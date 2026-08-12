@@ -1,0 +1,27 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# node, if a chapter ever needs it
+node_modules/
+
+# build output — regenerate with ./build.py
+dist/
+
+# renderer output. Reference images live in reference/ and are committed;
+# everything a reader generates while working through a chapter is not.
+out/
+*.ppm
+!reference/**/*.ppm

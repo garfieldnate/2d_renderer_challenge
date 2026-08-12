@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 1 · The Canvas and the Color — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 1 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="#plate">Plate&nbsp;1</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter One</p>
+    <h1>The Canvas and the Color</h1>
+    <p class="hook">Here's a question you'd think a graphics book could answer in one line.
+      You have a black pixel and a white pixel. What number is exactly halfway between them?</p>
+  </header>
+
+  <p>If you said 128, you're in excellent company — that's what almost every piece of software
+    written before about 2010 said too, and plenty written since. It's also wrong, in a way that will
+    quietly bend the color of every gradient, every antialiased edge, and every soft shadow you draw
+    for the rest of this book.</p>
+
+  <p>The right answer is 188. Not because of some obscure convention nobody follows, but because of how
+    the numbers in an image file relate to actual light, and the two are nothing like proportional.
+    Before you take my word for it, look at this.</p>
+
+  <figure class="wide">
+    <canvas id="fig12" role="img" aria-label="A one-pixel checkerboard of black and white beside two solid gray patches, one at value 128 and one at value 188"></canvas>
+    <figcaption><span class="fig">Figure 1.1</span> A checkerboard of pure black and pure white pixels — physically, half the light — next to two solid grays. Lean back from the screen until the checkerboard blurs, and see which patch it turns into. Best viewed at 100% zoom.</figcaption>
+  </figure>
+
+  <p>The checkerboard is the honest half. Every other pixel is off, every other pixel is fully on, so
+    the light coming off that patch is exactly 50% of full white. And it matches the patch on the
+    right, the one labeled 188. The patch labeled 128 — the one everybody's arithmetic produces — is
+    visibly darker.</p>
+
+  <p>By the end of this chapter you'll have a canvas, a way to get pictures out of your program, and
+    a renderer that knows the difference. It's a short chapter. The trap in the middle of it is the
+    reason the rest of the book works.</p>
+
+  <h2><span class="sec">§ 1.1</span> A color is three numbers</h2>
+
+  <p>Start with the smallest thing. A color is a triple of red, green and blue, and you're going to
+    keep them as floating point numbers where 0.0 is none and 1.0 is full, rather than as bytes from
+    0 to 255.</p>
+
+  <p>Two reasons. The first is that you'll be adding, scaling and averaging colors constantly, and
+    doing that in bytes means rounding at every step until your grays turn brown. The second is that
+    values are allowed to wander outside the 0-to-1 range in the middle of a calculation, and that's
+    fine — you clamp once, at the very end, when the pixels are on their way out to a file. A color
+    of 1.7 isn't a bug. It's a bright thing you haven't finished computing yet.</p>
+
+  <p>You need four operations, and you already know all of them:</p>
+
+  <ul>
+    <li><strong>Add</strong> and <strong>subtract</strong>, component by component. Adding light to light.</li>
+    <li><strong>Scale</strong> by a number. Half as bright, twice as bright.</li>
+    <li><strong>Multiply</strong> two colors together, component by component — red times red, green
+      times green, blue times blue. This is the Hadamard product, and it's what you use when one color
+      <em>filters</em> another: a green light through a red gel gives you nothing at all, which the
+      arithmetic gets right without being told.</li>
+  </ul>
+
+  <div class="test">
+    <p class="label">features/chapter01-colors.feature</p>
+<pre><code><span class="kw">Feature</span>: Colors
+
+  <span class="kw">Scenario</span>: A color is a red, green, blue tuple
+    <span class="kw">Given</span> c ← color(-0.5, 0.4, 1.7)
+    <span class="kw">Then</span>  c.red = -0.5
+    <span class="kw">And</span>   c.green = 0.4
+    <span class="kw">And</span>   c.blue = 1.7
+
+  <span class="kw">Scenario</span>: Adding colors
+    <span class="kw">Given</span> c1 ← color(0.9, 0.6, 0.75)
+    <span class="kw">And</span>   c2 ← color(0.7, 0.1, 0.25)
+    <span class="kw">Then</span>  c1 + c2 = color(1.6, 0.7, 1.0)
+
+  <span class="kw">Scenario</span>: Scaling a color
+    <span class="kw">Given</span> c ← color(0.2, 0.3, 0.4)
+    <span class="kw">Then</span>  c * 2 = color(0.4, 0.6, 0.8)
+
+  <span class="kw">Scenario</span>: Multiplying colors filters one through the other
+    <span class="kw">Given</span> c1 ← color(1, 0.2, 0.4)
+    <span class="kw">And</span>   c2 ← color(0.9, 1, 0.1)
+    <span class="kw">Then</span>  c1 * c2 = color(0.9, 0.2, 0.04)</code></pre>
+  </div>
+
+  <p>Write those. It'll take you five minutes and it's the last five easy minutes for a while.</p>
+
+  <h2><span class="sec">§ 1.2</span> The canvas</h2>
+
+  <p>A canvas is a rectangle of colors with a width, a height, and two operations: put a color at
+    a position, and read the color back. Every pixel starts black.</p>
+
+  <p>The only decision worth pausing on is which way is up, and the answer is that it isn't. Your
+    canvas has its origin at the <em>top left</em>, x increasing to the right and y increasing
+    <em>downward</em>. That's upside down from every graph you drew in school, and it's what image
+    files, screens, printers and every 2D API in existence agree on. Fighting it costs you a sign
+    error in every chapter. Accept it now.</p>
+
+  <figure>
+    <canvas id="fig11" role="img" aria-label="A grid showing canvas coordinates with the origin at top left, x increasing right and y increasing down, with the pixel at column 2 row 3 filled"></canvas>
+    <figcaption><span class="fig">Figure 1.2</span> Origin top left, y downward. The filled cell is <span style="text-transform:none;letter-spacing:0">write_pixel(c, 2, 3, …)</span> — column first, row second.</figcaption>
+  </figure>
+
+  <div class="test">
+    <p class="label">features/chapter01-canvas.feature</p>
+<pre><code>  <span class="kw">Scenario</span>: A new canvas starts black
+    <span class="kw">Given</span> c ← canvas(10, 20)
+    <span class="kw">Then</span>  c.width = 10
+    <span class="kw">And</span>   c.height = 20
+    <span class="kw">And</span>   every pixel of c is color(0, 0, 0)
+
+  <span class="kw">Scenario</span>: Writing a pixel
+    <span class="kw">Given</span> c ← canvas(10, 20)
+    <span class="kw">And</span>   red ← color(1, 0, 0)
+    <span class="kw">When</span>  write_pixel(c, 2, 3, red)
+    <span class="kw">Then</span>  pixel_at(c, 2, 3) = red</code></pre>
+  </div>
+
+  <p>Decide what happens when someone writes outside the canvas. Silently ignoring it is the choice
+    most renderers make and the one I'd suggest, because by chapter 6 you'll have geometry hanging off
+    the edges constantly and you do not want a bounds check throwing an exception in the middle of a
+    scanline. Whatever you pick, write a test for it now, while it's a decision instead of a bug.</p>
+
+  <h2><span class="sec">§ 1.3</span> Getting it out of the computer</h2>
+
+  <p>A canvas nobody can see isn't worth much. You need a file format, and you're going to use the
+    least sophisticated one ever standardized: PPM.</p>
+
+  <p>PPM is a text file. It has three header lines — the magic string <code>P3</code>, the width and
+    height, and the maximum channel value — and then the pixel values as decimal numbers, left to
+    right, top to bottom. That's the entire specification. A five-by-three canvas comes out looking
+    like this:</p>
+
+<pre><code>P3
+5 3
+255
+255 0 0  0 0 0  0 0 0  0 0 0  0 0 0
+0 0 0  0 128 0  0 0 0  0 0 0  0 0 0
+0 0 0  0 0 0  0 0 0  0 0 0  0 0 255</code></pre>
+
+  <p>You can open that in a text editor. You can read it out loud. When your renderer produces
+    something baffling in chapter 7, being able to <code>cat</code> the output and stare at actual
+    numbers is worth more than any debugger, and it's why we're starting here instead of with PNG.</p>
+
+  <p>Converting a color to those numbers means clamping to 0-to-1 and scaling to 0-to-255. Clamp
+    first, then scale, then round — in that order, or a color of 1.7 becomes 434 and your file becomes
+    garbage.</p>
+
+  <p>One oddity to respect: some very old PPM readers choke on lines longer than 70 characters. Split
+    your rows at a space before you hit the limit. It's a strange little constraint to be honoring in
+    the third decade of the twenty-first century, and it takes four lines of code, and if you skip it
+    the one tool you eventually need will be the one that cares.</p>
+
+  <div class="test">
+    <p class="label">features/chapter01-ppm.feature</p>
+<pre><code>  <span class="kw">Scenario</span>: The PPM header
+    <span class="kw">Given</span> c ← canvas(5, 3)
+    <span class="kw">When</span>  ppm ← canvas_to_ppm(c)
+    <span class="kw">Then</span>  lines 1-3 of ppm are
+      """
+      P3
+      5 3
+      255
+      """
+
+  <span class="kw">Scenario</span>: Colors out of range are clamped, not wrapped
+    <span class="kw">Given</span> c ← canvas(2, 1)
+    <span class="kw">When</span>  write_pixel(c, 0, 0, color(1.5, 0, -0.5))
+    <span class="kw">And</span>   ppm ← canvas_to_ppm(c)
+    <span class="kw">Then</span>  line 4 of ppm is "255 0 0  0 0 0"
+
+  <span class="kw">Scenario</span>: No line exceeds 70 characters
+    <span class="kw">Given</span> c ← canvas(40, 2) filled with color(1, 0.8, 0.6)
+    <span class="kw">When</span>  ppm ← canvas_to_ppm(c)
+    <span class="kw">Then</span>  every line of ppm is at most 70 characters
+
+  <span class="kw">Scenario</span>: The file ends with a newline
+    <span class="kw">Given</span> c ← canvas(5, 3)
+    <span class="kw">When</span>  ppm ← canvas_to_ppm(c)
+    <span class="kw">Then</span>  ppm ends with a newline character</code></pre>
+  </div>
+
+  <p>That last scenario looks like pedantry until the day a file viewer shows you nothing and you
+    spend an hour looking for the bug in your rasterizer.</p>
+
+  <p>Write the canvas, write the PPM function, fill a canvas with something and open it. Congratulations,
+    you have a renderer. It renders rectangles of one color, but everything from here is detail.</p>
+
+  <h2><span class="sec">§ 1.4</span> The numbers are not the light</h2>
+
+  <p>Now the part that matters.</p>
+
+  <p>When you write 128 into a PPM file, you are not asking for half as much light as 255. You're
+    asking for about 21.6% as much. The value in the file has been through a transfer function — a
+    deliberate, standardized bend — and undoing that bend is called decoding.</p>
+
+  <p>The reason the bend exists is that your eye is not a light meter. It's far more sensitive to
+    changes among dark tones than among bright ones. If you spread 256 evenly-spaced light levels
+    across a gradient, the dark end would band horribly while the bright end wasted dozens of values
+    on differences you can't see. So the encoding spends more of its 256 values down in the shadows,
+    where you'll notice, and fewer up in the highlights, where you won't. It's a compression scheme
+    for human eyeballs, and it's been so successful that most programmers never learn it's there.</p>
+
+  <p>The standard your images are in is sRGB. Two functions, and you can copy them:</p>
+
+<pre><code><span class="cm">// file value  →  light</span>
+decode(v) = v ≤ 0.04045
+              ? v / 12.92
+              : ((v + 0.055) / 1.055) <span class="hi">^ 2.4</span>
+
+<span class="cm">// light  →  file value</span>
+encode(v) = v ≤ 0.0031308
+              ? v * 12.92
+              : 1.055 * v <span class="hi">^ (1/2.4)</span> - 0.055</code></pre>
+
+  <p>The little linear segment near zero isn't decoration — it keeps the slope finite at black, which
+    matters for numerical stability. Copy it exactly.</p>
+
+  <p>Now run the numbers from the top of the chapter. Decode 128/255 and you get 0.216: that patch is
+    emitting 21.6% of full light. Encode 0.5 — genuine, physical, half-the-photons light — and you get
+    0.7354, which is 188 out of 255. The checkerboard in Figure&nbsp;1.1 was never lying. Your
+    arithmetic was.</p>
+
+  <div class="test">
+    <p class="label">features/chapter01-srgb.feature</p>
+<pre><code>  <span class="kw">Scenario Outline</span>: Encoding light into file values
+    <span class="kw">Given</span> l ← &lt;light&gt;
+    <span class="kw">Then</span>  encode(l) = &lt;value&gt; ± 0.0001
+
+    <span class="kw">Examples</span>:
+      | light  | value  |
+      | 0.0    | 0.0    |
+      | 0.0025 | 0.0323 |
+      | 0.216  | 0.5021 |
+      | 0.5    | 0.7354 |
+      | 1.0    | 1.0    |
+
+  <span class="kw">Scenario</span>: Decode undoes encode
+    <span class="kw">Given</span> l ← 0.2
+    <span class="kw">Then</span>  decode(encode(l)) = 0.2 ± 0.000000001
+
+  <span class="kw">Scenario</span>: The half-gray that isn't 128
+    <span class="kw">Then</span>  round(encode(0.5) * 255) = 188</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 1.5</span> Two ways to mix</h2>
+
+  <p>Here's the whole lesson in one operation. To blend two colors halfway, you have a choice:</p>
+
+<pre><code><span class="cm">// the way that feels obvious and is wrong</span>
+mid = (a + b) / 2
+
+<span class="cm">// the way light actually works</span>
+mid = encode( (decode(a) + decode(b)) / 2 )</code></pre>
+
+  <p>Decode into light, do the arithmetic there, encode on the way out. That's it. That's the entire
+    correction, and you'll apply it for the rest of the book without thinking about it, because from
+    chapter 2 onward your canvas is going to store <em>light</em> and only encode when it writes
+    the file.</p>
+
+  <p>That single decision — the canvas holds linear values, the PPM writer encodes — is the
+    architecture of the whole renderer. Make it now and you'll never think about gamma again. Make
+    it in chapter 9, when you have compositing, gradients and antialiasing all built on the wrong
+    assumption, and you'll be rewriting most of them.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>Doing this correctly will make your output look <em>different from your browser</em>. Web
+      browsers, most design tools and a decent share of image editors blend in encoded space — the
+      wrong way — because they've always done it and changing now would alter billions of existing
+      pages. Your red-to-green gradient will pass through a bright olive. Chrome's will pass through
+      a muddy brown. Yours is right, and it will look wrong to you for about a week.</p>
+    <p>So put a switch in. One boolean, <code>LINEAR_BLENDING</code>, defaulting to on. When something
+      you render doesn't match a reference image from another tool, flipping that switch tells you
+      in one second whether you've found a real bug or a philosophical disagreement. You'll use it
+      more than you expect.</p>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>This is the setting behind Photoshop's <em>Blend RGB Colors Using Gamma 1.00</em> checkbox, in
+      Edit → Color Settings. Turn it on and every layer blend, gradient and feathered edge in your
+      document shifts — usually brighter. It's off by default for exactly the compatibility reasons
+      above.</p>
+  </aside>
+
+  <h2><span class="sec">§ 1.6</span> Putting it together</h2>
+
+  <p>Two gradients, each rendered both ways, in one image. About twenty lines:</p>
+
+<pre><code>c ← canvas(600, 260)
+
+ramps ← [ (color(0,0,0),      color(1,1,1)),
+          (color(0.85,0,0),   color(0,0.55,0.1)) ]
+
+<span class="kw">for</span> i, (a, b) <span class="kw">in</span> ramps:
+    top ← i * 130
+    <span class="kw">for</span> x <span class="kw">in</span> 0..599:
+        t ← x / 599
+
+        naive  ← a * (1 - t) + b * t
+        linear ← encode( decode(a) * (1 - t) + decode(b) * t )
+
+        <span class="kw">for</span> y <span class="kw">in</span> top      .. top + 58:  write_pixel(c, x, y, naive)
+        <span class="kw">for</span> y <span class="kw">in</span> top + 62 .. top + 120: write_pixel(c, x, y, linear)
+
+write_file("plate01.ppm", canvas_to_ppm(c))</code></pre>
+
+  <p>Note the <code>encode</code> and <code>decode</code> around the second one, and nothing around
+    the first. Run it, open the file, and compare your output to this:</p>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate1" role="img" aria-label="Two pairs of color ramps: black to white and red to green, each blended naively above and in linear light below"></canvas>
+    <figcaption><span class="fig">Plate 1</span> Naive above, linear below, in each pair. The gray ramp's midpoint moves from 128 to 188. The red-to-green ramp is the one that will change how you look at gradients — the naive version goes through mud on its way across, and it has been doing that in your software for your entire career.</figcaption>
+  </figure>
+
+  <div class="exercises">
+    <h2>Exercises</h2>
+    <ol>
+      <li><div><b>Write the binary format.</b>
+        <p>PPM has a binary sibling, <code>P6</code>: same three header lines, then one raw byte per
+          channel with no whitespace at all. Files come out around four times smaller and write
+          considerably faster. Keep both writers — you'll want the readable one for debugging long
+          after you've switched the default. From chapter 2 on, the book assumes P6.</p></div></li>
+      <li><div><b>Rebuild Figure 1.1 yourself.</b>
+        <p>Render the checkerboard and the two solid patches into a PPM and view it at 100% zoom.
+          Then generalize: for any light level L, a checkerboard with the right proportion of white
+          pixels should match a solid patch of <code>encode(L)</code>. Try 25% and 75%. If your
+          renderer disagrees with your eyes, one of them has a bug and it probably isn't your eyes.</p></div></li>
+      <li><div><b>Find the banding.</b>
+        <p>Render a black-to-white ramp 256 pixels wide, correctly. Some of the steps at the dark end
+          will be duplicated and some at the bright end will jump. Count them. This is the reason
+          chapter 10 has a section on dithering, and it's worth seeing the problem before you meet
+          the fix.</p></div></li>
+      <li><div><b>Break the clamp on purpose.</b>
+        <p>Write a color of <code>(2.0, 0.5, 0.5)</code> and one of <code>(1.0, 0.25, 0.25)</code>
+          side by side. Clamping makes them different colors, not the same color at different
+          brightness. Nothing to fix here — but when your highlights go pink in a later chapter,
+          you'll remember why.</p></div></li>
+    </ol>
+  </div>
+
+  <nav class="endnav">
+    <a href="../plan.html">← Outline</a>
+    <span>Chapter 1 · The Canvas and the Color</span>
+    <span>Next: 2 · Coverage (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+/* ---------- Figure 1.1 — the gray match ---------- */
+Plate.add('fig12', 0.30, function (ctx, w, h, p, dpr) {
+  /* drawn in raw device pixels: a checkerboard that gets resampled is a lie */
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  var W = Math.round(w * dpr), H = Math.round(h * dpr);
+  var lab = Math.round(22 * dpr), PH = H - lab;
+  var pw = Math.floor(W / 3);
+
+  ctx.fillStyle = p.plate;
+  ctx.fillRect(0, 0, W, H);
+
+  var img = ctx.createImageData(pw, PH);
+  for (var y = 0; y < PH; y++) {
+    for (var x = 0; x < pw; x++) {
+      var v = ((x + y) & 1) ? 255 : 0, i = (y * pw + x) * 4;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  ctx.fillStyle = 'rgb(128,128,128)'; ctx.fillRect(pw, 0, pw, PH);
+  ctx.fillStyle = 'rgb(188,188,188)'; ctx.fillRect(pw * 2, 0, W - pw * 2, PH);
+
+  var fs = Math.round(9.5 * dpr);
+  ctx.font = fs + 'px ' + Plate.MONO;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = p.ink3;
+  ctx.fillText('50% OF THE LIGHT', pw * 0.5, H - Math.round(7 * dpr));
+  ctx.fillText('SOLID 128', pw * 1.5, H - Math.round(7 * dpr));
+  ctx.fillStyle = p.cyan;
+  ctx.fillText('SOLID 188', pw * 2.5, H - Math.round(7 * dpr));
+  ctx.textAlign = 'left';
+});
+
+/* ---------- Figure 1.2 — canvas coordinates ---------- */
+Plate.add('fig11', 0.46, function (ctx, w, h, p) {
+  var cols = 13, cs = Math.floor((w - 34) / cols), ox = 30, oy = 22;
+  var rows = Math.floor((h - oy - 14) / cs);
+
+  ctx.fillStyle = Plate.rgba(p.magenta, 0.85);
+  ctx.fillRect(ox + 2 * cs, oy + 3 * cs, cs, cs);
+
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.45);
+  ctx.lineWidth = 1;
+  for (var i = 0; i <= cols; i++) {
+    ctx.beginPath(); ctx.moveTo(ox + i * cs, oy); ctx.lineTo(ox + i * cs, oy + rows * cs); ctx.stroke();
+  }
+  for (var j = 0; j <= rows; j++) {
+    ctx.beginPath(); ctx.moveTo(ox, oy + j * cs); ctx.lineTo(ox + cols * cs, oy + j * cs); ctx.stroke();
+  }
+
+  /* origin marker and axis arrows */
+  ctx.strokeStyle = p.cyan; ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  ctx.moveTo(ox, oy - 9); ctx.lineTo(ox + cs * 3.2, oy - 9);
+  ctx.lineTo(ox + cs * 3.2 - 5, oy - 12); ctx.moveTo(ox + cs * 3.2, oy - 9);
+  ctx.lineTo(ox + cs * 3.2 - 5, oy - 6);
+  ctx.moveTo(ox - 9, oy); ctx.lineTo(ox - 9, oy + cs * 3.2);
+  ctx.lineTo(ox - 12, oy + cs * 3.2 - 5); ctx.moveTo(ox - 9, oy + cs * 3.2);
+  ctx.lineTo(ox - 6, oy + cs * 3.2 - 5);
+  ctx.stroke();
+  Plate.label(ctx, 'x', ox + cs * 3.2 + 5, oy - 6, p.cyan, 11);
+  Plate.label(ctx, 'y', ox - 14, oy + cs * 3.2 + 11, p.cyan, 11);
+  Plate.label(ctx, '(0,0)', ox + 3, oy - 12, p.ink3, 9.5);
+
+  for (var k = 0; k < cols; k += 2) {
+    Plate.label(ctx, String(k), ox + k * cs + cs / 2, oy + rows * cs + 11, p.ink3, 9, 'center');
+  }
+  for (var m = 0; m < rows; m++) {
+    Plate.label(ctx, String(m), ox - 6, oy + m * cs + cs / 2 + 3.5, p.ink3, 9, 'right');
+  }
+  Plate.label(ctx, '(2, 3)', ox + 2 * cs + cs + 7, oy + 3 * cs + cs / 2 + 4, p.magenta, 10);
+});
+
+/* ---------- Plate 1 — the two ramps ---------- */
+Plate.add('plate1', 0.42, function (ctx, w, h, p) {
+  var pairs = [
+    { a: [0, 0, 0], b: [1, 1, 1], t: 'black to white' },
+    { a: [0.85, 0, 0], b: [0, 0.55, 0.1], t: 'red to green' }
+  ];
+  var gh = (h - 40) / 2, barh = (gh - 8) / 2;
+
+  pairs.forEach(function (pr, gi) {
+    var top = gi * (gh + 26) + 18;
+    Plate.label(ctx, pr.t.toUpperCase(), 0, top - 7, p.ink3, 9.5);
+    for (var x = 0; x < w; x++) {
+      var t = x / (w - 1), n = [0, 0, 0], l = [0, 0, 0];
+      for (var i = 0; i < 3; i++) {
+        n[i] = pr.a[i] + (pr.b[i] - pr.a[i]) * t;
+        l[i] = Plate.l2s(Plate.s2l(pr.a[i]) + (Plate.s2l(pr.b[i]) - Plate.s2l(pr.a[i])) * t);
+      }
+      ctx.fillStyle = Plate.rgbs(n.map(function (v) { return v * 255; }));
+      ctx.fillRect(x, top, 1, barh);
+      ctx.fillStyle = Plate.rgbs(l.map(function (v) { return v * 255; }));
+      ctx.fillRect(x, top + barh + 4, 1, barh);
+    }
+    Plate.label(ctx, 'NAIVE', 7, top + barh - 7, 'rgba(150,150,150,0.95)', 9.5);
+    Plate.label(ctx, 'LINEAR', 7, top + barh * 2 - 3, 'rgba(150,150,150,0.95)', 9.5);
+  });
+
+  /* the midpoint, called out */
+  ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = Plate.rgba(p.magenta, 0.95);
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(w / 2, 8); ctx.lineTo(w / 2, h - 20); ctx.stroke();
+  ctx.setLineDash([]);
+  Plate.label(ctx, '128  vs  188', w / 2 + 7, h - 8, p.magenta, 10);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  Plate.helpers.map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>

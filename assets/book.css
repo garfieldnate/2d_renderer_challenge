@@ -1,0 +1,202 @@
+/* ============================================================
+   The 2D Renderer Challenge — shared chapter styles
+   Palette and type are inherited from plan.html so the book and
+   its outline read as one object. Layout is different on purpose:
+   the outline is a plate book, a chapter is a reading column.
+   ============================================================ */
+
+:root{
+  --paper:#F1F3F4; --plate:#FFFFFF; --surface:#E6EBED; --rule:#C6D0D5; --rule-2:#DDE4E7;
+  --ink:#0F1518; --ink-2:#44535B; --ink-3:#6C7E87;
+  --cyan:#00718F; --cyan-soft:#D8EAF1; --magenta:#B81C6B; --magenta-soft:#FAE0EC;
+  --display:"Helvetica Neue",Helvetica,"Arial Nova",Arial,sans-serif;
+  --body:Charter,"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0D1215; --plate:#141B1F; --surface:#182126; --rule:#28353C; --rule-2:#1F2A30;
+    --ink:#DDE6EA; --ink-2:#9CAFB7; --ink-3:#73868E;
+    --cyan:#48C1E2; --cyan-soft:#0D2C37; --magenta:#F663A3; --magenta-soft:#331120;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0D1215; --plate:#141B1F; --surface:#182126; --rule:#28353C; --rule-2:#1F2A30;
+  --ink:#DDE6EA; --ink-2:#9CAFB7; --ink-3:#73868E;
+  --cyan:#48C1E2; --cyan-soft:#0D2C37; --magenta:#F663A3; --magenta-soft:#331120;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--paper); color:var(--ink); font-family:var(--body);
+  font-size:18px; line-height:1.62; margin:0;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ---- reading column -------------------------------------------------- */
+.chapter{
+  display:grid;
+  grid-template-columns:1fr min(65ch,calc(100% - 44px)) 1fr;
+  padding:0 0 90px;
+}
+.chapter > *{grid-column:2}
+.chapter > .wide{
+  grid-column:1/-1;
+  width:min(1000px,calc(100% - 44px));
+  margin-inline:auto;
+}
+@media (max-width:640px){
+  body{font-size:17px}
+  .chapter{grid-template-columns:1fr min(65ch,calc(100% - 32px)) 1fr}
+  .chapter > .wide{width:calc(100% - 32px)}
+}
+
+/* ---- running head ---------------------------------------------------- */
+.runner{
+  grid-column:1/-1; border-bottom:1px solid var(--rule);
+  display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  padding:16px max(22px,calc((100% - 1000px)/2));
+  font-family:var(--mono); font-size:11px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--ink-3);
+}
+.runner a{color:var(--cyan);text-decoration:none}
+.runner a:hover{text-decoration:underline}
+
+/* ---- chapter opener -------------------------------------------------- */
+.opener{padding:64px 0 8px}
+.opener .num{
+  font-family:var(--mono); font-size:12px; letter-spacing:.2em;
+  text-transform:uppercase; color:var(--cyan); margin:0 0 18px;
+}
+h1{
+  font-family:var(--display); font-weight:700; letter-spacing:-.026em;
+  line-height:1.04; font-size:clamp(34px,6vw,58px); margin:0; text-wrap:balance;
+}
+.hook{font-size:21px;line-height:1.5;color:var(--ink-2);margin:20px 0 0}
+
+/* ---- headings -------------------------------------------------------- */
+h2{
+  font-family:var(--display); font-weight:700; letter-spacing:-.02em;
+  font-size:26px; margin:52px 0 14px; text-wrap:balance;
+}
+h2 .sec{
+  display:block; font-family:var(--mono); font-size:11px; font-weight:400;
+  letter-spacing:.16em; color:var(--cyan); margin-bottom:7px;
+}
+h3{
+  font-family:var(--display); font-weight:700; letter-spacing:-.014em;
+  font-size:19px; margin:34px 0 10px;
+}
+p{margin:0 0 18px}
+em{font-style:italic}
+strong{font-weight:600}
+a{color:var(--cyan)}
+ul,ol{margin:0 0 18px;padding-left:24px}
+li{margin-bottom:9px}
+li:last-child{margin-bottom:0}
+hr{border:none;border-top:1px solid var(--rule);margin:44px 0}
+
+/* ---- inline code and blocks ------------------------------------------ */
+code{
+  font-family:var(--mono); font-size:.84em; background:var(--surface);
+  padding:.12em .34em; color:var(--ink);
+}
+pre{
+  margin:22px 0; background:var(--surface); border:1px solid var(--rule-2);
+  padding:15px 17px; overflow-x:auto;
+}
+pre code{
+  font-family:var(--mono); font-size:12.5px; line-height:1.6;
+  background:none; padding:0; color:var(--ink); white-space:pre; display:block;
+}
+pre .cm{color:var(--ink-3)}
+pre .kw{color:var(--cyan)}
+pre .hi{color:var(--magenta)}
+.caption-mono{
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.13em;
+  text-transform:uppercase; color:var(--ink-3); margin:0 0 -12px;
+}
+
+/* ---- figures --------------------------------------------------------- */
+figure{
+  margin:30px 0; background:var(--plate); border:1px solid var(--rule); padding:13px;
+}
+figure canvas{display:block;width:100%}
+figcaption{
+  font-family:var(--mono); font-size:11px; line-height:1.55; color:var(--ink-3);
+  margin-top:11px; letter-spacing:.02em;
+}
+figcaption .fig{color:var(--cyan);letter-spacing:.12em;text-transform:uppercase}
+figure.plate{border-width:2px;border-color:var(--ink)}
+figure.plate figcaption .fig{color:var(--magenta)}
+
+details.src{margin-top:11px;border-top:1px solid var(--rule-2);padding-top:9px}
+details.src summary{
+  font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--cyan); cursor:pointer; list-style:none; user-select:none;
+}
+details.src summary::-webkit-details-marker{display:none}
+details.src summary::before{content:"+  "}
+details.src[open] summary::before{content:"\2212  "}
+details.src pre{margin:10px 0 0;max-height:340px;overflow-y:auto}
+details.src pre code{font-size:11px;line-height:1.55;color:var(--ink-2)}
+
+/* ---- asides ---------------------------------------------------------- */
+.gui{
+  margin:30px 0; border:1px solid var(--rule); background:var(--surface); padding:16px 18px;
+}
+.gui h4{
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.15em; text-transform:uppercase;
+  color:var(--cyan); margin:0 0 8px; font-weight:400;
+}
+.gui p{margin:0;font-size:16px;color:var(--ink-2)}
+.gui p + p{margin-top:9px}
+
+.trap{
+  margin:30px 0; border-left:2px solid var(--magenta); padding:2px 0 2px 18px;
+}
+.trap h4{
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.15em; text-transform:uppercase;
+  color:var(--magenta); margin:0 0 8px; font-weight:400;
+}
+.trap p{margin:0;font-size:16.5px}
+.trap p + p{margin-top:12px}
+
+/* ---- the test blocks ------------------------------------------------- */
+.test{margin:24px 0}
+.test > .label{
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--ink-3); margin:0 0 -14px;
+}
+.test pre{border-left:2px solid var(--cyan)}
+
+/* ---- exercises ------------------------------------------------------- */
+.exercises{margin:52px 0 0;border-top:2px solid var(--ink);padding-top:22px}
+.exercises h2{margin-top:0}
+.exercises ol{list-style:none;padding:0;margin:0;counter-reset:ex}
+.exercises li{
+  display:grid; grid-template-columns:auto 1fr; gap:18px;
+  padding:16px 0; border-bottom:1px solid var(--rule-2); align-items:baseline; margin:0;
+}
+.exercises li::before{
+  counter-increment:ex; content:counter(ex,decimal-leading-zero);
+  font-family:var(--mono); font-size:11.5px; color:var(--cyan); letter-spacing:.1em;
+}
+.exercises b{font-family:var(--display);font-weight:700;font-size:16.5px;letter-spacing:-.012em}
+.exercises p{margin:5px 0 0;font-size:16px;color:var(--ink-2)}
+
+/* ---- footer nav ------------------------------------------------------ */
+.endnav{
+  grid-column:1/-1; border-top:2px solid var(--ink); margin-top:60px;
+  display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  padding:22px max(22px,calc((100% - 1000px)/2));
+  font-family:var(--mono); font-size:11.5px; letter-spacing:.08em; text-transform:uppercase;
+}
+.endnav a{color:var(--cyan);text-decoration:none}
+.endnav span{color:var(--ink-3)}
+
+:focus-visible{outline:2px solid var(--cyan);outline-offset:3px}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.001ms !important;transition-duration:.001ms !important}
+}
