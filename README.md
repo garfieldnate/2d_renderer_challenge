@@ -27,7 +27,7 @@ Three-quarters of the book is teaching them to see that.
 | Path | What's in it |
 | --- | --- |
 | `plan.html` | The full outline — 24 chapters, every plate rendered live, plus the writing guide (chapter rhythm, aside rules, voice). Read this first. |
-| `chapters/` | The book. One self-contained HTML document per chapter. |
+| `chapters/` | The book. One HTML document per chapter, zero-padded (`chapter-01.html`) so they sort in reading order. |
 | `assets/book.css` | Shared chapter styling — palette, type, reading column. |
 | `assets/book.js` | The figure scaffold. `Plate.add(id, aspect, draw)` plus theme handling and the source panels. |
 | `features/` | Cucumber scenarios, one file per chapter section, exactly as printed in the text. |
@@ -47,8 +47,8 @@ To produce a single-file version for publishing:
 
 ```sh
 ./build.py                          # all chapters → dist/
-./build.py chapters/chapter1.html   # just one
-./build.py --fragment chapters/chapter1.html   # for the Artifact publisher
+./build.py chapters/chapter-01.html   # just one
+./build.py --fragment chapters/chapter-01.html   # for the Artifact publisher
 ```
 
 ## The rules of the book

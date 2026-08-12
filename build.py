@@ -8,7 +8,7 @@ This script produces the other thing we sometimes need: a single file with
 nothing external, suitable for publishing or emailing.
 
     ./build.py                     # build every chapter into dist/
-    ./build.py chapters/chapter1.html
+    ./build.py chapters/chapter-01.html
     ./build.py --fragment ...      # drop <html>/<head>/<body>, for Artifacts
 
 The --fragment form is what the Artifact publisher wants: a bare <title>,
