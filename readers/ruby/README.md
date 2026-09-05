@@ -4,16 +4,10 @@ This is a Ruby implementation of the 2D Renderer Challenge, covering Chapters 1 
 
 ## Running Tests
 
-Run all tests (Chapter 1 and Chapter 2):
+Run all tests from this directory (it expects `features/` and `reference/` beside it, which the book's staging tool provides):
 ```bash
 ruby test_chapter01.rb
 ruby test_chapter02.rb
-```
-
-Or from the project root:
-```bash
-ruby readers/ruby/test_chapter01.rb
-ruby readers/ruby/test_chapter02.rb
 ```
 
 ## Generating Output Images

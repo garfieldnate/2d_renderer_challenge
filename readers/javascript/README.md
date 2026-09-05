@@ -4,9 +4,9 @@ Implementation of Chapters 1 and 2 of "The 2D Renderer Challenge" in JavaScript 
 
 ## Running Tests
 
-Run all tests from the project root:
+Run all tests from this directory (it expects `features/` and `reference/` beside it, which the book's staging tool provides):
 ```bash
-node readers/javascript/test.js
+node test.js
 ```
 
 This runs:
@@ -19,7 +19,7 @@ All 89 tests should pass.
 
 The test suite automatically generates output images:
 ```bash
-node readers/javascript/test.js
+node test.js
 ```
 
 Output files are written to `out/`:

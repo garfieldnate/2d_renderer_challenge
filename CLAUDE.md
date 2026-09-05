@@ -109,9 +109,19 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
 
 Before declaring a chapter done, have subagents implement it cold, as readers:
 
-1. Build the single-file chapter (`./build.py`) and copy it, `features/chapterNN-*.feature`, and
-   `reference/chapter-NN/` into an isolated scratch directory per agent. Nothing else: no
-   `plan.html`, no reference implementation, no other agents' work.
+1. Stage an isolated scratch directory per agent with `./tools/readers.py stage <lang> <N> <dir>`:
+   the language's existing code from `readers/<lang>/`, the built chapters 1..N, their feature
+   files and reference images. Nothing else: no `plan.html`, no reference implementation, no other
+   agents' work. **Tell the agent, in so many words, that the book's repository exists elsewhere on
+   this machine and it must not read or write it**, and give only the absolute scratch path. Two
+   haiku agents in the chapter-2 round found `readers/<lang>/` in the repo, worked there instead,
+   and one consulted `reference/impl/`; their feedback for that round is compromised. After a
+   round, run `git status` before committing anything and treat any change under `readers/` that
+   you didn't collect yourself as contamination.
+1b. Collect with `./tools/readers.py collect <lang> <N> <dir>`: code comes back to
+   `readers/<lang>/`, `FEEDBACK.md` goes to `readers/feedback/chapterNN-<lang>.md`, renders and
+   copies of the book do not come back. Every reader's README must run its tests from its own
+   directory, which the staging layout satisfies.
 2. Spread agents across model tiers (haiku, sonnet, opus) and language families (dynamic, managed,
    systems). Tell them to translate every scenario, write the renders to `out/` with the
    reference filenames, and write a candid `FEEDBACK.md` (ambiguities, hard-to-translate steps,
