@@ -26,3 +26,11 @@ def main : IO Unit := do
   saveP6 "disc-coverage.ppm" (← discCoverage)
   saveP6 "painted-twice.ppm" (← paintedTwice)
   saveP6 "plate-02.ppm" (← plate02)
+  saveP6 "fan-bresenham.ppm" fanBresenham
+  saveP6 "fan-wu.ppm" (← fanWu)
+  let t0 ← IO.monoMsNow
+  let cov ← fanCoverage
+  let t1 ← IO.monoMsNow
+  IO.println s!"fan_coverage: {t1 - t0}ms"
+  saveP6 "fan-coverage.ppm" cov
+  saveP6 "plate-03.ppm" (← plate03)

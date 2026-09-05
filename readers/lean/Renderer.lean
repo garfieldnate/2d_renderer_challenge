@@ -19,6 +19,10 @@ def approxEq (a b : Float) (eps : Float := epsilon) : Bool :=
 def roundNat (x : Float) : Nat :=
   (Float.floor (x + 0.5)).toUInt64.toNat
 
+/-- Core Lean has no `Int → Float` coercion. -/
+def intToFloat (i : Int) : Float :=
+  if i < 0 then -(i.natAbs.toFloat) else i.natAbs.toFloat
+
 /-! ## § 1.2  A color is three numbers -/
 
 structure Color where
@@ -431,13 +435,15 @@ def rasterizeCenters (s : Shape) (w h : Nat) : Coverage := Id.run do
 
 /-! ## § 2.5  Paint through it -/
 
-/-- Moves every pixel of the canvas toward `col` by that pixel's coverage.
-    The one place the renderer touches the canvas. -/
+/-- Moves every pixel of the canvas toward `col` by that pixel's coverage,
+    with the linear-blending switch forced to the light's way regardless of
+    what it is set to: `mix(pixel, color, coverage, true)`. The one place
+    the renderer touches the canvas. -/
 def paintThrough (c : Canvas) (cov : Coverage) (col : Color) : IO Canvas := do
   let mut out := c
   for y in [0:c.height] do
     for x in [0:c.width] do
-      out := writePixel out x y (← mix (pixelAt out x y) col (coverageAt cov x y))
+      out := writePixel out x y (← mix (pixelAt out x y) col (coverageAt cov x y) (some true))
   return out
 
 /-! ## § 2.6  The better question
@@ -511,5 +517,188 @@ def plate02 : IO Canvas := do
       both := setCoverage both (x + 40) y (coverageAt right x y)
   c ← paintThrough c both orange
   return magnify c 6
+
+/-! # Chapter 3 -- Lines -/
+
+/-! ## § 3.1  Bresenham
+
+Integer-only, both endpoints included. Threaded through `Id.run do` with
+`let mut`: the pseudo-code is already an imperative loop over a mutable
+canvas, and that's the most direct translation of it. -/
+
+/-- Every pixel of the canvas that isn't black, in reading order: top row
+    first, left to right. A test helper, not a renderer function. -/
+def litPixels (c : Canvas) : Array (Nat × Nat) := Id.run do
+  let mut out := #[]
+  for y in [0:c.height] do
+    for x in [0:c.width] do
+      let p := c.pixels[y * c.width + x]!
+      if !(p.approxEq (color 0 0 0)) then
+        out := out.push (x, y)
+  return out
+
+/-- The sum of every pixel's red channel: for a white line on black, exactly
+    how much paint went down. -/
+def totalInk (c : Canvas) : Float := c.pixels.foldl (fun acc p => acc + p.red) 0.0
+
+def lineBresenham (c0 : Canvas) (x0 y0 x1 y1 : Int) (col : Color) : Canvas := Id.run do
+  let steep := (y1 - y0).natAbs > (x1 - x0).natAbs
+  let mut x0 := x0
+  let mut y0 := y0
+  let mut x1 := x1
+  let mut y1 := y1
+  if steep then
+    let t0 := x0; x0 := y0; y0 := t0
+    let t1 := x1; x1 := y1; y1 := t1
+  if x0 > x1 then
+    let tx := x0; x0 := x1; x1 := tx
+    let ty := y0; y0 := y1; y1 := ty
+  let dx : Int := x1 - x0
+  let dy : Int := (y1 - y0).natAbs
+  let ystep : Int := if y0 < y1 then 1 else -1
+  let mut err : Int := dx / 2
+  let mut y := y0
+  let mut c := c0
+  for i in [0:dx.toNat + 1] do
+    let x := x0 + (i : Int)
+    if steep then
+      c := writePixel c y x col
+    else
+      c := writePixel c x y col
+    err := err - dy
+    if err < 0 then
+      y := y + ystep
+      err := err + dx
+  return c
+
+/-! ## § 3.2  Wu
+
+`plot` is `paint_through` for one pixel: it drops writes off the canvas, and
+as a shortcut (not a rule) skips a weight of zero, so the endpoints of a
+line that starts off-canvas never touch a pixel outside it. -/
+
+def plot (c : Canvas) (x y : Int) (col : Color) (weight : Float) : IO Canvas := do
+  if weight == 0.0 then
+    return c
+  else if x < 0 || y < 0 || x >= (c.width : Int) || y >= (c.height : Int) then
+    return c
+  else
+    return writePixel c x y (← mix (pixelAt c x y) col weight)
+
+/-- Floor, not truncation: they agree on positive numbers and part company
+    below zero, and a line that starts above the canvas has a negative `y`
+    for a few columns. -/
+def floorInt (x : Float) : Int := (Float.floor x).toInt64.toInt
+
+def lineWu (c0 : Canvas) (x0 y0 x1 y1 : Int) (col : Color) : IO Canvas := do
+  let steep := (y1 - y0).natAbs > (x1 - x0).natAbs
+  let mut x0 := x0
+  let mut y0 := y0
+  let mut x1 := x1
+  let mut y1 := y1
+  if steep then
+    let t0 := x0; x0 := y0; y0 := t0
+    let t1 := x1; x1 := y1; y1 := t1
+  if x0 > x1 then
+    let tx := x0; x0 := x1; x1 := tx
+    let ty := y0; y0 := y1; y1 := ty
+  let dx : Int := x1 - x0
+  let slope : Float := if dx == 0 then 0.0 else intToFloat (y1 - y0) / intToFloat dx
+  let mut c := c0
+  for i in [0:dx.toNat + 1] do
+    let x := x0 + (i : Int)
+    let y := intToFloat y0 + intToFloat (x - x0) * slope
+    let yi := floorInt y
+    let f := y - intToFloat yi
+    if steep then
+      c ← plot c yi x col (1.0 - f)
+      c ← plot c (yi + 1) x col f
+    else
+      c ← plot c x yi col (1.0 - f)
+      c ← plot c x (yi + 1) col f
+  return c
+
+/-! ## § 3.3  The reveal
+
+A line is a rectangle one pixel wide: four half-planes, and chapter 2's
+rasterizer already knows what to do with it. -/
+
+/-- The rectangle of `width` centered on the segment from the center of pixel
+    `(x0, y0)` to the center of pixel `(x1, y1)`, with square ends. A line of
+    no length has no direction, so it gets `(1, 0)` and its two ends are
+    pushed apart by half the width each, making it a `width`-by-`width`
+    square. -/
+def thickLine (x0 y0 x1 y1 : Int) (width : Float) : Shape :=
+  let ax0 := intToFloat x0 + 0.5
+  let ay0 := intToFloat y0 + 0.5
+  let bx0 := intToFloat x1 + 0.5
+  let by0 := intToFloat y1 + 0.5
+  let h := width / 2.0
+  let len := Float.sqrt ((bx0 - ax0) * (bx0 - ax0) + (by0 - ay0) * (by0 - ay0))
+  let (ax, bx, dx, dy) :=
+    if len == 0.0 then (ax0 - h, bx0 + h, 1.0, 0.0)
+    else (ax0, bx0, (bx0 - ax0) / len, (by0 - ay0) / len)
+  let ay := ay0
+  let byy := by0
+  let nx := -dy
+  let ny := dx
+  let ahead := halfPlane ax ay dx dy
+  let behind := halfPlane bx byy (-dx) (-dy)
+  let left := halfPlane (ax + nx * h) (ay + ny * h) (-nx) (-ny)
+  let right := halfPlane (ax - nx * h) (ay - ny * h) nx ny
+  ⟨fun x y => inside ahead x y && inside behind x y && inside left x y && inside right x y⟩
+
+/-! ## § 3.1, 3.2, 3.3, 3.4  The renders -/
+
+private def fanPaper : Color := color 0.02 0.02 0.025
+private def fanInk : Color := color 0.92 0.92 0.88
+private def pi : Float := 3.14159265358979323846
+
+/-- Twelve points 72 pixels out from (80, 80), one every 30 degrees, rounded
+    to integers. -/
+def rayEnds : Array (Int × Int) := Id.run do
+  let mut out := #[]
+  for k in [0:12] do
+    let a := k.toFloat * 30.0 * (pi / 180.0)
+    let x := roundNat (80.0 + 72.0 * Float.cos a)
+    let y := roundNat (80.0 + 72.0 * Float.sin a)
+    out := out.push ((x : Int), (y : Int))
+  return out
+
+def fanBresenham : Canvas := Id.run do
+  let mut c := canvas 160 160
+  c := fill c fanPaper
+  for (x, y) in rayEnds do
+    c := lineBresenham c 80 80 x y fanInk
+  return c
+
+/-- `fanBresenham` with `lineWu` in place of `lineBresenham`, and nothing
+    else changed. -/
+def fanWu : IO Canvas := do
+  let mut c := canvas 160 160
+  c := fill c fanPaper
+  for (x, y) in rayEnds do
+    c ← lineWu c 80 80 x y fanInk
+  return c
+
+/-- Each ray a `thickLine` of width 1, rasterized and painted through in
+    turn, then magnified by 2. -/
+def fanCoverage : IO Canvas := do
+  let mut c := canvas 160 160
+  c := fill c fanPaper
+  for (x, y) in rayEnds do
+    let cov := rasterize (thickLine 80 80 x y 1.0) 160 160
+    c ← paintThrough c cov fanInk
+  return magnify c 2
+
+def plate03 : IO Canvas := do
+  let a := fanBresenham
+  let b ← fanWu
+  let mut both := canvas 320 160
+  for y in [0:160] do
+    for x in [0:160] do
+      both := writePixel both x y (pixelAt a x y)
+      both := writePixel both (x + 160) y (pixelAt b x y)
+  return magnify both 2
 
 end Renderer

@@ -44,6 +44,15 @@ def eqTri (label : String) (g e : Nat × Nat × Nat) (tol : Nat := 0) : T Unit :
 def eqS (label : String) (a b : String) : T Unit :=
   chk (a == b) s!"{label}: got {repr a}, expected {repr b}"
 
+def pairStr (p : Nat × Nat) : String := s!"({p.1}, {p.2})"
+
+def pixelListStr (a : Array (Nat × Nat)) : String :=
+  "[" ++ String.intercalate ", " (a.toList.map pairStr) ++ "]"
+
+/-- "lit_pixels(c) = [(x, y), ...]", or comparing two canvases' `lit_pixels`. -/
+def eqPixels (label : String) (a b : Array (Nat × Nat)) : T Unit :=
+  chk (a == b) s!"{label}: got {pixelListStr a}, expected {pixelListStr b}"
+
 def textLines (s : String) : Array String := (s.splitOn "\n").toArray
 
 /-- "lines a-b of ppm are" a quoted block. -/

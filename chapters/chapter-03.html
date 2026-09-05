@@ -198,8 +198,9 @@ fan_bresenham():
     <figcaption><span class="fig">Figure 3.2</span> Wu's rule. In each column, the line's height splits into a whole part and a fraction. The row below gets 1 minus the fraction; the row above gets the fraction.</figcaption>
   </figure>
 
-  <p>To light a pixel at a weight, you paint it: <code>mix(pixel_at(c, x, y), col, weight)</code>,
-    written back with <code>write_pixel</code>. That's <code>paint_through</code> for one pixel, and
+  <p>To light a pixel at a weight, you paint it: <code>mix(pixel_at(c, x, y), col, weight, true)</code>,
+    written back with <code>write_pixel</code>. That's <code>paint_through</code> for one pixel, in
+    light whatever the global switch says, for the same reason, and
     it's worth its own little function, <code>plot(c, x, y, col, weight)</code>, that also drops
     writes off the canvas and, as a shortcut rather than a rule, skips a weight of zero. The bounds
     check in <code>plot</code> is load-bearing even though <code>write_pixel</code> has one of its
@@ -257,6 +258,13 @@ fan_bresenham():
     <span class="kw">And</span>   pixel_at(c, 2, 2) = color(0, 0, 0)
     <span class="kw">And</span>   pixel_at(c, 4, 2) = color(1, 1, 1)
     <span class="kw">And</span>   total_ink(c) = 5
+
+  <span class="kw">Scenario</span>: The weights are applied in light, whatever the switch says
+    <span class="kw">Given</span> linear blending is off
+    <span class="kw">And</span>   c ← canvas(10, 10)
+    <span class="kw">When</span>  line_wu(c, 0, 0, 4, 2, color(1, 1, 1))
+    <span class="kw">Then</span>  pixel_at(c, 1, 0) = color(0.5, 0.5, 0.5)
+    <span class="kw">And</span>   pixel_at(c, 1, 1) = color(0.5, 0.5, 0.5)
 
   <span class="kw">Scenario</span>: A diagonal has uniform weights
     <span class="kw">Given</span> c ← canvas(10, 10)
@@ -404,8 +412,10 @@ fan_bresenham():
       it multiplies. Many compilers fuse <code>a * b + c * d</code> into a single fused
       multiply-add, which keeps one product at full precision and turns the exact zero into
       -0.00000000000000005, and four samples that should count as inside fall out. You'll see 9.65625
-      and no idea why. C and C++ compilers do this by default on ARM; the fix is to switch contraction
-      off for the renderer (<code>#pragma STDC FP_CONTRACT OFF</code>, or the equivalent flag), and
+      and no idea why. Whether it happens is a compiler setting, not a property of your machine: clang
+      contracts by default, several others don't, and the same source gives different answers under
+      different flags. The fix is to switch contraction off for the renderer
+      (<code>#pragma STDC FP_CONTRACT OFF</code>, or the equivalent flag), and
       to remember, every time a scenario puts a sample on a boundary, that "boundary included" is a
       promise your arithmetic has to keep exactly.</p>
   </div>
@@ -500,9 +510,9 @@ fan_bresenham():
   <span class="kw">return</span> magnify(c, 2)</code></pre>
 
   <p>It's slow. Twelve rasterizations of a 160-by-160 canvas at 64 samples a pixel is twenty million
-    inside tests: ten to twenty seconds in Python or Ruby, a quarter of a second or less on a JIT or
-    in a compiled language, and either way about a thousand times the work Bresenham did for the
-    same picture. Every ray is the same weight now. Nothing flickers, nothing beads, and the slanted rays
+    inside tests: ten to twenty seconds in Python or Ruby, a quarter of a second or less in most
+    compiled languages, half a minute in one whose compiler doesn't inline closures, and every way
+    about a thousand times the work Bresenham did for the same picture. Every ray is the same weight now. Nothing flickers, nothing beads, and the slanted rays
     are as heavy as the axes. The fan scenarios probe a pixel on the steep ray at 60° as well as the
     shallow one at 30°, because a Bresenham that forgot its steep swap draws the shallow rays
     perfectly. Then go back and look at the work, because that's the actual lesson of this chapter.</p>

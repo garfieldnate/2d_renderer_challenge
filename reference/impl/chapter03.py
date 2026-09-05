@@ -55,7 +55,7 @@ def lit_pixels(c):
 # --------------------------------------------------------------------------
 def plot(c, x, y, col, weight):
     if 0 <= x < c.width and 0 <= y < c.height and weight > 0:
-        write_pixel(c, x, y, mix(pixel_at(c, x, y), col, weight))
+        write_pixel(c, x, y, mix(pixel_at(c, x, y), col, weight, True))
 
 
 def line_wu(c, x0, y0, x1, y1, col):

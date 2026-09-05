@@ -15,6 +15,13 @@ Feature: Wu's line
     And   pixel_at(c, 4, 2) = color(1, 1, 1)
     And   total_ink(c) = 5
 
+  Scenario: The weights are applied in light, whatever the switch says
+    Given linear blending is off
+    And   c ← canvas(10, 10)
+    When  line_wu(c, 0, 0, 4, 2, color(1, 1, 1))
+    Then  pixel_at(c, 1, 0) = color(0.5, 0.5, 0.5)
+    And   pixel_at(c, 1, 1) = color(0.5, 0.5, 0.5)
+
   Scenario: A diagonal has uniform weights
     Given c ← canvas(10, 10)
     When  line_wu(c, 0, 0, 5, 5, color(1, 1, 1))

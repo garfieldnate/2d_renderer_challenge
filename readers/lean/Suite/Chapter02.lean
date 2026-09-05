@@ -60,6 +60,37 @@ def chapter02 (r : Runner) : IO Unit := do
     eqN "max_channel_difference(p3, p6)" (maxChannelDifference p3 p6) 0
     eqN "distinct_values(p6)" (distinctValues p6) 2
 
+  r.run "Rows go top to bottom" do
+    let c := canvas 1 2
+    let c := writePixel c 0 0 (color 1 0 0)
+    let c := writePixel c 0 1 (color 0 0 1)
+    let p6 := canvasToP6 c
+    eqByte "byte 12 of p6" p6 12 255
+    eqByte "byte 17 of p6" p6 17 255
+    eqTri "ppm_pixel(p6, 0, 0)" (ppmPixel p6 0 0) (255, 0, 0)
+    eqTri "ppm_pixel(p6, 0, 1)" (ppmPixel p6 0 1) (0, 0, 255)
+
+  r.run "The binary writer clamps too" do
+    let c := canvas 2 1
+    let c := writePixel c 0 0 (color 1.5 0 (-0.5))
+    let p6 := canvasToP6 c
+    eqByte "byte 12 of p6" p6 12 255
+    eqByte "byte 13 of p6" p6 13 0
+    eqByte "byte 14 of p6" p6 14 0
+    eqTri "ppm_pixel(p6, 0, 0)" (ppmPixel p6 0 0) (255, 0, 0)
+
+  r.run "Pixel bytes that look like whitespace are still pixel bytes" do
+    let c := canvas 2 1
+    let c := writePixel c 0 0 (color 0.00304 0.01444 0.00304)
+    let c := writePixel c 1 0 (color 1 1 1)
+    let p6 := canvasToP6 c
+    eqN "length(p6)" p6.size 17
+    eqByte "byte 12 of p6" p6 12 10
+    eqByte "byte 13 of p6" p6 13 32
+    eqTri "ppm_pixel(p6, 0, 0)" (ppmPixel p6 0 0) (10, 32, 10)
+    eqTri "ppm_pixel(p6, 1, 0)" (ppmPixel p6 1 0) (255, 255, 255)
+    eqN "max_channel_difference(canvas_to_ppm(c), p6)" (maxChannelDifference (canvasToPpm c) p6) 0
+
   r.run "Sizes still have to match" do
     let c1 := canvas 2 1
     let c2 := canvas 1 2
@@ -107,19 +138,48 @@ def chapter02 (r : Runner) : IO Unit := do
     eqF "coverage_at(cov, 1, 2)" (coverageAt cov 1 2) 0
     eqF "ink(cov)" (ink cov) 0.75
 
-  r.run "Setting coverage outside the buffer is ignored" do
+  r.run "Setting coverage outside the buffer is ignored, and reading it gives 0" do
     let cov := coverageBuffer 4 3
     let cov := setCoverage cov (-1) 1 1
     let cov := setCoverage cov 4 1 1
     let cov := setCoverage cov 1 3 1
     eqF "ink(cov)" (ink cov) 0
+    eqF "coverage_at(cov, -1, 1)" (coverageAt cov (-1) 1) 0
+    eqF "coverage_at(cov, 4, 1)" (coverageAt cov 4 1) 0
+    eqF "coverage_at(cov, 1, 3)" (coverageAt cov 1 3) 0
 
   r.run "The center of pixel (x, y) is (x + 0.5, y + 0.5)" do
     let s := halfPlane 2.5 0 1 0
+    let t := halfPlane 2.6 0 1 0
     eqF "center_inside(s, 2, 4)" (centerInside s 2 4) 1
     eqF "center_inside(s, 1, 4)" (centerInside s 1 4) 0
-    let t := halfPlane 2.6 0 1 0
     eqF "center_inside(t, 2, 4)" (centerInside t 2 4) 0
+
+  r.run "The center question is not \"at least half\"" do
+    let s := halfPlane 2.55 0 1 0
+    eqF "center_inside(s, 2, 4)" (centerInside s 2 4) 0
+    eqF "coverage(s, 2, 4)" (coverage s 2 4) 0.5
+
+  r.run "A buffer need not be square" do
+    let s := rectangle 0 0 2 1
+    let cov := rasterizeCenters s 4 2
+    eqN "cov.width" cov.width 4
+    eqN "cov.height" cov.height 2
+    eqF "coverage_at(cov, 1, 0)" (coverageAt cov 1 0) 1
+    eqF "coverage_at(cov, 0, 1)" (coverageAt cov 0 1) 0
+    eqF "ink(cov)" (ink cov) 2
+
+  r.run "A rectangle, by asking each center" do
+    let s := rectangle 1.25 2.0 4.75 5.0
+    let cov := rasterizeCenters s 8 8
+    eqF "coverage_at(cov, 1, 4)" (coverageAt cov 1 4) 1
+    eqF "coverage_at(cov, 4, 1)" (coverageAt cov 4 1) 0
+    eqF "coverage_at(cov, 4, 4)" (coverageAt cov 4 4) 1
+    eqF "coverage_at(cov, 0, 3)" (coverageAt cov 0 3) 0
+    eqF "coverage_at(cov, 5, 3)" (coverageAt cov 5 3) 0
+    eqF "coverage_at(cov, 2, 1)" (coverageAt cov 2 1) 0
+    eqF "coverage_at(cov, 2, 5)" (coverageAt cov 2 5) 0
+    eqF "ink(cov)" (ink cov) 12
 
   r.run "A disc, by asking each center" do
     let s := circle 8 8 5
@@ -162,12 +222,14 @@ def chapter02 (r : Runner) : IO Unit := do
     eqC "pixel_at(c, 0, 0)" (pixelAt c 0 0) (color 0.2 0.2 0.2)
     eqC "pixel_at(c, 1, 0)" (pixelAt c 1 0) (color 1 0 0)
 
-  r.run "The arithmetic is on light" do
+  r.run "The arithmetic is on light, whatever the switch says" do
+    setLinearBlending false
     let c := canvas 1 1
     let cov := coverageBuffer 1 1
     let cov := setCoverage cov 0 0 0.5
     let c ← paintThrough c cov (color 1 1 1)
     let ppm := canvasToPpm c
+    eqC "pixel_at(c, 0, 0)" (pixelAt c 0 0) (color 0.5 0.5 0.5)
     eqTri "ppm_pixel(ppm, 0, 0)" (ppmPixel ppm 0 0) (188, 188, 188)
 
   r.run "The disc by centers" do
@@ -203,6 +265,16 @@ def chapter02 (r : Runner) : IO Unit := do
     eqF "coverage_at(cov, 2, 1)" (coverageAt cov 2 1) 0
     eqF "coverage_at(cov, 2, 5)" (coverageAt cov 2 5) 0
     eqF "ink(cov)" (ink cov) 10.5
+
+  r.run "Neither need the buffer be square here" do
+    let s := rectangle 0 0 2 1
+    let cov := rasterize s 4 2
+    eqN "cov.width" cov.width 4
+    eqN "cov.height" cov.height 2
+    eqF "coverage_at(cov, 1, 0)" (coverageAt cov 1 0) 1
+    eqF "coverage_at(cov, 2, 0)" (coverageAt cov 2 0) 0
+    eqF "coverage_at(cov, 0, 1)" (coverageAt cov 0 1) 0
+    eqF "ink(cov)" (ink cov) 2
 
   r.run "A half-plane through a pixel center covers half of it" do
     let s := halfPlane 2.5 4.5 0.6 0.8
