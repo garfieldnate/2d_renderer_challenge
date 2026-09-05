@@ -94,6 +94,26 @@ export function assert_true(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
 }
 
-export function read_file(path: string): string {
-  return Deno.readTextFileSync(path);
+/** Reference images are binary from chapter 2 on, so this returns bytes. */
+export function read_file(path: string): Uint8Array {
+  return Deno.readFileSync(path);
+}
+
+/** "p6 begins with ..." — the header, byte for byte. */
+export function assert_begins_with(bytes: Uint8Array, prefix: string): void {
+  const want = new TextEncoder().encode(prefix);
+  const got = bytes.subarray(0, want.length);
+  for (let i = 0; i < want.length; i++) {
+    if (got[i] !== want[i]) {
+      throw new Error(
+        `expected file to begin with ${JSON.stringify(prefix)}, got ` +
+          JSON.stringify(new TextDecoder().decode(got)),
+      );
+    }
+  }
+}
+
+/** "byte n of p6" counts from 1. */
+export function byte_of(bytes: Uint8Array, n: number): number {
+  return bytes[n - 1];
 }

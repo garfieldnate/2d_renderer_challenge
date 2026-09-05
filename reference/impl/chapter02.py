@@ -115,7 +115,7 @@ def paint_through(c, cov, col):
         for x in range(c.width):
             k = coverage_at(cov, x, y)
             if k > 0:
-                write_pixel(c, x, y, mix(pixel_at(c, x, y), col, k))
+                write_pixel(c, x, y, mix(pixel_at(c, x, y), col, k, True))
 
 
 # --------------------------------------------------------------------------

@@ -105,8 +105,9 @@
   <p>A quick detour, because the pictures in this chapter are about to get bigger. PPM has a binary
     sibling, <code>P6</code>. Same three header lines, with a 6 in place of the 3, then exactly one
     newline, then the pixel data as raw bytes: one byte per channel, nothing in between. A 2-by-1
-    canvas is 11 bytes of header and 6 bytes of pixels. The file is a quarter the size of the P3
-    version and considerably faster to write, and from here on the book's reference images are P6.</p>
+    canvas is 11 bytes of header and 6 bytes of pixels. The file is somewhere between a quarter and
+    a third the size of the P3 version, depending on how many three-digit values it had, and it's
+    considerably faster to write. From here on the book's reference images are P6.</p>
 
   <p>Write <code>canvas_to_p6</code>. The bytes are the same numbers your P3 writer computes, clamp
     then encode then scale then round, so share that code. Then teach <code>ppm_pixel</code>,
@@ -126,7 +127,9 @@
     and the one whitespace after the last, and treat every byte after that as pixel data no matter
     what it looks like. There's a scenario whose first pixel is <code>10 32 10</code> for exactly this
     reason. Bytes in the scenarios are numbered from 1, the same way lines are: byte 1 is the
-    <code>P</code>, and in a 2-by-1 file byte 12 is the first pixel byte.</p>
+    <code>P</code>, and in a 2-by-1 file byte 12 is the first pixel byte. <code>length</code> is a
+    count of bytes, not characters. And the binary writer shares the P3 writer's clamp; there's a
+    scenario that feeds it a 1.5.</p>
 
   <p>Keep the P3 writer. When something goes wrong, you'll still want to <code>cat</code> a file.</p>
 
@@ -158,6 +161,15 @@
     <span class="kw">And</span>   ppm_pixel(p3, 1, 0) = (0, 188, 0)
     <span class="kw">And</span>   max_channel_difference(p3, p6) = 0
     <span class="kw">And</span>   distinct_values(p6) = 2
+
+  <span class="kw">Scenario</span>: The binary writer clamps too
+    <span class="kw">Given</span> c ← canvas(2, 1)
+    <span class="kw">When</span>  write_pixel(c, 0, 0, color(1.5, 0, -0.5))
+    <span class="kw">And</span>   p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  byte 12 of p6 = 255
+    <span class="kw">And</span>   byte 13 of p6 = 0
+    <span class="kw">And</span>   byte 14 of p6 = 0
+    <span class="kw">And</span>   ppm_pixel(p6, 0, 0) = (255, 0, 0)
 
   <span class="kw">Scenario</span>: Pixel bytes that look like whitespace are still pixel bytes
     <span class="kw">Given</span> c ← canvas(2, 1)
@@ -272,10 +284,10 @@
 
   <span class="kw">Scenario</span>: The center of pixel (x, y) is (x + 0.5, y + 0.5)
     <span class="kw">Given</span> s ← half_plane(2.5, 0, 1, 0)
+    <span class="kw">And</span>   t ← half_plane(2.6, 0, 1, 0)
     <span class="kw">Then</span>  center_inside(s, 2, 4) = 1
     <span class="kw">And</span>   center_inside(s, 1, 4) = 0
-    <span class="kw">Given</span> t ← half_plane(2.6, 0, 1, 0)
-    <span class="kw">Then</span>  center_inside(t, 2, 4) = 0
+    <span class="kw">And</span>   center_inside(t, 2, 4) = 0
 
   <span class="kw">Scenario</span>: A disc, by asking each center
     <span class="kw">Given</span> s ← circle(8, 8, 5)
@@ -301,8 +313,11 @@
   <p>A coverage buffer is a stencil. To get a picture out of it you push paint through:
     <code>paint_through(canvas, coverage, color)</code> moves every pixel of the canvas toward the
     color by that pixel's coverage. Zero coverage leaves a pixel alone, full coverage replaces it,
-    and in between it's <code>mix(pixel, color, coverage)</code>, the same mix as chapter 1, in
-    light. This is the one place the renderer touches the canvas, from here to the end of the book.</p>
+    and in between it's <code>mix(pixel, color, coverage)</code> with the switch forced to the
+    light's way: <code>mix(pixel, color, coverage, true)</code>. The browser-style switch exists so
+    you can compare gradients against other tools; it has no business inside the rasterizer, and a
+    scenario turns it off and checks that painting doesn't notice. This is the one place the renderer
+    touches the canvas, from here to the end of the book.</p>
 
   <p>That last sentence is worth reading again. Chapters 3 through 8 are about producing better
     coverage buffers faster. Chapters 9 through 12 are about producing fancier paint. Neither side
@@ -339,13 +354,15 @@
     <span class="kw">Then</span>  pixel_at(c, 0, 0) = color(0.2, 0.2, 0.2)
     <span class="kw">And</span>   pixel_at(c, 1, 0) = color(1, 0, 0)
 
-  <span class="kw">Scenario</span>: The arithmetic is on light
-    <span class="kw">Given</span> c ← canvas(1, 1)
+  <span class="kw">Scenario</span>: The arithmetic is on light, whatever the switch says
+    <span class="kw">Given</span> linear blending is off
+    <span class="kw">And</span>   c ← canvas(1, 1)
     <span class="kw">And</span>   cov ← coverage_buffer(1, 1)
     <span class="kw">When</span>  set_coverage(cov, 0, 0, 0.5)
     <span class="kw">And</span>   paint_through(c, cov, color(1, 1, 1))
     <span class="kw">And</span>   ppm ← canvas_to_ppm(c)
-    <span class="kw">Then</span>  ppm_pixel(ppm, 0, 0) = (188, 188, 188)
+    <span class="kw">Then</span>  pixel_at(c, 0, 0) = color(0.5, 0.5, 0.5)
+    <span class="kw">And</span>   ppm_pixel(ppm, 0, 0) = (188, 188, 188)
 
   <span class="kw">Scenario</span>: The disc by centers
     <span class="kw">Given</span> c ← disc_centers()
@@ -394,10 +411,12 @@
     <code>rasterize(shape, w, h)</code> is a buffer full of it.</p>
 
   <p>It's slow. Sixty-four shape queries per pixel, for every pixel on the canvas, whether the shape
-    is anywhere near it or not. It's also correct to within 1/64 for anything with a straight edge,
-    and it's so simple that it's very hard to get wrong. That combination is why it stays in the book
-    for good: from here on, whenever a chapter builds a faster rasterizer, this one is what the fast
-    one gets checked against. It's your reference renderer, and you've written it in ten lines.</p>
+    is anywhere near it or not. You won't feel it on a 40-pixel disc; on a 1920-by-1080 canvas it's
+    133 million questions per shape. It's also correct to within 1/64 for an axis-aligned edge, and
+    off by at most 1/16 on the worst diagonal, for reasons the next paragraph gets to, and it's so
+    simple that it's very hard to get wrong. That combination is why it stays in the book for good:
+    from here on, whenever a chapter builds a faster rasterizer, this one is what the fast one gets
+    checked against. It's your reference renderer, and you've written it in a dozen lines.</p>
 
   <p>The rectangle scenario below is exact, not approximate: its edges at 1.25 and 4.75 land on
     sample boundaries, so 6 of the 8 columns of samples fall inside and the coverage is 0.75 on the
@@ -588,7 +607,7 @@
   The same circle on the same grid, asked two different questions, magnified
   so you can see the answers.
 
-  <span class="kw">Scenario</span>: The plate
+  <span class="kw">Scenario</span>: Plate 2
     <span class="kw">Given</span> c ← plate_02()
     <span class="kw">And</span>   ref ← read_file("reference/chapter-02/plate-02.ppm")
     <span class="kw">When</span>  p6 ← canvas_to_p6(c)

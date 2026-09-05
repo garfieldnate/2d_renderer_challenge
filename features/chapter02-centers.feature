@@ -26,10 +26,10 @@ Feature: The coverage buffer, and the first question
 
   Scenario: The center of pixel (x, y) is (x + 0.5, y + 0.5)
     Given s ← half_plane(2.5, 0, 1, 0)
+    And   t ← half_plane(2.6, 0, 1, 0)
     Then  center_inside(s, 2, 4) = 1
     And   center_inside(s, 1, 4) = 0
-    Given t ← half_plane(2.6, 0, 1, 0)
-    Then  center_inside(t, 2, 4) = 0
+    And   center_inside(t, 2, 4) = 0
 
   Scenario: A disc, by asking each center
     Given s ← circle(8, 8, 5)

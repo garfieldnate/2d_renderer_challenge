@@ -38,7 +38,7 @@ Feature: Plate 3
     And   ppm_pixel(p6, 200, 185) = (209, 209, 205) ± 1
     And   max_channel_difference(p6, ref) ≤ 1
 
-  Scenario: The plate
+  Scenario: Plate 3
     Given c ← plate_03()
     And   ref ← read_file("reference/chapter-03/plate-03.ppm")
     When  p6 ← canvas_to_p6(c)

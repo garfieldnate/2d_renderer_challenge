@@ -27,13 +27,15 @@ Feature: Painting through coverage
     Then  pixel_at(c, 0, 0) = color(0.2, 0.2, 0.2)
     And   pixel_at(c, 1, 0) = color(1, 0, 0)
 
-  Scenario: The arithmetic is on light
-    Given c ← canvas(1, 1)
+  Scenario: The arithmetic is on light, whatever the switch says
+    Given linear blending is off
+    And   c ← canvas(1, 1)
     And   cov ← coverage_buffer(1, 1)
     When  set_coverage(cov, 0, 0, 0.5)
     And   paint_through(c, cov, color(1, 1, 1))
     And   ppm ← canvas_to_ppm(c)
-    Then  ppm_pixel(ppm, 0, 0) = (188, 188, 188)
+    Then  pixel_at(c, 0, 0) = color(0.5, 0.5, 0.5)
+    And   ppm_pixel(ppm, 0, 0) = (188, 188, 188)
 
   Scenario: The disc by centers
     Given c ← disc_centers()

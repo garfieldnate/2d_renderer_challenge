@@ -2,7 +2,7 @@ Feature: Plate 2
   The same circle on the same grid, asked two different questions, magnified
   so you can see the answers.
 
-  Scenario: The plate
+  Scenario: Plate 2
     Given c ← plate_02()
     And   ref ← read_file("reference/chapter-02/plate-02.ppm")
     When  p6 ← canvas_to_p6(c)

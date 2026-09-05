@@ -2,7 +2,7 @@ Feature: Plate 1
   Two ramps, black to white and red to green, each mixed both ways.
   The browser's way on top, the light's way beneath.
 
-  Scenario: The plate
+  Scenario: Plate 1
     Given c ← plate_01()
     And   ref ← read_file("reference/chapter-01/plate-01.ppm")
     When  ppm ← canvas_to_ppm(c)

@@ -484,7 +484,7 @@ fan_bresenham():
     <span class="kw">And</span>   ppm_pixel(p6, 200, 185) = (209, 209, 205) ± 1
     <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
 
-  <span class="kw">Scenario</span>: The plate
+  <span class="kw">Scenario</span>: Plate 3
     <span class="kw">Given</span> c ← plate_03()
     <span class="kw">And</span>   ref ← read_file("reference/chapter-03/plate-03.ppm")
     <span class="kw">When</span>  p6 ← canvas_to_p6(c)

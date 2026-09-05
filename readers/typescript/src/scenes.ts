@@ -1,7 +1,16 @@
 import { type Color, color } from "./color.ts";
-import { type Canvas, canvas, write_pixel } from "./canvas.ts";
+import { type Canvas, canvas, fill, magnify, write_pixel } from "./canvas.ts";
 import { decode } from "./srgb.ts";
 import { mix, set_linear_blending } from "./mix.ts";
+import { circle } from "./shape.ts";
+import {
+  coverage_at,
+  coverage_buffer,
+  paint_through,
+  rasterize,
+  rasterize_centers,
+  set_coverage,
+} from "./coverage.ts";
 
 const WHITE = color(1, 1, 1);
 const BLACK = color(0, 0, 0);
@@ -73,4 +82,64 @@ export function plate_01(): Canvas {
   ramp_pair(c, 0, color(0, 0, 0), color(1, 1, 1));
   ramp_pair(c, 90, color(0.7, 0, 0), color(0, 0.3, 0.02));
   return c;
+}
+
+// ---- chapter 2 -----------------------------------------------------------
+
+const PAPER = color(0.02, 0.02, 0.025);
+const INK = color(0.9, 0.55, 0.1);
+
+export function disc_centers(): Canvas {
+  const c = canvas(40, 40);
+  fill(c, PAPER);
+  const cov = rasterize_centers(circle(20, 20, 16), 40, 40);
+  paint_through(c, cov, INK);
+  return magnify(c, 8);
+}
+
+export function disc_coverage(): Canvas {
+  const c = canvas(40, 40);
+  fill(c, PAPER);
+  const cov = rasterize(circle(20, 20, 16), 40, 40);
+  paint_through(c, cov, INK);
+  return magnify(c, 8);
+}
+
+export function painted_twice(): Canvas {
+  const c = canvas(80, 40);
+  fill(c, PAPER);
+  const cov = rasterize(circle(20, 20, 16), 40, 40);
+  const once = coverage_buffer(80, 40); // the disc in both halves
+  for (let y = 0; y <= 39; y++) {
+    for (let x = 0; x <= 39; x++) {
+      set_coverage(once, x, y, coverage_at(cov, x, y));
+      set_coverage(once, x + 40, y, coverage_at(cov, x, y));
+    }
+  }
+  paint_through(c, once, INK);
+  const twice = coverage_buffer(80, 40); // the disc in the right half only
+  for (let y = 0; y <= 39; y++) {
+    for (let x = 0; x <= 39; x++) {
+      set_coverage(twice, x + 40, y, coverage_at(cov, x, y));
+    }
+  }
+  paint_through(c, twice, INK);
+  return magnify(c, 6);
+}
+
+export function plate_02(): Canvas {
+  const c = canvas(80, 40);
+  fill(c, PAPER);
+  const shape = circle(20, 20, 16);
+  const left = rasterize_centers(shape, 40, 40);
+  const right = rasterize(shape, 40, 40);
+  const both = coverage_buffer(80, 40);
+  for (let y = 0; y <= 39; y++) {
+    for (let x = 0; x <= 39; x++) {
+      set_coverage(both, x, y, coverage_at(left, x, y));
+      set_coverage(both, x + 40, y, coverage_at(right, x, y));
+    }
+  }
+  paint_through(c, both, INK);
+  return magnify(c, 6);
 }
