@@ -68,8 +68,16 @@
     <li>The names in the scenarios, <code>write_pixel</code>, <code>canvas_to_ppm</code> and so on,
       are the names the tests call. Rename them if your language's conventions insist, but rename them
       in your step definitions too, and don't rename them casually: later chapters refer back to them.</li>
-    <li><code>round(x)</code> rounds to the nearest whole number. No test in this book lands exactly
-      on a half, so it doesn't matter which way your language breaks ties.</li>
+    <li><code>round(x)</code> rounds to the nearest whole number. No test in this book lands close
+      enough to a half for the tie rule to matter, and the file comparisons allow a difference of one
+      anyway, so any tie-breaking rule your language ships with is acceptable. I checked.</li>
+    <li><em>every pixel of c is</em> some color, and <em>exactly N pixels of c are</em> some color,
+      are loops over the whole canvas comparing with the usual tolerance. The count is exact.</li>
+    <li><em>lines 4-5 of ppm are</em> followed by a quoted block compares those lines of the text,
+      one by one, with the lines of the block.</li>
+    <li>The short programs printed in the text are pseudo-code, and their ranges are inclusive at
+      both ends: <code>0..99</code> is a hundred values. Watch for that if your language's ranges
+      stop one short.</li>
     <li>A <em>Scenario Outline</em> is a template. Each row of its <em>Examples</em> table is one test,
       with the row's values dropped into the <code>&lt;placeholders&gt;</code>.</li>
   </ul>
@@ -199,8 +207,10 @@
 
   <p>Writes outside the canvas are ignored. Not an error, not a wraparound, not a resize. Silently
     dropped. By chapter 6 you'll have geometry hanging off every edge, and you do not want a bounds
-    check throwing in the middle of a scanline. The test pins all four sides. Reads outside the
-    canvas are left undefined, because nothing in the book ever does one; if yours throws, good.</p>
+    check throwing in the middle of a scanline. The test pins all four sides, which means x and y
+    can be negative: give them a signed integer type, even in a language whose array indices
+    aren't. Reads outside the canvas are left undefined, because nothing in the book ever does
+    one; if yours throws, good.</p>
 
   <p>The last operation, <code>fill</code>, sets every pixel to one color. You'll use it for
     backgrounds from here to the end of the book.</p>
@@ -286,9 +296,15 @@ encode(l) = l ≤ 0.0031308
   <p>The little linear segment near zero isn't decoration. A pure power curve has infinite slope at
     black, and the straight piece keeps the numbers well behaved there. Copy it exactly, thresholds
     included. The scenarios test on both sides of both thresholds, because the classic bug is getting
-    the branch backwards and only noticing three chapters later when your shadows look wrong.</p>
+    the branch backwards and only noticing three chapters later when your shadows look wrong. Both
+    functions are defined on numbers between 0 and 1 and nothing else; every value in the tables was
+    chosen with room to spare inside the tolerance, so a marginal failure is a real one.</p>
 
-  <p>Now run the numbers from the top of the chapter. Decode 128/255 and you get 0.216: that patch is
+  <p>You'll also want both functions on colors, meaning applied to each of the three numbers in
+    turn. When the chapter writes <code>encode(a)</code> for a color <code>a</code>, that's what it
+    means.</p>
+
+  <p>Now run the numbers from the top of the chapter. Decode 128/255 and you get 0.2159: that patch is
     emitting 21.6% of full light. Encode 0.5, genuine, physical, half-the-photons light, and you get
     0.7354, which is 188 out of 255. The checkerboard in Figure&nbsp;1.1 was never lying. Your
     arithmetic was.</p>
@@ -308,7 +324,6 @@ encode(l) = l ≤ 0.0031308
       | light     | value  |
       | 0.0       | 0.0    |
       | 0.0025    | 0.0323 |
-      | 0.0031308 | 0.0405 |
       | 0.01      | 0.0999 |
       | 0.1       | 0.3492 |
       | 0.216     | 0.5021 |
@@ -325,7 +340,6 @@ encode(l) = l ≤ 0.0031308
       | value   | light  |
       | 0.0     | 0.0    |
       | 0.04    | 0.0031 |
-      | 0.04045 | 0.0031 |
       | 0.05    | 0.0039 |
       | 0.1     | 0.0100 |
       | 0.5     | 0.2140 |
@@ -389,18 +403,24 @@ encode(l) = l ≤ 0.0031308
 
   <p>One oddity to respect: some very old PPM readers choke on lines longer than 70 characters. The
     rule you'll implement is greedy word packing. Emit values separated by single spaces; before
-    adding a value, if the line would grow past 70 characters, start a new line instead. Each row of
-    pixels starts on a fresh line regardless. The scenario pins exactly where a ten-pixel row breaks,
+    adding a value, if the line would end up longer than 70 characters, start a new line instead.
+    Exactly 70 is fine. Each row of pixels starts on a fresh line regardless. The scenario pins exactly where a ten-pixel row breaks,
     so there's nothing to guess. It's a strange little constraint to be honoring in the third decade
     of the twenty-first century, and it takes four lines of code, and if you skip it the one tool you
     eventually need will be the one that cares.</p>
 
-  <p>Two more functions in this section, and they exist so that tests can read files back. Neither
-    is a renderer function; both are five lines. <code>ppm_pixel(ppm, x, y)</code> splits the text on
-    whitespace, skips the four header tokens and returns the three whole numbers at pixel (x, y).
-    <code>max_channel_difference(a, b)</code> does the same to two files and returns the largest
-    difference between any pair of corresponding numbers. Later in this chapter you'll compare your
-    output against the book's reference images with it, and every later chapter does too.</p>
+  <p>Three more functions in this section, and they exist so that tests can read files back. None
+    is a renderer function; each is about five lines, and all three start the same way: split the
+    text on whitespace, read the width and height out of the second and third tokens, and treat
+    everything after the fourth token as pixel data. <code>ppm_pixel(ppm, x, y)</code> returns the
+    three whole numbers at pixel (x, y), which is where the width comes in.
+    <code>distinct_values(ppm)</code> returns how many different numbers appear in the pixel data.
+    <code>max_channel_difference(a, b)</code> takes two files and returns the largest difference
+    between any pair of corresponding numbers, with one rule on top: if the two files don't have the
+    same width and height, the answer is 255. Without that rule a transposed render compares as a
+    perfect match, and a transposed render is the one mistake this chapter has already warned you
+    about. Later in this chapter you'll compare your output against the book's reference images with
+    this function, and every later chapter does too.</p>
 
   <div class="test" data-feature="chapter01-ppm.feature">
     <p class="label">features/chapter01-ppm.feature</p>
@@ -447,6 +467,17 @@ encode(l) = l ≤ 0.0031308
       """
     <span class="kw">And</span>   every line of ppm is at most 70 characters
 
+  <span class="kw">Scenario</span>: A line of exactly 70 characters is allowed
+    <span class="kw">Given</span> c ← canvas(8, 1)
+    <span class="kw">When</span>  fill(c, color(1, 0.1, 0))
+    <span class="kw">And</span>   write_pixel(c, 7, 0, color(1, 1, 1))
+    <span class="kw">And</span>   ppm ← canvas_to_ppm(c)
+    <span class="kw">Then</span>  lines 4-5 of ppm are
+      """
+      255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 255
+      255
+      """
+
   <span class="kw">Scenario</span>: The file ends with a newline
     <span class="kw">Given</span> c ← canvas(5, 3)
     <span class="kw">When</span>  ppm ← canvas_to_ppm(c)
@@ -459,6 +490,14 @@ encode(l) = l ≤ 0.0031308
     <span class="kw">Then</span>  ppm_pixel(ppm, 2, 1) = (0, 188, 255)
     <span class="kw">And</span>   ppm_pixel(ppm, 1, 1) = (0, 0, 0)
 
+  <span class="kw">Scenario</span>: Counting the distinct values in a file
+    <span class="kw">Given</span> c ← canvas(3, 1)
+    <span class="kw">When</span>  write_pixel(c, 0, 0, color(1, 0, 0))
+    <span class="kw">And</span>   write_pixel(c, 1, 0, color(0, 0.5, 0))
+    <span class="kw">And</span>   write_pixel(c, 2, 0, color(0, 0, 0.216))
+    <span class="kw">And</span>   ppm ← canvas_to_ppm(c)
+    <span class="kw">Then</span>  distinct_values(ppm) = 4
+
   <span class="kw">Scenario</span>: Comparing two files
     <span class="kw">Given</span> c1 ← canvas(2, 1)
     <span class="kw">And</span>   c2 ← canvas(2, 1)
@@ -466,7 +505,14 @@ encode(l) = l ≤ 0.0031308
     <span class="kw">And</span>   ppm1 ← canvas_to_ppm(c1)
     <span class="kw">And</span>   ppm2 ← canvas_to_ppm(c2)
     <span class="kw">Then</span>  max_channel_difference(ppm1, ppm1) = 0
-    <span class="kw">And</span>   max_channel_difference(ppm1, ppm2) = 188</code></pre>
+    <span class="kw">And</span>   max_channel_difference(ppm1, ppm2) = 188
+
+  <span class="kw">Scenario</span>: Files of different sizes are as different as it gets
+    <span class="kw">Given</span> c1 ← canvas(5, 3)
+    <span class="kw">And</span>   c2 ← canvas(3, 5)
+    <span class="kw">When</span>  ppm1 ← canvas_to_ppm(c1)
+    <span class="kw">And</span>   ppm2 ← canvas_to_ppm(c2)
+    <span class="kw">Then</span>  max_channel_difference(ppm1, ppm2) = 255</code></pre>
   </div>
 
   <p>That trailing-newline scenario looks like pedantry until the day a file viewer shows you nothing
@@ -499,17 +545,39 @@ encode(l) = l ≤ 0.0031308
       write_pixel(c, x, y, color(0.5, 0.5, 0.5))
   <span class="kw">return</span> c</code></pre>
 
-  <p>Ranges in these programs are inclusive at both ends: <code>0..99</code> is a hundred values.</p>
+  <p>The test for this one counts, as well as looking: a hundred by a hundred checkerboard has
+    exactly 5000 white pixels, and the two gray patches contribute none, so 5000 pixels of the whole
+    canvas are white. Counting pixels of a given color is a loop, not a renderer function, and it
+    catches the mistake where a pattern is right along one edge and wrong everywhere else.</p>
 
   <p>Write it to a file, open it at 100% zoom, and lean back. The checkerboard should melt into the
     right-hand patch, the 188 one. If it melts into the left one instead, your PPM writer is scaling
     instead of encoding, and the middle scenario in the previous section should already be red.</p>
 
+  <div class="note">
+    <h4>Looking at a PPM</h4>
+    <p>Not every image viewer opens PPM, and the one that ships with your operating system may
+      not. GIMP, IrfanView, feh and most Linux viewers do. If yours doesn't, ImageMagick converts
+      one in a second: <code>magick gray-match.ppm gray-match.png</code>. Whatever you use, view it
+      at 100%. A viewer that scales the image resamples the checkerboard and the comparison is
+      off.</p>
+  </div>
+
   <p>Then push on it. A checkerboard is half the light because half the pixels are on. If one pixel
     in four is on, that's a quarter of the light, and it should match a solid patch of
     <code>color(0.25, 0.25, 0.25)</code>, whose file value is 137. The pattern that puts one pixel in
-    four on is: white when x + y is a multiple of 4. Call it <code>quarter_match</code>, 200 by 100,
-    pattern on the left half, solid on the right.</p>
+    four on is: white when x + y is a multiple of 4, and 0 counts as a multiple. Call it
+    <code>quarter_match</code>:</p>
+
+<pre><code>quarter_match():
+  c ← canvas(200, 100)
+  <span class="kw">for</span> y <span class="kw">in</span> 0..99:
+    <span class="kw">for</span> x <span class="kw">in</span> 0..99:
+      write_pixel(c, x, y, (x + y) mod 4 = 0 ? color(1, 1, 1) : color(0, 0, 0))
+  <span class="kw">for</span> y <span class="kw">in</span> 0..99:
+    <span class="kw">for</span> x <span class="kw">in</span> 100..199:
+      write_pixel(c, x, y, color(0.25, 0.25, 0.25))
+  <span class="kw">return</span> c</code></pre>
 
   <p>You'll notice the second match is a little harder to see than the first. That's honest too. A
     display doesn't reproduce the darks perfectly, and your eye isn't a light meter either. It's close
@@ -532,17 +600,17 @@ encode(l) = l ≤ 0.0031308
     <span class="kw">And</span>   pixel_at(c, 1, 1) = color(1, 1, 1)
     <span class="kw">And</span>   pixel_at(c, 150, 50) = color(0.2159, 0.2159, 0.2159)
     <span class="kw">And</span>   pixel_at(c, 250, 50) = color(0.5, 0.5, 0.5)
-    <span class="kw">And</span>   5000 pixels of c are color(1, 1, 1)
+    <span class="kw">And</span>   exactly 5000 pixels of c are color(1, 1, 1)
 
   <span class="kw">Scenario</span>: The gray match, as a file
     <span class="kw">Given</span> c ← gray_match()
     <span class="kw">When</span>  ppm ← canvas_to_ppm(c)
-    <span class="kw">Then</span>  ppm_pixel(ppm, 0, 0) = (255, 255, 255)
-    <span class="kw">And</span>   ppm_pixel(ppm, 1, 0) = (0, 0, 0)
-    <span class="kw">And</span>   ppm_pixel(ppm, 150, 50) = (128, 128, 128)
-    <span class="kw">And</span>   ppm_pixel(ppm, 250, 50) = (188, 188, 188)
-    <span class="kw">Given</span> ref ← read_file("reference/chapter-01/gray-match.ppm")
-    <span class="kw">Then</span>  max_channel_difference(ppm, ref) ≤ 1
+    <span class="kw">Then</span>  ppm_pixel(ppm, 0, 0) = (255, 255, 255) ± 1
+    <span class="kw">And</span>   ppm_pixel(ppm, 1, 0) = (0, 0, 0) ± 1
+    <span class="kw">And</span>   ppm_pixel(ppm, 150, 50) = (128, 128, 128) ± 1
+    <span class="kw">And</span>   ppm_pixel(ppm, 250, 50) = (188, 188, 188) ± 1
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-01/gray-match.ppm")
+    <span class="kw">And</span>   max_channel_difference(ppm, ref) ≤ 1
 
   <span class="kw">Scenario</span>: One pixel in four
     <span class="kw">Given</span> c ← quarter_match()
@@ -553,11 +621,11 @@ encode(l) = l ≤ 0.0031308
     <span class="kw">And</span>   pixel_at(c, 2, 2) = color(1, 1, 1)
     <span class="kw">And</span>   pixel_at(c, 3, 1) = color(1, 1, 1)
     <span class="kw">And</span>   pixel_at(c, 150, 50) = color(0.25, 0.25, 0.25)
-    <span class="kw">And</span>   2500 pixels of c are color(1, 1, 1)
+    <span class="kw">And</span>   exactly 2500 pixels of c are color(1, 1, 1)
     <span class="kw">When</span>  ppm ← canvas_to_ppm(c)
-    <span class="kw">Then</span>  ppm_pixel(ppm, 150, 50) = (137, 137, 137)
-    <span class="kw">Given</span> ref ← read_file("reference/chapter-01/quarter-match.ppm")
-    <span class="kw">Then</span>  max_channel_difference(ppm, ref) ≤ 1</code></pre>
+    <span class="kw">Then</span>  ppm_pixel(ppm, 150, 50) = (137, 137, 137) ± 1
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-01/quarter-match.ppm")
+    <span class="kw">And</span>   max_channel_difference(ppm, ref) ≤ 1</code></pre>
   </div>
 
   <p>The last step of each scenario compares your file to the book's, allowing each number to differ
@@ -580,8 +648,12 @@ mix(a, b, t) = a + (b - a) * t</code></pre>
   <p>Both are component-wise, red with red and so on. The second one is a plain linear interpolation
     on the light values your colors already hold. The first one encodes both ends into file values,
     interpolates <em>those</em>, and decodes the result back into light so it can go on the canvas.
-    It's what you get if you build your renderer on bytes and never think about it, and it's what
-    every web browser does when you write a CSS gradient.</p>
+    The decode at the end isn't a typo: the canvas holds light, so the PPM writer will encode this
+    color again on the way out, and the file value you get is the interpolated file value. That's
+    what you get if you build your renderer on bytes and never think about it, and it's what every
+    web browser does when you write a CSS gradient. One detail: <code>encode</code> is only defined
+    on 0..1, and canvas colors aren't, so the browser's way clamps each end before encoding it.
+    There's a scenario for that.</p>
 
   <p>Decode into light, do the arithmetic there, encode on the way out. That's the entire correction,
     and because your canvas already holds light, the correct version is the one with less code in it.
@@ -602,7 +674,12 @@ mix(a, b, t) = a + (b - a) * t</code></pre>
 
   <p>The switch is global state, and global state in tests needs one rule: every scenario that
     doesn't say otherwise expects it <em>on</em>. Reset it before each scenario, or turn it back on at
-    the end of any scenario that turns it off. The last scenario in the chapter checks that you did.</p>
+    the end of any scenario that turns it off. If your test runner runs tests in parallel by default,
+    as Rust's and some JUnit setups do, a plain global will leak between scenarios and fail at random;
+    make it thread-local or run those tests serially. If your language objects to a mutable global on
+    principle, as Swift 6 does, give <code>mix</code> an optional last argument whose default is the
+    switch. The first scenario below checks the default; under a reset-before-every-scenario harness
+    it tests the harness, and that's fine. The plate's scenario checks the switch was left on.</p>
 
   <div class="test" data-feature="chapter01-mix.feature">
     <p class="label">features/chapter01-mix.feature</p>
@@ -643,6 +720,12 @@ mix(a, b, t) = a + (b - a) * t</code></pre>
     <span class="kw">And</span>   a ← color(0.7, 0, 0)
     <span class="kw">And</span>   b ← color(0, 0.3, 0.02)
     <span class="kw">Then</span>  mix(a, b, 0.5) = color(0.1527, 0.0693, 0.0067)
+
+  <span class="kw">Scenario</span>: The browser's way can't see past 1
+    <span class="kw">Given</span> linear blending is off
+    <span class="kw">And</span>   a ← color(1.5, 0.5, -0.2)
+    <span class="kw">And</span>   b ← color(0, 0, 0)
+    <span class="kw">Then</span>  mix(a, b, 0) = color(1, 0.5, 0)
 
   <span class="kw">Scenario</span>: The ends of a mix are its inputs either way
     <span class="kw">Given</span> linear blending is off
@@ -686,11 +769,10 @@ mix(a, b, t) = a + (b - a) * t</code></pre>
   </figure>
 
   <p>Look at the first line of pixel data in the file. It begins <code>0 0 0 13 13 13 22 22 22</code>.
-    The dark end of your ramp skips twelve file values in its first step, then eight, then five, and
-    the steps keep shrinking until, around column 76, two neighboring columns land on the same file
+    The dark end of your ramp jumps by thirteen file values in its first step, then nine, then six,
+    and the steps keep shrinking until, at column 76, two neighboring columns land on the same file
     value for the first time. From there to white, the file has fewer distinct values than you have
-    columns. Count them with <code>distinct_values</code>, which is the set of all the numbers after
-    the header: 183 of them, out of 256 slots.</p>
+    columns. Count them with <code>distinct_values</code>: 183 of them, out of 256 slots.</p>
 
   <p>This is the encoding doing exactly what it was designed to do, spending file values where your
     eye can use them, and it's also the reason smooth gradients band. Chapter 10 has a section on
@@ -731,12 +813,12 @@ mix(a, b, t) = a + (b - a) * t</code></pre>
     <span class="kw">Given</span> c ← ramp()
     <span class="kw">When</span>  ppm ← canvas_to_ppm(c)
     <span class="kw">Then</span>  line 4 of ppm is "0 0 0 13 13 13 22 22 22 28 28 28 34 34 34 38 38 38 42 42 42 46 46 46"
-    <span class="kw">And</span>   ppm_pixel(ppm, 75, 0) = (148, 148, 148)
-    <span class="kw">And</span>   ppm_pixel(ppm, 76, 0) = (148, 148, 148)
-    <span class="kw">And</span>   ppm_pixel(ppm, 254, 0) = (255, 255, 255)
+    <span class="kw">And</span>   ppm_pixel(ppm, 75, 0) = (148, 148, 148) ± 1
+    <span class="kw">And</span>   ppm_pixel(ppm, 76, 0) = (148, 148, 148) ± 1
+    <span class="kw">And</span>   ppm_pixel(ppm, 254, 0) = (255, 255, 255) ± 1
     <span class="kw">And</span>   distinct_values(ppm) = 183
-    <span class="kw">Given</span> ref ← read_file("reference/chapter-01/ramp.ppm")
-    <span class="kw">Then</span>  max_channel_difference(ppm, ref) ≤ 1
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-01/ramp.ppm")
+    <span class="kw">And</span>   max_channel_difference(ppm, ref) ≤ 1
 
   <span class="kw">Scenario</span>: Clamping changes the color, not only the brightness
     <span class="kw">Given</span> c ← clamp_pair()
@@ -745,40 +827,40 @@ mix(a, b, t) = a + (b - a) * t</code></pre>
     <span class="kw">And</span>   pixel_at(c, 50, 50) = color(2, 0.5, 0.5)
     <span class="kw">And</span>   pixel_at(c, 150, 50) = color(1, 0.25, 0.25)
     <span class="kw">When</span>  ppm ← canvas_to_ppm(c)
-    <span class="kw">Then</span>  ppm_pixel(ppm, 50, 50) = (255, 188, 188)
-    <span class="kw">And</span>   ppm_pixel(ppm, 150, 50) = (255, 137, 137)
-    <span class="kw">Given</span> ref ← read_file("reference/chapter-01/clamp-pair.ppm")
-    <span class="kw">Then</span>  max_channel_difference(ppm, ref) ≤ 1</code></pre>
+    <span class="kw">Then</span>  ppm_pixel(ppm, 50, 50) = (255, 188, 188) ± 1
+    <span class="kw">And</span>   ppm_pixel(ppm, 150, 50) = (255, 137, 137) ± 1
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-01/clamp-pair.ppm")
+    <span class="kw">And</span>   max_channel_difference(ppm, ref) ≤ 1</code></pre>
   </div>
 
   <h2><span class="sec">§ 1.9</span> Putting it together</h2>
 
   <p>Two ramps, each mixed both ways, in one image. Black to white on top, then a red to a green
     chosen so the midpoint is as ugly as possible one way and as reasonable as possible the other.
-    In each pair, the browser's way is above and the light's way beneath. About twenty lines:</p>
+    In each pair, the browser's way is above and the light's way beneath. A dozen lines, plus a
+    helper that draws one pair:</p>
 
-<pre><code>plate_01():
+<pre><code>ramp_pair(c, top, a, b):
+  <span class="kw">for</span> x <span class="kw">in</span> 0..399:
+    t ← x / 399
+
+    <span class="kw">set</span> linear blending off
+    naive ← mix(a, b, t)
+    <span class="kw">set</span> linear blending on
+    light ← mix(a, b, t)
+
+    <span class="kw">for</span> y <span class="kw">in</span> top .. top + 39:       write_pixel(c, x, y, naive)
+    <span class="kw">for</span> y <span class="kw">in</span> top + 45 .. top + 84:  write_pixel(c, x, y, light)
+
+plate_01():
   c ← canvas(400, 180)
-  ramps ← [ (color(0, 0, 0),   color(1, 1, 1)),
-            (color(0.7, 0, 0), color(0, 0.3, 0.02)) ]
-
-  <span class="kw">for</span> i, (a, b) <span class="kw">in</span> ramps:
-    top ← i * 90
-    <span class="kw">for</span> x <span class="kw">in</span> 0..399:
-      t ← x / 399
-
-      linear blending ← off
-      naive ← mix(a, b, t)
-      linear blending ← on
-      light ← mix(a, b, t)
-
-      <span class="kw">for</span> y <span class="kw">in</span> top .. top + 39:       write_pixel(c, x, y, naive)
-      <span class="kw">for</span> y <span class="kw">in</span> top + 45 .. top + 84:  write_pixel(c, x, y, light)
-
+  ramp_pair(c, 0,  color(0, 0, 0),   color(1, 1, 1))
+  ramp_pair(c, 90, color(0.7, 0, 0), color(0, 0.3, 0.02))
   <span class="kw">return</span> c</code></pre>
 
-  <p>The five rows between the bands, and the five after the last one, stay black. Run it, open the
-    file, and compare your output to this:</p>
+  <p>Four bands of forty rows, starting at rows 0, 45, 90 and 135. The five rows after each band,
+    rows 40 to 44, 85 to 89, 130 to 134 and 175 to 179, stay black. Run it, open the file, and
+    compare your output to this:</p>
 
   <figure class="plate wide" id="plate">
     <canvas id="plate1" role="img" aria-label="Two pairs of color ramps: black to white and red to green, each blended the browser's way above and in linear light below"></canvas>
@@ -796,22 +878,21 @@ mix(a, b, t) = a + (b - a) * t</code></pre>
     <span class="kw">Then</span>  c.width = 400
     <span class="kw">And</span>   c.height = 180
     <span class="kw">When</span>  ppm ← canvas_to_ppm(c)
-    <span class="kw">Then</span>  ppm_pixel(ppm, 0, 20) = (0, 0, 0)
-    <span class="kw">And</span>   ppm_pixel(ppm, 399, 20) = (255, 255, 255)
+    <span class="kw">Then</span>  ppm_pixel(ppm, 0, 20) = (0, 0, 0) ± 1
+    <span class="kw">And</span>   ppm_pixel(ppm, 399, 20) = (255, 255, 255) ± 1
     <span class="kw">And</span>   ppm_pixel(ppm, 200, 20) = (128, 128, 128) ± 1
     <span class="kw">And</span>   ppm_pixel(ppm, 200, 65) = (188, 188, 188) ± 1
-    <span class="kw">And</span>   ppm_pixel(ppm, 200, 42) = (0, 0, 0)
-    <span class="kw">And</span>   ppm_pixel(ppm, 0, 110) = (218, 0, 0)
-    <span class="kw">And</span>   ppm_pixel(ppm, 399, 110) = (0, 149, 39)
+    <span class="kw">And</span>   ppm_pixel(ppm, 200, 42) = (0, 0, 0) ± 1
+    <span class="kw">And</span>   ppm_pixel(ppm, 0, 110) = (218, 0, 0) ± 1
+    <span class="kw">And</span>   ppm_pixel(ppm, 399, 110) = (0, 149, 39) ± 1
     <span class="kw">And</span>   ppm_pixel(ppm, 200, 110) = (109, 75, 19) ± 1
     <span class="kw">And</span>   ppm_pixel(ppm, 200, 155) = (160, 108, 26) ± 1
-    <span class="kw">And</span>   ppm_pixel(ppm, 200, 87) = (0, 0, 0)
-    <span class="kw">Given</span> ref ← read_file("reference/chapter-01/plate-01.ppm")
-    <span class="kw">Then</span>  max_channel_difference(ppm, ref) ≤ 1
-
-  <span class="kw">Scenario</span>: The switch was left on
-    <span class="kw">Given</span> c ← plate_01()
-    <span class="kw">Then</span>  linear blending is on</code></pre>
+    <span class="kw">And</span>   ppm_pixel(ppm, 200, 87) = (0, 0, 0) ± 1
+    <span class="kw">And</span>   ppm_pixel(ppm, 200, 132) = (0, 0, 0) ± 1
+    <span class="kw">And</span>   ppm_pixel(ppm, 200, 177) = (0, 0, 0) ± 1
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-01/plate-01.ppm")
+    <span class="kw">And</span>   max_channel_difference(ppm, ref) ≤ 1
+    <span class="kw">And</span>   linear blending is on</code></pre>
   </div>
 
   <nav class="endnav">

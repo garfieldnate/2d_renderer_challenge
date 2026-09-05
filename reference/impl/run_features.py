@@ -97,7 +97,7 @@ def run_step(text, doc, env):
         if bad:
             raise StepError("%d pixels differ, first at index %d" % (len(bad), bad[0]))
         return
-    m = re.match(r"(\d+) pixels of (\w+) are (.+)$", text)
+    m = re.match(r"exactly (\d+) pixels of (\w+) are (.+)$", text)
     if m:
         want = evaluate(m.group(3), env)
         n = sum(1 for p in env[m.group(2)].pixels if p.approx(want))

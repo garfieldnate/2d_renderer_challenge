@@ -36,6 +36,12 @@ Feature: Mixing two colors
     And   b ← color(0, 0.3, 0.02)
     Then  mix(a, b, 0.5) = color(0.1527, 0.0693, 0.0067)
 
+  Scenario: The browser's way can't see past 1
+    Given linear blending is off
+    And   a ← color(1.5, 0.5, -0.2)
+    And   b ← color(0, 0, 0)
+    Then  mix(a, b, 0) = color(1, 0.5, 0)
+
   Scenario: The ends of a mix are its inputs either way
     Given linear blending is off
     And   a ← color(0.7, 0, 0)

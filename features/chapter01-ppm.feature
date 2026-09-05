@@ -41,6 +41,17 @@ Feature: PPM output
       """
     And   every line of ppm is at most 70 characters
 
+  Scenario: A line of exactly 70 characters is allowed
+    Given c ← canvas(8, 1)
+    When  fill(c, color(1, 0.1, 0))
+    And   write_pixel(c, 7, 0, color(1, 1, 1))
+    And   ppm ← canvas_to_ppm(c)
+    Then  lines 4-5 of ppm are
+      """
+      255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 255
+      255
+      """
+
   Scenario: The file ends with a newline
     Given c ← canvas(5, 3)
     When  ppm ← canvas_to_ppm(c)
@@ -53,6 +64,14 @@ Feature: PPM output
     Then  ppm_pixel(ppm, 2, 1) = (0, 188, 255)
     And   ppm_pixel(ppm, 1, 1) = (0, 0, 0)
 
+  Scenario: Counting the distinct values in a file
+    Given c ← canvas(3, 1)
+    When  write_pixel(c, 0, 0, color(1, 0, 0))
+    And   write_pixel(c, 1, 0, color(0, 0.5, 0))
+    And   write_pixel(c, 2, 0, color(0, 0, 0.216))
+    And   ppm ← canvas_to_ppm(c)
+    Then  distinct_values(ppm) = 4
+
   Scenario: Comparing two files
     Given c1 ← canvas(2, 1)
     And   c2 ← canvas(2, 1)
@@ -61,3 +80,10 @@ Feature: PPM output
     And   ppm2 ← canvas_to_ppm(c2)
     Then  max_channel_difference(ppm1, ppm1) = 0
     And   max_channel_difference(ppm1, ppm2) = 188
+
+  Scenario: Files of different sizes are as different as it gets
+    Given c1 ← canvas(5, 3)
+    And   c2 ← canvas(3, 5)
+    When  ppm1 ← canvas_to_ppm(c1)
+    And   ppm2 ← canvas_to_ppm(c2)
+    Then  max_channel_difference(ppm1, ppm2) = 255

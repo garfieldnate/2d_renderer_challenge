@@ -40,6 +40,17 @@ The first draft of chapter 1 failed because it left things to the reader. Never 
   prints every scenario in each file, whole, via a `data-feature` block (see below).
 - Scenarios that toggle global state (`Given linear blending is off`) are explicit; every other
   scenario expects the default, and the chapter tells the reader to reset between scenarios.
+- **A scenario must be able to fail on the mistake it exists for.** Round 1 of reader testing
+  found a `>= 70` line wrap that passed every scenario: the pinning example broke at 67 columns, so
+  the boundary was never exercised. Pin boundaries exactly (a line of exactly 70 characters), and
+  when a scenario claims to test a branch, put a value on each side where the branches actually
+  disagree by more than the tolerance.
+- **Helpers that tests depend on get their own scenarios**, including their failure modes:
+  `max_channel_difference` on files of different sizes returns 255, and there is a scenario for it,
+  because otherwise a transposed render compares as identical.
+- Step order is legal Gherkin: `Given` never follows `When` or `Then`. Use `And`.
+- In render scenarios every `ppm_pixel` probe carries `± 1`, consistently, for the same reason the
+  reference diff does. Unit scenarios for the PPM writer stay exact.
 
 ## Ground truth lives in `reference/`
 
@@ -100,6 +111,9 @@ Before declaring a chapter done, have subagents implement it cold, as readers:
    bug in the chapter, the reference, or the agent; find out which.
 4. Every ambiguity two or more agents report is a chapter bug. Fix the prose or the scenario,
    re-sync, re-run the reference runner, and re-test.
+5. Run a second round in languages no first-round agent used, so the fixes are tested cold.
+6. Ask agents to try to break the suite ("find a wrong implementation that still passes"). The
+   most valuable round-1 finding came from an agent doing that unprompted.
 
 ## Git
 

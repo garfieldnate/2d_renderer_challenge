@@ -152,6 +152,11 @@ def distinct_values(ppm):
 
 
 def max_channel_difference(ppm_a, ppm_b):
+    """the largest difference between corresponding numbers; 255 if the
+    two files don't have the same width and height"""
+    ha, hb = ppm_a.split()[:4], ppm_b.split()[:4]
+    if ha != hb:
+        return 255
     a, b = ppm_values(ppm_a), ppm_values(ppm_b)
     if len(a) != len(b):
         return 255
@@ -176,12 +181,11 @@ def lerp(a, b, t):
 def mix(a, b, t):
     if LINEAR_BLENDING:
         return Color(lerp(a.red, b.red, t), lerp(a.green, b.green, t), lerp(a.blue, b.blue, t))
-    # the way browsers do it: blend the file values, then pretend the result is light
-    return Color(
-        decode(lerp(encode(a.red), encode(b.red), t)),
-        decode(lerp(encode(a.green), encode(b.green), t)),
-        decode(lerp(encode(a.blue), encode(b.blue), t)),
-    )
+    # the way browsers do it: blend the file values, then pretend the result is
+    # light. encode is only defined on 0..1, so clamp on the way in.
+    def naive(x, y):
+        return decode(lerp(encode(clamp(x)), encode(clamp(y)), t))
+    return Color(naive(a.red, b.red), naive(a.green, b.green), naive(a.blue, b.blue))
 
 
 # --------------------------------------------------------------------------
