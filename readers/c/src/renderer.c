@@ -58,17 +58,27 @@ double encode(double l) {
 /* ---- mixing ---------------------------------------------------------- */
 bool linear_blending = true;
 
-static double mix1(double a, double b, double t) {
-    if (linear_blending) return a + (b - a) * t;
-    double ea = encode(a), eb = encode(b);
+/* The light's way never clamps: a + (b-a)*t can leave 0-1 in either
+   direction, and the file writer is the only place that clamps. The
+   browser's way clamps each end to 0-1 *before* encoding it, which is
+   what a browser's own color parsing does -- clamping the result instead
+   passes every scenario except the one that mixes at t = 0.5 with an
+   out-of-range end. */
+static double mix1(double a, double b, double t, bool linear) {
+    if (linear) return a + (b - a) * t;
+    double ca = a < 0.0 ? 0.0 : (a > 1.0 ? 1.0 : a);
+    double cb = b < 0.0 ? 0.0 : (b > 1.0 ? 1.0 : b);
+    double ea = encode(ca), eb = encode(cb);
     return decode(ea + (eb - ea) * t);
 }
 
-Color mix(Color a, Color b, double t) {
-    return color(mix1(a.red, b.red, t),
-                 mix1(a.green, b.green, t),
-                 mix1(a.blue, b.blue, t));
+Color mix4(Color a, Color b, double t, bool linear) {
+    return color(mix1(a.red, b.red, t, linear),
+                 mix1(a.green, b.green, t, linear),
+                 mix1(a.blue, b.blue, t, linear));
 }
+
+Color mix3(Color a, Color b, double t) { return mix4(a, b, t, linear_blending); }
 
 /* ---- a growable string ------------------------------------------------ */
 typedef struct { char *s; size_t len, cap; } Buf;
@@ -286,13 +296,19 @@ Shape thick_line(double x0, double y0, double x1, double y1, double width) {
     double ax = x0 + 0.5, ay = y0 + 0.5, bx = x1 + 0.5, by = y1 + 0.5;
     double dx = bx - ax, dy = by - ay;
     double len = sqrt(dx * dx + dy * dy);
-    if (len == 0) { dx = 1; dy = 0; } else { dx /= len; dy /= len; }
-    double nx = -dy, ny = dx;          /* the unit normal */
     double half = width / 2;
+    /* A line of no length has no direction to pick a normal from. Give it
+       one anyway (dx, dy) = (1, 0), and push the two end caps out by half
+       the width too, the same as the sides -- otherwise they meet at a
+       single point and the "line" is a segment of zero area instead of
+       the width-by-width square the reader would draw by hand. */
+    double cap = 0;
+    if (len == 0) { dx = 1; dy = 0; cap = half; } else { dx /= len; dy /= len; }
+    double nx = -dy, ny = dx;          /* the unit normal */
 
     Shape s = {SHAPE_THICK_LINE, ax, ay, bx, by, {{0}}};
-    set_half(s.h[0], ax, ay,  dx,  dy);                              /* across the start */
-    set_half(s.h[1], bx, by, -dx, -dy);                              /* across the end */
+    set_half(s.h[0], ax - dx * cap, ay - dy * cap,  dx,  dy);        /* across the start */
+    set_half(s.h[1], bx + dx * cap, by + dy * cap, -dx, -dy);        /* across the end */
     set_half(s.h[2], ax + nx * half, ay + ny * half, -nx, -ny);      /* one side */
     set_half(s.h[3], ax - nx * half, ay - ny * half,  nx,  ny);      /* the other */
     return s;
@@ -379,10 +395,13 @@ CoverageBuffer *rasterize_centers(Shape s, int w, int h) { return rasterize_with
 CoverageBuffer *rasterize(Shape s, int w, int h)         { return rasterize_with(s, w, h, coverage); }
 
 /* ---- the one place the renderer touches the canvas -------------------- */
+/* The browser-style switch exists so you can compare gradients against
+   other tools; it has no business inside the rasterizer, so this forces
+   the light's way regardless of what linear_blending is set to. */
 void paint_through(Canvas *c, const CoverageBuffer *cov, Color col) {
     for (int y = 0; y < c->height; y++)
         for (int x = 0; x < c->width; x++)
-            write_pixel(c, x, y, mix(pixel_at(c, x, y), col, coverage_at(cov, x, y)));
+            write_pixel(c, x, y, mix4(pixel_at(c, x, y), col, coverage_at(cov, x, y), true));
 }
 
 /* ---- the pictures ----------------------------------------------------- */
@@ -441,10 +460,8 @@ Canvas *plate_01(void) {
         int top = i * 90;
         for (int x = 0; x <= 399; x++) {
             double t = x / 399.0;
-            linear_blending = false;
-            Color naive = mix(a, b, t);
-            linear_blending = true;
-            Color light = mix(a, b, t);
+            Color naive = mix4(a, b, t, false);   /* the browser's way */
+            Color light = mix4(a, b, t, true);    /* the light's way */
             for (int y = top; y <= top + 39; y++)      write_pixel(c, x, y, naive);
             for (int y = top + 45; y <= top + 84; y++) write_pixel(c, x, y, light);
         }

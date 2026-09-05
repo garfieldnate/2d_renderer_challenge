@@ -37,7 +37,9 @@ int main(void) {
     save_p6("out/painted-twice.ppm", painted_twice());
     save_p6("out/plate-02.ppm",      plate_02());
 
-    save_p6("out/fan-coverage.ppm", fan_coverage());
-    save_p6("out/plate-03.ppm",     plate_03());
+    save_p6("out/fan-bresenham.ppm", fan_bresenham());
+    save_p6("out/fan-wu.ppm",        fan_wu());
+    save_p6("out/fan-coverage.ppm",  fan_coverage());
+    save_p6("out/plate-03.ppm",      plate_03());
     return 0;
 }

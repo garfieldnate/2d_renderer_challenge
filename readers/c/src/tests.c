@@ -115,7 +115,7 @@ static void feature_srgb(void) {
     char name[96];
 
     struct { double light, value; } enc[] = {
-        {0.0, 0.0}, {0.0025, 0.0323}, {0.0031308, 0.0405}, {0.01, 0.0999},
+        {0.0, 0.0}, {0.0025, 0.0323}, {0.01, 0.0999},
         {0.1, 0.3492}, {0.216, 0.5021}, {0.25, 0.5371}, {0.5, 0.7354},
         {0.75, 0.8808}, {1.0, 1.0}
     };
@@ -125,7 +125,7 @@ static void feature_srgb(void) {
     }
 
     struct { double value, light; } dec[] = {
-        {0.0, 0.0}, {0.04, 0.0031}, {0.04045, 0.0031}, {0.05, 0.0039},
+        {0.0, 0.0}, {0.04, 0.0031}, {0.05, 0.0039},
         {0.1, 0.0100}, {0.5, 0.2140}, {0.75, 0.5225}, {1.0, 1.0}
     };
     for (unsigned i = 0; i < sizeof dec / sizeof *dec; i++) {
@@ -181,6 +181,17 @@ static void feature_ppm(void) {
         LEI(ppm_longest_line(ppm), 70);
         free(got); free(ppm); canvas_free(c);
     }
+    S(F, "A line of exactly 70 characters is allowed") {
+        Canvas *c = canvas(8, 1);
+        fill(c, color(1, 0.1, 0));
+        write_pixel(c, 7, 0, color(1, 1, 1));
+        char *ppm = canvas_to_ppm(c);
+        char *got = ppm_lines(ppm, 4, 5);
+        h_eqstr("lines 4-5 of ppm", got,
+            "255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 255\n"
+            "255");
+        free(got); free(ppm); canvas_free(c);
+    }
     S(F, "The file ends with a newline") {
         Canvas *c = canvas(5, 3);
         char *ppm = canvas_to_ppm(c);
@@ -195,12 +206,33 @@ static void feature_ppm(void) {
         EQP(ppm, 1, 1, 0, 0, 0);
         free(ppm); canvas_free(c);
     }
+    S(F, "Counting the distinct values in a file") {
+        Canvas *c = canvas(3, 1);
+        write_pixel(c, 0, 0, color(1, 0, 0));
+        write_pixel(c, 1, 0, color(0, 0.5, 0));
+        write_pixel(c, 2, 0, color(0, 0, 0.216));
+        char *ppm = canvas_to_ppm(c);
+        EQI(distinct_values(ppm), 4);
+        free(ppm); canvas_free(c);
+    }
     S(F, "Comparing two files") {
         Canvas *c1 = canvas(2, 1), *c2 = canvas(2, 1);
         write_pixel(c2, 0, 0, color(0.5, 0, 0));
         char *ppm1 = canvas_to_ppm(c1), *ppm2 = canvas_to_ppm(c2);
         EQI(max_channel_difference(ppm1, ppm1), 0);
         EQI(max_channel_difference(ppm1, ppm2), 188);
+        free(ppm1); free(ppm2); canvas_free(c1); canvas_free(c2);
+    }
+    S(F, "Files of different sizes are as different as it gets") {
+        Canvas *c1 = canvas(5, 3), *c2 = canvas(3, 5);
+        char *ppm1 = canvas_to_ppm(c1), *ppm2 = canvas_to_ppm(c2);
+        EQI(max_channel_difference(ppm1, ppm2), 255);
+        free(ppm1); free(ppm2); canvas_free(c1); canvas_free(c2);
+    }
+    S(F, "The same width with a different height is still a different size") {
+        Canvas *c1 = canvas(5, 3), *c2 = canvas(5, 4);
+        char *ppm1 = canvas_to_ppm(c1), *ppm2 = canvas_to_ppm(c2);
+        EQI(max_channel_difference(ppm1, ppm2), 255);
         free(ppm1); free(ppm2); canvas_free(c1); canvas_free(c2);
     }
 }
@@ -257,9 +289,6 @@ static void feature_gray_match(void) {
 static void feature_mix(void) {
     const char *F = "Mixing two colors";
 
-    S(F, "Linear blending is on by default") {
-        TRUEP(linear_blending);
-    }
     S(F, "Halfway between black and white") {
         Color a = color(0, 0, 0), b = color(1, 1, 1);
         EQC(mix(a, b, 0.5), 0.5, 0.5, 0.5);
@@ -284,7 +313,24 @@ static void feature_mix(void) {
         Color a = color(0.7, 0, 0), b = color(0, 0.3, 0.02);
         EQC(mix(a, b, 0.5), 0.1527, 0.0693, 0.0067);
     }
-    S(F, "The ends of a mix are its inputs either way") {
+    S(F, "The light's way never clamps") {
+        Color a = color(1.5, 0.5, -0.2), b = color(0, 0, 0);
+        EQC(mix(a, b, 0), 1.5, 0.5, -0.2);
+        EQC(mix(a, b, 0.5), 0.75, 0.25, -0.1);
+    }
+    S(F, "The switch can be passed instead of set") {
+        Color a = color(0, 0, 0), b = color(1, 1, 1);
+        EQC(mix(a, b, 0.5, true), 0.5, 0.5, 0.5);
+        EQC(mix(a, b, 0.5, false), 0.2140, 0.2140, 0.2140);
+        TRUEP(linear_blending);
+    }
+    S(F, "The browser's way clamps each end before encoding it") {
+        linear_blending = false;
+        Color a = color(1.5, 0.5, -0.2), b = color(0, 0, 0);
+        EQC(mix(a, b, 0), 1, 0.5, 0);
+        EQC(mix(a, b, 0.5), 0.2140, 0.1113, 0.0000);
+    }
+    S(F, "The ends of a mix are its inputs either way, when they're in range") {
         linear_blending = false;
         Color a = color(0.7, 0, 0), b = color(0, 0.3, 0.02);
         EQCC(mix(a, b, 0), a);
@@ -340,7 +386,7 @@ static void feature_limits(void) {
 static void feature_plate(void) {
     const char *F = "Plate 1";
 
-    S(F, "The plate") {
+    S(F, "Plate 1") {
         Canvas *c = plate_01();
         EQI(c->width, 400);
         EQI(c->height, 180);
@@ -359,11 +405,6 @@ static void feature_plate(void) {
         if (!ref.data) h_fail("could not read reference/chapter-01/plate-01.ppm");
         else { LEI(max_channel_difference(ppm, ref), 1); free(ref.data); }
         free(ppm); canvas_free(c);
-    }
-    S(F, "The switch was left on") {
-        Canvas *c = plate_01();
-        TRUEP(linear_blending);
-        canvas_free(c);
     }
 }
 
@@ -427,6 +468,41 @@ static void feature_p6(void) {
         EQI(distinct_values(p6), 2);
         free(p3); free(p6.data); canvas_free(c);
     }
+    S(F, "Rows go top to bottom") {
+        Canvas *c = canvas(1, 2);
+        write_pixel(c, 0, 0, color(1, 0, 0));
+        write_pixel(c, 0, 1, color(0, 0, 1));
+        Bytes p6 = canvas_to_p6(c);
+        EQI(p6.data[11], 255);
+        EQI(p6.data[16], 255);
+        EQP(p6, 0, 0, 255, 0, 0);
+        EQP(p6, 0, 1, 0, 0, 255);
+        free(p6.data); canvas_free(c);
+    }
+    S(F, "The binary writer clamps too") {
+        Canvas *c = canvas(2, 1);
+        write_pixel(c, 0, 0, color(1.5, 0, -0.5));
+        Bytes p6 = canvas_to_p6(c);
+        EQI(p6.data[11], 255);
+        EQI(p6.data[12], 0);
+        EQI(p6.data[13], 0);
+        EQP(p6, 0, 0, 255, 0, 0);
+        free(p6.data); canvas_free(c);
+    }
+    S(F, "Pixel bytes that look like whitespace are still pixel bytes") {
+        Canvas *c = canvas(2, 1);
+        write_pixel(c, 0, 0, color(0.00304, 0.01444, 0.00304));
+        write_pixel(c, 1, 0, color(1, 1, 1));
+        Bytes p6 = canvas_to_p6(c);
+        EQI((long)p6.len, 17);
+        EQI(p6.data[11], 10);
+        EQI(p6.data[12], 32);
+        EQP(p6, 0, 0, 10, 32, 10);
+        EQP(p6, 1, 0, 255, 255, 255);
+        char *ppm = canvas_to_ppm(c);
+        EQI(max_channel_difference(ppm, p6), 0);
+        free(ppm); free(p6.data); canvas_free(c);
+    }
     S(F, "Sizes still have to match") {
         Canvas *c1 = canvas(2, 1), *c2 = canvas(1, 2);
         Bytes p6a = canvas_to_p6(c1), p6b = canvas_to_p6(c2);
@@ -483,12 +559,15 @@ static void feature_centers(void) {
         EQ(ink(cov), 0.75);
         coverage_free(cov);
     }
-    S(F, "Setting coverage outside the buffer is ignored") {
+    S(F, "Setting coverage outside the buffer is ignored, and reading it gives 0") {
         CoverageBuffer *cov = coverage_buffer(4, 3);
         set_coverage(cov, -1, 1, 1);
         set_coverage(cov, 4, 1, 1);
         set_coverage(cov, 1, 3, 1);
         EQ(ink(cov), 0);
+        EQ(coverage_at(cov, -1, 1), 0);
+        EQ(coverage_at(cov, 4, 1), 0);
+        EQ(coverage_at(cov, 1, 3), 0);
         coverage_free(cov);
     }
     S(F, "The center of pixel (x, y) is (x + 0.5, y + 0.5)") {
@@ -497,6 +576,34 @@ static void feature_centers(void) {
         EQ(center_inside(s, 1, 4), 0);
         Shape t = half_plane(2.6, 0, 1, 0);
         EQ(center_inside(t, 2, 4), 0);
+    }
+    S(F, "The center question is not \"at least half\"") {
+        Shape s = half_plane(2.55, 0, 1, 0);
+        EQ(center_inside(s, 2, 4), 0);
+        EQ(coverage(s, 2, 4), 0.5);
+    }
+    S(F, "A buffer need not be square") {
+        Shape s = rectangle(0, 0, 2, 1);
+        CoverageBuffer *cov = rasterize_centers(s, 4, 2);
+        EQI(cov->width, 4);
+        EQI(cov->height, 2);
+        EQ(coverage_at(cov, 1, 0), 1);
+        EQ(coverage_at(cov, 0, 1), 0);
+        EQ(ink(cov), 2);
+        coverage_free(cov);
+    }
+    S(F, "A rectangle, by asking each center") {
+        Shape s = rectangle(1.25, 2.0, 4.75, 5.0);
+        CoverageBuffer *cov = rasterize_centers(s, 8, 8);
+        EQ(coverage_at(cov, 1, 4), 1);
+        EQ(coverage_at(cov, 4, 1), 0);
+        EQ(coverage_at(cov, 4, 4), 1);
+        EQ(coverage_at(cov, 0, 3), 0);
+        EQ(coverage_at(cov, 5, 3), 0);
+        EQ(coverage_at(cov, 2, 1), 0);
+        EQ(coverage_at(cov, 2, 5), 0);
+        EQ(ink(cov), 12);
+        coverage_free(cov);
     }
     S(F, "A disc, by asking each center") {
         Shape s = circle(8, 8, 5);
@@ -546,12 +653,14 @@ static void feature_paint(void) {
         EQC(pixel_at(c, 1, 0), 1, 0, 0);
         coverage_free(cov); canvas_free(c);
     }
-    S(F, "The arithmetic is on light") {
+    S(F, "The arithmetic is on light, whatever the switch says") {
+        linear_blending = false;
         Canvas *c = canvas(1, 1);
         CoverageBuffer *cov = coverage_buffer(1, 1);
         set_coverage(cov, 0, 0, 0.5);
         paint_through(c, cov, color(1, 1, 1));
         char *ppm = canvas_to_ppm(c);
+        EQC(pixel_at(c, 0, 0), 0.5, 0.5, 0.5);
         EQP(ppm, 0, 0, 188, 188, 188);
         free(ppm); coverage_free(cov); canvas_free(c);
     }
@@ -593,6 +702,17 @@ static void feature_coverage(void) {
         EQ(coverage_at(cov, 2, 1), 0);
         EQ(coverage_at(cov, 2, 5), 0);
         EQ(ink(cov), 10.5);
+        coverage_free(cov);
+    }
+    S(F, "Neither need the buffer be square here") {
+        Shape s = rectangle(0, 0, 2, 1);
+        CoverageBuffer *cov = rasterize(s, 4, 2);
+        EQI(cov->width, 4);
+        EQI(cov->height, 2);
+        EQ(coverage_at(cov, 1, 0), 1);
+        EQ(coverage_at(cov, 2, 0), 0);
+        EQ(coverage_at(cov, 0, 1), 0);
+        EQ(ink(cov), 2);
         coverage_free(cov);
     }
     S(F, "A half-plane through a pixel center covers half of it") {
@@ -662,7 +782,7 @@ static void feature_twice(void) {
 static void feature_plate_02(void) {
     const char *F = "Plate 2";
 
-    S(F, "The plate") {
+    S(F, "Plate 2") {
         Canvas *c = plate_02();
         Bytes ref = read_file("reference/chapter-02/plate-02.ppm");
         Bytes p6 = canvas_to_p6(c);
@@ -684,6 +804,14 @@ static void feature_bresenham(void) {
     const char *F = "Bresenham's line";
     const Color W = {1, 1, 1};
 
+    S(F, "lit_pixels reads like a page") {
+        Canvas *c = canvas(10, 10);
+        write_pixel(c, 5, 0, W);
+        write_pixel(c, 0, 2, W);
+        write_pixel(c, 2, 2, color(0.5, 0, 0));
+        EQ_PIXELS(c, {{5,0},{0,2},{2,2}});
+        canvas_free(c);
+    }
     S(F, "A diagonal") {
         Canvas *c = canvas(10, 10);
         line_bresenham(c, 0, 0, 5, 5, W);
@@ -800,6 +928,21 @@ static void feature_wu(void) {
         EQI(max_channel_difference(a, b), 0);
         free(a.data); free(b.data); canvas_free(c1); canvas_free(c2);
     }
+    S(F, "A line that starts above the canvas") {
+        Canvas *c = canvas(10, 10);
+        line_wu(c, 0, -1, 8, 3, W);
+        EQC(pixel_at(c, 1, 0), 0.5, 0.5, 0.5);
+        EQC(pixel_at(c, 2, 0), 1, 1, 1);
+        EQ(total_ink(c), 7.5);
+        canvas_free(c);
+    }
+    S(F, "A Wu line of one point") {
+        Canvas *c = canvas(10, 10);
+        line_wu(c, 3, 3, 3, 3, W);
+        EQ_PIXELS(c, {{3,3}});
+        EQC(pixel_at(c, 3, 3), 1, 1, 1);
+        canvas_free(c);
+    }
     S(F, "Sevenths") {
         Canvas *c = canvas(10, 10);
         line_wu(c, 0, 0, 7, 3, W);
@@ -854,6 +997,36 @@ static void feature_quad(void) {
         EQ(ink(cov), 7);
         coverage_free(cov);
     }
+    S(F, "A line of no length is a square") {
+        Shape s = thick_line(3, 3, 3, 3, 1);
+        CoverageBuffer *cov = rasterize(s, 8, 8);
+        EQ(coverage_at(cov, 3, 3), 1);
+        EQ(ink(cov), 1);
+        coverage_free(cov);
+    }
+    S(F, "A wider line") {
+        Shape s = thick_line(0, 3, 7, 3, 3);
+        CoverageBuffer *cov = rasterize(s, 10, 10);
+        EQ(coverage_at(cov, 3, 2), 1);
+        EQ(coverage_at(cov, 3, 3), 1);
+        EQ(coverage_at(cov, 3, 4), 1);
+        EQ(coverage_at(cov, 3, 1), 0);
+        EQ(coverage_at(cov, 3, 5), 0);
+        EQ(coverage_at(cov, 0, 3), 0.5);
+        EQ(ink(cov), 21);
+        coverage_free(cov);
+    }
+    S(F, "An off-axis line runs through pixel centers, not corners") {
+        Shape s = thick_line(2, 2, 11, 5, 1);
+        CoverageBuffer *cov = rasterize(s, 16, 10);
+        EQ(coverage_at(cov, 2, 2), 0.484375);
+        EQ(coverage_at(cov, 11, 5), 0.484375);
+        EQ(coverage_at(cov, 6, 3), 0.6875);
+        EQ(coverage_at(cov, 7, 3), 0.359375);
+        EQ(coverage_at(cov, 2, 1), 0);
+        EQ(ink(cov), 9.4063);
+        coverage_free(cov);
+    }
 
     struct { int x1, y1; } rows[] = { {12, 2}, {10, 8}, {8, 10}, {2, 12} };
     for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
@@ -870,7 +1043,7 @@ static void feature_quad(void) {
     S(F, "Except that the grid is blind along the diagonal") {
         Shape s = thick_line(2, 2, 9, 9, 1);
         CoverageBuffer *cov = rasterize(s, 20, 20);
-        EQ(ink(cov), 9.7188);
+        EQ(ink(cov), 9.71875);
         EQ_EPS(ink(cov), 9.8995, 0.25);
         coverage_free(cov);
     }
@@ -894,6 +1067,7 @@ static void feature_plate_03(void) {
     }
     S(F, "Bresenham's fan") {
         Canvas *c = fan_bresenham();
+        Bytes ref = read_file("reference/chapter-03/fan-bresenham.ppm");
         Bytes p6 = canvas_to_p6(c);
         EQI(c->width, 160);
         EQI(c->height, 160);
@@ -902,15 +1076,25 @@ static void feature_plate_03(void) {
         EQP1(p6,  10, 10,  39,  39,  44);
         EQP1(p6, 100, 91,  39,  39,  44);
         EQP1(p6, 100, 92, 246, 246, 241);
+        EQP1(p6, 103, 120, 246, 246, 241);
+        EQP1(p6, 102, 120,  39,  39,  44);
+        EQP1(p6, 104, 120,  39,  39,  44);
+        if (!ref.data) h_fail("could not read reference/chapter-03/fan-bresenham.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
         free(p6.data); canvas_free(c);
     }
     S(F, "Wu's fan") {
         Canvas *c = fan_wu();
+        Bytes ref = read_file("reference/chapter-03/fan-wu.ppm");
         Bytes p6 = canvas_to_p6(c);
         EQP1(p6,  80, 80, 246, 246, 241);
         EQP1(p6, 120, 80, 246, 246, 241);
         EQP1(p6, 100, 91, 163, 163, 161);
         EQP1(p6, 100, 92, 199, 199, 196);
+        EQP1(p6, 103, 120, 220, 220, 216);
+        EQP1(p6, 104, 120, 130, 130, 129);
+        if (!ref.data) h_fail("could not read reference/chapter-03/fan-wu.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
         free(p6.data); canvas_free(c);
     }
     S(F, "The fan as twelve thin rectangles") {

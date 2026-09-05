@@ -29,7 +29,14 @@ double encode(double l);   /* light -> file value */
 
 /* ---- mixing ---------------------------------------------------------- */
 extern bool linear_blending;   /* defaults to true */
-Color mix(Color a, Color b, double t);
+
+/* mix(a, b, t) uses the global switch; mix(a, b, t, linear) takes the
+   switch as an explicit fourth argument instead, without touching the
+   global, for languages (or callers) that would rather not have one. */
+Color mix3(Color a, Color b, double t);
+Color mix4(Color a, Color b, double t, bool linear);
+#define MIX_PICK(_1, _2, _3, _4, NAME, ...) NAME
+#define mix(...) MIX_PICK(__VA_ARGS__, mix4, mix3)(__VA_ARGS__)
 
 /* ---- PPM ------------------------------------------------------------- */
 /* A run of bytes, because a P6 file is not a string: it has NULs in it.
