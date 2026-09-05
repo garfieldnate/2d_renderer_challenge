@@ -1,5 +1,11 @@
-/** §1.6, §1.8, §1.9: the five renders this chapter asks for. */
+/**
+ * §1.6, §1.8, §1.9: the five renders chapter 1 asks for, plus §2.5, §2.6,
+ * §2.7, §2.8: the four renders chapter 2 asks for.
+ */
 public final class Figures {
+    private static final Color PAPER = new Color(0.02, 0.02, 0.025);
+    private static final Color INK = new Color(0.9, 0.55, 0.1);
+
     private Figures() {}
 
     public static Canvas grayMatch() {
@@ -99,5 +105,67 @@ public final class Figures {
             Mixer.linearBlending = true;
         }
         return c;
+    }
+
+    /** §2.5: a disc rasterized by asking each pixel's center -- the 1985 way. */
+    public static Canvas discCenters() {
+        Canvas c = new Canvas(40, 40);
+        c.fill(PAPER);
+        CoverageBuffer cov = Rasterizer.rasterizeCenters(new Circle(20, 20, 16), 40, 40);
+        Painter.paintThrough(c, cov, INK);
+        return Magnify.magnify(c, 8);
+    }
+
+    /** §2.6: disc_centers with rasterize in place of rasterize_centers, nothing else changed. */
+    public static Canvas discCoverage() {
+        Canvas c = new Canvas(40, 40);
+        c.fill(PAPER);
+        CoverageBuffer cov = Rasterizer.rasterize(new Circle(20, 20, 16), 40, 40);
+        Painter.paintThrough(c, cov, INK);
+        return Magnify.magnify(c, 8);
+    }
+
+    /** §2.7: the same coverage, painted through once and painted through twice. */
+    public static Canvas paintedTwice() {
+        Canvas c = new Canvas(80, 40);
+        c.fill(PAPER);
+        CoverageBuffer cov = Rasterizer.rasterize(new Circle(20, 20, 16), 40, 40);
+
+        CoverageBuffer once = new CoverageBuffer(80, 40); // the disc in both halves
+        for (int y = 0; y < 40; y++) {
+            for (int x = 0; x < 40; x++) {
+                once.setCoverage(x, y, cov.coverageAt(x, y));
+                once.setCoverage(x + 40, y, cov.coverageAt(x, y));
+            }
+        }
+        Painter.paintThrough(c, once, INK);
+
+        CoverageBuffer twice = new CoverageBuffer(80, 40); // the disc in the right half only
+        for (int y = 0; y < 40; y++) {
+            for (int x = 0; x < 40; x++) {
+                twice.setCoverage(x + 40, y, cov.coverageAt(x, y));
+            }
+        }
+        Painter.paintThrough(c, twice, INK);
+
+        return Magnify.magnify(c, 6);
+    }
+
+    /** §2.8: the same circle, the same grid, the two questions, side by side. */
+    public static Canvas plate02() {
+        Canvas c = new Canvas(80, 40);
+        c.fill(PAPER);
+        Shape shape = new Circle(20, 20, 16);
+        CoverageBuffer left = Rasterizer.rasterizeCenters(shape, 40, 40);
+        CoverageBuffer right = Rasterizer.rasterize(shape, 40, 40);
+        CoverageBuffer both = new CoverageBuffer(80, 40);
+        for (int y = 0; y < 40; y++) {
+            for (int x = 0; x < 40; x++) {
+                both.setCoverage(x, y, left.coverageAt(x, y));
+                both.setCoverage(x + 40, y, right.coverageAt(x, y));
+            }
+        }
+        Painter.paintThrough(c, both, INK);
+        return Magnify.magnify(c, 6);
     }
 }

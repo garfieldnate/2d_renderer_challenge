@@ -114,7 +114,11 @@
     at the first two bytes, and if they're <code>P6</code>, read the three header numbers, skip the
     single whitespace byte after the last one, and take the rest as pixel bytes. Your
     <code>read_file</code> now returns bytes rather than text; a P3 file is text that happens to be
-    stored in bytes, so nothing changes for chapter 1's tests.</p>
+    stored in bytes, so nothing changes for chapter 1's tests. In a language that keeps strings and
+    byte arrays firmly apart, make the three readers take bytes and convert a P3 string at the call,
+    or overload them; the scenarios compare a P3 to a P6 directly, so both routes have to end in the
+    same place. The size rule from chapter 1 still holds: files of different dimensions differ by
+    255, whatever their format.</p>
 
   <p>One trap, and it's the reason the reader can't reuse chapter 1's "split on whitespace": a pixel
     byte can be 10 or 32, which are the newline and space characters. Split a P6 file the way you
@@ -227,8 +231,10 @@
 
   <p>The first way to fill one is the binary question. Pixel <code>(x, y)</code> is the square from
     <code>(x, y)</code> to <code>(x + 1, y + 1)</code>, so its center is <code>(x + 0.5, y + 0.5)</code>.
-    Ask the shape whether the center is inside. If so, coverage 1; if not, 0. Do that for every pixel
-    and you've got <code>rasterize_centers</code>, which is what every renderer did until the
+    Ask the shape whether the center is inside. If so, coverage 1; if not, 0. That's
+    <code>center_inside(shape, x, y)</code>, and it returns the number, not a boolean, because the
+    number is what goes in the buffer. Do that for every pixel and you've got
+    <code>rasterize_centers</code>, which is what every renderer did until the
     nineties and what a few still do when you turn antialiasing off.</p>
 
   <p>That half-pixel offset is the one thing here that people get wrong. If you test
