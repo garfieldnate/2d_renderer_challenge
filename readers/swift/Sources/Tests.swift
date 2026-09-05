@@ -73,6 +73,10 @@ func everyPixel(_ c: Canvas, is col: Color) throws {
     }
 }
 
+func eqPts(_ a: [(Int, Int)], _ b: [(Int, Int)], _ label: String) throws {
+    let ok = a.count == b.count && zip(a, b).allSatisfy { $0.0 == $1.0 && $0.1 == $1.1 }
+    try step(ok, "\(label): \(a) != \(b)")
+}
 func eqBool(_ a: Bool, _ b: Bool, _ label: String) throws {
     try step(a == b, "\(label): \(a) != \(b)")
 }
@@ -481,6 +485,37 @@ func runTests() {
         try eqI(maxChannelDifference(p3, p6), 0, "max_channel_difference(p3, p6)")
         try eqI(distinctValues(p6), 2, "distinct_values(p6)")
     }
+    scenario("Rows go top to bottom") {
+        let c = canvas(1, 2)
+        writePixel(c, 0, 0, color(1, 0, 0))
+        writePixel(c, 0, 1, color(0, 0, 1))
+        let p6 = canvasToP6(c)
+        try eqI(Int(p6[11]), 255, "byte 12 of p6")
+        try eqI(Int(p6[16]), 255, "byte 17 of p6")
+        try eqPx(ppmPixel(p6, 0, 0), (255, 0, 0), 0, "ppm_pixel(p6, 0, 0)")
+        try eqPx(ppmPixel(p6, 0, 1), (0, 0, 255), 0, "ppm_pixel(p6, 0, 1)")
+    }
+    scenario("The binary writer clamps too") {
+        let c = canvas(2, 1)
+        writePixel(c, 0, 0, color(1.5, 0, -0.5))
+        let p6 = canvasToP6(c)
+        try eqI(Int(p6[11]), 255, "byte 12 of p6")
+        try eqI(Int(p6[12]), 0, "byte 13 of p6")
+        try eqI(Int(p6[13]), 0, "byte 14 of p6")
+        try eqPx(ppmPixel(p6, 0, 0), (255, 0, 0), 0, "ppm_pixel(p6, 0, 0)")
+    }
+    scenario("Pixel bytes that look like whitespace are still pixel bytes") {
+        let c = canvas(2, 1)
+        writePixel(c, 0, 0, color(0.00304, 0.01444, 0.00304))
+        writePixel(c, 1, 0, color(1, 1, 1))
+        let p6 = canvasToP6(c)
+        try eqI(p6.count, 17, "length(p6)")
+        try eqI(Int(p6[11]), 10, "byte 12 of p6")
+        try eqI(Int(p6[12]), 32, "byte 13 of p6")
+        try eqPx(ppmPixel(p6, 0, 0), (10, 32, 10), 0, "ppm_pixel(p6, 0, 0)")
+        try eqPx(ppmPixel(p6, 1, 0), (255, 255, 255), 0, "ppm_pixel(p6, 1, 0)")
+        try eqI(maxChannelDifference(canvasToPPM(c), p6), 0, "max_channel_difference(canvas_to_ppm(c), p6)")
+    }
     scenario("Sizes still have to match") {
         let p6a = canvasToP6(canvas(2, 1))
         let p6b = canvasToP6(canvas(1, 2))
@@ -528,12 +563,15 @@ func runTests() {
         try eq(coverageAt(cov, 1, 2), 0, EPSILON, "coverage_at(cov, 1, 2)")
         try eq(ink(cov), 0.75, EPSILON, "ink(cov)")
     }
-    scenario("Setting coverage outside the buffer is ignored") {
+    scenario("Setting coverage outside the buffer is ignored, and reading it gives 0") {
         let cov = coverageBuffer(4, 3)
         setCoverage(cov, -1, 1, 1)
         setCoverage(cov, 4, 1, 1)
         setCoverage(cov, 1, 3, 1)
         try eq(ink(cov), 0, EPSILON, "ink(cov)")
+        try eq(coverageAt(cov, -1, 1), 0, EPSILON, "coverage_at(cov, -1, 1)")
+        try eq(coverageAt(cov, 4, 1), 0, EPSILON, "coverage_at(cov, 4, 1)")
+        try eq(coverageAt(cov, 1, 3), 0, EPSILON, "coverage_at(cov, 1, 3)")
     }
     scenario("The center of pixel (x, y) is (x + 0.5, y + 0.5)") {
         let s = halfPlane(2.5, 0, 1, 0)
@@ -541,6 +579,32 @@ func runTests() {
         try eq(centerInside(s, 1, 4), 0, EPSILON, "center_inside(s, 1, 4)")
         let t = halfPlane(2.6, 0, 1, 0)
         try eq(centerInside(t, 2, 4), 0, EPSILON, "center_inside(t, 2, 4)")
+    }
+    scenario("The center question is not \"at least half\"") {
+        let s = halfPlane(2.55, 0, 1, 0)
+        try eq(centerInside(s, 2, 4), 0, EPSILON, "center_inside(s, 2, 4)")
+        try eq(coverage(s, 2, 4), 0.5, EPSILON, "coverage(s, 2, 4)")
+    }
+    scenario("A buffer need not be square") {
+        let s = rectangle(0, 0, 2, 1)
+        let cov = rasterizeCenters(s, 4, 2)
+        try eqI(cov.width, 4, "cov.width")
+        try eqI(cov.height, 2, "cov.height")
+        try eq(coverageAt(cov, 1, 0), 1, EPSILON, "coverage_at(cov, 1, 0)")
+        try eq(coverageAt(cov, 0, 1), 0, EPSILON, "coverage_at(cov, 0, 1)")
+        try eq(ink(cov), 2, EPSILON, "ink(cov)")
+    }
+    scenario("A rectangle, by asking each center") {
+        let s = rectangle(1.25, 2.0, 4.75, 5.0)
+        let cov = rasterizeCenters(s, 8, 8)
+        try eq(coverageAt(cov, 1, 4), 1, EPSILON, "coverage_at(cov, 1, 4)")
+        try eq(coverageAt(cov, 4, 1), 0, EPSILON, "coverage_at(cov, 4, 1)")
+        try eq(coverageAt(cov, 4, 4), 1, EPSILON, "coverage_at(cov, 4, 4)")
+        try eq(coverageAt(cov, 0, 3), 0, EPSILON, "coverage_at(cov, 0, 3)")
+        try eq(coverageAt(cov, 5, 3), 0, EPSILON, "coverage_at(cov, 5, 3)")
+        try eq(coverageAt(cov, 2, 1), 0, EPSILON, "coverage_at(cov, 2, 1)")
+        try eq(coverageAt(cov, 2, 5), 0, EPSILON, "coverage_at(cov, 2, 5)")
+        try eq(ink(cov), 12, EPSILON, "ink(cov)")
     }
     scenario("A disc, by asking each center") {
         let s = circle(8, 8, 5)
@@ -587,14 +651,16 @@ func runTests() {
         try eqC(pixelAt(c, 0, 0), color(0.2, 0.2, 0.2), "pixel_at(c, 0, 0)")
         try eqC(pixelAt(c, 1, 0), color(1, 0, 0), "pixel_at(c, 1, 0)")
     }
-    scenario("The arithmetic is on light") {
-        linearBlending = true
+    scenario("The arithmetic is on light, whatever the switch says") {
+        linearBlending = false
         let c = canvas(1, 1)
         let cov = coverageBuffer(1, 1)
         setCoverage(cov, 0, 0, 0.5)
         paintThrough(c, cov, color(1, 1, 1))
         let ppm = canvasToPPM(c)
+        try eqC(pixelAt(c, 0, 0), color(0.5, 0.5, 0.5), "pixel_at(c, 0, 0)")
         try eqPx(ppmPixel(ppm, 0, 0), (188, 188, 188), 0, "ppm_pixel(ppm, 0, 0)")
+        linearBlending = true
     }
     scenario("The disc by centers") {
         linearBlending = true
@@ -632,6 +698,16 @@ func runTests() {
         try eq(coverageAt(cov, 2, 1), 0, EPSILON, "coverage_at(cov, 2, 1)")
         try eq(coverageAt(cov, 2, 5), 0, EPSILON, "coverage_at(cov, 2, 5)")
         try eq(ink(cov), 10.5, EPSILON, "ink(cov)")
+    }
+    scenario("Neither need the buffer be square here") {
+        let s = rectangle(0, 0, 2, 1)
+        let cov = rasterize(s, 4, 2)
+        try eqI(cov.width, 4, "cov.width")
+        try eqI(cov.height, 2, "cov.height")
+        try eq(coverageAt(cov, 1, 0), 1, EPSILON, "coverage_at(cov, 1, 0)")
+        try eq(coverageAt(cov, 2, 0), 0, EPSILON, "coverage_at(cov, 2, 0)")
+        try eq(coverageAt(cov, 0, 1), 0, EPSILON, "coverage_at(cov, 0, 1)")
+        try eq(ink(cov), 2, EPSILON, "ink(cov)")
     }
     scenario("A half-plane through a pixel center covers half of it") {
         let s = halfPlane(2.5, 4.5, 0.6, 0.8)
@@ -706,6 +782,284 @@ func runTests() {
         try eqPx(ppmPixel(p6, 360, 120), (243, 196, 89), 1, "ppm_pixel(p6, 360, 120)")
         try eqPx(ppmPixel(p6, 93, 27), (39, 39, 44), 1, "ppm_pixel(p6, 93, 27)")
         try eqPx(ppmPixel(p6, 333, 27), (157, 127, 64), 1, "ppm_pixel(p6, 333, 27)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+
+    chapter(3)
+    // =========================================== chapter03-bresenham.feature
+    feature("Bresenham's line")
+
+    scenario("lit_pixels reads like a page") {
+        let c = canvas(10, 10)
+        writePixel(c, 5, 0, color(1, 1, 1))
+        writePixel(c, 0, 2, color(1, 1, 1))
+        writePixel(c, 2, 2, color(0.5, 0, 0))
+        try eqPts(litPixels(c), [(5, 0), (0, 2), (2, 2)], "lit_pixels(c)")
+    }
+    scenario("A diagonal") {
+        let c = canvas(10, 10)
+        lineBresenham(c, 0, 0, 5, 5, color(1, 1, 1))
+        try eqPts(litPixels(c), [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5)], "lit_pixels(c)")
+    }
+    scenario("A horizontal line lights one row and nothing else") {
+        let c = canvas(10, 10)
+        lineBresenham(c, 0, 3, 7, 3, color(1, 1, 1))
+        try eqPts(litPixels(c), [(0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3)], "lit_pixels(c)")
+    }
+    scenario("A shallow line steps along x") {
+        let c = canvas(10, 10)
+        lineBresenham(c, 0, 0, 7, 3, color(1, 1, 1))
+        try eqPts(litPixels(c), [(0, 0), (1, 0), (2, 1), (3, 1), (4, 2), (5, 2), (6, 3), (7, 3)], "lit_pixels(c)")
+    }
+    scenario("A steep line steps along y") {
+        let c = canvas(10, 10)
+        lineBresenham(c, 1, 1, 3, 7, color(1, 1, 1))
+        try eqPts(litPixels(c), [(1, 1), (1, 2), (2, 3), (2, 4), (2, 5), (3, 6), (3, 7)], "lit_pixels(c)")
+    }
+    scenario("The pixels don't depend on which end you start from") {
+        let c1 = canvas(10, 10), c2 = canvas(10, 10)
+        lineBresenham(c1, 1, 1, 3, 7, color(1, 1, 1))
+        lineBresenham(c2, 3, 7, 1, 1, color(1, 1, 1))
+        try eqPts(litPixels(c1), litPixels(c2), "lit_pixels(c1) = lit_pixels(c2)")
+        try eqI(maxChannelDifference(canvasToP6(c1), canvasToP6(c2)), 0,
+                "max_channel_difference(canvas_to_p6(c1), canvas_to_p6(c2))")
+    }
+    scenario("A line going up and to the right") {
+        let c = canvas(10, 10)
+        lineBresenham(c, 0, 6, 7, 3, color(1, 1, 1))
+        try eqPts(litPixels(c), [(6, 3), (7, 3), (4, 4), (5, 4), (2, 5), (3, 5), (0, 6), (1, 6)], "lit_pixels(c)")
+    }
+    scenario("At an exact half the line stays on its row one step longer") {
+        let c = canvas(10, 10)
+        lineBresenham(c, 0, 0, 4, 2, color(1, 1, 1))
+        try eqPts(litPixels(c), [(0, 0), (1, 0), (2, 1), (3, 1), (4, 2)], "lit_pixels(c)")
+    }
+    scenario("A line of one point") {
+        let c = canvas(10, 10)
+        lineBresenham(c, 3, 3, 3, 3, color(1, 1, 1))
+        try eqPts(litPixels(c), [(3, 3)], "lit_pixels(c)")
+    }
+    scenario("A line may run off the canvas") {
+        let c = canvas(10, 10)
+        lineBresenham(c, 0, 0, 12, 6, color(1, 1, 1))
+        try eqI(litPixels(c).count, 10, "length(lit_pixels(c))")
+    }
+
+    // ================================================ chapter03-wu.feature
+    feature("Wu's line")
+
+    scenario("A half step lights two pixels equally") {
+        let c = canvas(10, 10)
+        lineWu(c, 0, 0, 4, 2, color(1, 1, 1))
+        try eqC(pixelAt(c, 0, 0), color(1, 1, 1), "pixel_at(c, 0, 0)")
+        try eqC(pixelAt(c, 1, 0), color(0.5, 0.5, 0.5), "pixel_at(c, 1, 0)")
+        try eqC(pixelAt(c, 1, 1), color(0.5, 0.5, 0.5), "pixel_at(c, 1, 1)")
+        try eqC(pixelAt(c, 2, 1), color(1, 1, 1), "pixel_at(c, 2, 1)")
+        try eqC(pixelAt(c, 2, 2), color(0, 0, 0), "pixel_at(c, 2, 2)")
+        try eqC(pixelAt(c, 4, 2), color(1, 1, 1), "pixel_at(c, 4, 2)")
+        try eq(totalInk(c), 5, EPSILON, "total_ink(c)")
+    }
+    scenario("A diagonal has uniform weights") {
+        let c = canvas(10, 10)
+        lineWu(c, 0, 0, 5, 5, color(1, 1, 1))
+        try eqPts(litPixels(c), [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5)], "lit_pixels(c)")
+        try eqC(pixelAt(c, 3, 3), color(1, 1, 1), "pixel_at(c, 3, 3)")
+        try eq(totalInk(c), 6, EPSILON, "total_ink(c)")
+    }
+    scenario("A horizontal line has weight 1 on its row and 0 on the neighbors") {
+        let c = canvas(10, 10)
+        lineWu(c, 0, 3, 7, 3, color(1, 1, 1))
+        try eqPts(litPixels(c), [(0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3)], "lit_pixels(c)")
+        try eqC(pixelAt(c, 3, 3), color(1, 1, 1), "pixel_at(c, 3, 3)")
+        try eqC(pixelAt(c, 3, 2), color(0, 0, 0), "pixel_at(c, 3, 2)")
+        try eqC(pixelAt(c, 3, 4), color(0, 0, 0), "pixel_at(c, 3, 4)")
+        try eq(totalInk(c), 8, EPSILON, "total_ink(c)")
+    }
+    scenario("A steep line weights across columns") {
+        let c = canvas(10, 10)
+        lineWu(c, 1, 1, 3, 7, color(1, 1, 1))
+        try eqC(pixelAt(c, 1, 1), color(1, 1, 1), "pixel_at(c, 1, 1)")
+        try eqC(pixelAt(c, 1, 2), color(0.6667, 0.6667, 0.6667), "pixel_at(c, 1, 2)")
+        try eqC(pixelAt(c, 2, 2), color(0.3333, 0.3333, 0.3333), "pixel_at(c, 2, 2)")
+        try eqC(pixelAt(c, 2, 4), color(1, 1, 1), "pixel_at(c, 2, 4)")
+        try eqC(pixelAt(c, 3, 7), color(1, 1, 1), "pixel_at(c, 3, 7)")
+        try eq(totalInk(c), 7, EPSILON, "total_ink(c)")
+    }
+    scenario("The weights don't depend on which end you start from") {
+        let c1 = canvas(10, 10), c2 = canvas(10, 10)
+        lineWu(c1, 1, 1, 3, 7, color(1, 1, 1))
+        lineWu(c2, 3, 7, 1, 1, color(1, 1, 1))
+        try eqI(maxChannelDifference(canvasToP6(c1), canvasToP6(c2)), 0,
+                "max_channel_difference(canvas_to_p6(c1), canvas_to_p6(c2))")
+    }
+    scenario("A line that starts above the canvas") {
+        let c = canvas(10, 10)
+        lineWu(c, 0, -1, 8, 3, color(1, 1, 1))
+        try eqC(pixelAt(c, 1, 0), color(0.5, 0.5, 0.5), "pixel_at(c, 1, 0)")
+        try eqC(pixelAt(c, 2, 0), color(1, 1, 1), "pixel_at(c, 2, 0)")
+        try eq(totalInk(c), 7.5, EPSILON, "total_ink(c)")
+    }
+    scenario("A Wu line of one point") {
+        let c = canvas(10, 10)
+        lineWu(c, 3, 3, 3, 3, color(1, 1, 1))
+        try eqPts(litPixels(c), [(3, 3)], "lit_pixels(c)")
+        try eqC(pixelAt(c, 3, 3), color(1, 1, 1), "pixel_at(c, 3, 3)")
+    }
+    scenario("Sevenths") {
+        let c = canvas(10, 10)
+        lineWu(c, 0, 0, 7, 3, color(1, 1, 1))
+        try eqC(pixelAt(c, 1, 0), color(0.5714, 0.5714, 0.5714), "pixel_at(c, 1, 0)")
+        try eqC(pixelAt(c, 1, 1), color(0.4286, 0.4286, 0.4286), "pixel_at(c, 1, 1)")
+        try eqC(pixelAt(c, 2, 0), color(0.1429, 0.1429, 0.1429), "pixel_at(c, 2, 0)")
+        try eqC(pixelAt(c, 2, 1), color(0.8571, 0.8571, 0.8571), "pixel_at(c, 2, 1)")
+        try eq(totalInk(c), 8, EPSILON, "total_ink(c)")
+    }
+    let inkAngleRows: [(Int, Int, Double)] = [
+        (12, 2, 11), (10, 8, 9), (8, 10, 9), (2, 12, 11),
+    ]
+    for (x1, y1, ink) in inkAngleRows {
+        scenario("The ink depends on the angle [x1=\(x1), y1=\(y1), ink=\(ink)]") {
+            let c = canvas(20, 20)
+            lineWu(c, 2, 2, x1, y1, color(1, 1, 1))
+            try eq(totalInk(c), ink, EPSILON, "total_ink(c)")
+        }
+    }
+
+    // ============================================== chapter03-quad.feature
+    feature("A line is a thin rectangle")
+
+    scenario("Inside a thick line") {
+        let s = thickLine(0, 0, 4, 0, 1)
+        try eqBool(inside(s, 2.5, 0.5), true, "inside(s, 2.5, 0.5)")
+        try eqBool(inside(s, 2.5, 1.0), true, "inside(s, 2.5, 1.0)")
+        try eqBool(inside(s, 2.5, 1.01), false, "inside(s, 2.5, 1.01)")
+        try eqBool(inside(s, 0.5, 0.5), true, "inside(s, 0.5, 0.5)")
+        try eqBool(inside(s, 0.4, 0.5), false, "inside(s, 0.4, 0.5)")
+        try eqBool(inside(s, 4.5, 0.5), true, "inside(s, 4.5, 0.5)")
+        try eqBool(inside(s, 4.6, 0.5), false, "inside(s, 4.6, 0.5)")
+    }
+    scenario("A horizontal thick line covers its row, with half pixels at the ends") {
+        let s = thickLine(0, 3, 7, 3, 1)
+        let cov = rasterize(s, 10, 10)
+        try eq(coverageAt(cov, 0, 3), 0.5, EPSILON, "coverage_at(cov, 0, 3)")
+        try eq(coverageAt(cov, 1, 3), 1, EPSILON, "coverage_at(cov, 1, 3)")
+        try eq(coverageAt(cov, 6, 3), 1, EPSILON, "coverage_at(cov, 6, 3)")
+        try eq(coverageAt(cov, 7, 3), 0.5, EPSILON, "coverage_at(cov, 7, 3)")
+        try eq(coverageAt(cov, 8, 3), 0, EPSILON, "coverage_at(cov, 8, 3)")
+        try eq(coverageAt(cov, 3, 2), 0, EPSILON, "coverage_at(cov, 3, 2)")
+        try eq(coverageAt(cov, 3, 4), 0, EPSILON, "coverage_at(cov, 3, 4)")
+        try eq(ink(cov), 7, EPSILON, "ink(cov)")
+    }
+    scenario("A line of no length is a square") {
+        let s = thickLine(3, 3, 3, 3, 1)
+        let cov = rasterize(s, 8, 8)
+        try eq(coverageAt(cov, 3, 3), 1, EPSILON, "coverage_at(cov, 3, 3)")
+        try eq(ink(cov), 1, EPSILON, "ink(cov)")
+    }
+    scenario("A wider line") {
+        let s = thickLine(0, 3, 7, 3, 3)
+        let cov = rasterize(s, 10, 10)
+        try eq(coverageAt(cov, 3, 2), 1, EPSILON, "coverage_at(cov, 3, 2)")
+        try eq(coverageAt(cov, 3, 3), 1, EPSILON, "coverage_at(cov, 3, 3)")
+        try eq(coverageAt(cov, 3, 4), 1, EPSILON, "coverage_at(cov, 3, 4)")
+        try eq(coverageAt(cov, 3, 1), 0, EPSILON, "coverage_at(cov, 3, 1)")
+        try eq(coverageAt(cov, 3, 5), 0, EPSILON, "coverage_at(cov, 3, 5)")
+        try eq(coverageAt(cov, 0, 3), 0.5, EPSILON, "coverage_at(cov, 0, 3)")
+        try eq(ink(cov), 21, EPSILON, "ink(cov)")
+    }
+    scenario("An off-axis line runs through pixel centers, not corners") {
+        let s = thickLine(2, 2, 11, 5, 1)
+        let cov = rasterize(s, 16, 10)
+        try eq(coverageAt(cov, 2, 2), 0.484375, EPSILON, "coverage_at(cov, 2, 2)")
+        try eq(coverageAt(cov, 11, 5), 0.484375, EPSILON, "coverage_at(cov, 11, 5)")
+        try eq(coverageAt(cov, 6, 3), 0.6875, EPSILON, "coverage_at(cov, 6, 3)")
+        try eq(coverageAt(cov, 7, 3), 0.359375, EPSILON, "coverage_at(cov, 7, 3)")
+        try eq(coverageAt(cov, 2, 1), 0, EPSILON, "coverage_at(cov, 2, 1)")
+        try eq(ink(cov), 9.4063, EPSILON, "ink(cov)")
+    }
+    let angleRows: [(Int, Int)] = [(12, 2), (10, 8), (8, 10), (2, 12)]
+    for (x1, y1) in angleRows {
+        scenario("The ink is the length, whatever the angle [x1=\(x1), y1=\(y1)]") {
+            let s = thickLine(2, 2, x1, y1, 1)
+            let cov = rasterize(s, 20, 20)
+            try eq(ink(cov), 10, EPSILON, "ink(cov)")
+        }
+    }
+    scenario("Except that the grid is blind along the diagonal") {
+        let s = thickLine(2, 2, 9, 9, 1)
+        let cov = rasterize(s, 20, 20)
+        try eq(ink(cov), 9.71875, EPSILON, "ink(cov)")
+        try eq(ink(cov), 9.8995, 0.25, "ink(cov) = 9.8995 ± 0.25")
+    }
+
+    // ============================================== chapter03-plate.feature
+    feature("Plate 3")
+
+    scenario("The ray endpoints") {
+        try eqPts(rayEnds(),
+                  [(152, 80), (142, 116), (116, 142), (80, 152), (44, 142), (18, 116),
+                   (8, 80), (18, 44), (44, 18), (80, 8), (116, 18), (142, 44)],
+                  "ray_ends()")
+    }
+    scenario("Bresenham's fan") {
+        let c = fanBresenham()
+        let ref = readFile("reference/chapter-03/fan-bresenham.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 160, "c.width")
+        try eqI(c.height, 160, "c.height")
+        try eqPx(ppmPixel(p6, 80, 80), (246, 246, 241), 1, "ppm_pixel(p6, 80, 80)")
+        try eqPx(ppmPixel(p6, 120, 80), (246, 246, 241), 1, "ppm_pixel(p6, 120, 80)")
+        try eqPx(ppmPixel(p6, 10, 10), (39, 39, 44), 1, "ppm_pixel(p6, 10, 10)")
+        try eqPx(ppmPixel(p6, 100, 91), (39, 39, 44), 1, "ppm_pixel(p6, 100, 91)")
+        try eqPx(ppmPixel(p6, 100, 92), (246, 246, 241), 1, "ppm_pixel(p6, 100, 92)")
+        try eqPx(ppmPixel(p6, 103, 120), (246, 246, 241), 1, "ppm_pixel(p6, 103, 120)")
+        try eqPx(ppmPixel(p6, 102, 120), (39, 39, 44), 1, "ppm_pixel(p6, 102, 120)")
+        try eqPx(ppmPixel(p6, 104, 120), (39, 39, 44), 1, "ppm_pixel(p6, 104, 120)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+    scenario("Wu's fan") {
+        let c = fanWu()
+        let ref = readFile("reference/chapter-03/fan-wu.ppm")
+        let p6 = canvasToP6(c)
+        try eqPx(ppmPixel(p6, 80, 80), (246, 246, 241), 1, "ppm_pixel(p6, 80, 80)")
+        try eqPx(ppmPixel(p6, 120, 80), (246, 246, 241), 1, "ppm_pixel(p6, 120, 80)")
+        try eqPx(ppmPixel(p6, 100, 91), (163, 163, 161), 1, "ppm_pixel(p6, 100, 91)")
+        try eqPx(ppmPixel(p6, 100, 92), (199, 199, 196), 1, "ppm_pixel(p6, 100, 92)")
+        try eqPx(ppmPixel(p6, 103, 120), (220, 220, 216), 1, "ppm_pixel(p6, 103, 120)")
+        try eqPx(ppmPixel(p6, 104, 120), (130, 130, 129), 1, "ppm_pixel(p6, 104, 120)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+    scenario("The fan as twelve thin rectangles") {
+        let c = fanCoverage()
+        let ref = readFile("reference/chapter-03/fan-coverage.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 320, "c.width")
+        try eqI(c.height, 320, "c.height")
+        try eqPx(ppmPixel(p6, 160, 160), (246, 246, 241), 1, "ppm_pixel(p6, 160, 160)")
+        try eqPx(ppmPixel(p6, 10, 10), (39, 39, 44), 1, "ppm_pixel(p6, 10, 10)")
+        try eqPx(ppmPixel(p6, 240, 160), (246, 246, 241), 1, "ppm_pixel(p6, 240, 160)")
+        try eqPx(ppmPixel(p6, 240, 158), (39, 39, 44), 1, "ppm_pixel(p6, 240, 158)")
+        try eqPx(ppmPixel(p6, 200, 183), (177, 177, 174), 1, "ppm_pixel(p6, 200, 183)")
+        try eqPx(ppmPixel(p6, 200, 185), (209, 209, 205), 1, "ppm_pixel(p6, 200, 185)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+    scenario("Plate 3") {
+        let c = plate03()
+        let ref = readFile("reference/chapter-03/plate-03.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 640, "c.width")
+        try eqI(c.height, 320, "c.height")
+        try eqPx(ppmPixel(p6, 160, 160), (246, 246, 241), 1, "ppm_pixel(p6, 160, 160)")
+        try eqPx(ppmPixel(p6, 480, 160), (246, 246, 241), 1, "ppm_pixel(p6, 480, 160)")
+        try eqPx(ppmPixel(p6, 10, 10), (39, 39, 44), 1, "ppm_pixel(p6, 10, 10)")
+        try eqPx(ppmPixel(p6, 200, 183), (39, 39, 44), 1, "ppm_pixel(p6, 200, 183)")
+        try eqPx(ppmPixel(p6, 200, 185), (246, 246, 241), 1, "ppm_pixel(p6, 200, 185)")
+        try eqPx(ppmPixel(p6, 520, 183), (163, 163, 161), 1, "ppm_pixel(p6, 520, 183)")
+        try eqPx(ppmPixel(p6, 520, 185), (199, 199, 196), 1, "ppm_pixel(p6, 520, 185)")
         let d = maxChannelDifference(p6, ref)
         try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
     }

@@ -15,6 +15,9 @@ func render() {
         ("out/disc-coverage.ppm", discCoverage),
         ("out/painted-twice.ppm", paintedTwice),
         ("out/plate-02.ppm", plate02),
+        ("out/fan-bresenham.ppm", fanBresenham),
+        ("out/fan-wu.ppm", fanWu),
+        ("out/plate-03.ppm", plate03),
     ]
     try? FileManager.default.createDirectory(atPath: "out", withIntermediateDirectories: true)
     for (path, make) in jobs {
@@ -27,6 +30,14 @@ func render() {
         try! Data(bytes).write(to: URL(fileURLWithPath: path))
         print("wrote \(path)")
     }
+    // fan_coverage is the slow one: twelve 160x160 rasterizations at 64
+    // samples a pixel. Timed on its own.
+    let t0 = Date()
+    let cov = fanCoverage()
+    let dt = Date().timeIntervalSince(t0)
+    try! Data(canvasToP6(cov)).write(to: URL(fileURLWithPath: "out/fan-coverage.ppm"))
+    print("wrote out/fan-coverage.ppm")
+    print(String(format: "fan_coverage() took %.3fs", dt))
 }
 
 if args.count > 1 && args[1] == "render" {

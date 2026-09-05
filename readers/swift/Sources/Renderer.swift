@@ -364,14 +364,19 @@ func rasterizeCenters(_ s: Shape, _ w: Int, _ h: Int) -> CoverageBuffer {
 }
 
 // ---------------------------------------------------------------- § 2.5 paint
-/// Move every pixel of the canvas toward the color by that pixel's coverage.
+/// Move every pixel of the canvas toward the color by that pixel's coverage:
+/// mix(pixel, color, coverage) with the switch forced to the light's way,
+/// mix(pixel, color, coverage, true). The browser-style switch has no
+/// business inside the rasterizer, so this does the linear arithmetic
+/// directly instead of going through the switchable mix().
 /// The one place the renderer touches the canvas.
 func paintThrough(_ c: Canvas, _ cov: CoverageBuffer, _ col: Color) {
     for y in 0..<c.height {
         for x in 0..<c.width {
             let t = cov.coverageAt(x, y)
             if t == 0 { continue }              // zero coverage leaves a pixel alone
-            c.writePixel(x, y, mix(c.pixelAt(x, y), col, t))
+            let p = c.pixelAt(x, y)
+            c.writePixel(x, y, p + (col - p) * t)
         }
     }
 }
@@ -459,4 +464,184 @@ func plate02() -> Canvas {
     }
     paintThrough(c, both, color(0.9, 0.55, 0.1))
     return magnify(c, 6)
+}
+
+// ---------------------------------------------------------------- § 3.1 Bresenham
+/// A test helper, not a renderer function: every pixel of the canvas that
+/// isn't black, with the usual tolerance, in reading order (top row first,
+/// left to right within a row).
+func litPixels(_ c: Canvas) -> [(Int, Int)] {
+    var result: [(Int, Int)] = []
+    for y in 0..<c.height {
+        for x in 0..<c.width {
+            if !c.pixelAt(x, y).equals(BLACK) { result.append((x, y)) }
+        }
+    }
+    return result
+}
+
+/// One pixel per column (or row, if steep) chosen with integer-only
+/// arithmetic. Ranges are inclusive at both ends, as always.
+func lineBresenham(_ c: Canvas, _ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int, _ col: Color) {
+    var x0 = x0, y0 = y0, x1 = x1, y1 = y1
+    let steep = abs(y1 - y0) > abs(x1 - x0)
+    if steep {
+        swap(&x0, &y0)
+        swap(&x1, &y1)
+    }
+    if x0 > x1 {
+        swap(&x0, &x1)
+        swap(&y0, &y1)
+    }
+    let dx = x1 - x0
+    let dy = abs(y1 - y0)
+    let ystep = y0 < y1 ? 1 : -1
+    var err = dx / 2                      // integer division
+    var y = y0
+    for x in x0...x1 {
+        if steep { c.writePixel(y, x, col) }  // swap back on the way out
+        else     { c.writePixel(x, y, col) }
+        err -= dy
+        if err < 0 {
+            y += ystep
+            err += dx
+        }
+    }
+}
+
+// ---------------------------------------------------------------- pictures
+/// Twelve points, 30 degrees apart, 72 pixels out from (80, 80), rounded to
+/// integers.
+func rayEnds() -> [(Int, Int)] {
+    var ends: [(Int, Int)] = []
+    for k in 0...11 {
+        let a = Double(k) * 30.0 * Double.pi / 180.0
+        let x = Int((80 + 72 * cos(a)).rounded())
+        let y = Int((80 + 72 * sin(a)).rounded())
+        ends.append((x, y))
+    }
+    return ends
+}
+
+func fanBresenham() -> Canvas {
+    let c = canvas(160, 160)
+    fill(c, color(0.02, 0.02, 0.025))
+    for (x, y) in rayEnds() {
+        lineBresenham(c, 80, 80, x, y, color(0.92, 0.92, 0.88))
+    }
+    return c
+}
+
+// ---------------------------------------------------------------- § 3.2 Wu
+/// paint_through for one pixel: mixes the pixel toward col by weight, drops
+/// writes off the canvas, and, as a shortcut rather than a rule, skips a
+/// weight of zero.
+func plot(_ c: Canvas, _ x: Int, _ y: Int, _ col: Color, _ weight: Double) {
+    guard x >= 0, x < c.width, y >= 0, y < c.height else { return }
+    if weight == 0 { return }
+    c.writePixel(x, y, mix(c.pixelAt(x, y), col, weight))
+}
+
+/// Two pixels per column (or row, if steep), weighted by where the ideal
+/// line falls between them. Integer endpoints only.
+func lineWu(_ c: Canvas, _ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int, _ col: Color) {
+    var x0 = x0, y0 = y0, x1 = x1, y1 = y1
+    let steep = abs(y1 - y0) > abs(x1 - x0)
+    if steep {
+        swap(&x0, &y0)
+        swap(&x1, &y1)
+    }
+    if x0 > x1 {
+        swap(&x0, &x1)
+        swap(&y0, &y1)
+    }
+    let dx = x1 - x0
+    let slope = dx == 0 ? 0.0 : Double(y1 - y0) / Double(dx)
+    for x in x0...x1 {
+        let y = Double(y0) + Double(x - x0) * slope
+        let yi = Int(floor(y))               // floor, not truncation
+        let f = y - Double(yi)
+        if steep {
+            plot(c, yi, x, col, 1 - f)
+            plot(c, yi + 1, x, col, f)
+        } else {
+            plot(c, x, yi, col, 1 - f)
+            plot(c, x, yi + 1, col, f)
+        }
+    }
+}
+
+/// Sum of every pixel's red channel: for a white line on black, exactly how
+/// much paint went down.
+func totalInk(_ c: Canvas) -> Double {
+    var sum = 0.0
+    for y in 0..<c.height {
+        for x in 0..<c.width {
+            sum += c.pixelAt(x, y).red
+        }
+    }
+    return sum
+}
+
+// ---------------------------------------------------------------- pictures
+func fanWu() -> Canvas {
+    let c = canvas(160, 160)
+    fill(c, color(0.02, 0.02, 0.025))
+    for (x, y) in rayEnds() {
+        lineWu(c, 80, 80, x, y, color(0.92, 0.92, 0.88))
+    }
+    return c
+}
+
+// ---------------------------------------------------------------- § 3.3 the reveal
+/// A line is a shape: the rectangle of the given width centered on the
+/// segment from the center of pixel (x0, y0) to the center of pixel
+/// (x1, y1), with square ends. Four half-planes; a line of no length has no
+/// direction, so it gets (1, 0) and becomes a width-by-width square.
+func thickLine(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int, _ width: Double) -> Shape {
+    var ax = Double(x0) + 0.5, ay = Double(y0) + 0.5   // pixel centers
+    var bx = Double(x1) + 0.5, by = Double(y1) + 0.5
+    let h = width / 2
+    let length = hypot(bx - ax, by - ay)
+    var dx: Double, dy: Double
+    if length == 0 {
+        dx = 1; dy = 0
+        ax -= h; bx += h
+    } else {
+        dx = (bx - ax) / length                        // unit direction
+        dy = (by - ay) / length
+    }
+    let nx = -dy, ny = dx                               // unit normal
+    let ahead  = halfPlane(ax, ay, dx, dy)               // ahead of the start
+    let behind = halfPlane(bx, by, -dx, -dy)             // behind the end
+    let left   = halfPlane(ax + nx * h, ay + ny * h, -nx, -ny)   // inside the left side
+    let right  = halfPlane(ax - nx * h, ay - ny * h, nx, ny)     // inside the right side
+    return Shape { x, y in
+        inside(ahead, x, y) && inside(behind, x, y) && inside(left, x, y) && inside(right, x, y)
+    }
+}
+
+// ---------------------------------------------------------------- pictures
+func fanCoverage() -> Canvas {
+    let c = canvas(160, 160)
+    fill(c, color(0.02, 0.02, 0.025))
+    for (x, y) in rayEnds() {
+        let cov = rasterize(thickLine(80, 80, x, y, 1), 160, 160)
+        paintThrough(c, cov, color(0.92, 0.92, 0.88))
+    }
+    return magnify(c, 2)
+}
+
+// ---------------------------------------------------------------- § 3.4 putting it together
+func plate03() -> Canvas {
+    let both = canvas(320, 160)
+    let a = fanBresenham()
+    let b = fanWu()
+    for y in 0...159 {
+        for x in 0...159 {
+            writePixel(both, x, y, pixelAt(a, x, y))
+            writePixel(both, x + 160, y, pixelAt(b, x, y))
+        }
+    }
+    return magnify(both, 2)
 }
