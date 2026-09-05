@@ -52,7 +52,8 @@
     <li>A <strong>circle</strong>, given its center and radius. Inside means within the radius,
       boundary included.</li>
     <li>A <strong>rectangle</strong>, given its left, top, right and bottom edges as
-      <code>rectangle(x0, y0, x1, y1)</code>. Boundary included.</li>
+      <code>rectangle(x0, y0, x1, y1)</code>, remembering that y grows downward so the top is the
+      smaller y. Boundary included.</li>
     <li>A <strong>half-plane</strong>, which is everything on one side of a line. You describe it
       with a point on the line and a normal vector pointing into the half you want:
       <code>half_plane(px, py, nx, ny)</code>. A point is inside when the vector from
@@ -114,8 +115,10 @@
     <code>distinct_values</code> and <code>max_channel_difference</code> to read either format: look
     at the first two bytes, and if they're <code>P6</code>, read the three header numbers, skip the
     single whitespace byte after the last one, and take the rest as pixel bytes. Your
-    <code>read_file</code> now returns bytes rather than text; a P3 file is text that happens to be
-    stored in bytes, so nothing changes for chapter 1's tests. In a language that keeps strings and
+    <code>read_file</code> now returns bytes rather than text, and in a language where a byte array
+    has to carry its own length, that's a new type in your code, not a new flag. A P3 file is text
+    that happens to be stored in bytes, so nothing changes for chapter 1's results, even if a few of
+    its call sites change type. In a language that keeps strings and
     byte arrays firmly apart, make the three readers take bytes and convert a P3 string at the call,
     or overload them; the scenarios compare a P3 to a P6 directly, so both routes have to end in the
     same place. The size rule from chapter 1 still holds: files of different dimensions differ by
@@ -126,8 +129,10 @@
     split a P3 and those pixels vanish. Read the header byte by byte until you've seen three numbers
     and the one whitespace after the last, and treat every byte after that as pixel data no matter
     what it looks like. There's a scenario whose first pixel is <code>10 32 10</code> for exactly this
-    reason. Bytes in the scenarios are numbered from 1, the same way lines are: byte 1 is the
-    <code>P</code>, and in a 2-by-1 file byte 12 is the first pixel byte. <code>length</code> is a
+    reason. Rows go top to bottom, as in P3, and there's a scenario for that too, because every
+    picture in this chapter happens to be symmetric top to bottom and wouldn't notice a writer that
+    got it backwards. Bytes in the scenarios are numbered from 1, the same way lines are: byte 1 is
+    the <code>P</code>, and in a 2-by-1 file byte 12 is the first pixel byte. <code>length</code> is a
     count of bytes, not characters. And the binary writer shares the P3 writer's clamp; there's a
     scenario that feeds it a 1.5.</p>
 
@@ -255,8 +260,10 @@
     <code>(x, y)</code> to <code>(x + 1, y + 1)</code>, so its center is <code>(x + 0.5, y + 0.5)</code>.
     Ask the shape whether the center is inside. If so, coverage 1; if not, 0. That's
     <code>center_inside(shape, x, y)</code>, and it returns the number, not a boolean, because the
-    number is what goes in the buffer. Do that for every pixel and you've got
-    <code>rasterize_centers</code>, which is what every renderer did until the
+    number is what goes in the buffer. It's a question about one point, not about how much of the
+    pixel is covered, and a scenario pins the difference: a line that misses the center by a
+    twentieth of a pixel gets a 0 from this question and a 0.5 from the next section's. Do that for
+    every pixel and you've got <code>rasterize_centers</code>, which is what every renderer did until the
     nineties and what a few still do when you turn antialiasing off.</p>
 
   <p>That half-pixel offset is the one thing here that people get wrong. If you test
@@ -338,6 +345,17 @@
     coverage buffers faster. Chapters 9 through 12 are about producing fancier paint. Neither side
     needs to know about the other, and the seam between them is this one function.</p>
 
+  <p>The last scenario below is your first picture: a 40-by-40 canvas painted a dark gray, a disc of
+    radius 16 centered at <code>(20, 20)</code> rasterized by centers, painted through in an orange,
+    and magnified eight times.</p>
+
+<pre><code>disc_centers():
+  c ← canvas(40, 40)
+  fill(c, color(0.02, 0.02, 0.025))
+  cov ← rasterize_centers(circle(20, 20, 16), 40, 40)
+  paint_through(c, cov, color(0.9, 0.55, 0.1))
+  <span class="kw">return</span> magnify(c, 8)</code></pre>
+
   <div class="test" data-feature="chapter02-paint.feature">
     <p class="label">features/chapter02-paint.feature</p>
 <pre><code><span class="kw">Feature</span>: Painting through coverage
@@ -392,17 +410,6 @@
     <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
   </div>
 
-  <p>The last scenario is your first picture: a 40-by-40 canvas painted a dark gray, a disc of
-    radius 16 centered at <code>(20, 20)</code> rasterized by centers, painted through in an orange,
-    and magnified eight times.</p>
-
-<pre><code>disc_centers():
-  c ← canvas(40, 40)
-  fill(c, color(0.02, 0.02, 0.025))
-  cov ← rasterize_centers(circle(20, 20, 16), 40, 40)
-  paint_through(c, cov, color(0.9, 0.55, 0.1))
-  <span class="kw">return</span> magnify(c, 8)</code></pre>
-
   <p>Write it out as P6, open it, and look at the edge. Every step is a full pixel. It's a
     perfectly good circle and it looks like it was drawn in 1985, because this is exactly how
     circles were drawn in 1985.</p>
@@ -427,9 +434,9 @@
 
   <p>It's slow. Sixty-four shape queries per pixel, for every pixel on the canvas, whether the shape
     is anywhere near it or not. You won't feel it on a 40-pixel disc; on a 1920-by-1080 canvas it's
-    133 million questions per shape. It's also correct to within 1/64 for an axis-aligned edge, and
-    off by at most 1/16 on the worst diagonal, for reasons the next paragraph gets to, and it's so
-    simple that it's very hard to get wrong. That combination is why it stays in the book for good:
+    133 million questions per shape. Its answers are multiples of 1/64, and for a straight edge
+    they're never more than 1/16 from the truth, which is half a row of samples; the next paragraph
+    shows the worst case. And it's so simple that it's very hard to get wrong. That combination is why it stays in the book for good:
     from here on, whenever a chapter builds a faster rasterizer, this one is what the fast one gets
     checked against. It's your reference renderer, and you've written it in a dozen lines.</p>
 
