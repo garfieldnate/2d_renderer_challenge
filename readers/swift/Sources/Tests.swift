@@ -9,7 +9,10 @@ var passedCount = 0
 var failedCount = 0
 var failureLog: [String] = []
 var currentFeature = ""
+var currentChapter = 1
+var perChapter: [Int: (Int, Int)] = [:]   // chapter -> (passed, failed)
 
+func chapter(_ n: Int) { currentChapter = n }
 func feature(_ name: String) { currentFeature = name }
 
 var timings: [(String, Double)] = []
@@ -20,11 +23,14 @@ func scenario(_ name: String, _ body: () throws -> Void) {
     do {
         try body()
         passedCount += 1
+        perChapter[currentChapter, default: (0, 0)].0 += 1
     } catch let f as StepFailure {
         failedCount += 1
+        perChapter[currentChapter, default: (0, 0)].1 += 1
         failureLog.append("FAIL  \(currentFeature) :: \(name)\n      \(f.message)")
     } catch {
         failedCount += 1
+        perChapter[currentChapter, default: (0, 0)].1 += 1
         failureLog.append("FAIL  \(currentFeature) :: \(name)\n      \(error)")
     }
 }
@@ -67,7 +73,17 @@ func everyPixel(_ c: Canvas, is col: Color) throws {
     }
 }
 
+func eqBool(_ a: Bool, _ b: Bool, _ label: String) throws {
+    try step(a == b, "\(label): \(a) != \(b)")
+}
+func beginsWith(_ bytes: [UInt8], _ prefix: String, _ label: String) throws {
+    let p = Array(prefix.utf8)
+    let head = Array(bytes.prefix(p.count))
+    try step(head == p, "\(label): begins with \(String(decoding: head, as: UTF8.self).debugDescription)")
+}
+
 func runTests() {
+    chapter(1)
     // ============================================ chapter01-equality.feature
     feature("Comparing numbers")
 
@@ -407,5 +423,290 @@ func runTests() {
         let c = plate01()
         try step(c.width == 400, "plate_01() did not run")   // keep the call alive under -O
         try step(linearBlending, "linear blending is off after plate_01()")
+    }
+
+    chapter(2)
+    // ============================================== chapter02-shapes.feature
+    feature("Shapes are questions")
+
+    scenario("A point inside a circle") {
+        let s = circle(8, 8, 5)
+        try eqBool(inside(s, 8, 8), true, "inside(s, 8, 8)")
+        try eqBool(inside(s, 12, 8), true, "inside(s, 12, 8)")
+        try eqBool(inside(s, 13, 8), true, "inside(s, 13, 8)")
+        try eqBool(inside(s, 13.01, 8), false, "inside(s, 13.01, 8)")
+        try eqBool(inside(s, 11.6, 11.6), false, "inside(s, 11.6, 11.6)")
+    }
+    scenario("A point inside a rectangle") {
+        let s = rectangle(1.25, 2.0, 4.75, 5.0)
+        try eqBool(inside(s, 3, 3), true, "inside(s, 3, 3)")
+        try eqBool(inside(s, 1.25, 2.0), true, "inside(s, 1.25, 2.0)")
+        try eqBool(inside(s, 4.75, 5.0), true, "inside(s, 4.75, 5.0)")
+        try eqBool(inside(s, 1.2, 3), false, "inside(s, 1.2, 3)")
+        try eqBool(inside(s, 3, 5.1), false, "inside(s, 3, 5.1)")
+    }
+    scenario("A point inside a half-plane") {
+        let s = halfPlane(2.5, 0, 1, 0)
+        try eqBool(inside(s, 2.5, 7), true, "inside(s, 2.5, 7)")
+        try eqBool(inside(s, 3, -4), true, "inside(s, 3, -4)")
+        try eqBool(inside(s, 2.4, 0), false, "inside(s, 2.4, 0)")
+    }
+    scenario("The normal picks the side") {
+        let s = halfPlane(2.5, 0, -1, 0)
+        try eqBool(inside(s, 2.4, 0), true, "inside(s, 2.4, 0)")
+        try eqBool(inside(s, 3, 0), false, "inside(s, 3, 0)")
+    }
+
+    // ================================================= chapter02-p6.feature
+    feature("Binary PPM")
+
+    scenario("The header, then the bytes") {
+        let c = canvas(2, 1)
+        writePixel(c, 0, 0, color(1, 0, 0))
+        writePixel(c, 1, 0, color(0, 0.5, 0))
+        let p6 = canvasToP6(c)
+        try beginsWith(p6, "P6\n2 1\n255\n", "p6")
+        try eqI(p6.count, 17, "length(p6)")
+        try eqI(Int(p6[11]), 255, "byte 12 of p6")     // the feature counts from 1
+        try eqI(Int(p6[12]), 0, "byte 13 of p6")
+        try eqI(Int(p6[15]), 188, "byte 16 of p6")
+    }
+    scenario("The same pixel comes back out of either format") {
+        let c = canvas(2, 1)
+        writePixel(c, 1, 0, color(0, 0.5, 0))
+        let p3 = canvasToPPM(c)
+        let p6 = canvasToP6(c)
+        try eqPx(ppmPixel(p6, 1, 0), (0, 188, 0), 0, "ppm_pixel(p6, 1, 0)")
+        try eqPx(ppmPixel(p3, 1, 0), (0, 188, 0), 0, "ppm_pixel(p3, 1, 0)")
+        try eqI(maxChannelDifference(p3, p6), 0, "max_channel_difference(p3, p6)")
+        try eqI(distinctValues(p6), 2, "distinct_values(p6)")
+    }
+    scenario("Sizes still have to match") {
+        let p6a = canvasToP6(canvas(2, 1))
+        let p6b = canvasToP6(canvas(1, 2))
+        try eqI(maxChannelDifference(p6a, p6b), 255, "max_channel_difference(p6a, p6b)")
+    }
+
+    // ============================================ chapter02-magnify.feature
+    feature("Magnify")
+
+    scenario("Every pixel becomes a block") {
+        let c = canvas(2, 1)
+        writePixel(c, 0, 0, color(1, 0, 0))
+        writePixel(c, 1, 0, color(0, 0.5, 0))
+        let m = magnify(c, 3)
+        try eqI(m.width, 6, "m.width")
+        try eqI(m.height, 3, "m.height")
+        try eqC(pixelAt(m, 0, 0), color(1, 0, 0), "pixel_at(m, 0, 0)")
+        try eqC(pixelAt(m, 2, 2), color(1, 0, 0), "pixel_at(m, 2, 2)")
+        try eqC(pixelAt(m, 3, 0), color(0, 0.5, 0), "pixel_at(m, 3, 0)")
+        try eqC(pixelAt(m, 5, 2), color(0, 0.5, 0), "pixel_at(m, 5, 2)")
+        try eqI(m.count(of: color(1, 0, 0)), 9, "pixels of m that are color(1, 0, 0)")
+    }
+    scenario("Magnifying by one changes nothing") {
+        let c = canvas(2, 1)
+        writePixel(c, 1, 0, color(0, 0.5, 0))
+        let m = magnify(c, 1)
+        try eqI(maxChannelDifference(canvasToP6(c), canvasToP6(m)), 0,
+                "max_channel_difference(canvas_to_p6(c), canvas_to_p6(m))")
+    }
+
+    // ============================================ chapter02-centers.feature
+    feature("The coverage buffer, and the first question")
+
+    scenario("A new coverage buffer is empty") {
+        let cov = coverageBuffer(4, 3)
+        try eqI(cov.width, 4, "cov.width")
+        try eqI(cov.height, 3, "cov.height")
+        try eq(coverageAt(cov, 2, 1), 0, EPSILON, "coverage_at(cov, 2, 1)")
+        try eq(ink(cov), 0, EPSILON, "ink(cov)")
+    }
+    scenario("Setting coverage") {
+        let cov = coverageBuffer(4, 3)
+        setCoverage(cov, 2, 1, 0.75)
+        try eq(coverageAt(cov, 2, 1), 0.75, EPSILON, "coverage_at(cov, 2, 1)")
+        try eq(coverageAt(cov, 1, 2), 0, EPSILON, "coverage_at(cov, 1, 2)")
+        try eq(ink(cov), 0.75, EPSILON, "ink(cov)")
+    }
+    scenario("Setting coverage outside the buffer is ignored") {
+        let cov = coverageBuffer(4, 3)
+        setCoverage(cov, -1, 1, 1)
+        setCoverage(cov, 4, 1, 1)
+        setCoverage(cov, 1, 3, 1)
+        try eq(ink(cov), 0, EPSILON, "ink(cov)")
+    }
+    scenario("The center of pixel (x, y) is (x + 0.5, y + 0.5)") {
+        let s = halfPlane(2.5, 0, 1, 0)
+        try eq(centerInside(s, 2, 4), 1, EPSILON, "center_inside(s, 2, 4)")
+        try eq(centerInside(s, 1, 4), 0, EPSILON, "center_inside(s, 1, 4)")
+        let t = halfPlane(2.6, 0, 1, 0)
+        try eq(centerInside(t, 2, 4), 0, EPSILON, "center_inside(t, 2, 4)")
+    }
+    scenario("A disc, by asking each center") {
+        let s = circle(8, 8, 5)
+        let cov = rasterizeCenters(s, 16, 16)
+        try eqI(cov.width, 16, "cov.width")
+        try eqI(cov.height, 16, "cov.height")
+        try eq(coverageAt(cov, 8, 8), 1, EPSILON, "coverage_at(cov, 8, 8)")
+        try eq(coverageAt(cov, 3, 8), 1, EPSILON, "coverage_at(cov, 3, 8)")
+        try eq(coverageAt(cov, 12, 8), 1, EPSILON, "coverage_at(cov, 12, 8)")
+        try eq(coverageAt(cov, 2, 8), 0, EPSILON, "coverage_at(cov, 2, 8)")
+        try eq(coverageAt(cov, 13, 8), 0, EPSILON, "coverage_at(cov, 13, 8)")
+        try eq(coverageAt(cov, 4, 4), 1, EPSILON, "coverage_at(cov, 4, 4)")
+        try eq(coverageAt(cov, 3, 4), 0, EPSILON, "coverage_at(cov, 3, 4)")
+        try eq(ink(cov), 80, EPSILON, "ink(cov)")
+    }
+
+    // ============================================== chapter02-paint.feature
+    feature("Painting through coverage")
+
+    scenario("Half coverage is half the paint") {
+        linearBlending = true
+        let c = canvas(1, 1)
+        let cov = coverageBuffer(1, 1)
+        setCoverage(cov, 0, 0, 0.5)
+        paintThrough(c, cov, color(1, 1, 1))
+        try eqC(pixelAt(c, 0, 0), color(0.5, 0.5, 0.5), "pixel_at(c, 0, 0)")
+    }
+    scenario("Paint over something that isn't black") {
+        linearBlending = true
+        let c = canvas(1, 1)
+        let cov = coverageBuffer(1, 1)
+        fill(c, color(0.2, 0.2, 0.2))
+        setCoverage(cov, 0, 0, 0.25)
+        paintThrough(c, cov, color(1, 0, 0))
+        try eqC(pixelAt(c, 0, 0), color(0.4, 0.15, 0.15), "pixel_at(c, 0, 0)")
+    }
+    scenario("Zero leaves it alone and one replaces it") {
+        linearBlending = true
+        let c = canvas(2, 1)
+        let cov = coverageBuffer(2, 1)
+        fill(c, color(0.2, 0.2, 0.2))
+        setCoverage(cov, 1, 0, 1)
+        paintThrough(c, cov, color(1, 0, 0))
+        try eqC(pixelAt(c, 0, 0), color(0.2, 0.2, 0.2), "pixel_at(c, 0, 0)")
+        try eqC(pixelAt(c, 1, 0), color(1, 0, 0), "pixel_at(c, 1, 0)")
+    }
+    scenario("The arithmetic is on light") {
+        linearBlending = true
+        let c = canvas(1, 1)
+        let cov = coverageBuffer(1, 1)
+        setCoverage(cov, 0, 0, 0.5)
+        paintThrough(c, cov, color(1, 1, 1))
+        let ppm = canvasToPPM(c)
+        try eqPx(ppmPixel(ppm, 0, 0), (188, 188, 188), 0, "ppm_pixel(ppm, 0, 0)")
+    }
+    scenario("The disc by centers") {
+        linearBlending = true
+        let c = discCenters()
+        let ref = readFile("reference/chapter-02/disc-centers.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 320, "c.width")
+        try eqI(c.height, 320, "c.height")
+        try eqPx(ppmPixel(p6, 160, 160), (243, 196, 89), 1, "ppm_pixel(p6, 160, 160)")
+        try eqPx(ppmPixel(p6, 124, 36), (39, 39, 44), 1, "ppm_pixel(p6, 124, 36)")
+        try eqPx(ppmPixel(p6, 132, 36), (243, 196, 89), 1, "ppm_pixel(p6, 132, 36)")
+        try eqI(distinctValues(p6), 5, "distinct_values(p6)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+
+    // =========================================== chapter02-coverage.feature
+    feature("The better question")
+
+    scenario("The sixty-four sample points") {
+        let s = halfPlane(2.5, 0, 1, 0)
+        try eq(coverage(s, 2, 4), 0.5, EPSILON, "coverage(s, 2, 4)")
+        try eq(coverage(s, 1, 4), 0, EPSILON, "coverage(s, 1, 4)")
+        try eq(coverage(s, 3, 4), 1, EPSILON, "coverage(s, 3, 4)")
+    }
+    scenario("A rectangle is covered exactly, when its edges land on sample boundaries") {
+        let s = rectangle(1.25, 2.0, 4.75, 5.0)
+        let cov = rasterize(s, 8, 8)
+        try eq(coverageAt(cov, 0, 2), 0, EPSILON, "coverage_at(cov, 0, 2)")
+        try eq(coverageAt(cov, 1, 2), 0.75, EPSILON, "coverage_at(cov, 1, 2)")
+        try eq(coverageAt(cov, 2, 2), 1, EPSILON, "coverage_at(cov, 2, 2)")
+        try eq(coverageAt(cov, 3, 2), 1, EPSILON, "coverage_at(cov, 3, 2)")
+        try eq(coverageAt(cov, 4, 2), 0.75, EPSILON, "coverage_at(cov, 4, 2)")
+        try eq(coverageAt(cov, 5, 2), 0, EPSILON, "coverage_at(cov, 5, 2)")
+        try eq(coverageAt(cov, 2, 1), 0, EPSILON, "coverage_at(cov, 2, 1)")
+        try eq(coverageAt(cov, 2, 5), 0, EPSILON, "coverage_at(cov, 2, 5)")
+        try eq(ink(cov), 10.5, EPSILON, "ink(cov)")
+    }
+    scenario("A half-plane through a pixel center covers half of it") {
+        let s = halfPlane(2.5, 4.5, 0.6, 0.8)
+        try eq(coverage(s, 2, 4), 0.5, EPSILON, "coverage(s, 2, 4)")
+    }
+    scenario("Except when the grid conspires") {
+        let s = halfPlane(2.5, 4.5, 1, 1)
+        try eq(coverage(s, 2, 4), 0.5625, EPSILON, "coverage(s, 2, 4)")
+    }
+    scenario("A disc is only ever approximately covered") {
+        let s = circle(8, 8, 5)
+        let cov = rasterize(s, 16, 16)
+        try eq(coverageAt(cov, 8, 8), 1, EPSILON, "coverage_at(cov, 8, 8)")
+        try eq(coverageAt(cov, 3, 8), 0.96875, EPSILON, "coverage_at(cov, 3, 8)")
+        try eq(coverageAt(cov, 12, 8), 0.96875, EPSILON, "coverage_at(cov, 12, 8)")
+        try eq(coverageAt(cov, 4, 4), 0.5625, EPSILON, "coverage_at(cov, 4, 4)")
+        try eq(coverageAt(cov, 3, 4), 0, EPSILON, "coverage_at(cov, 3, 4)")
+        try eq(ink(cov), 78.5, EPSILON, "ink(cov)")
+        try eq(ink(cov), 78.5398, 0.1, "ink(cov) = 78.5398 ± 0.1")
+    }
+    scenario("The disc by coverage") {
+        linearBlending = true
+        let c = discCoverage()
+        let ref = readFile("reference/chapter-02/disc-coverage.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 320, "c.width")
+        try eqI(c.height, 320, "c.height")
+        try eqPx(ppmPixel(p6, 160, 160), (243, 196, 89), 1, "ppm_pixel(p6, 160, 160)")
+        try eqPx(ppmPixel(p6, 124, 36), (157, 127, 64), 1, "ppm_pixel(p6, 124, 36)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+
+    // ============================================== chapter02-twice.feature
+    feature("Coverage is not opacity")
+
+    scenario("Half coverage, painted twice, is three quarters") {
+        linearBlending = true
+        let c = canvas(1, 1)
+        let cov = coverageBuffer(1, 1)
+        setCoverage(cov, 0, 0, 0.5)
+        paintThrough(c, cov, color(1, 1, 1))
+        paintThrough(c, cov, color(1, 1, 1))
+        try eqC(pixelAt(c, 0, 0), color(0.75, 0.75, 0.75), "pixel_at(c, 0, 0)")
+    }
+    scenario("The disc, once and twice") {
+        linearBlending = true
+        let c = paintedTwice()
+        let ref = readFile("reference/chapter-02/painted-twice.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 480, "c.width")
+        try eqI(c.height, 240, "c.height")
+        try eqPx(ppmPixel(p6, 120, 120), (243, 196, 89), 1, "ppm_pixel(p6, 120, 120)")
+        try eqPx(ppmPixel(p6, 360, 120), (243, 196, 89), 1, "ppm_pixel(p6, 360, 120)")
+        try eqPx(ppmPixel(p6, 93, 27), (157, 127, 64), 1, "ppm_pixel(p6, 93, 27)")
+        try eqPx(ppmPixel(p6, 333, 27), (194, 156, 74), 1, "ppm_pixel(p6, 333, 27)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+
+    // ============================================== chapter02-plate.feature
+    feature("Plate 2")
+
+    scenario("The plate") {
+        linearBlending = true
+        let c = plate02()
+        let ref = readFile("reference/chapter-02/plate-02.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 480, "c.width")
+        try eqI(c.height, 240, "c.height")
+        try eqPx(ppmPixel(p6, 120, 120), (243, 196, 89), 1, "ppm_pixel(p6, 120, 120)")
+        try eqPx(ppmPixel(p6, 360, 120), (243, 196, 89), 1, "ppm_pixel(p6, 360, 120)")
+        try eqPx(ppmPixel(p6, 93, 27), (39, 39, 44), 1, "ppm_pixel(p6, 93, 27)")
+        try eqPx(ppmPixel(p6, 333, 27), (157, 127, 64), 1, "ppm_pixel(p6, 333, 27)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
     }
 }

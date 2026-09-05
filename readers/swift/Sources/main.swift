@@ -10,10 +10,21 @@ func render() {
         ("out/clamp-pair.ppm", clampPair),
         ("out/plate-01.ppm", plate01),
     ]
+    let p6jobs: [(String, () -> Canvas)] = [
+        ("out/disc-centers.ppm", discCenters),
+        ("out/disc-coverage.ppm", discCoverage),
+        ("out/painted-twice.ppm", paintedTwice),
+        ("out/plate-02.ppm", plate02),
+    ]
     try? FileManager.default.createDirectory(atPath: "out", withIntermediateDirectories: true)
     for (path, make) in jobs {
         let ppm = canvasToPPM(make())
         try! ppm.write(toFile: path, atomically: true, encoding: .utf8)
+        print("wrote \(path)")
+    }
+    for (path, make) in p6jobs {
+        let bytes = canvasToP6(make())
+        try! Data(bytes).write(to: URL(fileURLWithPath: path))
         print("wrote \(path)")
     }
 }
@@ -26,10 +37,14 @@ if args.count > 1 && args[1] == "render" {
     let dt = Date().timeIntervalSince(t0)
     for f in failureLog { print(f) }
     print("")
+    for ch in perChapter.keys.sorted() {
+        let (p, f) = perChapter[ch]!
+        print("chapter \(ch):  scenarios: \(p + f)  passed: \(p)  failed: \(f)")
+    }
     print("scenarios: \(passedCount + failedCount)  passed: \(passedCount)  failed: \(failedCount)")
     print(String(format: "time: %.3fs", dt))
     print("slowest scenarios:")
-    for (n, t) in timings.sorted(by: { $0.1 > $1.1 }).prefix(6) {
+    for (n, t) in timings.sorted(by: { $0.1 > $1.1 }).prefix(10) {
         print(String(format: "  %6.1f ms  %@", t * 1000, n))
     }
     exit(failedCount == 0 ? 0 : 1)

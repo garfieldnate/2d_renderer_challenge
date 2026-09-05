@@ -36,6 +36,18 @@ Feature: The coverage buffer, and the first question
     Then  center_inside(s, 2, 4) = 0
     And   coverage(s, 2, 4) = 0.5
 
+  Scenario: A rectangle, by asking each center
+    Given s ← rectangle(1.25, 2.0, 4.75, 5.0)
+    When  cov ← rasterize_centers(s, 8, 8)
+    Then  coverage_at(cov, 1, 4) = 1
+    And   coverage_at(cov, 4, 1) = 0
+    And   coverage_at(cov, 4, 4) = 1
+    And   coverage_at(cov, 0, 3) = 0
+    And   coverage_at(cov, 5, 3) = 0
+    And   coverage_at(cov, 2, 1) = 0
+    And   coverage_at(cov, 2, 5) = 0
+    And   ink(cov) = 12
+
   Scenario: A disc, by asking each center
     Given s ← circle(8, 8, 5)
     When  cov ← rasterize_centers(s, 16, 16)

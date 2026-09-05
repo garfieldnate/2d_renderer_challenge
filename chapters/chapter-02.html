@@ -263,7 +263,10 @@
     number is what goes in the buffer. It's a question about one point, not about how much of the
     pixel is covered, and a scenario pins the difference: a line that misses the center by a
     twentieth of a pixel gets a 0 from this question and a 0.5 from the next section's. Do that for
-    every pixel and you've got <code>rasterize_centers</code>, which is what every renderer did until the
+    every pixel and you've got <code>rasterize_centers</code>. The scenarios rasterize a rectangle
+    as well as a disc, because a disc in a square buffer looks the same with x and y swapped and a
+    rectangle doesn't; chapter 1's warning about transposed renders applies to buffers too. Then
+    you've got <code>rasterize_centers</code>, which is what every renderer did until the
     nineties and what a few still do when you turn antialiasing off.</p>
 
   <p>That half-pixel offset is the one thing here that people get wrong. If you test
@@ -310,6 +313,18 @@
     <span class="kw">Given</span> s ← half_plane(2.55, 0, 1, 0)
     <span class="kw">Then</span>  center_inside(s, 2, 4) = 0
     <span class="kw">And</span>   coverage(s, 2, 4) = 0.5
+
+  <span class="kw">Scenario</span>: A rectangle, by asking each center
+    <span class="kw">Given</span> s ← rectangle(1.25, 2.0, 4.75, 5.0)
+    <span class="kw">When</span>  cov ← rasterize_centers(s, 8, 8)
+    <span class="kw">Then</span>  coverage_at(cov, 1, 4) = 1
+    <span class="kw">And</span>   coverage_at(cov, 4, 1) = 0
+    <span class="kw">And</span>   coverage_at(cov, 4, 4) = 1
+    <span class="kw">And</span>   coverage_at(cov, 0, 3) = 0
+    <span class="kw">And</span>   coverage_at(cov, 5, 3) = 0
+    <span class="kw">And</span>   coverage_at(cov, 2, 1) = 0
+    <span class="kw">And</span>   coverage_at(cov, 2, 5) = 0
+    <span class="kw">And</span>   ink(cov) = 12
 
   <span class="kw">Scenario</span>: A disc, by asking each center
     <span class="kw">Given</span> s ← circle(8, 8, 5)
@@ -440,12 +455,15 @@
     from here on, whenever a chapter builds a faster rasterizer, this one is what the fast one gets
     checked against. It's your reference renderer, and you've written it in a dozen lines.</p>
 
-  <p>The rectangle scenario below is exact, not approximate: its edges at 1.25 and 4.75 land on
-    sample boundaries, so 6 of the 8 columns of samples fall inside and the coverage is 0.75 on the
-    nose. The half-plane scenarios show the method's one honest weakness. A vertical line through a
-    pixel center covers exactly half the samples, and so does a line at most angles. But a line at
-    exactly 45° through the center runs straight through a diagonal of sample points, every one of
-    which counts as inside, and the answer comes out 0.5625. A regular grid has a few directions it's
+  <p>The rectangle scenario below is exact, not approximate: its edges at 1.25 and 4.75 land on the
+    boundaries between cells of the sample grid, never on a sample point, so 6 of the 8 columns of
+    samples fall inside and the coverage is 0.75 on the nose. That also means the rectangle's
+    "boundary included" rule is invisible to the rasterizer; only the <code>inside</code> scenario in
+    §2.1 sees it. The half-plane scenarios show the method's one honest weakness. A vertical line
+    through a pixel center covers exactly half the samples, and so does a line at most angles. But a
+    line at exactly 45° through the center runs straight through a diagonal of eight sample points,
+    and because the half-plane includes its boundary, all eight count as inside, and the answer
+    comes out 0.5625. Had you excluded the boundary you'd get 0.4375, which is no better. A regular grid has a few directions it's
     blind to; renderers that care use a rotated or jittered grid. You'll live with it, and you'll
     know what it is when you see it.</p>
 

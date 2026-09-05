@@ -118,46 +118,85 @@ func canvasToPPM(_ c: Canvas) -> String {
     return out
 }
 
-// -- test helpers that read a PPM back out of its text ---------------------
+// -- § 2.2  a faster file: P6, and readers that take either format ---------
 
-private func ppmTokens(_ ppm: String) -> [Int] {
-    ppm.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\r" || $0 == "\t" })
-       .compactMap { Int($0) }
+/// P6 is P3 with the numbers written as bytes: the same three header lines
+/// with a 6 in place of the 3, exactly one newline, then one byte per channel.
+func canvasToP6(_ c: Canvas) -> [UInt8] {
+    var out = Array("P6\n\(c.width) \(c.height)\n255\n".utf8)
+    out.reserveCapacity(out.count + c.width * c.height * 3)
+    for y in 0..<c.height {
+        for x in 0..<c.width {
+            let p = c.pixelAt(x, y)
+            // the same numbers the P3 writer computes: clamp, encode, scale, round
+            out.append(UInt8(channelToByte(p.red)))
+            out.append(UInt8(channelToByte(p.green)))
+            out.append(UInt8(channelToByte(p.blue)))
+        }
+    }
+    return out
 }
 
-/// (P3, width, height, maxval) -- P3 is not an Int so it drops out of the token
-/// list above; parse the header separately to keep this honest.
-private func ppmHeader(_ ppm: String) -> (width: Int, height: Int) {
-    let toks = ppm.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\r" || $0 == "\t" })
-    return (Int(toks[1])!, Int(toks[2])!)
+// -- test helpers that read a PPM back out, in either format ---------------
+
+/// Anything the readers accept: P3 text, or the bytes of either format.
+protocol PPMSource { var ppmBytes: [UInt8] { get } }
+extension String: PPMSource { var ppmBytes: [UInt8] { Array(utf8) } }
+extension Array: PPMSource where Element == UInt8 { var ppmBytes: [UInt8] { self } }
+
+private func isSpaceByte(_ b: UInt8) -> Bool {
+    b == 0x20 || b == 0x0A || b == 0x0D || b == 0x09
 }
 
-private func ppmBody(_ ppm: String) -> [Int] {
-    // skip width, height, maxval (P3 already dropped by compactMap)
-    Array(ppmTokens(ppm).dropFirst(3))
+/// Width, height, and every channel value in order -- from P3 or P6.
+private func ppmParse(_ src: PPMSource) -> (width: Int, height: Int, values: [Int]) {
+    let b = src.ppmBytes
+    // look at the first two bytes
+    if !(b.count >= 2 && b[0] == 0x50 && b[1] == 0x36) {
+        // P3: whitespace-separated text. Drop "P3", width, height, maxval.
+        let s = String(decoding: b, as: UTF8.self)
+        let toks = s.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\r" || $0 == "\t" })
+        let w = Int(toks[1])!, h = Int(toks[2])!
+        return (w, h, toks.dropFirst(4).compactMap { Int($0) })
+    }
+    // P6: read the three header numbers ...
+    var i = 2
+    var nums: [Int] = []
+    while nums.count < 3 {
+        while i < b.count && isSpaceByte(b[i]) { i += 1 }
+        var n = 0
+        while i < b.count && b[i] >= 0x30 && b[i] <= 0x39 { n = n * 10 + Int(b[i] - 0x30); i += 1 }
+        nums.append(n)
+    }
+    i += 1                      // ... skip the single whitespace byte after the last ...
+    return (nums[0], nums[1], b[i...].map { Int($0) })   // ... and take the rest as pixels.
 }
 
-func ppmPixel(_ ppm: String, _ x: Int, _ y: Int) -> (Int, Int, Int) {
-    let (w, _) = ppmHeader(ppm)
-    let body = ppmBody(ppm)
-    let i = (y * w + x) * 3
-    return (body[i], body[i + 1], body[i + 2])
+func ppmPixel(_ src: PPMSource, _ x: Int, _ y: Int) -> (Int, Int, Int) {
+    let p = ppmParse(src)
+    let i = (y * p.width + x) * 3
+    return (p.values[i], p.values[i + 1], p.values[i + 2])
 }
 
-func maxChannelDifference(_ a: String, _ b: String) -> Int {
-    let pa = ppmBody(a), pb = ppmBody(b)
+func maxChannelDifference(_ a: PPMSource, _ b: PPMSource) -> Int {
+    let pa = ppmParse(a), pb = ppmParse(b)
+    // different sizes: not comparable. 2x1 and 1x2 hold the same number of
+    // bytes, so the dimensions have to be compared, not just the counts.
+    if pa.width != pb.width || pa.height != pb.height || pa.values.count != pb.values.count {
+        return 255
+    }
     var m = 0
-    for i in 0..<min(pa.count, pb.count) { m = max(m, abs(pa[i] - pb[i])) }
-    if pa.count != pb.count { m = max(m, 255) }  // different sizes: not comparable
+    for i in 0..<pa.values.count { m = max(m, abs(pa.values[i] - pb.values[i])) }
     return m
 }
 
-func distinctValues(_ ppm: String) -> Int {
-    Set(ppmBody(ppm)).count
+func distinctValues(_ src: PPMSource) -> Int {
+    Set(ppmParse(src).values).count
 }
 
-func readFile(_ path: String) -> String {
-    try! String(contentsOfFile: path, encoding: .utf8)
+/// Bytes, now: a P3 file is text that happens to be stored in bytes.
+func readFile(_ path: String) -> [UInt8] {
+    [UInt8](try! Data(contentsOf: URL(fileURLWithPath: path)))
 }
 
 // ---------------------------------------------------------------- § 1.7 mix
@@ -232,4 +271,192 @@ func plate01() -> Canvas {
         }
     }
     return c
+}
+
+// ---------------------------------------------------------------- § 2.1 shapes
+// A shape is a function from a point to yes or no. That's the whole interface.
+struct Shape {
+    let test: (Double, Double) -> Bool
+}
+
+func inside(_ s: Shape, _ x: Double, _ y: Double) -> Bool { s.test(x, y) }
+
+/// Inside means within the radius, boundary included.
+func circle(_ cx: Double, _ cy: Double, _ r: Double) -> Shape {
+    Shape { x, y in
+        let dx = x - cx, dy = y - cy
+        return dx * dx + dy * dy <= r * r
+    }
+}
+
+/// Left, top, right, bottom. Boundary included.
+func rectangle(_ x0: Double, _ y0: Double, _ x1: Double, _ y1: Double) -> Shape {
+    Shape { x, y in x >= x0 && x <= x1 && y >= y0 && y <= y1 }
+}
+
+/// Everything on the side the normal points to. A point is inside when the
+/// vector from (px, py) to it has a non-negative dot product with the normal.
+/// The normal needn't have length 1.
+func halfPlane(_ px: Double, _ py: Double, _ nx: Double, _ ny: Double) -> Shape {
+    Shape { x, y in (x - px) * nx + (y - py) * ny >= 0 }
+}
+
+// ---------------------------------------------------------------- § 2.3 loupe
+/// k times wider and taller, every pixel repeated into a k-by-k block.
+/// No smoothing, no averaging, no cleverness.
+func magnify(_ c: Canvas, _ k: Int) -> Canvas {
+    let m = canvas(c.width * k, c.height * k)
+    for y in 0..<m.height {
+        for x in 0..<m.width {
+            m.writePixel(x, y, c.pixelAt(x / k, y / k))
+        }
+    }
+    return m
+}
+
+// ---------------------------------------------------------------- § 2.4 coverage buffer
+/// A canvas of numbers instead of colors: one value per pixel, 0 to 1.
+final class CoverageBuffer {
+    let width: Int
+    let height: Int
+    private var values: [Double]
+
+    init(_ width: Int, _ height: Int) {
+        self.width = width
+        self.height = height
+        self.values = Array(repeating: 0, count: max(0, width * height))
+    }
+
+    func setCoverage(_ x: Int, _ y: Int, _ v: Double) {
+        // As with the canvas, writes outside the buffer are dropped.
+        guard x >= 0, x < width, y >= 0, y < height else { return }
+        values[y * width + x] = v
+    }
+
+    func coverageAt(_ x: Int, _ y: Int) -> Double {
+        guard x >= 0, x < width, y >= 0, y < height else { return 0 }
+        return values[y * width + x]
+    }
+
+    /// The total: the area of the shape, in pixels, as the buffer sees it.
+    var ink: Double { values.reduce(0, +) }
+}
+
+func coverageBuffer(_ w: Int, _ h: Int) -> CoverageBuffer { CoverageBuffer(w, h) }
+func setCoverage(_ cov: CoverageBuffer, _ x: Int, _ y: Int, _ v: Double) { cov.setCoverage(x, y, v) }
+func coverageAt(_ cov: CoverageBuffer, _ x: Int, _ y: Int) -> Double { cov.coverageAt(x, y) }
+func ink(_ cov: CoverageBuffer) -> Double { cov.ink }
+
+/// Pixel (x, y) is the square from (x, y) to (x + 1, y + 1), so its center is
+/// (x + 0.5, y + 0.5). 1 if that center is inside, 0 if not.
+func centerInside(_ s: Shape, _ x: Int, _ y: Int) -> Double {
+    inside(s, Double(x) + 0.5, Double(y) + 0.5) ? 1 : 0
+}
+
+func rasterizeCenters(_ s: Shape, _ w: Int, _ h: Int) -> CoverageBuffer {
+    let cov = coverageBuffer(w, h)
+    for y in 0..<h {
+        for x in 0..<w {
+            cov.setCoverage(x, y, centerInside(s, x, y))
+        }
+    }
+    return cov
+}
+
+// ---------------------------------------------------------------- § 2.5 paint
+/// Move every pixel of the canvas toward the color by that pixel's coverage.
+/// The one place the renderer touches the canvas.
+func paintThrough(_ c: Canvas, _ cov: CoverageBuffer, _ col: Color) {
+    for y in 0..<c.height {
+        for x in 0..<c.width {
+            let t = cov.coverageAt(x, y)
+            if t == 0 { continue }              // zero coverage leaves a pixel alone
+            c.writePixel(x, y, mix(c.pixelAt(x, y), col, t))
+        }
+    }
+}
+
+// ---------------------------------------------------------------- § 2.6 the better question
+let SAMPLE_GRID = 8
+
+/// Divide the pixel into an 8-by-8 grid, put one sample at the center of each
+/// cell, ask the shape about all 64, and divide the count by 64.
+func coverage(_ s: Shape, _ x: Int, _ y: Int) -> Double {
+    let n = SAMPLE_GRID
+    var count = 0
+    for j in 0..<n {
+        let sy = Double(y) + (Double(j) + 0.5) / Double(n)
+        for i in 0..<n {
+            let sx = Double(x) + (Double(i) + 0.5) / Double(n)
+            if inside(s, sx, sy) { count += 1 }
+        }
+    }
+    return Double(count) / Double(n * n)
+}
+
+func rasterize(_ s: Shape, _ w: Int, _ h: Int) -> CoverageBuffer {
+    let cov = coverageBuffer(w, h)
+    for y in 0..<h {
+        for x in 0..<w {
+            cov.setCoverage(x, y, coverage(s, x, y))
+        }
+    }
+    return cov
+}
+
+// ---------------------------------------------------------------- pictures
+func discCenters() -> Canvas {
+    let c = canvas(40, 40)
+    fill(c, color(0.02, 0.02, 0.025))
+    let cov = rasterizeCenters(circle(20, 20, 16), 40, 40)
+    paintThrough(c, cov, color(0.9, 0.55, 0.1))
+    return magnify(c, 8)
+}
+
+func discCoverage() -> Canvas {
+    let c = canvas(40, 40)
+    fill(c, color(0.02, 0.02, 0.025))
+    let cov = rasterize(circle(20, 20, 16), 40, 40)
+    paintThrough(c, cov, color(0.9, 0.55, 0.1))
+    return magnify(c, 8)
+}
+
+// § 2.7  the same disc, painted once on the left and twice on the right
+func paintedTwice() -> Canvas {
+    let c = canvas(80, 40)
+    fill(c, color(0.02, 0.02, 0.025))
+    let cov = rasterize(circle(20, 20, 16), 40, 40)
+    let once = coverageBuffer(80, 40)           // the disc in both halves
+    for y in 0...39 {
+        for x in 0...39 {
+            setCoverage(once, x, y, coverageAt(cov, x, y))
+            setCoverage(once, x + 40, y, coverageAt(cov, x, y))
+        }
+    }
+    paintThrough(c, once, color(0.9, 0.55, 0.1))
+    let twice = coverageBuffer(80, 40)          // the disc in the right half only
+    for y in 0...39 {
+        for x in 0...39 {
+            setCoverage(twice, x + 40, y, coverageAt(cov, x, y))
+        }
+    }
+    paintThrough(c, twice, color(0.9, 0.55, 0.1))
+    return magnify(c, 6)
+}
+
+func plate02() -> Canvas {
+    let c = canvas(80, 40)
+    fill(c, color(0.02, 0.02, 0.025))
+    let shape = circle(20, 20, 16)
+    let left = rasterizeCenters(shape, 40, 40)
+    let right = rasterize(shape, 40, 40)
+    let both = coverageBuffer(80, 40)
+    for y in 0...39 {
+        for x in 0...39 {
+            setCoverage(both, x, y, coverageAt(left, x, y))
+            setCoverage(both, x + 40, y, coverageAt(right, x, y))
+        }
+    }
+    paintThrough(c, both, color(0.9, 0.55, 0.1))
+    return magnify(c, 6)
 }
