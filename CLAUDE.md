@@ -131,6 +131,14 @@ Before declaring a chapter done, have subagents implement it cold, as readers:
 4. Every ambiguity two or more agents report is a chapter bug. Fix the prose or the scenario,
    re-sync, re-run the reference runner, and re-test.
 5. Run a second round in languages no first-round agent used, so the fixes are tested cold.
+5b. **Catch-up pass.** Fixes from a round add scenarios that the already-collected readers never
+   saw. Before the next chapter, stage every reader again at the current chapter and run a small
+   "bring the tests up to date with features/, fix what fails, say what failed" agent per
+   language. A new scenario that fails previously-green reader code is the strongest evidence a
+   scenario earns its place (the zero-length `thick_line` was a division by zero in every
+   implementation). Opus agents are capped by the org's monthly limit; use sonnet for catch-ups.
+5c. If the session's scratch directory disappears, agents' unfinished work is lost with it.
+   Collect finished readers promptly, and stage new runs under `${TMPDIR}2d-readers/`.
 6. Ask agents to try to break the suite ("find a wrong implementation that still passes"). The
    most valuable round-1 finding came from an agent doing that unprompted.
 
