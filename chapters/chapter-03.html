@@ -161,7 +161,9 @@
 
   <p>Now draw something with it. Twelve rays from the center of a 160-by-160 canvas to points 72
     pixels out, one every 30 degrees, in an off-white on a near-black paper. The endpoints are
-    rounded to integers, and <code>ray_ends()</code> returns them so the tests can check yours match:</p>
+    rounded to integers, and <code>ray_ends()</code> returns them so the tests can check yours match.
+    None of the twelve lands on a half, so the tie rule of your <code>round</code> doesn't matter
+    here, and the scenario would tell you if it did:</p>
 
 <pre><code>ray_ends():
   ends ← []
@@ -199,7 +201,10 @@ fan_bresenham():
   <p>To light a pixel at a weight, you paint it: <code>mix(pixel_at(c, x, y), col, weight)</code>,
     written back with <code>write_pixel</code>. That's <code>paint_through</code> for one pixel, and
     it's worth its own little function, <code>plot(c, x, y, col, weight)</code>, that also drops
-    writes off the canvas and, as a shortcut rather than a rule, skips a weight of zero. With integer
+    writes off the canvas and, as a shortcut rather than a rule, skips a weight of zero. The bounds
+    check in <code>plot</code> is load-bearing even though <code>write_pixel</code> has one of its
+    own, because <code>plot</code> has to read the pixel first and <code>pixel_at</code> makes no
+    promises outside the canvas. With integer
     endpoints you can compute the ideal <code>y</code> directly in floating point, as
     <code>y0 + (x - x0) * slope</code>, and split it with <code>floor</code>. Floor, not truncation
     toward zero: they agree on positive numbers and part company below zero, and a line that starts
@@ -495,9 +500,9 @@ fan_bresenham():
   <span class="kw">return</span> magnify(c, 2)</code></pre>
 
   <p>It's slow. Twelve rasterizations of a 160-by-160 canvas at 64 samples a pixel is twenty million
-    inside tests: ten to twenty seconds in Python or Ruby, a quarter of a second on a JIT or in a
-    compiled language, and either way about a thousand times the work Bresenham did for the same
-    picture. Every ray is the same weight now. Nothing flickers, nothing beads, and the slanted rays
+    inside tests: ten to twenty seconds in Python or Ruby, a quarter of a second or less on a JIT or
+    in a compiled language, and either way about a thousand times the work Bresenham did for the
+    same picture. Every ray is the same weight now. Nothing flickers, nothing beads, and the slanted rays
     are as heavy as the axes. The fan scenarios probe a pixel on the steep ray at 60° as well as the
     shallow one at 30°, because a Bresenham that forgot its steep swap draws the shallow rays
     perfectly. Then go back and look at the work, because that's the actual lesson of this chapter.</p>
