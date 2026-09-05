@@ -142,7 +142,7 @@ def expand_step(step_text, example):
 def parse_comparison(text):
     """Parse a comparison like '1.0 = 1.0000001 ± 0.00001'."""
     # Try to match: a OP b [± tolerance]
-    match = re.match(r'^(.*?)\s*(=|≠|=|!=)\s*(.*?)(?:\s*±\s*(.*))?$', text)
+    match = re.match(r'^(.*?)\s*(!=|<=|>=|≤|≥|≠|=|<|>)\s*(.*?)(?:\s*±\s*(.*))?$', text)
     if match:
         left = match.group(1).strip()
         op = match.group(2).strip()
@@ -242,11 +242,11 @@ def compare_values(left_val, right_val, op, tolerance=0.0001):
         return not compare_values(left_val, right_val, '=', tolerance)
     elif op == '<':
         return left_val < right_val
-    elif op == '<=':
+    elif op in ('<=', '≤'):
         return left_val <= right_val
     elif op == '>':
         return left_val > right_val
-    elif op == '>=':
+    elif op in ('>=', '≥'):
         return left_val >= right_val
     return False
 
@@ -306,7 +306,7 @@ def execute_step(step_keyword, step_text, ctx, docstring=None):
         return True, None
 
     # Handle comparisons
-    if any(op in step_text for op in ['=', '≠', '!=', '<', '<=', '>', '>=']):
+    if any(op in step_text for op in ['=', '≠', '!=', '<', '<=', '>', '>=', '≤', '≥']):
         # Try to parse as a comparison
         comp = parse_comparison(step_text)
         if comp:
@@ -335,8 +335,8 @@ def execute_step(step_keyword, step_text, ctx, docstring=None):
             renderer.set_linear_blending(False)
             return True, None
 
-    # Handle "N pixels of c are color(...)"
-    match = re.match(r'(\d+) pixels of (\w+) are color\((.*?)\)', step_text)
+    # Handle "[exactly] N pixels of c are color(...)"
+    match = re.match(r'(?:exactly\s+)?(\d+) pixels of (\w+) are color\((.*?)\)', step_text)
     if match:
         count = int(match.group(1))
         canvas_name = match.group(2)
@@ -378,7 +378,7 @@ def execute_step(step_keyword, step_text, ctx, docstring=None):
         return True, None
 
     # Handle "max_channel_difference(ppm1, ppm2) = N"
-    match = re.match(r'max_channel_difference\((\w+),\s*(\w+)\)\s*([<>=≠!]+)\s*(\d+)', step_text)
+    match = re.match(r'max_channel_difference\((\w+),\s*(\w+)\)\s*([<>=≠!≤≥]+)\s*(\d+)', step_text)
     if match:
         ppm1_name = match.group(1)
         ppm2_name = match.group(2)
@@ -389,9 +389,9 @@ def execute_step(step_keyword, step_text, ctx, docstring=None):
         actual = renderer.max_channel_difference(ppm1_text, ppm2_text)
         if op == '=' and actual != expected:
             return False, f"max_channel_difference = {actual}, expected {expected}"
-        elif op == '<=' and actual > expected:
+        elif op in ('<=', '≤') and actual > expected:
             return False, f"max_channel_difference = {actual}, expected <= {expected}"
-        elif op == '>=' and actual < expected:
+        elif op in ('>=', '≥') and actual < expected:
             return False, f"max_channel_difference = {actual}, expected >= {expected}"
         return True, None
 

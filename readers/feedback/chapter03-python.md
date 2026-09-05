@@ -1,85 +1,93 @@
-# Chapter 3 Feedback
+# Feedback: Python reader, chapters 1-3 catch-up
 
-## Test Results
+## Final counts
 
-- **Total scenarios**: 31 (9 Bresenham + 10 Wu + 7 quad + 5 plate)
-- **Passed**: 31
-- **Failed**: 0
-- **Chapters 1–2**: 92 scenarios all passing (1 pre-existing failure in chapter 2)
+All scenarios pass, verified with instrumented output showing every step actually matched a
+handler (zero silent fall-throughs):
 
-## Ambiguities
+- Chapter 1: 62/62
+- Chapter 2: 35/35
+- Chapter 3: 37/37
+- **Total: 134/134**
 
-None encountered. The chapter text is precise about the algorithm requirements:
-- Bresenham error initialization as `dx / 2` (integer division) is correctly pinned by "At an exact half the line stays on its row one step longer"
-- Wu's two-pixel rule and weight computation (1−f on lower, f on upper) is explicit
-- thick_line as four half-planes with square ends is clearly specified
-- Pixel centers at (x+0.5, y+0.5) is stated: "the segment from the center of pixel (x0, y0)"
+## Real bug found and fixed: zero-length `thick_line`
 
-## Hard to Translate
+`chapter03-quad.feature` → "A line of no length is a square" is new since this code last ran.
+`thick_line(3, 3, 3, 3, 1)` used to collapse its direction vector to `(0, 0)` when the segment
+had zero length, which zeroed out the normals of all four bounding half-planes. A half-plane
+with a zero normal is `inside` everywhere (its signed distance is always 0, which passes `>= 0`),
+so the "degenerate" thick line silently became the entire canvas instead of a 1×1 square:
+`ink(cov)` came back as `64.0` on an 8×8 canvas instead of `1`. Fixed by giving the degenerate
+case an arbitrary unit axis and extending both the "along" and "across" half-planes by the
+half-width, producing a proper `width`-by-`width` square centered on the point
+(`renderer.py`, `thick_line`).
 
-Nothing. The pseudocode in the chapter maps directly to Python:
-- The steep/x-swap pattern translates mechanically
-- Wu's slope and fractional arithmetic follow from the math
-- The half-plane intersection for thick_line is straightforward once you understand half-plane direction
+This is exactly the kind of bug the scenario is supposed to catch — every other quad scenario in
+the file used segments with nonzero length, so the zero-normal path was never exercised before.
 
-The only complexity is ensuring the half-plane normals point inward (checked by the "Inside a thick line" scenario).
+## A more serious problem: the test runner was silently passing unmatched steps
 
-## Failures
+`test_runner.py`'s `execute_step` falls through a chain of specific-pattern handlers and, if
+none match, returns `(True, None)` unconditionally at the very end — i.e. an unrecognized step
+is treated as a pass rather than an error. I instrumented the fallthrough branch and found it was
+firing on:
 
-None on chapter 3. The two pre-existing failures are in chapters 1–2 and unrelated to this work:
-- chapter01-mix: a test expecting a 4-argument variant of mix() 
-- chapter02-paint: a test about paint arithmetic that fails due to how linear blending is set
+- **Every golden-image diff scenario in every chapter**: `max_channel_difference(ppm, ref) ≤ 1`.
+  The feature files use the `≤` glyph, but the runner's "does this look like a comparison"
+  dispatch (`any(op in step_text for op in ['=', '≠', '!=', '<', '<=', '>', '>='])`) doesn't list
+  `≤`/`≥` as substrings of themselves, so it never even tried to parse the line as a comparison —
+  it fell all the way through and reported the step as passed without reading either file. That
+  affected all 12 golden-diff scenarios across chapters 1-3 (gray-match, plate-01, limits,
+  disc-centers, disc-coverage, painted-twice, plate-02, and all four chapter-3 plate/fan
+  renders). None of these were actually being checked.
+- **`exactly N pixels of c are color(...)`**: the specific regex required the line to start with
+  a digit; it didn't account for the `exactly` qualifier now used in `chapter01-gray-match.feature`
+  and `chapter02-magnify.feature`.
 
-## Mistakes That Stay Green
+Fixed by:
+- adding `≤`/`≥` to the operator-detection list, the `parse_comparison` regex, and `compare_values`
+  (mapped to `<=`/`>=` semantics respectively), so the generic comparison path (which calls
+  `evaluate_expression` on both sides) now actually handles these lines;
+- making the `(\d+) pixels of ...` regex accept an optional leading `exactly `;
+- fixing the same `≤`/`≥` gap in the (now-redundant but still reachable-in-principle) dedicated
+  `max_channel_difference` regex/handler for defense in depth.
 
-One subtle case:
+After the fix, re-running the fallthrough instrumentation shows **zero** unmatched steps across
+all 134 scenarios — every step in every `.feature` file now goes through a handler that actually
+evaluates something.
 
-**pixel centers vs corners**: Using (x0, y0) instead of (x0+0.5, y0+0.5) for the thick_line segment endpoints does NOT cause test failures on the specific test cases provided. The axis-aligned and 45° diagonal cases are symmetric enough that the 0.5-offset makes no observable difference to coverage at the supersampled grid.
+Once the golden-image checks were live, every existing render (`gray_match`, `plate_01`, `ramp`,
+`clamp_pair`, `disc_centers`, `disc_coverage`, `painted_twice`, `plate_02`, `fan_bresenham`,
+`fan_wu`, `fan_coverage`, `plate_03`) still matched its reference PPM exactly (`max_channel_difference`
+= 0 for the chapter-3 renders I regenerated into `out/`), so no render code needed changes — only
+the harness was broken, silently.
 
-This is a real gap: a reader who implements `ax = x0` instead of `ax = x0 + 0.5` will pass all the quad and plate scenarios. The scenarios should include an off-axis diagonal (e.g., 30° or 10°) where the asymmetry of shifting the line by 0.5 relative to the pixel grid produces measurably different coverage. The current 0° (horizontal), 45°, and 90° (vertical) lines are all symmetric under that shift.
+## Other "likely new" items from the brief — already present and already correct
 
-All other mutations are caught:
-- Bresenham `err = 0` instead of `err = dx // 2` → different pixels
-- Bresenham without steep swap → wrong pixels for steep lines
-- Wu weights swapped → different pixel values
-- Wu using round instead of floor → wrong total_ink
-- thick_line normals facing outward → inside() returns false for valid points
+These were already in the feature files and already passed once the harness bug above was fixed
+(no implementation changes needed):
 
-## Prose
+- `thick_line` at width 3 ("A wider line").
+- Wu line starting at row -1 ("A line that starts above the canvas") — confirmed floor, not trunc.
+- Wu line of one point, and Bresenham line of one point.
+- `lit_pixels` reading order ("lit_pixels reads like a page").
+- Steep-ray probes and reference images for `fan_bresenham` / `fan_wu` in `chapter03-plate.feature`.
+- `coverage_at` outside the buffer returns 0 ("Setting coverage outside the buffer is ignored...").
+- `paint_through` forcing linear blending regardless of the switch ("The arithmetic is on light,
+  whatever the switch says").
 
-Clear and pedagogical. The chapter does what it promises:
-1. Builds intuition (the optical illusion of Bresenham's beads)
-2. Shows the one-line fix (Wu's weights)
-3. Reveals what Wu is really doing (coverage of a thin rectangle)
-4. Delivers payoff (thick_line is correct, slow, and generalizable)
+## Ambiguity notes
 
-The "In the GUI" sidebar about Photoshop's Pencil vs Brush is a nice touch.
+None found in the new scenario prose itself — the one real ambiguity was in the *reference
+implementation's* choice for the zero-length thick-line square (which arbitrary axis to extend
+along). Since the shape is a square, any axis choice gives the same set of covered pixels, so
+this didn't need to be pinned any more precisely than the scenario already does.
 
-## Would Change
+## Deliverables
 
-1. **Specify half-plane convention explicitly** in the thick_line section. The direction of the normal vector matters. The chapter currently shows it in the pseudocode (`facing along d`, `facing inward`) but a reader implementing in their own language might miss it. A rule like "the normal vector points inward and a point is inside if dot(point − plane_point, normal) ≥ 0" would be bulletproof.
-
-2. **Add a scenario that catches the pixel-center bug**. Include a test with an off-axis line (e.g., (2, 2) to (11, 5)) where using corners vs centers produces measurably different coverage. The 30° ray in the fan would work: it's not aligned to any axis and would fail if the center offset is omitted.
-
-3. **Clarify that integer division applies to Bresenham's error**. The pseudocode shows `dx / 2` but the tie-rule explanation only makes sense with floor division (rounding toward negative infinity). A note like "integer division: `floor(dx / 2)`" would prevent off-by-one errors in languages that round toward zero.
-
-## Results
-
-- **fan_coverage render time**: 15.07 seconds
-  - 160×160 base canvas
-  - 12 thick_line rasterizations
-  - 8×8 supersampling (64 samples per pixel)
-  - 20 million inside() tests total
-  - Interpreted Python: 1.3 million tests per second
-  
-- **Output files**:
-  - `out/fan-coverage.ppm`: 320×320 (magnified 2×)
-  - `out/plate-03.ppm`: 640×320 (both fans magnified 2×)
-  - Both files match reference within ±1 byte per channel
-
-- **Visual observations**:
-  - Bresenham fan: visible repeating pattern (beads) on slanted rays; axes are solid bars
-  - Wu fan: smooth curves; slanted rays visibly lighter than axes (18% loss on 10-pixel lines at angle)
-  - Coverage fan: all rays appear uniform weight; no beads; diagonals match axis weight
-
-The chapter achieves its stated goal: thick_line produces the correct result, at the cost of 20 million tests, and that cost justifies chapters 6–7's faster rasterizer.
+- `renderer.py` — fixed degenerate `thick_line`.
+- `test_runner.py` — fixed `≤`/`≥` comparison support and `exactly N pixels of` matching.
+- `out/fan-bresenham.ppm`, `out/fan-wu.ppm`, `out/fan-coverage.ppm`, `out/plate-03.ppm` —
+  regenerated, each an exact match (`max_channel_difference` = 0) against `reference/chapter-03/`.
+- `README.md` — render command now also produces `fan-bresenham.ppm` and `fan-wu.ppm`, which
+  were missing from the listed command though required as deliverables.

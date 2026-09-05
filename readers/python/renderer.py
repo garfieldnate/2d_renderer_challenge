@@ -920,19 +920,27 @@ def thick_line(x0, y0, x1, y1, width):
     dy = by - ay
     length = math.sqrt(dx * dx + dy * dy)
 
+    # Half-width offset
+    h = width / 2.0
+
     if length == 0:
-        # Degenerate case: single point
-        dx, dy = 0, 0
-    else:
-        dx /= length
-        dy /= length
+        # Degenerate case: a single point becomes a width-by-width square,
+        # extended by the half-width along an arbitrary axis (any axis
+        # gives the same square, since a point has no direction of its own).
+        dx, dy = 1.0, 0.0
+        nx, ny = -dy, dx
+        hp1 = HalfPlane(ax - dx * h, ay - dy * h, dx, dy)
+        hp2 = HalfPlane(bx + dx * h, by + dy * h, -dx, -dy)
+        hp3 = HalfPlane(ax + nx * h, ay + ny * h, -nx, -ny)
+        hp4 = HalfPlane(ax - nx * h, ay - ny * h, nx, ny)
+        return ThickLineShape([hp1, hp2, hp3, hp4])
+
+    dx /= length
+    dy /= length
 
     # Normal vector (perpendicular to direction)
     nx = -dy
     ny = dx
-
-    # Half-width offset
-    h = width / 2.0
 
     # Four half-planes:
     # 1. Through start point, facing along direction

@@ -21,7 +21,7 @@ python3 -c "
 import renderer
 import os
 os.makedirs('out', exist_ok=True)
-for name, func in [('disc-centers.ppm', renderer.disc_centers), ('disc-coverage.ppm', renderer.disc_coverage), ('painted-twice.ppm', renderer.painted_twice), ('plate-02.ppm', renderer.plate_02), ('fan-coverage.ppm', renderer.fan_coverage), ('plate-03.ppm', renderer.plate_03)]:
+for name, func in [('disc-centers.ppm', renderer.disc_centers), ('disc-coverage.ppm', renderer.disc_coverage), ('painted-twice.ppm', renderer.painted_twice), ('plate-02.ppm', renderer.plate_02), ('fan-bresenham.ppm', renderer.fan_bresenham), ('fan-wu.ppm', renderer.fan_wu), ('fan-coverage.ppm', renderer.fan_coverage), ('plate-03.ppm', renderer.plate_03)]:
     p6 = renderer.canvas_to_p6(func())
     with open(f'out/{name}', 'wb') as f:
         f.write(p6 if isinstance(p6, bytes) else p6.encode('latin-1'))
