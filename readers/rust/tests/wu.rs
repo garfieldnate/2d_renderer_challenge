@@ -84,6 +84,23 @@ fn the_weights_dont_depend_on_which_end_you_start_from() {
 }
 
 #[test]
+fn a_line_that_starts_above_the_canvas() {
+    let mut c = canvas(10, 10);
+    line_wu(&mut c, 0, -1, 8, 3, color(1.0, 1.0, 1.0));
+    assert!(colors_eq(pixel_at(&c, 1, 0), color(0.5, 0.5, 0.5)));
+    assert!(colors_eq(pixel_at(&c, 2, 0), color(1.0, 1.0, 1.0)));
+    assert!(approx_eq(total_ink(&c), 7.5));
+}
+
+#[test]
+fn a_wu_line_of_one_point() {
+    let mut c = canvas(10, 10);
+    line_wu(&mut c, 3, 3, 3, 3, color(1.0, 1.0, 1.0));
+    assert_eq!(lit_pixels(&c), vec![(3, 3)]);
+    assert!(colors_eq(pixel_at(&c, 3, 3), color(1.0, 1.0, 1.0)));
+}
+
+#[test]
 fn sevenths() {
     let mut c = canvas(10, 10);
     line_wu(&mut c, 0, 0, 7, 3, color(1.0, 1.0, 1.0));

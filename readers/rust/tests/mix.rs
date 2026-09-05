@@ -5,7 +5,7 @@
 // or parallelism -- this is how the "reset before each scenario" rule from
 // the chapter is honored in Rust's threaded test harness.
 
-use renderer::{color, colors_eq, is_linear_blending, mix, set_linear_blending};
+use renderer::{color, colors_eq, is_linear_blending, mix, mix_with, set_linear_blending};
 
 #[test]
 fn linear_blending_is_on_by_default() {
@@ -58,4 +58,30 @@ fn the_ends_of_a_mix_are_its_inputs_either_way() {
     let b = color(0.0, 0.3, 0.02);
     assert!(colors_eq(mix(a, b, 0.0), a));
     assert!(colors_eq(mix(a, b, 1.0), b));
+}
+
+#[test]
+fn the_lights_way_never_clamps() {
+    let a = color(1.5, 0.5, -0.2);
+    let b = color(0.0, 0.0, 0.0);
+    assert!(colors_eq(mix(a, b, 0.0), color(1.5, 0.5, -0.2)));
+    assert!(colors_eq(mix(a, b, 0.5), color(0.75, 0.25, -0.1)));
+}
+
+#[test]
+fn the_switch_can_be_passed_instead_of_set() {
+    let a = color(0.0, 0.0, 0.0);
+    let b = color(1.0, 1.0, 1.0);
+    assert!(colors_eq(mix_with(a, b, 0.5, true), color(0.5, 0.5, 0.5)));
+    assert!(colors_eq(mix_with(a, b, 0.5, false), color(0.2140, 0.2140, 0.2140)));
+    assert!(is_linear_blending());
+}
+
+#[test]
+fn the_browsers_way_clamps_each_end_before_encoding_it() {
+    set_linear_blending(false);
+    let a = color(1.5, 0.5, -0.2);
+    let b = color(0.0, 0.0, 0.0);
+    assert!(colors_eq(mix(a, b, 0.0), color(1.0, 0.5, 0.0)));
+    assert!(colors_eq(mix(a, b, 0.5), color(0.2140, 0.1113, 0.0000)));
 }

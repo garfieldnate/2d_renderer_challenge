@@ -34,6 +34,46 @@ fn the_same_pixel_comes_back_out_of_either_format() {
 }
 
 #[test]
+fn rows_go_top_to_bottom() {
+    let mut c = canvas(1, 2);
+    write_pixel(&mut c, 0, 0, color(1.0, 0.0, 0.0));
+    write_pixel(&mut c, 0, 1, color(0.0, 0.0, 1.0));
+    let p6 = canvas_to_p6(&c);
+
+    assert_eq!(p6[12 - 1], 255);
+    assert_eq!(p6[17 - 1], 255);
+    assert_eq!(ppm_pixel(&p6, 0, 0), (255, 0, 0));
+    assert_eq!(ppm_pixel(&p6, 0, 1), (0, 0, 255));
+}
+
+#[test]
+fn the_binary_writer_clamps_too() {
+    let mut c = canvas(2, 1);
+    write_pixel(&mut c, 0, 0, color(1.5, 0.0, -0.5));
+    let p6 = canvas_to_p6(&c);
+
+    assert_eq!(p6[12 - 1], 255);
+    assert_eq!(p6[13 - 1], 0);
+    assert_eq!(p6[14 - 1], 0);
+    assert_eq!(ppm_pixel(&p6, 0, 0), (255, 0, 0));
+}
+
+#[test]
+fn pixel_bytes_that_look_like_whitespace_are_still_pixel_bytes() {
+    let mut c = canvas(2, 1);
+    write_pixel(&mut c, 0, 0, color(0.00304, 0.01444, 0.00304));
+    write_pixel(&mut c, 1, 0, color(1.0, 1.0, 1.0));
+    let p6 = canvas_to_p6(&c);
+
+    assert_eq!(p6.len(), 17);
+    assert_eq!(p6[12 - 1], 10);
+    assert_eq!(p6[13 - 1], 32);
+    assert_eq!(ppm_pixel(&p6, 0, 0), (10, 32, 10));
+    assert_eq!(ppm_pixel(&p6, 1, 0), (255, 255, 255));
+    assert_eq!(max_channel_difference(canvas_to_ppm(&c), &p6), 0);
+}
+
+#[test]
 fn sizes_still_have_to_match() {
     let c1 = canvas(2, 1);
     let c2 = canvas(1, 2);

@@ -29,6 +29,8 @@ fn the_plate() {
     assert_pixel_within(&ppm, 200, 110, (109, 75, 19), 1);
     assert_pixel_within(&ppm, 200, 155, (160, 108, 26), 1);
     assert_eq!(ppm_pixel(&ppm, 200, 87), (0, 0, 0));
+    assert_eq!(ppm_pixel(&ppm, 200, 132), (0, 0, 0));
+    assert_eq!(ppm_pixel(&ppm, 200, 177), (0, 0, 0));
 
     let reference = read_file("reference/chapter-01/plate-01.ppm");
     assert!(max_channel_difference(&ppm, &reference) <= 1);

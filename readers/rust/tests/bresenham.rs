@@ -1,6 +1,17 @@
 // features/chapter03-bresenham.feature
 
-use renderer::{canvas, canvas_to_p6, color, line_bresenham, lit_pixels, max_channel_difference};
+use renderer::{
+    canvas, canvas_to_p6, color, line_bresenham, lit_pixels, max_channel_difference, write_pixel,
+};
+
+#[test]
+fn lit_pixels_reads_like_a_page() {
+    let mut c = canvas(10, 10);
+    write_pixel(&mut c, 5, 0, color(1.0, 1.0, 1.0));
+    write_pixel(&mut c, 0, 2, color(1.0, 1.0, 1.0));
+    write_pixel(&mut c, 2, 2, color(0.5, 0.0, 0.0));
+    assert_eq!(lit_pixels(&c), vec![(5, 0), (0, 2), (2, 2)]);
+}
 
 #[test]
 fn a_diagonal() {

@@ -359,13 +359,28 @@ pub fn is_linear_blending() -> bool {
     LINEAR_BLENDING.with(|f| f.get())
 }
 
-/// The color a fraction `t` of the way from `a` to `b`.
+/// The color a fraction `t` of the way from `a` to `b`, using the switch's
+/// current setting.
 pub fn mix(a: Color, b: Color, t: f64) -> Color {
-    if is_linear_blending() {
+    mix_with(a, b, t, is_linear_blending())
+}
+
+/// `mix`, with the switch passed explicitly instead of read from the
+/// thread-local: lets a caller (`paint_through`, for one) force linear
+/// blending regardless of what the reader last set, and lets a scenario
+/// pass the switch instead of setting it.
+pub fn mix_with(a: Color, b: Color, t: f64, linear: bool) -> Color {
+    if linear {
         a + (b - a) * t
     } else {
-        let ea = color(encode(a.red), encode(a.green), encode(a.blue));
-        let eb = color(encode(b.red), encode(b.green), encode(b.blue));
+        // The browser's way clamps each end to 0..1 *before* encoding it,
+        // not the mixed result afterward -- otherwise an out-of-range
+        // input would encode nonsense (negative light, say) instead of
+        // landing wherever a browser would have clamped it first.
+        let ca = color(a.red.clamp(0.0, 1.0), a.green.clamp(0.0, 1.0), a.blue.clamp(0.0, 1.0));
+        let cb = color(b.red.clamp(0.0, 1.0), b.green.clamp(0.0, 1.0), b.blue.clamp(0.0, 1.0));
+        let ea = color(encode(ca.red), encode(ca.green), encode(ca.blue));
+        let eb = color(encode(cb.red), encode(cb.green), encode(cb.blue));
         let mixed = ea + (eb - ea) * t;
         color(decode(mixed.red), decode(mixed.green), decode(mixed.blue))
     }
@@ -588,8 +603,17 @@ pub fn coverage_buffer(width: usize, height: usize) -> CoverageBuffer {
     CoverageBuffer { width, height, values: vec![0.0; width * height] }
 }
 
+/// Reads outside the buffer are 0, same rule as `write_pixel`: a negative
+/// coordinate can't even be cast to `usize` without wrapping, so the
+/// bounds check has to happen before the cast, not after.
 pub fn coverage_at(cov: &CoverageBuffer, x: i64, y: i64) -> f64 {
+    if x < 0 || y < 0 {
+        return 0.0;
+    }
     let (x, y) = (x as usize, y as usize);
+    if x >= cov.width || y >= cov.height {
+        return 0.0;
+    }
     cov.values[y * cov.width + x]
 }
 
@@ -640,7 +664,8 @@ pub fn rasterize_centers(s: Shape, width: usize, height: usize) -> CoverageBuffe
 /// Moves every pixel of the canvas toward `col` by that pixel's coverage:
 /// zero coverage leaves a pixel alone, full coverage replaces it, and in
 /// between it's `mix(pixel, col, coverage)`, in light. The one place the
-/// renderer touches the canvas.
+/// renderer touches the canvas. Forces linear blending regardless of the
+/// switch -- the arithmetic here is never the browser's business.
 pub fn paint_through(c: &mut Canvas, cov: &CoverageBuffer, col: Color) {
     let width = c.width.min(cov.width);
     let height = c.height.min(cov.height);
@@ -648,7 +673,7 @@ pub fn paint_through(c: &mut Canvas, cov: &CoverageBuffer, col: Color) {
         for x in 0..width as i64 {
             let coverage = coverage_at(cov, x, y);
             let old = pixel_at(c, x, y);
-            write_pixel(c, x, y, mix(old, col, coverage));
+            write_pixel(c, x, y, mix_with(old, col, coverage, true));
         }
     }
 }
@@ -942,17 +967,27 @@ pub fn fan_wu() -> Canvas {
 /// (the end caps), two face inward along the normal, offset by half the
 /// width (the sides).
 pub fn thick_line(x0: i64, y0: i64, x1: i64, y1: i64, width: f64) -> Shape {
-    let ax = x0 as f64 + 0.5;
+    let mut ax = x0 as f64 + 0.5;
     let ay = y0 as f64 + 0.5;
-    let bx = x1 as f64 + 0.5;
+    let mut bx = x1 as f64 + 0.5;
     let by = y1 as f64 + 0.5;
+    let h = width / 2.0;
+
     let mut dx = bx - ax;
     let mut dy = by - ay;
     let len = (dx * dx + dy * dy).sqrt();
-    dx /= len;
-    dy /= len;
+    if len == 0.0 {
+        // No direction: make it a square by giving it one, (1, 0), and
+        // pushing the two coincident ends apart by half the width each.
+        dx = 1.0;
+        dy = 0.0;
+        ax -= h;
+        bx += h;
+    } else {
+        dx /= len;
+        dy /= len;
+    }
     let (nx, ny) = (-dy, dx);
-    let h = width / 2.0;
 
     Shape::Intersection([
         (ax, ay, dx, dy),

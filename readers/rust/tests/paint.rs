@@ -3,7 +3,7 @@
 use renderer::{
     canvas, canvas_to_p6, canvas_to_ppm, color, colors_eq, coverage_buffer, disc_centers, fill,
     distinct_values, max_channel_difference, paint_through, pixel_at, ppm_pixel, read_file,
-    set_coverage,
+    set_coverage, set_linear_blending,
 };
 
 fn assert_pixel_within(p6: &[u8], x: usize, y: usize, expected: (i64, i64, i64), tol: i64) {
@@ -48,10 +48,14 @@ fn zero_leaves_it_alone_and_one_replaces_it() {
 
 #[test]
 fn the_arithmetic_is_on_light() {
+    // The feature says "Given linear blending is off": paint_through must
+    // ignore the switch, not just happen to agree with it by default.
+    set_linear_blending(false);
     let mut c = canvas(1, 1);
     let mut cov = coverage_buffer(1, 1);
     set_coverage(&mut cov, 0, 0, 0.5);
     paint_through(&mut c, &cov, color(1.0, 1.0, 1.0));
+    assert!(colors_eq(pixel_at(&c, 0, 0), color(0.5, 0.5, 0.5)));
     let ppm = canvas_to_ppm(&c);
     assert_eq!(ppm_pixel(&ppm, 0, 0), (188, 188, 188));
 }

@@ -39,6 +39,18 @@ fn a_rectangle_is_covered_exactly_when_its_edges_land_on_sample_boundaries() {
 }
 
 #[test]
+fn neither_need_the_buffer_be_square_here() {
+    let s = rectangle(0.0, 0.0, 2.0, 1.0);
+    let cov = rasterize(s, 4, 2);
+    assert_eq!(cov.width, 4);
+    assert_eq!(cov.height, 2);
+    assert!(approx_eq(coverage_at(&cov, 1, 0), 1.0));
+    assert!(approx_eq(coverage_at(&cov, 2, 0), 0.0));
+    assert!(approx_eq(coverage_at(&cov, 0, 1), 0.0));
+    assert!(approx_eq(ink(&cov), 2.0));
+}
+
+#[test]
 fn a_half_plane_through_a_pixel_center_covers_half_of_it() {
     let s = half_plane(2.5, 4.5, 0.6, 0.8);
     assert!(approx_eq(coverage(s, 2, 4), 0.5));
