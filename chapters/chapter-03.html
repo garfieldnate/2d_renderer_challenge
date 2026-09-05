@@ -100,6 +100,13 @@
   both endpoints included. lit_pixels(c) lists every pixel of a canvas that
   isn't black, in reading order: top row first, left to right.
 
+  <span class="kw">Scenario</span>: lit_pixels reads like a page
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  write_pixel(c, 5, 0, color(1, 1, 1))
+    <span class="kw">And</span>   write_pixel(c, 0, 2, color(1, 1, 1))
+    <span class="kw">And</span>   write_pixel(c, 2, 2, color(0.5, 0, 0))
+    <span class="kw">Then</span>  lit_pixels(c) = [(5, 0), (0, 2), (2, 2)]
+
   <span class="kw">Scenario</span>: A diagonal
     <span class="kw">Given</span> c ← canvas(10, 10)
     <span class="kw">When</span>  line_bresenham(c, 0, 0, 5, 5, color(1, 1, 1))

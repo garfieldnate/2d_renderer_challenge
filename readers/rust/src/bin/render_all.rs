@@ -7,8 +7,9 @@ use std::fs;
 use std::path::Path;
 
 use renderer::{
-    canvas_to_p6, canvas_to_ppm, clamp_pair, disc_centers, disc_coverage, gray_match,
-    painted_twice, plate_01, plate_02, quarter_match, ramp,
+    canvas_to_p6, canvas_to_ppm, clamp_pair, disc_centers, disc_coverage, fan_bresenham,
+    fan_coverage, fan_wu, gray_match, painted_twice, plate_01, plate_02, plate_03, quarter_match,
+    ramp,
 };
 
 fn write_p3(dir: &Path, name: &str, ppm: String) {
@@ -36,5 +37,11 @@ fn main() {
     write_p6(out, "painted-twice.ppm", canvas_to_p6(&painted_twice()));
     write_p6(out, "plate-02.ppm", canvas_to_p6(&plate_02()));
 
-    println!("wrote 9 renders to out/");
+    // Chapter 3: same P6 writer.
+    write_p6(out, "fan-bresenham.ppm", canvas_to_p6(&fan_bresenham()));
+    write_p6(out, "fan-wu.ppm", canvas_to_p6(&fan_wu()));
+    write_p6(out, "fan-coverage.ppm", canvas_to_p6(&fan_coverage()));
+    write_p6(out, "plate-03.ppm", canvas_to_p6(&plate_03()));
+
+    println!("wrote 13 renders to out/");
 }

@@ -79,3 +79,52 @@ public sealed class HalfPlane : IShape
         return dx * Nx + dy * Ny >= 0;
     }
 }
+
+/// <summary>
+/// A line, honestly: the rectangle of the given width centered on the
+/// segment from the center of pixel (x0, y0) to the center of pixel
+/// (x1, y1), with square ends. Four half-planes - through each end facing
+/// outward along the segment, and along each side offset by half the width
+/// facing inward - and inside means inside all four.
+/// </summary>
+public sealed class ThickLine : IShape
+{
+    private readonly HalfPlane[] _planes;
+
+    public ThickLine(double x0, double y0, double x1, double y1, double width)
+    {
+        double ax = x0 + 0.5, ay = y0 + 0.5;
+        double bx = x1 + 0.5, by = y1 + 0.5;
+        double dx = bx - ax, dy = by - ay;
+        double length = Math.Sqrt(dx * dx + dy * dy);
+        if (length > 0)
+        {
+            dx /= length;
+            dy /= length;
+        }
+        else
+        {
+            dx = 1;
+            dy = 0;
+        }
+        double nx = -dy, ny = dx;
+        double half = width / 2.0;
+
+        _planes = new[]
+        {
+            new HalfPlane(ax, ay, dx, dy),
+            new HalfPlane(bx, by, -dx, -dy),
+            new HalfPlane(ax + nx * half, ay + ny * half, -nx, -ny),
+            new HalfPlane(ax - nx * half, ay - ny * half, nx, ny),
+        };
+    }
+
+    public bool Inside(double x, double y)
+    {
+        for (int i = 0; i < _planes.Length; i++)
+        {
+            if (!_planes[i].Inside(x, y)) return false;
+        }
+        return true;
+    }
+}

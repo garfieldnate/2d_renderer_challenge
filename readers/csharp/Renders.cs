@@ -195,4 +195,77 @@ public static class Renders
 
         return Magnifier.Magnify(c, 6);
     }
+
+    // -----------------------------------------------------------------
+    // Chapter 3 - the fan: twelve rays from the center of a 160x160
+    // canvas to points 72 pixels out, every 30 degrees.
+    // -----------------------------------------------------------------
+
+    private static readonly Color FanPaper = new(0.02, 0.02, 0.025);
+    private static readonly Color FanInk = new(0.92, 0.92, 0.88);
+
+    public static List<(int X, int Y)> RayEnds()
+    {
+        var ends = new List<(int, int)>();
+        for (int k = 0; k < 12; k++)
+        {
+            double a = k * 30.0 * Math.PI / 180.0;
+            int x = (int)Math.Round(80 + 72 * Math.Cos(a), MidpointRounding.AwayFromZero);
+            int y = (int)Math.Round(80 + 72 * Math.Sin(a), MidpointRounding.AwayFromZero);
+            ends.Add((x, y));
+        }
+        return ends;
+    }
+
+    public static Canvas FanBresenham()
+    {
+        var c = new Canvas(160, 160);
+        c.Fill(FanPaper);
+        foreach (var (x, y) in RayEnds())
+        {
+            Lines.LineBresenham(c, 80, 80, x, y, FanInk);
+        }
+        return c;
+    }
+
+    public static Canvas FanWu()
+    {
+        var c = new Canvas(160, 160);
+        c.Fill(FanPaper);
+        foreach (var (x, y) in RayEnds())
+        {
+            Lines.LineWu(c, 80, 80, x, y, FanInk);
+        }
+        return c;
+    }
+
+    /// <summary>Each ray a thick_line of width 1, rasterized and painted through in turn, then magnified 2x.</summary>
+    public static Canvas FanCoverage()
+    {
+        var c = new Canvas(160, 160);
+        c.Fill(FanPaper);
+        foreach (var (x, y) in RayEnds())
+        {
+            var cov = Rasterizer.Rasterize(new ThickLine(80, 80, x, y, 1), 160, 160);
+            Paint.PaintThrough(c, cov, FanInk);
+        }
+        return Magnifier.Magnify(c, 2);
+    }
+
+    /// <summary>Bresenham's fan, then Wu's, side by side, magnified 2x.</summary>
+    public static Canvas Plate03()
+    {
+        var both = new Canvas(320, 160);
+        var a = FanBresenham();
+        var b = FanWu();
+        for (int y = 0; y < 160; y++)
+        {
+            for (int x = 0; x < 160; x++)
+            {
+                both.WritePixel(x, y, a.PixelAt(x, y));
+                both.WritePixel(x + 160, y, b.PixelAt(x, y));
+            }
+        }
+        return Magnifier.Magnify(both, 2);
+    }
 }

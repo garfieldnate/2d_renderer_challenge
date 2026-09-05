@@ -3,6 +3,13 @@ Feature: Bresenham's line
   both endpoints included. lit_pixels(c) lists every pixel of a canvas that
   isn't black, in reading order: top row first, left to right.
 
+  Scenario: lit_pixels reads like a page
+    Given c ← canvas(10, 10)
+    When  write_pixel(c, 5, 0, color(1, 1, 1))
+    And   write_pixel(c, 0, 2, color(1, 1, 1))
+    And   write_pixel(c, 2, 2, color(0.5, 0, 0))
+    Then  lit_pixels(c) = [(5, 0), (0, 2), (2, 2)]
+
   Scenario: A diagonal
     Given c ← canvas(10, 10)
     When  line_bresenham(c, 0, 0, 5, 5, color(1, 1, 1))

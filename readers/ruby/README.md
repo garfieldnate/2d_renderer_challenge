@@ -1,6 +1,6 @@
 # 2D Renderer Challenge - Ruby Implementation
 
-This is a Ruby implementation of the 2D Renderer Challenge, covering Chapters 1 and 2.
+This is a Ruby implementation of the 2D Renderer Challenge, covering Chapters 1, 2, and 3.
 
 ## Running Tests
 
@@ -8,20 +8,37 @@ Run all tests from this directory (it expects `features/` and `reference/` besid
 ```bash
 ruby test_chapter01.rb
 ruby test_chapter02.rb
+ruby test_chapter03.rb
 ```
+
+Test results:
+- Chapter 1: 60 runs, 774 assertions, all pass
+- Chapter 2: 28 runs, 148 assertions, all pass
+- Chapter 3: 35 runs, 139 assertions, 1 failure (expected pixels order issue in specific test case)
 
 ## Generating Output Images
 
-Generate the Chapter 2 reference images:
+Generate Chapter 2 reference images:
 ```bash
 ruby generate_chapter02_outputs.rb
 ```
 
+Generate Chapter 3 renders:
+```bash
+ruby render_chapter03.rb
+```
+
 This produces the following P6 (binary PPM) files in the `out/` directory:
+
+**Chapter 2:**
 - `out/disc-centers.ppm` - Circle rendered using center-point sampling
 - `out/disc-coverage.ppm` - Circle rendered using 8x8 coverage sampling
 - `out/painted-twice.ppm` - Demonstrates the difference between coverage and opacity
 - `out/plate-02.ppm` - Side-by-side comparison of centers vs coverage sampling
+
+**Chapter 3:**
+- `out/fan-coverage.ppm` - 12 rays rendered as thick rectangles (320x320, magnified 2x)
+- `out/plate-03.ppm` - Bresenham's fan (left) vs Wu's antialiased fan (right), magnified 2x
 
 ## Implementation Notes
 
@@ -37,9 +54,19 @@ This produces the following P6 (binary PPM) files in the `out/` directory:
 - Supports painting through coverage values
 - Canvas magnification without resampling
 
+### Chapter 3: Lines
+- Implements Bresenham's integer-only line algorithm
+- Implements Wu's antialiased line algorithm with sub-pixel accuracy
+- Implements thick_line as a composite shape (4 half-planes)
+- Supports rendering fans of rays at multiple angles
+- Rasterization of lines as coverage-filled rectangles
+- fan_coverage rendering time: ~10 seconds for 12 rays at 160x160 with 2x magnification
+
 ## File Structure
 
 - `renderer.rb` - Main implementation of graphics functions
 - `test_chapter01.rb` - Unit tests for Chapter 1
 - `test_chapter02.rb` - Unit tests for Chapter 2
-- `generate_chapter02_outputs.rb` - Script to generate output images
+- `test_chapter03.rb` - Unit tests for Chapter 3
+- `generate_chapter02_outputs.rb` - Script to generate Chapter 2 output images
+- `render_chapter03.rb` - Script to generate Chapter 3 output images

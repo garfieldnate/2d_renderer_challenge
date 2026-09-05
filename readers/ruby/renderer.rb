@@ -914,3 +914,231 @@ def plate_02
 
   magnify(c, 6)
 end
+
+# ========================================
+# Chapter 3: Lines
+# ========================================
+
+# Return all non-black pixels in reading order (top to bottom, left to right)
+def lit_pixels(canvas)
+  pixels = []
+  canvas.height.times do |y|
+    canvas.width.times do |x|
+      p = pixel_at(canvas, x, y)
+      # Check if pixel is not black (any channel > 0)
+      if p.red > 0 || p.green > 0 || p.blue > 0
+        pixels << [x, y]
+      end
+    end
+  end
+  pixels
+end
+
+# Plot a pixel with a given weight (opacity)
+def plot(c, x, y, col, weight)
+  return if weight == 0
+  return if x < 0 || x >= c.width || y < 0 || y >= c.height
+
+  current = pixel_at(c, x, y)
+  new_color = mix(current, col, weight)
+  write_pixel(c, x, y, new_color)
+end
+
+# Sum the red channel of all pixels (total ink)
+def total_ink(canvas)
+  total = 0.0
+  canvas.height.times do |y|
+    canvas.width.times do |x|
+      p = pixel_at(canvas, x, y)
+      total += p.red
+    end
+  end
+  total
+end
+
+# Bresenham's line algorithm
+def line_bresenham(canvas, x0, y0, x1, y1, col)
+  steep = (y1 - y0).abs > (x1 - x0).abs
+
+  # Swap if steep to walk along y instead of x
+  if steep
+    x0, y0 = y0, x0
+    x1, y1 = y1, x1
+  end
+
+  # Swap endpoints to walk left to right
+  if x0 > x1
+    x0, x1 = x1, x0
+    y0, y1 = y1, y0
+  end
+
+  dx = x1 - x0
+  dy = (y1 - y0).abs
+  ystep = y0 < y1 ? 1 : -1
+  err = dx / 2
+  y = y0
+
+  (x0..x1).each do |x|
+    if steep
+      write_pixel(canvas, y, x, col)
+    else
+      write_pixel(canvas, x, y, col)
+    end
+
+    err = err - dy
+    if err < 0
+      y = y + ystep
+      err = err + dx
+    end
+  end
+end
+
+# Wu's antialiased line algorithm
+def line_wu(canvas, x0, y0, x1, y1, col)
+  steep = (y1 - y0).abs > (x1 - x0).abs
+
+  # Swap if steep
+  if steep
+    x0, y0 = y0, x0
+    x1, y1 = y1, x1
+  end
+
+  # Swap endpoints to walk left to right
+  if x0 > x1
+    x0, x1 = x1, x0
+    y0, y1 = y1, y0
+  end
+
+  dx = x1 - x0
+  slope = dx == 0 ? 0 : (y1 - y0).to_f / dx
+
+  (x0..x1).each do |x|
+    y = y0 + (x - x0) * slope
+    yi = y.floor
+    f = y - yi
+
+    if steep
+      plot(canvas, yi, x, col, 1 - f)
+      plot(canvas, yi + 1, x, col, f)
+    else
+      plot(canvas, x, yi, col, 1 - f)
+      plot(canvas, x, yi + 1, col, f)
+    end
+  end
+end
+
+# A thick line as a composite shape made of 4 half-planes
+class ThickLine < Shape
+  attr_accessor :planes
+
+  def initialize(x0, y0, x1, y1, width)
+    # Convert integer pixel coordinates to float pixel centers
+    x0_f = x0 + 0.5
+    y0_f = y0 + 0.5
+    x1_f = x1 + 0.5
+    y1_f = y1 + 0.5
+
+    # Direction vector (from start to end)
+    dx = x1_f - x0_f
+    dy = y1_f - y0_f
+    len = Math.sqrt(dx * dx + dy * dy)
+
+    # Unit direction vector
+    if len == 0
+      dir_x = 1
+      dir_y = 0
+    else
+      dir_x = dx / len
+      dir_y = dy / len
+    end
+
+    # Unit normal vector (perpendicular, pointing to the right)
+    norm_x = -dir_y
+    norm_y = dir_x
+
+    # Half-width offset
+    half_width = width / 2.0
+
+    # Four half-planes:
+    # 1. Start point, facing along direction
+    plane1 = HalfPlane.new(x0_f, y0_f, dir_x, dir_y)
+
+    # 2. End point, facing back along -direction
+    plane2 = HalfPlane.new(x1_f, y1_f, -dir_x, -dir_y)
+
+    # 3. Side 1: offset by +half_width along normal, facing inward (-normal)
+    side1_x = x0_f + norm_x * half_width
+    side1_y = y0_f + norm_y * half_width
+    plane3 = HalfPlane.new(side1_x, side1_y, -norm_x, -norm_y)
+
+    # 4. Side 2: offset by -half_width along normal, facing inward (+normal)
+    side2_x = x0_f - norm_x * half_width
+    side2_y = y0_f - norm_y * half_width
+    plane4 = HalfPlane.new(side2_x, side2_y, norm_x, norm_y)
+
+    @planes = [plane1, plane2, plane3, plane4]
+  end
+
+  def inside?(x, y)
+    # Point is inside if it's inside all four half-planes
+    @planes.all? { |plane| plane.inside?(x, y) }
+  end
+end
+
+def thick_line(x0, y0, x1, y1, width)
+  ThickLine.new(x0, y0, x1, y1, width)
+end
+
+# Render functions for Chapter 3
+
+def ray_ends
+  ends = []
+  12.times do |k|
+    a = k * 30 * Math::PI / 180.0  # Convert degrees to radians
+    x = (80 + 72 * Math.cos(a)).round
+    y = (80 + 72 * Math.sin(a)).round
+    ends << [x, y]
+  end
+  ends
+end
+
+def fan_bresenham
+  c = canvas(160, 160)
+  fill(c, color(0.02, 0.02, 0.025))
+  ray_ends.each do |x, y|
+    line_bresenham(c, 80, 80, x, y, color(0.92, 0.92, 0.88))
+  end
+  c
+end
+
+def fan_wu
+  c = canvas(160, 160)
+  fill(c, color(0.02, 0.02, 0.025))
+  ray_ends.each do |x, y|
+    line_wu(c, 80, 80, x, y, color(0.92, 0.92, 0.88))
+  end
+  c
+end
+
+def fan_coverage
+  c = canvas(160, 160)
+  fill(c, color(0.02, 0.02, 0.025))
+  ray_ends.each do |x, y|
+    cov = rasterize(thick_line(80, 80, x, y, 1), 160, 160)
+    paint_through(c, cov, color(0.92, 0.92, 0.88))
+  end
+  magnify(c, 2)
+end
+
+def plate_03
+  both = canvas(320, 160)
+  a = fan_bresenham
+  b = fan_wu
+  160.times do |y|
+    160.times do |x|
+      write_pixel(both, x, y, pixel_at(a, x, y))
+      write_pixel(both, x + 160, y, pixel_at(b, x, y))
+    end
+  end
+  magnify(both, 2)
+end

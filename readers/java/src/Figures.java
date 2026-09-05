@@ -1,10 +1,13 @@
 /**
  * §1.6, §1.8, §1.9: the five renders chapter 1 asks for, plus §2.5, §2.6,
- * §2.7, §2.8: the four renders chapter 2 asks for.
+ * §2.7, §2.8: the four renders chapter 2 asks for, plus §3.1, §3.2, §3.3,
+ * §3.4: the fan drawn three ways and the plate that puts two of them
+ * side by side.
  */
 public final class Figures {
     private static final Color PAPER = new Color(0.02, 0.02, 0.025);
     private static final Color INK = new Color(0.9, 0.55, 0.1);
+    private static final Color FAN_INK = new Color(0.92, 0.92, 0.88);
 
     private Figures() {}
 
@@ -167,5 +170,62 @@ public final class Figures {
         }
         Painter.paintThrough(c, both, INK);
         return Magnify.magnify(c, 6);
+    }
+
+    /** §3.1: twelve points 72 pixels from (80, 80), one every 30 degrees, rounded to integers. */
+    public static int[][] rayEnds() {
+        int[][] ends = new int[12][2];
+        for (int k = 0; k < 12; k++) {
+            double a = Math.toRadians(k * 30);
+            ends[k][0] = (int) Numbers.round(80 + 72 * Math.cos(a));
+            ends[k][1] = (int) Numbers.round(80 + 72 * Math.sin(a));
+        }
+        return ends;
+    }
+
+    /** §3.1: the fan, drawn with Bresenham -- solid bars on the axes, a beaded texture elsewhere. */
+    public static Canvas fanBresenham() {
+        Canvas c = new Canvas(160, 160);
+        c.fill(PAPER);
+        for (int[] end : rayEnds()) {
+            Lines.lineBresenham(c, 80, 80, end[0], end[1], FAN_INK);
+        }
+        return c;
+    }
+
+    /** §3.2: the same fan, drawn with Wu -- the beads are gone, but slanted rays carry less ink. */
+    public static Canvas fanWu() {
+        Canvas c = new Canvas(160, 160);
+        c.fill(PAPER);
+        for (int[] end : rayEnds()) {
+            Lines.lineWu(c, 80, 80, end[0], end[1], FAN_INK);
+        }
+        return c;
+    }
+
+    /** §3.3: the fan a third time, each ray a thick_line rasterized and painted through. */
+    public static Canvas fanCoverage() {
+        Canvas c = new Canvas(160, 160);
+        c.fill(PAPER);
+        for (int[] end : rayEnds()) {
+            CoverageBuffer cov = Rasterizer.rasterize(
+                    new ThickLine(80, 80, end[0], end[1], 1), 160, 160);
+            Painter.paintThrough(c, cov, FAN_INK);
+        }
+        return Magnify.magnify(c, 2);
+    }
+
+    /** §3.4: Bresenham's fan and Wu's, side by side, magnified twice. */
+    public static Canvas plate03() {
+        Canvas both = new Canvas(320, 160);
+        Canvas a = fanBresenham();
+        Canvas b = fanWu();
+        for (int y = 0; y < 160; y++) {
+            for (int x = 0; x < 160; x++) {
+                both.writePixel(x, y, a.pixelAt(x, y));
+                both.writePixel(x + 160, y, b.pixelAt(x, y));
+            }
+        }
+        return Magnify.magnify(both, 2);
     }
 }

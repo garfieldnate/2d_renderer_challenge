@@ -498,6 +498,12 @@ pub enum Shape {
     Circle { cx: f64, cy: f64, r: f64 },
     Rectangle { x0: f64, y0: f64, x1: f64, y1: f64 },
     HalfPlane { px: f64, py: f64, nx: f64, ny: f64 },
+    /// Inside all of four half-planes at once (each a (px, py, nx, ny)
+    /// tuple, same layout as `HalfPlane`). `thick_line` is the only thing
+    /// that builds one. A fixed-size array rather than `Vec<Shape>` so
+    /// `Shape` stays `Copy`, which chapter 2's `inside(s: Shape, ...)`
+    /// (by value, called repeatedly on the same shape) already depends on.
+    Intersection([(f64, f64, f64, f64); 4]),
 }
 
 /// A circle given its center and radius. Inside means within the radius,
@@ -520,6 +526,15 @@ pub fn half_plane(px: f64, py: f64, nx: f64, ny: f64) -> Shape {
     Shape::HalfPlane { px, py, nx, ny }
 }
 
+/// Is (x, y) on the side of the line through (px, py) that the normal
+/// (nx, ny) points toward? Shared by `Shape::HalfPlane` and `thick_line`'s
+/// four planes, so the rule lives in exactly one place.
+fn half_plane_inside(px: f64, py: f64, nx: f64, ny: f64, x: f64, y: f64) -> bool {
+    let dx = x - px;
+    let dy = y - py;
+    dx * nx + dy * ny >= 0.0
+}
+
 pub fn inside(s: Shape, x: f64, y: f64) -> bool {
     match s {
         Shape::Circle { cx, cy, r } => {
@@ -528,11 +543,10 @@ pub fn inside(s: Shape, x: f64, y: f64) -> bool {
             dx * dx + dy * dy <= r * r
         }
         Shape::Rectangle { x0, y0, x1, y1 } => x >= x0 && x <= x1 && y >= y0 && y <= y1,
-        Shape::HalfPlane { px, py, nx, ny } => {
-            let dx = x - px;
-            let dy = y - py;
-            dx * nx + dy * ny >= 0.0
-        }
+        Shape::HalfPlane { px, py, nx, ny } => half_plane_inside(px, py, nx, ny, x, y),
+        Shape::Intersection(planes) => planes
+            .iter()
+            .all(|&(px, py, nx, ny)| half_plane_inside(px, py, nx, ny, x, y)),
     }
 }
 
@@ -751,4 +765,232 @@ pub fn plate_02() -> Canvas {
     }
     paint_through(&mut c, &both, DISC);
     magnify(&c, 6)
+}
+
+// ---------------------------------------------------------------------
+// Chapter 3: Lines
+//
+// § 3.1 Bresenham
+// ---------------------------------------------------------------------
+
+/// Every pixel of the canvas that isn't black, in reading order: top row
+/// first, left to right within a row. A test helper, not a renderer
+/// function.
+pub fn lit_pixels(c: &Canvas) -> Vec<(i64, i64)> {
+    let mut pts = Vec::new();
+    for y in 0..c.height as i64 {
+        for x in 0..c.width as i64 {
+            if !colors_eq(pixel_at(c, x, y), BLACK) {
+                pts.push((x, y));
+            }
+        }
+    }
+    pts
+}
+
+/// Bresenham's line, 1962: one pixel per step along the longer axis,
+/// chosen with integer-only arithmetic. The steep swap keeps a
+/// more-vertical-than-horizontal line stepping along y instead of x (else
+/// it has gaps); the left-to-right swap makes the result independent of
+/// which end was called the start. `err` starts at `dx / 2` (integer
+/// division) -- the tie rule the tests pin: at exactly half a pixel of
+/// drift, this stays on the current row for one more step.
+pub fn line_bresenham(c: &mut Canvas, x0: i64, y0: i64, x1: i64, y1: i64, col: Color) {
+    let steep = (y1 - y0).abs() > (x1 - x0).abs();
+    let (mut x0, mut y0, mut x1, mut y1) = (x0, y0, x1, y1);
+    if steep {
+        std::mem::swap(&mut x0, &mut y0);
+        std::mem::swap(&mut x1, &mut y1);
+    }
+    if x0 > x1 {
+        std::mem::swap(&mut x0, &mut x1);
+        std::mem::swap(&mut y0, &mut y1);
+    }
+
+    let dx = x1 - x0;
+    let dy = (y1 - y0).abs();
+    let ystep = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx / 2;
+    let mut y = y0;
+
+    for x in x0..=x1 {
+        if steep {
+            write_pixel(c, y, x, col);
+        } else {
+            write_pixel(c, x, y, col);
+        }
+        err -= dy;
+        if err < 0 {
+            y += ystep;
+            err += dx;
+        }
+    }
+}
+
+/// The twelve points 72 pixels from (80, 80), one every 30 degrees,
+/// rounded to integers. Shared by every figure in this chapter so the
+/// tests can pin the endpoints once.
+pub fn ray_ends() -> Vec<(i64, i64)> {
+    let mut ends = Vec::with_capacity(12);
+    for k in 0..12 {
+        let a = k as f64 * 30.0 * std::f64::consts::PI / 180.0;
+        ends.push((round(80.0 + 72.0 * a.cos()), round(80.0 + 72.0 * a.sin())));
+    }
+    ends
+}
+
+const PAPER_3: Color = Color { red: 0.02, green: 0.02, blue: 0.025 };
+const RAY: Color = Color { red: 0.92, green: 0.92, blue: 0.88 };
+
+/// Twelve rays out of Bresenham's line, on a near-black paper. The
+/// slanted ones are a repeating pattern of short runs -- a texture the
+/// eye reads as flicker, though every ray is drawn with the same rule.
+pub fn fan_bresenham() -> Canvas {
+    let mut c = canvas(160, 160);
+    fill(&mut c, PAPER_3);
+    for (x, y) in ray_ends() {
+        line_bresenham(&mut c, 80, 80, x, y, RAY);
+    }
+    c
+}
+
+// ---------------------------------------------------------------------
+// § 3.2 Wu
+// ---------------------------------------------------------------------
+
+/// Paint through one pixel at a weight: `mix(pixel_at(c, x, y), col,
+/// weight)`, written back. `paint_through` for a single pixel, dropping
+/// writes off the canvas and skipping a weight of zero (nothing to do,
+/// and it keeps `pixel_at` from being asked about an out-of-range pixel).
+pub fn plot(c: &mut Canvas, x: i64, y: i64, col: Color, weight: f64) {
+    if weight <= 0.0 || x < 0 || y < 0 {
+        return;
+    }
+    if x as usize >= c.width || y as usize >= c.height {
+        return;
+    }
+    let old = pixel_at(c, x, y);
+    write_pixel(c, x, y, mix(old, col, weight));
+}
+
+/// Xiaolin Wu's line, 1991: two pixels per column instead of one, weighted
+/// by how far the ideal `y` falls past its floor. Same steep swap and
+/// left-to-right swap as Bresenham, for the same reasons; unlike
+/// Bresenham the endpoints must be integers, since this chapter doesn't
+/// give partial end-cap weights to fractional ones.
+pub fn line_wu(c: &mut Canvas, x0: i64, y0: i64, x1: i64, y1: i64, col: Color) {
+    let steep = (y1 - y0).abs() > (x1 - x0).abs();
+    let (mut x0, mut y0, mut x1, mut y1) = (x0, y0, x1, y1);
+    if steep {
+        std::mem::swap(&mut x0, &mut y0);
+        std::mem::swap(&mut x1, &mut y1);
+    }
+    if x0 > x1 {
+        std::mem::swap(&mut x0, &mut x1);
+        std::mem::swap(&mut y0, &mut y1);
+    }
+
+    let dx = x1 - x0;
+    let slope = if dx == 0 { 0.0 } else { (y1 - y0) as f64 / dx as f64 };
+
+    for x in x0..=x1 {
+        let y = y0 as f64 + (x - x0) as f64 * slope;
+        let yi = y.floor();
+        let f = y - yi;
+        let yi = yi as i64;
+        if steep {
+            plot(c, yi, x, col, 1.0 - f);
+            plot(c, yi + 1, x, col, f);
+        } else {
+            plot(c, x, yi, col, 1.0 - f);
+            plot(c, x, yi + 1, col, f);
+        }
+    }
+}
+
+/// The sum of every pixel's red channel: for a white line on black, how
+/// much paint went down. For Wu it's always the number of columns
+/// touched, since each column's two weights sum to 1.
+pub fn total_ink(c: &Canvas) -> f64 {
+    let mut sum = 0.0;
+    for y in 0..c.height as i64 {
+        for x in 0..c.width as i64 {
+            sum += pixel_at(c, x, y).red;
+        }
+    }
+    sum
+}
+
+/// `fan_bresenham`, with `line_wu` in place of `line_bresenham` and
+/// nothing else changed.
+pub fn fan_wu() -> Canvas {
+    let mut c = canvas(160, 160);
+    fill(&mut c, PAPER_3);
+    for (x, y) in ray_ends() {
+        line_wu(&mut c, 80, 80, x, y, RAY);
+    }
+    c
+}
+
+// ---------------------------------------------------------------------
+// § 3.3 The reveal: a line is a thin rectangle
+// ---------------------------------------------------------------------
+
+/// The rectangle of `width` centered on the segment from the center of
+/// pixel (x0, y0) to the center of pixel (x1, y1), with square ends: four
+/// half-planes, through chapter 2's `inside`. Two face along the segment
+/// (the end caps), two face inward along the normal, offset by half the
+/// width (the sides).
+pub fn thick_line(x0: i64, y0: i64, x1: i64, y1: i64, width: f64) -> Shape {
+    let ax = x0 as f64 + 0.5;
+    let ay = y0 as f64 + 0.5;
+    let bx = x1 as f64 + 0.5;
+    let by = y1 as f64 + 0.5;
+    let mut dx = bx - ax;
+    let mut dy = by - ay;
+    let len = (dx * dx + dy * dy).sqrt();
+    dx /= len;
+    dy /= len;
+    let (nx, ny) = (-dy, dx);
+    let h = width / 2.0;
+
+    Shape::Intersection([
+        (ax, ay, dx, dy),
+        (bx, by, -dx, -dy),
+        (ax + nx * h, ay + ny * h, -nx, -ny),
+        (ax - nx * h, ay - ny * h, nx, ny),
+    ])
+}
+
+/// The fan a third time: each ray a `thick_line` of width 1, rasterized
+/// and painted through, then magnified by 2 so the edges are visible.
+/// Slow -- twelve 160x160 rasterizations at 64 samples a pixel -- because
+/// chapter 2's rasterizer knows nothing about lines; it asks every pixel
+/// on the canvas whether the shape is anywhere near it.
+pub fn fan_coverage() -> Canvas {
+    let mut c = canvas(160, 160);
+    fill(&mut c, PAPER_3);
+    for (x, y) in ray_ends() {
+        let cov = rasterize(thick_line(80, 80, x, y, 1.0), 160, 160);
+        paint_through(&mut c, &cov, RAY);
+    }
+    magnify(&c, 2)
+}
+
+// ---------------------------------------------------------------------
+// § 3.4 The figures
+// ---------------------------------------------------------------------
+
+/// Plate 3: Bresenham's fan and Wu's, side by side, magnified twice.
+pub fn plate_03() -> Canvas {
+    let mut both = canvas(320, 160);
+    let a = fan_bresenham();
+    let b = fan_wu();
+    for y in 0..160i64 {
+        for x in 0..160i64 {
+            write_pixel(&mut both, x, y, pixel_at(&a, x, y));
+            write_pixel(&mut both, x + 160, y, pixel_at(&b, x, y));
+        }
+    }
+    magnify(&both, 2)
 }

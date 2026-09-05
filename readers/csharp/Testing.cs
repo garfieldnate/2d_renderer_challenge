@@ -89,6 +89,23 @@ public static class Check
         }
     }
 
+    /// <summary>An ordered list of (x, y) pixel coordinates, as lit_pixels returns.</summary>
+    public static void PixelListEqual(IReadOnlyList<(int X, int Y)> expected, IReadOnlyList<(int X, int Y)> actual, string? label = null)
+    {
+        bool equal = expected.Count == actual.Count;
+        for (int i = 0; equal && i < expected.Count; i++)
+        {
+            if (expected[i] != actual[i]) equal = false;
+        }
+        if (!equal)
+        {
+            throw new AssertionException($"{Prefix(label)}expected [{FormatPixels(expected)}] = [{FormatPixels(actual)}]");
+        }
+    }
+
+    private static string FormatPixels(IReadOnlyList<(int X, int Y)> pixels) =>
+        string.Join(", ", pixels.Select(p => $"({p.X}, {p.Y})"));
+
     private static string Quote(string s) => "\"" + s.Replace("\n", "\\n") + "\"";
     private static string Prefix(string? label) => label is null ? "" : $"{label}: ";
 }

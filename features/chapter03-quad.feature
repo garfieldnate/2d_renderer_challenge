@@ -51,5 +51,7 @@ Feature: A line is a thin rectangle
   Scenario: Except that the grid is blind along the diagonal
     Given s ← thick_line(2, 2, 9, 9, 1)
     When  cov ← rasterize(s, 20, 20)
+    # what the sampler says, exactly
     Then  ink(cov) = 9.7188
+    # and how far that is from the true length, 7 * sqrt(2)
     And   ink(cov) = 9.8995 ± 0.25

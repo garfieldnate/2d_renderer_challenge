@@ -792,6 +792,277 @@ runner.Run("chapter02-plate", "The plate", () =>
     Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
 });
 
+// ---------------------------------------------------------------------
+// features/chapter03-bresenham.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter03-bresenham", "A diagonal", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineBresenham(c, 0, 0, 5, 5, new Color(1, 1, 1));
+    Check.PixelListEqual(new (int, int)[] { (0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5) }, Lines.LitPixels(c));
+});
+
+runner.Run("chapter03-bresenham", "A horizontal line lights one row and nothing else", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineBresenham(c, 0, 3, 7, 3, new Color(1, 1, 1));
+    Check.PixelListEqual(new (int, int)[] { (0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3) }, Lines.LitPixels(c));
+});
+
+runner.Run("chapter03-bresenham", "A shallow line steps along x", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineBresenham(c, 0, 0, 7, 3, new Color(1, 1, 1));
+    Check.PixelListEqual(new (int, int)[] { (0, 0), (1, 0), (2, 1), (3, 1), (4, 2), (5, 2), (6, 3), (7, 3) }, Lines.LitPixels(c));
+});
+
+runner.Run("chapter03-bresenham", "A steep line steps along y", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineBresenham(c, 1, 1, 3, 7, new Color(1, 1, 1));
+    Check.PixelListEqual(new (int, int)[] { (1, 1), (1, 2), (2, 3), (2, 4), (2, 5), (3, 6), (3, 7) }, Lines.LitPixels(c));
+});
+
+runner.Run("chapter03-bresenham", "The pixels don't depend on which end you start from", () =>
+{
+    var c1 = new Canvas(10, 10);
+    var c2 = new Canvas(10, 10);
+    Lines.LineBresenham(c1, 1, 1, 3, 7, new Color(1, 1, 1));
+    Lines.LineBresenham(c2, 3, 7, 1, 1, new Color(1, 1, 1));
+    Check.PixelListEqual(Lines.LitPixels(c1), Lines.LitPixels(c2));
+    Check.IntEqual(0, Ppm.MaxChannelDifference(Ppm.CanvasToP6(c1), Ppm.CanvasToP6(c2)));
+});
+
+runner.Run("chapter03-bresenham", "A line going up and to the right", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineBresenham(c, 0, 6, 7, 3, new Color(1, 1, 1));
+    Check.PixelListEqual(new (int, int)[] { (6, 3), (7, 3), (4, 4), (5, 4), (2, 5), (3, 5), (0, 6), (1, 6) }, Lines.LitPixels(c));
+});
+
+runner.Run("chapter03-bresenham", "At an exact half the line stays on its row one step longer", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineBresenham(c, 0, 0, 4, 2, new Color(1, 1, 1));
+    Check.PixelListEqual(new (int, int)[] { (0, 0), (1, 0), (2, 1), (3, 1), (4, 2) }, Lines.LitPixels(c));
+});
+
+runner.Run("chapter03-bresenham", "A line of one point", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineBresenham(c, 3, 3, 3, 3, new Color(1, 1, 1));
+    Check.PixelListEqual(new (int, int)[] { (3, 3) }, Lines.LitPixels(c));
+});
+
+runner.Run("chapter03-bresenham", "A line may run off the canvas", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineBresenham(c, 0, 0, 12, 6, new Color(1, 1, 1));
+    Check.IntEqual(10, Lines.LitPixels(c).Count);
+});
+
+// ---------------------------------------------------------------------
+// features/chapter03-wu.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter03-wu", "A half step lights two pixels equally", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineWu(c, 0, 0, 4, 2, new Color(1, 1, 1));
+    Check.ColorEqual(new Color(1, 1, 1), c.PixelAt(0, 0));
+    Check.ColorEqual(new Color(0.5, 0.5, 0.5), c.PixelAt(1, 0));
+    Check.ColorEqual(new Color(0.5, 0.5, 0.5), c.PixelAt(1, 1));
+    Check.ColorEqual(new Color(1, 1, 1), c.PixelAt(2, 1));
+    Check.ColorEqual(new Color(0, 0, 0), c.PixelAt(2, 2));
+    Check.ColorEqual(new Color(1, 1, 1), c.PixelAt(4, 2));
+    Check.Equal(5, Lines.TotalInk(c));
+});
+
+runner.Run("chapter03-wu", "A diagonal has uniform weights", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineWu(c, 0, 0, 5, 5, new Color(1, 1, 1));
+    Check.PixelListEqual(new (int, int)[] { (0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5) }, Lines.LitPixels(c));
+    Check.ColorEqual(new Color(1, 1, 1), c.PixelAt(3, 3));
+    Check.Equal(6, Lines.TotalInk(c));
+});
+
+runner.Run("chapter03-wu", "A horizontal line has weight 1 on its row and 0 on the neighbors", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineWu(c, 0, 3, 7, 3, new Color(1, 1, 1));
+    Check.PixelListEqual(new (int, int)[] { (0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3) }, Lines.LitPixels(c));
+    Check.ColorEqual(new Color(1, 1, 1), c.PixelAt(3, 3));
+    Check.ColorEqual(new Color(0, 0, 0), c.PixelAt(3, 2));
+    Check.ColorEqual(new Color(0, 0, 0), c.PixelAt(3, 4));
+    Check.Equal(8, Lines.TotalInk(c));
+});
+
+runner.Run("chapter03-wu", "A steep line weights across columns", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineWu(c, 1, 1, 3, 7, new Color(1, 1, 1));
+    Check.ColorEqual(new Color(1, 1, 1), c.PixelAt(1, 1));
+    Check.ColorEqual(new Color(0.6667, 0.6667, 0.6667), c.PixelAt(1, 2));
+    Check.ColorEqual(new Color(0.3333, 0.3333, 0.3333), c.PixelAt(2, 2));
+    Check.ColorEqual(new Color(1, 1, 1), c.PixelAt(2, 4));
+    Check.ColorEqual(new Color(1, 1, 1), c.PixelAt(3, 7));
+    Check.Equal(7, Lines.TotalInk(c));
+});
+
+runner.Run("chapter03-wu", "The weights don't depend on which end you start from", () =>
+{
+    var c1 = new Canvas(10, 10);
+    var c2 = new Canvas(10, 10);
+    Lines.LineWu(c1, 1, 1, 3, 7, new Color(1, 1, 1));
+    Lines.LineWu(c2, 3, 7, 1, 1, new Color(1, 1, 1));
+    Check.IntEqual(0, Ppm.MaxChannelDifference(Ppm.CanvasToP6(c1), Ppm.CanvasToP6(c2)));
+});
+
+runner.Run("chapter03-wu", "Sevenths", () =>
+{
+    var c = new Canvas(10, 10);
+    Lines.LineWu(c, 0, 0, 7, 3, new Color(1, 1, 1));
+    Check.ColorEqual(new Color(0.5714, 0.5714, 0.5714), c.PixelAt(1, 0));
+    Check.ColorEqual(new Color(0.4286, 0.4286, 0.4286), c.PixelAt(1, 1));
+    Check.ColorEqual(new Color(0.1429, 0.1429, 0.1429), c.PixelAt(2, 0));
+    Check.ColorEqual(new Color(0.8571, 0.8571, 0.8571), c.PixelAt(2, 1));
+    Check.Equal(8, Lines.TotalInk(c));
+});
+
+(int X1, int Y1, double Ink)[] wuAngleExamples =
+{
+    (12, 2, 11), (10, 8, 9), (8, 10, 9), (2, 12, 11)
+};
+foreach (var (x1, y1, ink) in wuAngleExamples)
+{
+    runner.Run("chapter03-wu", $"The ink depends on the angle <{x1}, {y1}>", () =>
+    {
+        var c = new Canvas(20, 20);
+        Lines.LineWu(c, 2, 2, x1, y1, new Color(1, 1, 1));
+        Check.Equal(ink, Lines.TotalInk(c));
+    });
+}
+
+// ---------------------------------------------------------------------
+// features/chapter03-quad.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter03-quad", "Inside a thick line", () =>
+{
+    var s = new ThickLine(0, 0, 4, 0, 1);
+    Check.True(s.Inside(2.5, 0.5), "expected (2.5, 0.5) inside");
+    Check.True(s.Inside(2.5, 1.0), "expected (2.5, 1.0) inside (boundary included)");
+    Check.True(!s.Inside(2.5, 1.01), "expected (2.5, 1.01) outside");
+    Check.True(s.Inside(0.5, 0.5), "expected (0.5, 0.5) inside (boundary included)");
+    Check.True(!s.Inside(0.4, 0.5), "expected (0.4, 0.5) outside");
+    Check.True(s.Inside(4.5, 0.5), "expected (4.5, 0.5) inside (boundary included)");
+    Check.True(!s.Inside(4.6, 0.5), "expected (4.6, 0.5) outside");
+});
+
+runner.Run("chapter03-quad", "A horizontal thick line covers its row, with half pixels at the ends", () =>
+{
+    var s = new ThickLine(0, 3, 7, 3, 1);
+    var cov = Rasterizer.Rasterize(s, 10, 10);
+    Check.Equal(0.5, cov.CoverageAt(0, 3));
+    Check.Equal(1, cov.CoverageAt(1, 3));
+    Check.Equal(1, cov.CoverageAt(6, 3));
+    Check.Equal(0.5, cov.CoverageAt(7, 3));
+    Check.Equal(0, cov.CoverageAt(8, 3));
+    Check.Equal(0, cov.CoverageAt(3, 2));
+    Check.Equal(0, cov.CoverageAt(3, 4));
+    Check.Equal(7, cov.Ink);
+});
+
+(int X1, int Y1)[] thickLineAngleExamples =
+{
+    (12, 2), (10, 8), (8, 10), (2, 12)
+};
+foreach (var (x1, y1) in thickLineAngleExamples)
+{
+    runner.Run("chapter03-quad", $"The ink is the length, whatever the angle <{x1}, {y1}>", () =>
+    {
+        var s = new ThickLine(2, 2, x1, y1, 1);
+        var cov = Rasterizer.Rasterize(s, 20, 20);
+        Check.Equal(10, cov.Ink);
+    });
+}
+
+runner.Run("chapter03-quad", "Except that the grid is blind along the diagonal", () =>
+{
+    var s = new ThickLine(2, 2, 9, 9, 1);
+    var cov = Rasterizer.Rasterize(s, 20, 20);
+    Check.Equal(9.7188, cov.Ink);
+    Check.Equal(9.8995, cov.Ink, 0.25);
+});
+
+// ---------------------------------------------------------------------
+// features/chapter03-plate.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter03-plate", "The ray endpoints", () =>
+{
+    var expected = new (int, int)[]
+    {
+        (152, 80), (142, 116), (116, 142), (80, 152), (44, 142), (18, 116),
+        (8, 80), (18, 44), (44, 18), (80, 8), (116, 18), (142, 44)
+    };
+    Check.PixelListEqual(expected, Renders.RayEnds());
+});
+
+runner.Run("chapter03-plate", "Bresenham's fan", () =>
+{
+    var c = Renders.FanBresenham();
+    var p6 = Ppm.CanvasToP6(c);
+    Check.IntEqual(160, c.Width);
+    Check.IntEqual(160, c.Height);
+    Check.TripleEqual((246, 246, 241), Ppm.PpmPixel(p6, 80, 80), 1);
+    Check.TripleEqual((246, 246, 241), Ppm.PpmPixel(p6, 120, 80), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 10, 10), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 100, 91), 1);
+    Check.TripleEqual((246, 246, 241), Ppm.PpmPixel(p6, 100, 92), 1);
+});
+
+runner.Run("chapter03-plate", "Wu's fan", () =>
+{
+    var c = Renders.FanWu();
+    var p6 = Ppm.CanvasToP6(c);
+    Check.TripleEqual((246, 246, 241), Ppm.PpmPixel(p6, 80, 80), 1);
+    Check.TripleEqual((246, 246, 241), Ppm.PpmPixel(p6, 120, 80), 1);
+    Check.TripleEqual((163, 163, 161), Ppm.PpmPixel(p6, 100, 91), 1);
+    Check.TripleEqual((199, 199, 196), Ppm.PpmPixel(p6, 100, 92), 1);
+});
+
+runner.Run("chapter03-plate", "The fan as twelve thin rectangles", () =>
+{
+    var c = Renders.FanCoverage();
+    var ppmRef = File.ReadAllBytes("reference/chapter-03/fan-coverage.ppm");
+    var p6 = Ppm.CanvasToP6(c);
+    Check.IntEqual(320, c.Width);
+    Check.IntEqual(320, c.Height);
+    Check.TripleEqual((246, 246, 241), Ppm.PpmPixel(p6, 160, 160), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 10, 10), 1);
+    Check.TripleEqual((246, 246, 241), Ppm.PpmPixel(p6, 240, 160), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 240, 158), 1);
+    Check.TripleEqual((177, 177, 174), Ppm.PpmPixel(p6, 200, 183), 1);
+    Check.TripleEqual((209, 209, 205), Ppm.PpmPixel(p6, 200, 185), 1);
+    Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
+});
+
+runner.Run("chapter03-plate", "Plate 3", () =>
+{
+    var c = Renders.Plate03();
+    var ppmRef = File.ReadAllBytes("reference/chapter-03/plate-03.ppm");
+    var p6 = Ppm.CanvasToP6(c);
+    Check.IntEqual(640, c.Width);
+    Check.IntEqual(320, c.Height);
+    Check.TripleEqual((246, 246, 241), Ppm.PpmPixel(p6, 160, 160), 1);
+    Check.TripleEqual((246, 246, 241), Ppm.PpmPixel(p6, 480, 160), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 10, 10), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 200, 183), 1);
+    Check.TripleEqual((246, 246, 241), Ppm.PpmPixel(p6, 200, 185), 1);
+    Check.TripleEqual((163, 163, 161), Ppm.PpmPixel(p6, 520, 183), 1);
+    Check.TripleEqual((199, 199, 196), Ppm.PpmPixel(p6, 520, 185), 1);
+    Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
+});
+
 runner.PrintSummary();
 
 // ---------------------------------------------------------------------
@@ -807,8 +1078,11 @@ File.WriteAllBytes("out/disc-centers.ppm", Ppm.CanvasToP6(Renders.DiscCenters())
 File.WriteAllBytes("out/disc-coverage.ppm", Ppm.CanvasToP6(Renders.DiscCoverage()));
 File.WriteAllBytes("out/painted-twice.ppm", Ppm.CanvasToP6(Renders.PaintedTwice()));
 File.WriteAllBytes("out/plate-02.ppm", Ppm.CanvasToP6(Renders.Plate02()));
+File.WriteAllBytes("out/fan-coverage.ppm", Ppm.CanvasToP6(Renders.FanCoverage()));
+File.WriteAllBytes("out/plate-03.ppm", Ppm.CanvasToP6(Renders.Plate03()));
 Console.WriteLine();
 Console.WriteLine("Wrote out/gray-match.ppm, out/quarter-match.ppm, out/ramp.ppm, out/clamp-pair.ppm, out/plate-01.ppm,");
-Console.WriteLine("      out/disc-centers.ppm, out/disc-coverage.ppm, out/painted-twice.ppm, out/plate-02.ppm");
+Console.WriteLine("      out/disc-centers.ppm, out/disc-coverage.ppm, out/painted-twice.ppm, out/plate-02.ppm,");
+Console.WriteLine("      out/fan-coverage.ppm, out/plate-03.ppm");
 
 return runner.FailedCount == 0 ? 0 : 1;

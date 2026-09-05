@@ -15,6 +15,9 @@ Feature: Plate 3
     And   ppm_pixel(p6, 10, 10) = (39, 39, 44) ± 1
     And   ppm_pixel(p6, 100, 91) = (39, 39, 44) ± 1
     And   ppm_pixel(p6, 100, 92) = (246, 246, 241) ± 1
+    And   ppm_pixel(p6, 103, 120) = (246, 246, 241) ± 1
+    And   ppm_pixel(p6, 102, 120) = (39, 39, 44) ± 1
+    And   ppm_pixel(p6, 104, 120) = (39, 39, 44) ± 1
 
   Scenario: Wu's fan
     Given c ← fan_wu()
@@ -23,6 +26,8 @@ Feature: Plate 3
     And   ppm_pixel(p6, 120, 80) = (246, 246, 241) ± 1
     And   ppm_pixel(p6, 100, 91) = (163, 163, 161) ± 1
     And   ppm_pixel(p6, 100, 92) = (199, 199, 196) ± 1
+    And   ppm_pixel(p6, 103, 120) = (220, 220, 216) ± 1
+    And   ppm_pixel(p6, 104, 120) = (130, 130, 129) ± 1
 
   Scenario: The fan as twelve thin rectangles
     Given c ← fan_coverage()

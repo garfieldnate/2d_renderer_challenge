@@ -238,10 +238,13 @@ def get_linear_blending():
     return _linear_blending
 
 
-def mix(a, b, t):
+def mix(a, b, t, linear=None):
     """Mix two colors. With linear blending on, mix in light space.
-    With it off, mix in encoded file space (like web browsers do)."""
-    if _linear_blending:
+    With it off, mix in encoded file space (like web browsers do).
+    The optional fourth argument overrides the global switch."""
+    if linear is None:
+        linear = _linear_blending
+    if linear:
         # Mix in light space (correct)
         return Color(
             a.red + (b.red - a.red) * t,
@@ -733,7 +736,7 @@ def paint_through(canvas, cov, color):
             coverage_val = coverage_at(cov, x, y)
             if coverage_val > 0:
                 current = pixel_at(canvas, x, y)
-                painted = mix(current, color, coverage_val)
+                painted = mix(current, color, coverage_val, True)
                 write_pixel(canvas, x, y, painted)
 
 
