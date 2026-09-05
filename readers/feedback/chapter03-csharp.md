@@ -1,129 +1,97 @@
-# Chapter 3 feedback
+# C# reader: catch-up feedback
 
-## Ambiguities
+## New scenarios found and added (23 total, 111 -> 134)
 
-- **Rounding direction in `ray_ends()`.** The pseudocode just says `round(...)`.
-  Every value in the twelve endpoints happens to be nowhere near a half-integer,
-  so round-half-up vs. round-half-to-even vs. round-half-away-from-zero are all
-  indistinguishable here. I used `MidpointRounding.AwayFromZero` (C#'s
-  `Math.Round` defaults to banker's rounding, which would have been a silent,
-  untested divergence from "round" as plain English). Worked, but the chapter
-  never actually exercises the tie case it could have chosen to pin.
-- **What "isn't black" means for `lit_pixels`.** I used exact equality
-  (`Red != 0 || Green != 0 || Blue != 0`), not a tolerance. Since every pixel
-  written by `line_bresenham` is either untouched (exactly `(0,0,0)` from
-  `Canvas`'s default) or exactly `col`, and Wu's `plot` explicitly skips a
-  weight of zero (so it never writes a nonzero-but-negligible pixel), exact
-  equality happens to be safe. The chapter doesn't say so explicitly, though,
-  and a tolerance-based version would have been just as defensible.
-- **Zero-length `thick_line`.** `x0=y0=x1=y1` divides by zero when normalizing
-  the direction vector. No scenario exercises it, so I guarded it (falls back
-  to direction `(1, 0)`) rather than leaving a `NaN` shape, purely for safety —
-  this is unverified by any test.
+- **Ch1 mix**: `The light's way never clamps`, `The switch can be passed instead
+  of set` (mix's optional 4th arg), plus two renamed scenarios with an added
+  t=0.5 probe (`The browser's way clamps each end before encoding it`, `The
+  ends of a mix are its inputs either way, when they're in range`). Dropped
+  `Linear blending is on by default`, which no longer exists in the feature
+  file.
+- **Ch1 ppm**: `The same width with a different height is still a different
+  size`.
+- **Ch1 plate**: renamed `The plate` -> `Plate 1` (same body).
+- **Ch2 p6**: `Rows go top to bottom`, `The binary writer clamps too`, `Pixel
+  bytes that look like whitespace are still pixel bytes`.
+- **Ch2 centers**: `The center question is not "at least half"`, `A buffer
+  need not be square`, `A rectangle, by asking each center`; renamed
+  `Setting coverage outside the buffer is ignored` -> `...and reading it
+  gives 0` with added `coverage_at` probes.
+- **Ch2 paint**: renamed `The arithmetic is on light` -> `...whatever the
+  switch says`, now turns linear blending off first.
+- **Ch2 coverage**: `Neither need the buffer be square here`.
+- **Ch2 plate**: renamed `The plate` -> `Plate 2` (same body).
+- **Ch3 bresenham**: `lit_pixels reads like a page`.
+- **Ch3 wu**: `A line that starts above the canvas`, `A Wu line of one
+  point`.
+- **Ch3 quad**: `A line of no length is a square`, `A wider line`, `An
+  off-axis line runs through pixel centers, not corners`.
+- **Ch3 plate**: `Bresenham's fan` and `Wu's fan` gained three steep-ray
+  probes each (rows 120, columns 102-104); also found `Bresenham's fan` and
+  `Wu's fan` were never diffing against their reference PPMs at all — added
+  the missing `max_channel_difference(...) <= 1` checks.
 
-## Hard to translate
+## Failures found and fixed
 
-- `lit_pixels` and `total_ink` are test helpers with no feature-file "Given"
-  syntax of their own — they only appear inside `Then` clauses. Translating
-  them meant reading the prose (§3.1, §3.2) rather than the feature file to
-  learn their contracts (reading order, "sum of the red channel"). Routine,
-  but worth flagging: the feature files alone are not self-contained specs
-  for this chapter the way chapters 1–2 mostly were.
-- The plate scenarios (`fan_bresenham`, `fan_wu`, `fan_coverage`, `plate_03`)
-  are specified only as pseudocode in prose, not in the `.feature` file
-  (which just checks their output). I translated the pseudocode directly
-  rather than the JS figure code in the `<script>` (which takes a bounding-box
-  shortcut around each ray for `fan_coverage` — a legitimate rendering
-  optimization for a browser figure, but not what `fan_coverage()`'s own
-  pseudocode says: it rasterizes the *full* 160×160 canvas per ray). Getting
-  byte-identical output despite that shortcut existing right there in the
-  chapter took a careful re-read to confirm the JS was a figure-drawing
-  convenience, not the spec.
+Three real bugs, all caught by the new scenarios above, not by anything I
+went looking for on my own:
 
-## Failures
+1. **`CoverageBuffer.CoverageAt` threw `IndexOutOfRangeException` instead of
+   returning 0** for out-of-bounds (x, y). Writes were already
+   bounds-checked; reads weren't. Caught by `...and reading it gives 0`.
+   Fixed with the same bounds check `WritePixel`/`SetCoverage` already use.
+2. **`Paint.PaintThrough` respected the global linear-blending switch**
+   instead of forcing it on. With the switch off it silently used the
+   browser's encode-lerp-decode path, which the chapter never intends for
+   coverage. Caught by the newly-strict `...whatever the switch says`
+   scenario (turns blending off first). Fixed by giving `Mix.Blend` an
+   optional 4th `bool? linear` argument that overrides the switch for one
+   call, and having `PaintThrough` pass `linear: true`.
+3. **Zero-length `ThickLine` collapsed to a measure-zero sliver** instead of
+   a width-by-width square: with `x0==x1, y0==y1`, the two end caps sat
+   exactly on top of each other (no offset), so no pixel center or sample
+   point could ever satisfy both `Inside` half-planes — `ink` came out 0
+   instead of 1. Caught by `A line of no length is a square`. Fixed by
+   pushing the end caps out by half the width, same as the side planes,
+   whenever the segment has zero length.
 
-None in the final suite. Two things surprised me enough to double-check
-before trusting them:
+Everything else the new scenarios probed (`A buffer need not be square`,
+non-square `rasterize`, the Wu line starting at row -1, the Wu line of one
+point, `lit_pixels` ordering, thick_line width 3, the off-axis thick_line,
+mix's optional 4th argument itself) already worked once written — the
+existing `Coverage`/`Rasterize`/`LineWu`/`LineBresenham`/`LitPixels` code
+handled them correctly; they just weren't pinned yet.
 
-- `chapter03-quad`'s "grid is blind along the diagonal" scenario asserts
-  `ink(cov) = 9.7188` (exact, default tolerance 0.0001) **and**
-  `ink(cov) = 9.8995 ± 0.25` in the same scenario — the second assertion is
-  strictly weaker and always true given the first. Not a bug, just an odd
-  scenario shape (reads like two drafts of the same check left in after an
-  edit); flagging in case it's not intentional.
-- `fan_coverage()`'s ink figure ("twenty million inside tests... twenty
-  seconds") described an interpreted-language number. Compiled (Release,
-  post-JIT-warmup), the entire 119-scenario suite plus every render write
-  finishes in well under a second. Not a failure, just a reminder that the
-  "it's slow" lesson doesn't reproduce under .NET the way the chapter
-  implies it will for the reader trying this at home.
+## Ambiguity
 
-## Mistakes that stay green
+None worth flagging. The renamed scenarios (`Plate 1`/`Plate 2`, the two
+mix titles, the coverage-outside-buffer title) are unambiguous — same Given/
+When/Then, new title or one extra assertion — so no prose or scenario
+change was needed, only bringing the runner's transcription up to date.
 
-Deliberately reintroduced five plausible bugs one at a time and reran the
-suite:
+## The 9.71875 diagonal scenario
 
-| Mistake | Caught? | Detail |
-|---|---|---|
-| Bresenham `err` init to `0` instead of `dx/2` | **Yes**, hard | 5/9 bresenham scenarios fail, plus Plate 3 |
-| Steep swap forgotten (Bresenham) | **Yes** | only "A steep line steps along y" + Plate 3 fail — the other 7 scenarios are shallow or exactly diagonal and don't need the swap |
-| Steep swap forgotten (Wu) | **Yes** | 3/10 wu scenarios + Plate 3 fail |
-| Wu weights swapped (`f` / `1-f` reversed) | **Yes**, hard | 5/10 wu scenarios + 2 plate scenarios fail |
-| Wu `floor` replaced with `round` | **Yes** | 5/10 wu scenarios fail; "diagonal has uniform weights" *doesn't* catch it (integer y at every x, so floor and round agree) |
-| `thick_line` half-planes facing outward | **Yes**, total | all 7 quad scenarios fail plus 1 plate scenario — an inverted half-plane empties the shape almost everywhere, impossible to miss |
-| `thick_line` built from pixel corners, not centers | **Partially green** | only 2/7 quad scenarios + 1 plate scenario fail. The two "ink is the length" outline scenarios (4 angled lines) and the diagonal-blindness scenario all still pass, because shifting *both* endpoints by the same `(-0.5, -0.5)` is a rigid translation that doesn't change a shape's area or its angle relative to the sample grid — coverage-sum invariants like `ink` can't see a pure translation. Only tests that check *where* coverage lands (`coverage_at` at specific pixels, or pixel-value assertions in the plates) catch it. This is a real gap: a reader who only ran the outline scenarios and the diagonal one, skipping the horizontal-line scenario, would ship this bug undetected. |
-| `lit_pixels` walks columns before rows (column-major, not reading order) | **Mostly invisible** | only 1 of 19 bresenham/wu scenarios that use `lit_pixels`/pixel-list checks fails ("A line going up and to the right"). Every other scenario's line has `x` and `y` moving in the same direction (or is exactly diagonal, `x == y`), so row-major and column-major orderings coincide by accident. This is the biggest real hole in the suite: reading order is asserted, but almost every scenario picked happens to not require it. |
+Passed as written, with the feature's exact literal (I tightened the
+assertion from a hand-rounded `9.7188` to `9.71875`, still within the same
+tolerance). Printed `cov.Ink` in both Debug and Release configs before
+settling on that: both gave exactly `9.71875`, so this machine's RyuJIT
+(arm64) is not fusing the half-plane's `dx * Nx + dy * Ny` into an FMA the
+way the chapter's trap warns x64-with-AVX2 compilers might. No `9.65625`
+observed here; a reader on different hardware might see it, per the
+chapter's own caveat.
 
-## Prose
+## Final counts
 
-Chapter 3 is the strongest writing of the three so far. The Bresenham/Wu/
-coverage progression builds real understanding (the "18% less paint" reveal
-in §3.3 is genuinely satisfying), and the "special-purpose primitives are a
-local optimum" closing line earns its place. Two small notes:
+134/134 scenarios passing across all three chapters (was 119/119 before,
+against a suite that was silently missing 23 of the book's current 134
+scenarios — the pass/fail summary looked clean because the missing
+scenarios simply weren't transcribed yet, not because they passed).
 
-- The `ray_ends()` pseudocode uses `k * 30 degrees` — informal but
-  unambiguous — while `line_bresenham`'s pseudocode is precise pidgin-code
-  throughout. Fine, just a register shift worth knowing is intentional.
-- "Two things in there are load-bearing" (steep swap, left-to-right swap) is
-  a good instinct — it's exactly what the mutation testing above confirms
-  matters — but the scenario `A line may run off the canvas` only ever
-  tests the *count* of lit pixels (10), not their identity, so a bug that
-  clips a line into a different but still-10-pixel shape would sail through.
+- Chapter 1: 82/82 (equality 3, colors 6, canvas 6, srgb 20, ppm 11, mix 9,
+  gray-match 3, limits 3, plate 1)
+- Chapter 2: 35/35 (shapes 4, p6 6, magnify 2, centers 8, paint 5,
+  coverage 7, twice 2, plate 1)
+- Chapter 3: 37/37 (bresenham 10, wu 12, quad 10, plate 5)
 
-## Would change
-
-- Add one more Bresenham scenario with a genuinely negative-and-steep slope
-  through pixels that aren't monotone in a way that makes reading order
-  moot — something that actually distinguishes row-major from column-major
-  the way "A line going up and to the right" does, but for a steep line too
-  (right now only the shallow up-and-right case tests it).
-- Tighten `thick_line`'s corner-vs-center coverage: add a scenario like
-  `thick_line(0, 0, 4, 0, 1)` at asymmetric coordinates (not starting at the
-  origin) so a corner/center off-by-half can't hide behind translation
-  invariance the way it does now.
-- Either drop or explain the redundant second assertion in "Except that the
-  grid is blind along the diagonal" (`9.8995 ± 0.25` next to an exact
-  `9.7188`).
-
-## Results
-
-- `chapter03-bresenham`: 9/9
-- `chapter03-wu`: 10/10
-- `chapter03-quad`: 7/7
-- `chapter03-plate`: 5/5
-- Chapter 3 total: 31/31
-- Grand total (chapters 1–3): 119/119
-- `dotnet run` (debug build + full suite + all renders): ~3.3s, dominated by
-  the JIT/build step, not the scenarios themselves.
-- Pre-built Release binary, all 119 scenarios + all renders, cold start to
-  exit: ~0.70s.
-- `out/fan-coverage.ppm` and `out/plate-03.ppm`: byte-identical to
-  `reference/chapter-03/*.ppm` (`cmp` reports no difference), not merely
-  within the ±1 tolerance the scenarios ask for.
-- Time hotspot, measured directly (stub out `Renders.FanCoverage()` and
-  rerun the Release binary): `fan_coverage()` — twelve `thick_line`
-  rasterizations of a 160×160 canvas at 64 samples/pixel (~19.6M `Inside`
-  calls per call site, called twice: once by its own scenario, once for the
-  `out/` render) accounts for ~0.15s of the ~0.70s total, i.e. it's the
-  single largest identifiable cost in the suite even though its absolute
-  time is trivial. Everything else in chapters 1–3 is comparatively free.
+`out/fan-bresenham.ppm`, `out/fan-wu.ppm`, `out/fan-coverage.ppm` and
+`out/plate-03.ppm` are all byte-identical to `reference/chapter-03/*.ppm`.

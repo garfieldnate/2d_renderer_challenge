@@ -12,9 +12,14 @@ public static class Mix
     // [ThreadStatic] would matter for a parallel runner; this suite runs serially.
     public static bool LinearBlending { get; set; } = true;
 
-    public static Color Blend(Color a, Color b, double t)
+    /// <summary>
+    /// The optional fourth argument overrides the global switch for this one
+    /// call only, leaving LinearBlending untouched either way.
+    /// </summary>
+    public static Color Blend(Color a, Color b, double t, bool? linear = null)
     {
-        if (LinearBlending)
+        bool useLinear = linear ?? LinearBlending;
+        if (useLinear)
         {
             return a + (b - a) * t;
         }

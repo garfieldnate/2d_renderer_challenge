@@ -110,10 +110,17 @@ public sealed class ThickLine : IShape
         double nx = -dy, ny = dx;
         double half = width / 2.0;
 
+        // A zero-length line has no direction to be flush against, so its
+        // caps get pushed out by half the width too, same as its sides:
+        // the result is a width-by-width square, not a degenerate sliver.
+        double capOffset = length > 0 ? 0 : half;
+        double sx = ax - capOffset * dx, sy = ay - capOffset * dy;
+        double ex = bx + capOffset * dx, ey = by + capOffset * dy;
+
         _planes = new[]
         {
-            new HalfPlane(ax, ay, dx, dy),
-            new HalfPlane(bx, by, -dx, -dy),
+            new HalfPlane(sx, sy, dx, dy),
+            new HalfPlane(ex, ey, -dx, -dy),
             new HalfPlane(ax + nx * half, ay + ny * half, -nx, -ny),
             new HalfPlane(ax - nx * half, ay - ny * half, nx, ny),
         };

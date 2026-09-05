@@ -20,8 +20,20 @@ chapters 2 and 3).
 `Lines.cs` adds `line_bresenham` and `line_wu` (plus the `plot`,
 `lit_pixels` and `total_ink` test helpers). `Shapes.cs` grows one case,
 `ThickLine`, built from four `HalfPlane`s exactly the way chapter 2's
-`Circle` and `Rectangle` are — no new rasterizer needed. `Renders.cs`
-adds `ray_ends`, `fan_bresenham`, `fan_wu`, `fan_coverage` and `plate_03`.
+`Circle` and `Rectangle` are — no new rasterizer needed. A zero-length
+`ThickLine` has no direction to be flush against, so its caps push out
+by half the width too, same as its sides, making a width-by-width
+square. `Renders.cs` adds `ray_ends`, `fan_bresenham`, `fan_wu`,
+`fan_coverage` and `plate_03`.
 
-`out/fan-coverage.ppm` and `out/plate-03.ppm` match
-`reference/chapter-03/*.ppm` byte for byte.
+`out/fan-bresenham.ppm`, `out/fan-wu.ppm`, `out/fan-coverage.ppm` and
+`out/plate-03.ppm` all match `reference/chapter-03/*.ppm` byte for byte.
+
+## Notes for chapter 1 and 2 readers
+
+`Mix.Blend(a, b, t)` takes an optional fourth argument that overrides the
+global linear-blending switch for that one call only, without changing
+the switch itself. `Paint.PaintThrough` always blends in light,
+regardless of the switch — coverage isn't a browser color. Reading a
+`CoverageBuffer` outside its bounds returns 0, the same way writing
+outside it is ignored.

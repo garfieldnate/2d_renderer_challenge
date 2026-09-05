@@ -25,7 +25,12 @@ public sealed class CoverageBuffer
         _values[y * Width + x] = coverage;
     }
 
-    public double CoverageAt(int x, int y) => _values[y * Width + x];
+    /// <summary>Reads outside the buffer are 0, same as writes are ignored.</summary>
+    public double CoverageAt(int x, int y)
+    {
+        if (x < 0 || x >= Width || y < 0 || y >= Height) return 0;
+        return _values[y * Width + x];
+    }
 
     /// <summary>The sum of every value: the area of the shape, in pixels, as the buffer sees it.</summary>
     public double Ink => _values.Sum();
