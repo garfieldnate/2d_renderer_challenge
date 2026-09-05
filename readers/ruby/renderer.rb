@@ -833,39 +833,39 @@ end
 # Render functions for Chapter 2 tests
 
 def disc_centers
-  c = Canvas.new(320, 320)
+  c = canvas(40, 40)
   fill(c, color(0.02, 0.02, 0.025))
-  shape = circle(160, 160, 128)
-  cov = rasterize_centers(shape, 160, 160)
+  shape = circle(20, 20, 16)
+  cov = rasterize_centers(shape, 40, 40)
 
-  # Create coverage buffer for full canvas
-  full_cov = coverage_buffer(320, 320)
-  160.times do |y|
-    160.times do |x|
+  # Create coverage buffer
+  full_cov = coverage_buffer(40, 40)
+  40.times do |y|
+    40.times do |x|
       set_coverage(full_cov, x, y, coverage_at(cov, x, y))
     end
   end
 
   paint_through(c, full_cov, color(0.9, 0.55, 0.1))
-  c
+  magnify(c, 8)
 end
 
 def disc_coverage
-  c = Canvas.new(320, 320)
+  c = canvas(40, 40)
   fill(c, color(0.02, 0.02, 0.025))
-  shape = circle(160, 160, 128)
-  cov = rasterize(shape, 160, 160)
+  shape = circle(20, 20, 16)
+  cov = rasterize(shape, 40, 40)
 
-  # Create coverage buffer for full canvas
-  full_cov = coverage_buffer(320, 320)
-  160.times do |y|
-    160.times do |x|
+  # Create coverage buffer
+  full_cov = coverage_buffer(40, 40)
+  40.times do |y|
+    40.times do |x|
       set_coverage(full_cov, x, y, coverage_at(cov, x, y))
     end
   end
 
   paint_through(c, full_cov, color(0.9, 0.55, 0.1))
-  c
+  magnify(c, 8)
 end
 
 def painted_twice

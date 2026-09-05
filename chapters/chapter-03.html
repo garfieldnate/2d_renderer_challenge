@@ -167,12 +167,12 @@ fan_bresenham():
     line_bresenham(c, 80, 80, x, y, color(0.92, 0.92, 0.88))
   <span class="kw">return</span> c</code></pre>
 
-  <p>Open it and look at the rays. The horizontal and vertical ones are solid bars. The diagonals are
-    a string of beads, thinner and lighter, because a 45° line lights one pixel per column but the
-    pixels only touch at their corners. The ones at 30° and 60° are the worst: a run of two, a run of
-    one, a run of two, and the runs are the same everywhere along the ray, so your eye picks up the
-    period and reads it as a texture. Every ray is drawn with the same rule and the same color, and
-    they don't look like the same line.</p>
+  <p>Open it and look at the rays. The horizontal and vertical ones are solid bars. Every slanted
+    one is a repeating pattern of short runs: at 30° the line rises 0.577 pixels per column, so it
+    stays on a row for two columns, then one, then two, and the pattern recurs all the way out. Your
+    eye picks up the period and reads it as a texture, and at 60° the same thing happens down the
+    other axis. Every ray is drawn with the same rule and the same color, and they don't look like
+    the same line.</p>
 
   <h2><span class="sec">§ 3.2</span> Wu</h2>
 
@@ -298,9 +298,9 @@ fan_bresenham():
     place of <code>line_bresenham</code> and nothing else changed, and put the two files side by
     side. The beads are gone. Then look at the last scenario, the one with the outline. Four lines of
     exactly the same length, ten pixels, and the ink comes to 11 for the axis-aligned ones and 9 for
-    the ones at an angle. Wu's rays look smooth, but the diagonal ones are carrying 18% less paint
-    than the horizontal ones, and if you squint at the fan you can see it: the 45° rays are
-    thinner.</p>
+    the ones at an angle. Wu's rays look smooth, but the slanted ones are carrying up to 18% less
+    paint than the horizontal ones, and if you squint at the fan you can see it: the rays at 30° and
+    60° are thinner than the axes.</p>
 
   <h2><span class="sec">§ 3.3</span> The reveal</h2>
 
@@ -308,8 +308,8 @@ fan_bresenham():
     covers 70% of one pixel and 30% of the next, more or less. Wu's algorithm is computing the coverage
     of a thin rectangle, badly, one column at a time. The <em>less</em> is the 18%: a rectangle one
     pixel wide and ten long has area 10 at any angle, and Wu's two-pixels-per-column rule can't see
-    that, because at 45° each column is a diagonal slice through the band and the slice is longer
-    than the band is wide.</p>
+    that, because on a slanted line each column is a slanted slice through the band, and the slice
+    is longer than the band is wide.</p>
 
   <figure>
     <canvas id="fig33" role="img" aria-label="A thin rectangle one pixel wide drawn at an angle across a pixel grid, defined by four half-planes, with each cell shaded by the fraction the rectangle covers"></canvas>
@@ -434,7 +434,7 @@ fan_bresenham():
 
   <figure class="plate wide" id="plate">
     <canvas id="plate3" role="img" aria-label="Two fans of twelve rays: Bresenham's on the left with beaded, uneven diagonals, and Wu's on the right with smooth rays of slightly varying weight"></canvas>
-    <figcaption><span class="fig">Plate 3</span> Bresenham's fan, then Wu's. The left-hand rays flicker: beads on the diagonals, stripes at 30° and 60°. The right-hand ones are smooth, and if you look closely, the diagonals are a shade lighter than the axes. Figure 3.4 is the version where they aren't.</figcaption>
+    <figcaption><span class="fig">Plate 3</span> Bresenham's fan, then Wu's. The left-hand rays flicker: every slanted ray is a repeating pattern of one- and two-pixel runs. The right-hand ones are smooth, and if you look closely, the slanted rays are a shade lighter than the axes. Figure 3.4 is the version where they aren't.</figcaption>
   </figure>
 
   <figure class="wide">
