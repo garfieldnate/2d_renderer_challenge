@@ -202,11 +202,19 @@ func readFile(_ path: String) -> [UInt8] {
 // ---------------------------------------------------------------- § 1.7 mix
 var linearBlending = true
 
-func mix(_ a: Color, _ b: Color, _ t: Double) -> Color {
-    if linearBlending {
+/// clamp01, applied to every channel of a color
+func clamp01(_ c: Color) -> Color { Color(clamp01(c.red), clamp01(c.green), clamp01(c.blue)) }
+
+/// The fourth argument, when given, overrides the linearBlending switch for
+/// this call only -- the switch itself is left untouched.
+func mix(_ a: Color, _ b: Color, _ t: Double, _ linear: Bool? = nil) -> Color {
+    if linear ?? linearBlending {
         return a + (b - a) * t
     }
-    let ea = encode(a), eb = encode(b)
+    // The browser's way: clamp each end to 0-1 before encoding it, not the
+    // lerp's result -- clamping the result instead would agree with this at
+    // t = 0 and t = 1 and only disagree in between.
+    let ea = encode(clamp01(a)), eb = encode(clamp01(b))
     return decode(ea + (eb - ea) * t)
 }
 

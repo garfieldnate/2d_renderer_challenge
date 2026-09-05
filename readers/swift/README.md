@@ -5,7 +5,7 @@ Run everything from this directory.
 
 ```sh
 ./build.sh          # swiftc -O -o run Sources/*.swift
-./run               # runs all 131 scenarios, per-chapter counts, exits non-zero on failure
+./run               # runs all 138 scenarios, per-chapter counts, exits non-zero on failure
 ./run render        # writes out/ — chapter 1 as P3, chapters 2-3 as P6
 ```
 

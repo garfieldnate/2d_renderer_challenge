@@ -256,6 +256,21 @@ func runTests() {
             try step(line.count <= 70, "line \(i + 1) is \(line.count) characters")
         }
     }
+    scenario("A line of exactly 70 characters is allowed") {
+        let c = canvas(8, 1)
+        fill(c, color(1, 0.1, 0))
+        writePixel(c, 7, 0, color(1, 1, 1))
+        let ppm = canvasToPPM(c)
+        let l = lines(ppm)
+        let want = [
+            "255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 255",
+            "255",
+        ]
+        for i in 0..<2 {
+            try step(l[3 + i] == want[i], "line \(4 + i) is \"\(l[3 + i])\", want \"\(want[i])\"")
+        }
+        try step(l[3].count == 70, "line 4 is \(l[3].count) characters, want 70")
+    }
     scenario("The file ends with a newline") {
         let ppm = canvasToPPM(canvas(5, 3))
         try step(ppm.hasSuffix("\n"), "does not end with a newline")
@@ -267,12 +282,30 @@ func runTests() {
         try eqPx(ppmPixel(ppm, 2, 1), (0, 188, 255), 0, "ppm_pixel(ppm, 2, 1)")
         try eqPx(ppmPixel(ppm, 1, 1), (0, 0, 0), 0, "ppm_pixel(ppm, 1, 1)")
     }
+    scenario("Counting the distinct values in a file") {
+        let c = canvas(3, 1)
+        writePixel(c, 0, 0, color(1, 0, 0))
+        writePixel(c, 1, 0, color(0, 0.5, 0))
+        writePixel(c, 2, 0, color(0, 0, 0.216))
+        let ppm = canvasToPPM(c)
+        try eqI(distinctValues(ppm), 4, "distinct_values(ppm)")
+    }
     scenario("Comparing two files") {
         let c1 = canvas(2, 1), c2 = canvas(2, 1)
         writePixel(c2, 0, 0, color(0.5, 0, 0))
         let ppm1 = canvasToPPM(c1), ppm2 = canvasToPPM(c2)
         try eqI(maxChannelDifference(ppm1, ppm1), 0, "max_channel_difference(ppm1, ppm1)")
         try eqI(maxChannelDifference(ppm1, ppm2), 188, "max_channel_difference(ppm1, ppm2)")
+    }
+    scenario("Files of different sizes are as different as it gets") {
+        let c1 = canvas(5, 3), c2 = canvas(3, 5)
+        let ppm1 = canvasToPPM(c1), ppm2 = canvasToPPM(c2)
+        try eqI(maxChannelDifference(ppm1, ppm2), 255, "max_channel_difference(ppm1, ppm2)")
+    }
+    scenario("The same width with a different height is still a different size") {
+        let c1 = canvas(5, 3), c2 = canvas(5, 4)
+        let ppm1 = canvasToPPM(c1), ppm2 = canvasToPPM(c2)
+        try eqI(maxChannelDifference(ppm1, ppm2), 255, "max_channel_difference(ppm1, ppm2)")
     }
 
     // ========================================== chapter01-gray-match.feature
@@ -352,7 +385,27 @@ func runTests() {
         let a = color(0.7, 0, 0), b = color(0, 0.3, 0.02)
         try eqC(mix(a, b, 0.5), color(0.1527, 0.0693, 0.0067), "mix(a, b, 0.5)")
     }
-    scenario("The ends of a mix are its inputs either way") {
+    scenario("The light's way never clamps") {
+        linearBlending = true
+        let a = color(1.5, 0.5, -0.2), b = color(0, 0, 0)
+        try eqC(mix(a, b, 0), color(1.5, 0.5, -0.2), "mix(a, b, 0)")
+        try eqC(mix(a, b, 0.5), color(0.75, 0.25, -0.1), "mix(a, b, 0.5)")
+    }
+    scenario("The switch can be passed instead of set") {
+        linearBlending = true
+        let a = color(0, 0, 0), b = color(1, 1, 1)
+        try eqC(mix(a, b, 0.5, true), color(0.5, 0.5, 0.5), "mix(a, b, 0.5, true)")
+        try eqC(mix(a, b, 0.5, false), color(0.2140, 0.2140, 0.2140), "mix(a, b, 0.5, false)")
+        try step(linearBlending, "linear blending is on")
+    }
+    scenario("The browser's way clamps each end before encoding it") {
+        linearBlending = true
+        linearBlending = false
+        let a = color(1.5, 0.5, -0.2), b = color(0, 0, 0)
+        try eqC(mix(a, b, 0), color(1, 0.5, 0), "mix(a, b, 0)")
+        try eqC(mix(a, b, 0.5), color(0.2140, 0.1113, 0.0000), "mix(a, b, 0.5)")
+    }
+    scenario("The ends of a mix are its inputs either way, when they're in range") {
         linearBlending = true
         linearBlending = false
         let a = color(0.7, 0, 0), b = color(0, 0.3, 0.02)
