@@ -95,6 +95,8 @@ def thick_line(x0, y0, x1, y1, width):
     ax, ay, bx, by = x0 + 0.5, y0 + 0.5, x1 + 0.5, y1 + 0.5
     dx, dy = bx - ax, by - ay
     length = math.hypot(dx, dy)
+    if length == 0:
+        dx, dy, length = 1.0, 0.0, 1.0   # a zero-length line is a width-by-width square
     dx, dy = dx / length, dy / length
     nx, ny = -dy, dx
     h = width / 2
@@ -163,6 +165,8 @@ def plate_03():
 
 
 RENDERS = {
+    "fan-bresenham": fan_bresenham,
+    "fan-wu": fan_wu,
     "fan-coverage": fan_coverage,
     "plate-03": plate_03,
 }

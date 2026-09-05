@@ -5,6 +5,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* No fused multiply-add. thick_line's half-plane test relies on exact
+   cancellation for sample points that land exactly on an edge; contracting
+   a*b + c*d into an fma changes the last bit and loses four samples out of
+   sixty-four in the 45 degree scenario. */
+#pragma STDC FP_CONTRACT OFF
+
 /* ---- colors ---------------------------------------------------------- */
 Color color(double r, double g, double b) { Color c = {r, g, b}; return c; }
 Color color_add(Color a, Color b) { return color(a.red+b.red, a.green+b.green, a.blue+b.blue); }
@@ -258,15 +264,37 @@ Canvas *magnify(const Canvas *c, int k) {
 
 /* ---- shapes ----------------------------------------------------------- */
 Shape circle(double cx, double cy, double r) {
-    Shape s = {SHAPE_CIRCLE, cx, cy, r, 0};
+    Shape s = {SHAPE_CIRCLE, cx, cy, r, 0, {{0}}};
     return s;
 }
 Shape rectangle(double x0, double y0, double x1, double y1) {
-    Shape s = {SHAPE_RECTANGLE, x0, y0, x1, y1};
+    Shape s = {SHAPE_RECTANGLE, x0, y0, x1, y1, {{0}}};
     return s;
 }
 Shape half_plane(double px, double py, double nx, double ny) {
-    Shape s = {SHAPE_HALF_PLANE, px, py, nx, ny};
+    Shape s = {SHAPE_HALF_PLANE, px, py, nx, ny, {{0}}};
+    return s;
+}
+
+/* A line is a very thin rectangle: four half-planes, all facing inward.
+   The segment runs center to center, so (x0, y0) contributes its half pixel. */
+static void set_half(double h[4], double px, double py, double nx, double ny) {
+    h[0] = px; h[1] = py; h[2] = nx; h[3] = ny;
+}
+
+Shape thick_line(double x0, double y0, double x1, double y1, double width) {
+    double ax = x0 + 0.5, ay = y0 + 0.5, bx = x1 + 0.5, by = y1 + 0.5;
+    double dx = bx - ax, dy = by - ay;
+    double len = sqrt(dx * dx + dy * dy);
+    if (len == 0) { dx = 1; dy = 0; } else { dx /= len; dy /= len; }
+    double nx = -dy, ny = dx;          /* the unit normal */
+    double half = width / 2;
+
+    Shape s = {SHAPE_THICK_LINE, ax, ay, bx, by, {{0}}};
+    set_half(s.h[0], ax, ay,  dx,  dy);                              /* across the start */
+    set_half(s.h[1], bx, by, -dx, -dy);                              /* across the end */
+    set_half(s.h[2], ax + nx * half, ay + ny * half, -nx, -ny);      /* one side */
+    set_half(s.h[3], ax - nx * half, ay - ny * half,  nx,  ny);      /* the other */
     return s;
 }
 
@@ -280,6 +308,14 @@ bool inside(Shape s, double x, double y) {
         return x >= s.a && x <= s.c && y >= s.b && y <= s.d;
     case SHAPE_HALF_PLANE:
         return (x - s.a) * s.c + (y - s.b) * s.d >= 0;  /* normal points inward */
+    case SHAPE_THICK_LINE:
+        /* inside all four half-planes, same test as above, written out so the
+           supersampler isn't copying a Shape twenty million times */
+        for (int i = 0; i < 4; i++) {
+            const double *h = s.h[i];
+            if ((x - h[0]) * h[2] + (y - h[1]) * h[3] < 0) return false;
+        }
+        return true;
     }
     return false;
 }
@@ -479,5 +515,111 @@ Canvas *plate_02(void) {
     coverage_free(left); coverage_free(right); coverage_free(both);
     Canvas *m = magnify(c, 6);
     canvas_free(c);
+    return m;
+}
+
+
+/* ---- chapter 3: lines -------------------------------------------------- */
+/* Bresenham 1962: one pixel per step along the longer axis, integer only.
+   err starts at dx/2 with integer division, so an exact half stays put. */
+void line_bresenham(Canvas *c, int x0, int y0, int x1, int y1, Color col) {
+    int steep = abs(y1 - y0) > abs(x1 - x0);
+    if (steep) { int t; t = x0; x0 = y0; y0 = t; t = x1; x1 = y1; y1 = t; }
+    if (x0 > x1) { int t; t = x0; x0 = x1; x1 = t; t = y0; y0 = y1; y1 = t; }
+
+    int dx = x1 - x0;
+    int dy = abs(y1 - y0);
+    int ystep = y0 < y1 ? 1 : -1;
+    int err = dx / 2;
+    int y = y0;
+
+    for (int x = x0; x <= x1; x++) {
+        if (steep) write_pixel(c, y, x, col);
+        else       write_pixel(c, x, y, col);
+        err -= dy;
+        if (err < 0) { y += ystep; err += dx; }
+    }
+}
+
+/* paint_through for a single pixel */
+void plot(Canvas *c, int x, int y, Color col, double weight) {
+    if (weight == 0) return;
+    if (x < 0 || y < 0 || x >= c->width || y >= c->height) return;
+    write_pixel(c, x, y, mix(pixel_at(c, x, y), col, weight));
+}
+
+/* Wu 1991: the same walk, but each step splits its paint between the two
+   pixels the ideal line falls between. Integer endpoints only. */
+void line_wu(Canvas *c, int x0, int y0, int x1, int y1, Color col) {
+    int steep = abs(y1 - y0) > abs(x1 - x0);
+    if (steep) { int t; t = x0; x0 = y0; y0 = t; t = x1; x1 = y1; y1 = t; }
+    if (x0 > x1) { int t; t = x0; x0 = x1; x1 = t; t = y0; y0 = y1; y1 = t; }
+
+    int dx = x1 - x0;
+    double slope = dx == 0 ? 0.0 : (double)(y1 - y0) / dx;
+
+    for (int x = x0; x <= x1; x++) {
+        double y = y0 + (x - x0) * slope;
+        double yi = floor(y);
+        double f = y - yi;
+        int iy = (int)yi;
+        if (steep) { plot(c, iy, x, col, 1 - f); plot(c, iy + 1, x, col, f); }
+        else       { plot(c, x, iy, col, 1 - f); plot(c, x, iy + 1, col, f); }
+    }
+}
+
+/* ---- the fan ----------------------------------------------------------- */
+#define PI 3.14159265358979323846
+
+static const Color FAN_PAPER = {0.02, 0.02, 0.025};
+static const Color FAN_INK   = {0.92, 0.92, 0.88};
+
+void ray_ends(int out[12][2]) {
+    for (int k = 0; k < 12; k++) {
+        double a = k * 30.0 * PI / 180.0;
+        out[k][0] = (int)lround(80 + 72 * cos(a));
+        out[k][1] = (int)lround(80 + 72 * sin(a));
+    }
+}
+
+static Canvas *fan(void (*draw)(Canvas *, int, int, int, int, Color)) {
+    Canvas *c = canvas(160, 160);
+    fill(c, FAN_PAPER);
+    int ends[12][2];
+    ray_ends(ends);
+    for (int k = 0; k < 12; k++) draw(c, 80, 80, ends[k][0], ends[k][1], FAN_INK);
+    return c;
+}
+
+Canvas *fan_bresenham(void) { return fan(line_bresenham); }
+Canvas *fan_wu(void)        { return fan(line_wu); }
+
+Canvas *fan_coverage(void) {
+    Canvas *c = canvas(160, 160);
+    fill(c, FAN_PAPER);
+    int ends[12][2];
+    ray_ends(ends);
+    for (int k = 0; k < 12; k++) {
+        CoverageBuffer *cov = rasterize(thick_line(80, 80, ends[k][0], ends[k][1], 1), 160, 160);
+        paint_through(c, cov, FAN_INK);
+        coverage_free(cov);
+    }
+    Canvas *m = magnify(c, 2);
+    canvas_free(c);
+    return m;
+}
+
+Canvas *plate_03(void) {
+    Canvas *both = canvas(320, 160);
+    Canvas *a = fan_bresenham();
+    Canvas *b = fan_wu();
+    for (int y = 0; y <= 159; y++)
+        for (int x = 0; x <= 159; x++) {
+            write_pixel(both, x,       y, pixel_at(a, x, y));
+            write_pixel(both, x + 160, y, pixel_at(b, x, y));
+        }
+    canvas_free(a); canvas_free(b);
+    Canvas *m = magnify(both, 2);
+    canvas_free(both);
     return m;
 }

@@ -678,6 +678,276 @@ static void feature_plate_02(void) {
     }
 }
 
+
+/* ============ features/chapter03-bresenham.feature =================== */
+static void feature_bresenham(void) {
+    const char *F = "Bresenham's line";
+    const Color W = {1, 1, 1};
+
+    S(F, "A diagonal") {
+        Canvas *c = canvas(10, 10);
+        line_bresenham(c, 0, 0, 5, 5, W);
+        EQ_PIXELS(c, {{0,0},{1,1},{2,2},{3,3},{4,4},{5,5}});
+        canvas_free(c);
+    }
+    S(F, "A horizontal line lights one row and nothing else") {
+        Canvas *c = canvas(10, 10);
+        line_bresenham(c, 0, 3, 7, 3, W);
+        EQ_PIXELS(c, {{0,3},{1,3},{2,3},{3,3},{4,3},{5,3},{6,3},{7,3}});
+        canvas_free(c);
+    }
+    S(F, "A shallow line steps along x") {
+        Canvas *c = canvas(10, 10);
+        line_bresenham(c, 0, 0, 7, 3, W);
+        EQ_PIXELS(c, {{0,0},{1,0},{2,1},{3,1},{4,2},{5,2},{6,3},{7,3}});
+        canvas_free(c);
+    }
+    S(F, "A steep line steps along y") {
+        Canvas *c = canvas(10, 10);
+        line_bresenham(c, 1, 1, 3, 7, W);
+        EQ_PIXELS(c, {{1,1},{1,2},{2,3},{2,4},{2,5},{3,6},{3,7}});
+        canvas_free(c);
+    }
+    S(F, "The pixels don't depend on which end you start from") {
+        Canvas *c1 = canvas(10, 10), *c2 = canvas(10, 10);
+        line_bresenham(c1, 1, 1, 3, 7, W);
+        line_bresenham(c2, 3, 7, 1, 1, W);
+        h_same_pixels("lit_pixels(c1) = lit_pixels(c2)", c1, c2);
+        Bytes a = canvas_to_p6(c1), b = canvas_to_p6(c2);
+        EQI(max_channel_difference(a, b), 0);
+        free(a.data); free(b.data); canvas_free(c1); canvas_free(c2);
+    }
+    S(F, "A line going up and to the right") {
+        Canvas *c = canvas(10, 10);
+        line_bresenham(c, 0, 6, 7, 3, W);
+        EQ_PIXELS(c, {{6,3},{7,3},{4,4},{5,4},{2,5},{3,5},{0,6},{1,6}});
+        canvas_free(c);
+    }
+    S(F, "At an exact half the line stays on its row one step longer") {
+        Canvas *c = canvas(10, 10);
+        line_bresenham(c, 0, 0, 4, 2, W);
+        EQ_PIXELS(c, {{0,0},{1,0},{2,1},{3,1},{4,2}});
+        canvas_free(c);
+    }
+    S(F, "A line of one point") {
+        Canvas *c = canvas(10, 10);
+        line_bresenham(c, 3, 3, 3, 3, W);
+        EQ_PIXELS(c, {{3,3}});
+        canvas_free(c);
+    }
+    S(F, "A line may run off the canvas") {
+        Canvas *c = canvas(10, 10);
+        line_bresenham(c, 0, 0, 12, 6, W);
+        static PixelList lit;
+        lit_pixels(c, &lit);
+        EQI(lit.n, 10);
+        canvas_free(c);
+    }
+}
+
+/* ============ features/chapter03-wu.feature =========================== */
+static void feature_wu(void) {
+    const char *F = "Wu's line";
+    const Color W = {1, 1, 1};
+    char name[96];
+
+    S(F, "A half step lights two pixels equally") {
+        Canvas *c = canvas(10, 10);
+        line_wu(c, 0, 0, 4, 2, W);
+        EQC(pixel_at(c, 0, 0), 1, 1, 1);
+        EQC(pixel_at(c, 1, 0), 0.5, 0.5, 0.5);
+        EQC(pixel_at(c, 1, 1), 0.5, 0.5, 0.5);
+        EQC(pixel_at(c, 2, 1), 1, 1, 1);
+        EQC(pixel_at(c, 2, 2), 0, 0, 0);
+        EQC(pixel_at(c, 4, 2), 1, 1, 1);
+        EQ(total_ink(c), 5);
+        canvas_free(c);
+    }
+    S(F, "A diagonal has uniform weights") {
+        Canvas *c = canvas(10, 10);
+        line_wu(c, 0, 0, 5, 5, W);
+        EQ_PIXELS(c, {{0,0},{1,1},{2,2},{3,3},{4,4},{5,5}});
+        EQC(pixel_at(c, 3, 3), 1, 1, 1);
+        EQ(total_ink(c), 6);
+        canvas_free(c);
+    }
+    S(F, "A horizontal line has weight 1 on its row and 0 on the neighbors") {
+        Canvas *c = canvas(10, 10);
+        line_wu(c, 0, 3, 7, 3, W);
+        EQ_PIXELS(c, {{0,3},{1,3},{2,3},{3,3},{4,3},{5,3},{6,3},{7,3}});
+        EQC(pixel_at(c, 3, 3), 1, 1, 1);
+        EQC(pixel_at(c, 3, 2), 0, 0, 0);
+        EQC(pixel_at(c, 3, 4), 0, 0, 0);
+        EQ(total_ink(c), 8);
+        canvas_free(c);
+    }
+    S(F, "A steep line weights across columns") {
+        Canvas *c = canvas(10, 10);
+        line_wu(c, 1, 1, 3, 7, W);
+        EQC(pixel_at(c, 1, 1), 1, 1, 1);
+        EQC(pixel_at(c, 1, 2), 0.6667, 0.6667, 0.6667);
+        EQC(pixel_at(c, 2, 2), 0.3333, 0.3333, 0.3333);
+        EQC(pixel_at(c, 2, 4), 1, 1, 1);
+        EQC(pixel_at(c, 3, 7), 1, 1, 1);
+        EQ(total_ink(c), 7);
+        canvas_free(c);
+    }
+    S(F, "The weights don't depend on which end you start from") {
+        Canvas *c1 = canvas(10, 10), *c2 = canvas(10, 10);
+        line_wu(c1, 1, 1, 3, 7, W);
+        line_wu(c2, 3, 7, 1, 1, W);
+        Bytes a = canvas_to_p6(c1), b = canvas_to_p6(c2);
+        EQI(max_channel_difference(a, b), 0);
+        free(a.data); free(b.data); canvas_free(c1); canvas_free(c2);
+    }
+    S(F, "Sevenths") {
+        Canvas *c = canvas(10, 10);
+        line_wu(c, 0, 0, 7, 3, W);
+        EQC(pixel_at(c, 1, 0), 0.5714, 0.5714, 0.5714);
+        EQC(pixel_at(c, 1, 1), 0.4286, 0.4286, 0.4286);
+        EQC(pixel_at(c, 2, 0), 0.1429, 0.1429, 0.1429);
+        EQC(pixel_at(c, 2, 1), 0.8571, 0.8571, 0.8571);
+        EQ(total_ink(c), 8);
+        canvas_free(c);
+    }
+
+    struct { int x1, y1, ink; } rows[] = {
+        {12, 2, 11}, {10, 8, 9}, {8, 10, 9}, {2, 12, 11}
+    };
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        snprintf(name, sizeof name, "The ink depends on the angle [%d, %d, %d]",
+                 rows[i].x1, rows[i].y1, rows[i].ink);
+        S(F, name) {
+            Canvas *c = canvas(20, 20);
+            line_wu(c, 2, 2, rows[i].x1, rows[i].y1, W);
+            EQ(total_ink(c), rows[i].ink);
+            canvas_free(c);
+        }
+    }
+}
+
+/* ============ features/chapter03-quad.feature ========================= */
+static void feature_quad(void) {
+    const char *F = "A line is a thin rectangle";
+    char name[96];
+
+    S(F, "Inside a thick line") {
+        Shape s = thick_line(0, 0, 4, 0, 1);
+        TRUEP(inside(s, 2.5, 0.5));
+        TRUEP(inside(s, 2.5, 1.0));
+        FALSEP(inside(s, 2.5, 1.01));
+        TRUEP(inside(s, 0.5, 0.5));
+        FALSEP(inside(s, 0.4, 0.5));
+        TRUEP(inside(s, 4.5, 0.5));
+        FALSEP(inside(s, 4.6, 0.5));
+    }
+    S(F, "A horizontal thick line covers its row, with half pixels at the ends") {
+        Shape s = thick_line(0, 3, 7, 3, 1);
+        CoverageBuffer *cov = rasterize(s, 10, 10);
+        EQ(coverage_at(cov, 0, 3), 0.5);
+        EQ(coverage_at(cov, 1, 3), 1);
+        EQ(coverage_at(cov, 6, 3), 1);
+        EQ(coverage_at(cov, 7, 3), 0.5);
+        EQ(coverage_at(cov, 8, 3), 0);
+        EQ(coverage_at(cov, 3, 2), 0);
+        EQ(coverage_at(cov, 3, 4), 0);
+        EQ(ink(cov), 7);
+        coverage_free(cov);
+    }
+
+    struct { int x1, y1; } rows[] = { {12, 2}, {10, 8}, {8, 10}, {2, 12} };
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        snprintf(name, sizeof name, "The ink is the length, whatever the angle [%d, %d]",
+                 rows[i].x1, rows[i].y1);
+        S(F, name) {
+            Shape s = thick_line(2, 2, rows[i].x1, rows[i].y1, 1);
+            CoverageBuffer *cov = rasterize(s, 20, 20);
+            EQ(ink(cov), 10);
+            coverage_free(cov);
+        }
+    }
+
+    S(F, "Except that the grid is blind along the diagonal") {
+        Shape s = thick_line(2, 2, 9, 9, 1);
+        CoverageBuffer *cov = rasterize(s, 20, 20);
+        EQ(ink(cov), 9.7188);
+        EQ_EPS(ink(cov), 9.8995, 0.25);
+        coverage_free(cov);
+    }
+}
+
+/* ============ features/chapter03-plate.feature ======================== */
+static void feature_plate_03(void) {
+    const char *F = "Plate 3";
+
+    S(F, "The ray endpoints") {
+        static const int want[12][2] = {
+            {152,80},{142,116},{116,142},{80,152},{44,142},{18,116},
+            {8,80},{18,44},{44,18},{80,8},{116,18},{142,44}
+        };
+        int got[12][2];
+        ray_ends(got);
+        for (int k = 0; k < 12; k++) {
+            EQI(got[k][0], want[k][0]);
+            EQI(got[k][1], want[k][1]);
+        }
+    }
+    S(F, "Bresenham's fan") {
+        Canvas *c = fan_bresenham();
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 160);
+        EQI(c->height, 160);
+        EQP1(p6,  80, 80, 246, 246, 241);
+        EQP1(p6, 120, 80, 246, 246, 241);
+        EQP1(p6,  10, 10,  39,  39,  44);
+        EQP1(p6, 100, 91,  39,  39,  44);
+        EQP1(p6, 100, 92, 246, 246, 241);
+        free(p6.data); canvas_free(c);
+    }
+    S(F, "Wu's fan") {
+        Canvas *c = fan_wu();
+        Bytes p6 = canvas_to_p6(c);
+        EQP1(p6,  80, 80, 246, 246, 241);
+        EQP1(p6, 120, 80, 246, 246, 241);
+        EQP1(p6, 100, 91, 163, 163, 161);
+        EQP1(p6, 100, 92, 199, 199, 196);
+        free(p6.data); canvas_free(c);
+    }
+    S(F, "The fan as twelve thin rectangles") {
+        Canvas *c = fan_coverage();
+        Bytes ref = read_file("reference/chapter-03/fan-coverage.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 320);
+        EQI(c->height, 320);
+        EQP1(p6, 160, 160, 246, 246, 241);
+        EQP1(p6,  10,  10,  39,  39,  44);
+        EQP1(p6, 240, 160, 246, 246, 241);
+        EQP1(p6, 240, 158,  39,  39,  44);
+        EQP1(p6, 200, 183, 177, 177, 174);
+        EQP1(p6, 200, 185, 209, 209, 205);
+        if (!ref.data) h_fail("could not read reference/chapter-03/fan-coverage.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
+    }
+    S(F, "Plate 3") {
+        Canvas *c = plate_03();
+        Bytes ref = read_file("reference/chapter-03/plate-03.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 640);
+        EQI(c->height, 320);
+        EQP1(p6, 160, 160, 246, 246, 241);
+        EQP1(p6, 480, 160, 246, 246, 241);
+        EQP1(p6,  10,  10,  39,  39,  44);
+        EQP1(p6, 200, 183,  39,  39,  44);
+        EQP1(p6, 200, 185, 246, 246, 241);
+        EQP1(p6, 520, 183, 163, 163, 161);
+        EQP1(p6, 520, 185, 199, 199, 196);
+        if (!ref.data) h_fail("could not read reference/chapter-03/plate-03.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
+    }
+}
+
 #include <time.h>
 #define T(f) do { clock_t _s = clock(); f(); if (getenv("TIMING")) fprintf(stderr, "  %-22s %6.1f ms\n", #f, (clock()-_s)*1000.0/CLOCKS_PER_SEC); } while (0)
 
@@ -702,6 +972,12 @@ int main(void) {
     T(feature_twice);
     T(feature_plate_02);
     h_subtotal("chapter 2");
+
+    T(feature_bresenham);
+    T(feature_wu);
+    T(feature_quad);
+    T(feature_plate_03);
+    h_subtotal("chapter 3");
     h_report();
     return h_failed ? 1 : 0;
 }

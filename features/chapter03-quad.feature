@@ -26,6 +26,12 @@ Feature: A line is a thin rectangle
     And   coverage_at(cov, 3, 4) = 0
     And   ink(cov) = 7
 
+  Scenario: A line of no length is a square
+    Given s ← thick_line(3, 3, 3, 3, 1)
+    When  cov ← rasterize(s, 8, 8)
+    Then  coverage_at(cov, 3, 3) = 1
+    And   ink(cov) = 1
+
   Scenario: A wider line
     Given s ← thick_line(0, 3, 7, 3, 3)
     When  cov ← rasterize(s, 10, 10)
@@ -62,7 +68,7 @@ Feature: A line is a thin rectangle
   Scenario: Except that the grid is blind along the diagonal
     Given s ← thick_line(2, 2, 9, 9, 1)
     When  cov ← rasterize(s, 20, 20)
-    # what the sampler says, exactly
-    Then  ink(cov) = 9.7188
+    # what the sampler says, exactly: 622 of the 640 samples the band could cover
+    Then  ink(cov) = 9.71875
     # and how far that is from the true length, 7 * sqrt(2)
     And   ink(cov) = 9.8995 ± 0.25

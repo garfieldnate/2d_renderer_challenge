@@ -49,6 +49,23 @@ void h_nec(const char *what, Color a, Color b, double eps);
 void h_eqp(Bytes ppm, int x, int y, int r, int g, int b, int tol);
 void h_eqstr(const char *what, const char *got, const char *want);
 
+/* chapter 3 test helpers: not renderer functions.
+   lit_pixels lists every pixel that isn't black, in reading order;
+   total_ink sums the red channel, which for white on black is the paint. */
+#define LIT_MAX 8192
+typedef struct { int n; int xy[LIT_MAX][2]; } PixelList;
+
+void lit_pixels(const Canvas *c, PixelList *out);
+double total_ink(const Canvas *c);
+void h_eq_pixels(const char *what, const Canvas *c, const int (*want)[2], int n);
+void h_same_pixels(const char *what, const Canvas *a, const Canvas *b);
+
+/* EQ_PIXELS(c, {{0,0},{1,1}}) — the list literal from the scenario */
+#define EQ_PIXELS(c, ...) do { \
+    static const int _want[][2] = __VA_ARGS__; \
+    h_eq_pixels("lit_pixels(" #c ")", (c), _want, (int)(sizeof _want / sizeof _want[0])); \
+} while (0)
+
 /* text helpers for the PPM scenarios */
 char *ppm_lines(const char *ppm, int from, int to);  /* 1-based, inclusive; caller frees */
 int  ppm_longest_line(const char *ppm);

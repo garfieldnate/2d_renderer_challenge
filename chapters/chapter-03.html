@@ -91,9 +91,10 @@
     real number doesn't change a single pixel, as long as you round the half down.</p>
 
   <p>To test a line you need to see which pixels it lit. <code>lit_pixels(c)</code> returns every
-    pixel of the canvas that isn't black, as a list of <code>(x, y)</code> pairs in reading order:
-    top row first, left to right within a row. It's a test helper, not a renderer function, and it's
-    three lines.</p>
+    pixel of the canvas that isn't black, with the usual tolerance, as a list of <code>(x, y)</code>
+    pairs in reading order: top row first, left to right within a row. The tolerance matters: a
+    slope of a third lands one of Wu's weights at 0.0000000000000002, and a pixel that faint isn't
+    lit. It's a test helper, not a renderer function, and it's a few lines.</p>
 
   <div class="test" data-feature="chapter03-bresenham.feature">
     <p class="label">features/chapter03-bresenham.feature</p>
@@ -324,18 +325,22 @@ fan_bresenham():
     place of <code>line_bresenham</code> and nothing else changed, and put the two files side by
     side. The beads are gone. Then look at the last scenario, the one with the outline. Four lines of
     exactly the same length, ten pixels, and the ink comes to 11 for the axis-aligned ones and 9 for
-    the ones at an angle. Wu's rays look smooth, but the slanted ones are carrying up to 18% less
-    paint than the horizontal ones, and if you squint at the fan you can see it: the rays at 30° and
-    60° are thinner than the axes.</p>
+    the ones at an angle. Notice where the shortfall comes from. Every column still carries exactly
+    one unit of paint, so no pixel is dimmer than it should be; a slanted line of the same length
+    covers fewer columns, so there are fewer units. Wu's rays look smooth, but the slanted ones are
+    carrying up to 18% less paint than the horizontal ones, and if you squint at the fan you can see
+    it: the rays at 30° and 60° are thinner than the axes.</p>
 
   <h2><span class="sec">§ 3.3</span> The reveal</h2>
 
   <p>Look at what Wu's weights are. In a column, a one-pixel-wide band centered on the ideal line
     covers 70% of one pixel and 30% of the next, more or less. Wu's algorithm is computing the coverage
     of a thin rectangle, badly, one column at a time. The 18% is the price of the "more or less": a
-    rectangle one pixel wide and ten long has area 10 at any angle, and Wu's two-pixels-per-column rule can't see
-    that, because on a slanted line each column is a slanted slice through the band, and the slice
-    is longer than the band is wide.</p>
+    rectangle one pixel wide and ten long has area 10 at any angle, and Wu's two-pixels-per-column
+    rule can't see that. In a column, the band's slice is a parallelogram with area
+    <code>1 / cos θ</code>, more than 1 as soon as the line tilts, and Wu hands every column exactly
+    1. The undercount is <code>cos θ</code>, which for the 3-4-5 lines in the outline is 0.8 on one
+    axis and the missing tenth of the paint on the other.</p>
 
   <figure>
     <canvas id="fig33" role="img" aria-label="A thin rectangle one pixel wide drawn at an angle across a pixel grid, defined by four half-planes, with each cell shaded by the fraction the rectangle covers"></canvas>
@@ -345,7 +350,9 @@ fan_bresenham():
   <p>So describe the rectangle honestly and let the supersampler do the work. <code>thick_line(x0,
     y0, x1, y1, width)</code> is a shape: the rectangle of that width centered on the segment from the
     center of pixel <code>(x0, y0)</code> to the center of pixel <code>(x1, y1)</code>, with square
-    ends. Build it from four half-planes. With <code>d</code> the unit direction of the segment and
+    ends. A line of no length has no direction, so it gets <code>(1, 0)</code> and becomes a
+    width-by-width square; there's a scenario, because chapter 6 will hand you degenerate edges.
+    Build it from four half-planes. With <code>d</code> the unit direction of the segment and
     <code>n</code> the unit normal, <code>(-d.y, d.x)</code>, the four are: through the start point
     facing along <code>d</code>; through the end point facing back along <code>-d</code>; and one
     along each side, offset by half the width along <code>n</code>, facing inward. A point is inside
@@ -374,10 +381,24 @@ fan_bresenham():
     outline: four lines of length 10, at four angles, and every one of them has ink 10. Not 11, not 9.
     The line has become an area, and an area doesn't care which way it's pointing.</p>
 
-  <p>The last scenario keeps you honest. The 45° line of length 9.9 comes out at 9.72, off by
-    nearly 2%, and it's the same grid blindness from chapter 2: the rectangle's edges run along the
-    diagonals of the sample grid. Everything in Part II fixes this properly. For now it's a known
+  <p>The diagonal scenario keeps you honest. The 45° line of length 9.9 comes out at 9.71875, off
+    by nearly 2%, and it's the same grid blindness from chapter 2: the rectangle's edges run along
+    the diagonals of the sample grid. Everything in Part II fixes this properly. For now it's a known
     number, and it's a great deal better than 18%.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>That 9.71875 is 622 samples out of 640, and four of those samples sit <em>exactly</em> on the
+      half-plane through the line's start: their coordinates are sixteenths, and the two products in
+      the dot product cancel to zero in exact arithmetic. Whether your machine agrees depends on how
+      it multiplies. Many compilers fuse <code>a * b + c * d</code> into a single fused
+      multiply-add, which keeps one product at full precision and turns the exact zero into
+      -0.00000000000000005, and four samples that should count as inside fall out. You'll see 9.65625
+      and no idea why. C and C++ compilers do this by default on ARM; the fix is to switch contraction
+      off for the renderer (<code>#pragma STDC FP_CONTRACT OFF</code>, or the equivalent flag), and
+      to remember, every time a scenario puts a sample on a boundary, that "boundary included" is a
+      promise your arithmetic has to keep exactly.</p>
+  </div>
 
   <div class="test" data-feature="chapter03-quad.feature">
     <p class="label">features/chapter03-quad.feature</p>

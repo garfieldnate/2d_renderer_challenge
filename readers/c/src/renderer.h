@@ -58,12 +58,16 @@ int  distinct_values_bytes(Bytes ppm);
 #define distinct_values(p)           distinct_values_bytes(AS_BYTES(p))
 
 /* ---- shapes: a shape is a thing that answers "is this point inside?" -- */
-typedef enum { SHAPE_CIRCLE, SHAPE_RECTANGLE, SHAPE_HALF_PLANE } ShapeKind;
-typedef struct { ShapeKind kind; double a, b, c, d; } Shape;
+typedef enum { SHAPE_CIRCLE, SHAPE_RECTANGLE, SHAPE_HALF_PLANE, SHAPE_THICK_LINE } ShapeKind;
+/* h[] holds a thick line's four half-planes, each as px, py, nx, ny. */
+typedef struct { ShapeKind kind; double a, b, c, d; double h[4][4]; } Shape;
 
 Shape circle(double cx, double cy, double r);
 Shape rectangle(double x0, double y0, double x1, double y1);
 Shape half_plane(double px, double py, double nx, double ny);
+/* the rectangle of the given width centered on the segment from the center
+   of pixel (x0, y0) to the center of pixel (x1, y1), with square ends */
+Shape thick_line(double x0, double y0, double x1, double y1, double width);
 bool inside(Shape s, double x, double y);
 
 /* ---- coverage -------------------------------------------------------- */
@@ -93,5 +97,16 @@ Canvas *disc_centers(void);
 Canvas *disc_coverage(void);
 Canvas *painted_twice(void);
 Canvas *plate_02(void);
+
+/* ---- chapter 3: lines ------------------------------------------------- */
+void line_bresenham(Canvas *c, int x0, int y0, int x1, int y1, Color col);
+void plot(Canvas *c, int x, int y, Color col, double weight);  /* paint_through, one pixel */
+void line_wu(Canvas *c, int x0, int y0, int x1, int y1, Color col);
+
+void ray_ends(int out[12][2]);   /* twelve points 72 pixels out, every 30 degrees */
+Canvas *fan_bresenham(void);
+Canvas *fan_wu(void);
+Canvas *fan_coverage(void);
+Canvas *plate_03(void);
 
 #endif

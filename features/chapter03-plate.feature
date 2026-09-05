@@ -7,6 +7,7 @@ Feature: Plate 3
 
   Scenario: Bresenham's fan
     Given c ← fan_bresenham()
+    And   ref ← read_file("reference/chapter-03/fan-bresenham.ppm")
     When  p6 ← canvas_to_p6(c)
     Then  c.width = 160
     And   c.height = 160
@@ -18,9 +19,11 @@ Feature: Plate 3
     And   ppm_pixel(p6, 103, 120) = (246, 246, 241) ± 1
     And   ppm_pixel(p6, 102, 120) = (39, 39, 44) ± 1
     And   ppm_pixel(p6, 104, 120) = (39, 39, 44) ± 1
+    And   max_channel_difference(p6, ref) ≤ 1
 
   Scenario: Wu's fan
     Given c ← fan_wu()
+    And   ref ← read_file("reference/chapter-03/fan-wu.ppm")
     When  p6 ← canvas_to_p6(c)
     Then  ppm_pixel(p6, 80, 80) = (246, 246, 241) ± 1
     And   ppm_pixel(p6, 120, 80) = (246, 246, 241) ± 1
@@ -28,6 +31,7 @@ Feature: Plate 3
     And   ppm_pixel(p6, 100, 92) = (199, 199, 196) ± 1
     And   ppm_pixel(p6, 103, 120) = (220, 220, 216) ± 1
     And   ppm_pixel(p6, 104, 120) = (130, 130, 129) ± 1
+    And   max_channel_difference(p6, ref) ≤ 1
 
   Scenario: The fan as twelve thin rectangles
     Given c ← fan_coverage()

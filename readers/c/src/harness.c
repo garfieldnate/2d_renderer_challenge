@@ -114,3 +114,56 @@ int count_pixels(const Canvas *c, Color want) {
             if (ceq(pixel_at(c, x, y), want, EPS)) n++;
     return n;
 }
+
+
+/* ---- chapter 3 helpers ------------------------------------------------- */
+void lit_pixels(const Canvas *c, PixelList *out) {
+    out->n = 0;
+    for (int y = 0; y < c->height; y++)          /* reading order: rows, then columns */
+        for (int x = 0; x < c->width; x++) {
+            Color p = pixel_at(c, x, y);
+            if (p.red == 0 && p.green == 0 && p.blue == 0) continue;
+            if (out->n < LIT_MAX) { out->xy[out->n][0] = x; out->xy[out->n][1] = y; }
+            out->n++;
+        }
+}
+
+double total_ink(const Canvas *c) {
+    double t = 0;
+    for (int y = 0; y < c->height; y++)
+        for (int x = 0; x < c->width; x++) t += pixel_at(c, x, y).red;
+    return t;
+}
+
+static void print_list(const char *tag, const int (*xy)[2], int n) {
+    printf("        %s [", tag);
+    for (int i = 0; i < n; i++) printf("%s(%d, %d)", i ? ", " : "", xy[i][0], xy[i][1]);
+    printf("]\n");
+}
+
+void h_eq_pixels(const char *what, const Canvas *c, const int (*want)[2], int n) {
+    static PixelList got;
+    lit_pixels(c, &got);
+    int ok = got.n == n;
+    for (int i = 0; ok && i < n; i++)
+        if (got.xy[i][0] != want[i][0] || got.xy[i][1] != want[i][1]) ok = 0;
+    if (!ok) {
+        h_fail("%s: %d pixels, wanted %d", what, got.n, n);
+        print_list("got ", got.xy, got.n < LIT_MAX ? got.n : LIT_MAX);
+        print_list("want", want, n);
+    }
+}
+
+void h_same_pixels(const char *what, const Canvas *a, const Canvas *b) {
+    static PixelList la, lb;
+    lit_pixels(a, &la);
+    lit_pixels(b, &lb);
+    int ok = la.n == lb.n;
+    for (int i = 0; ok && i < la.n; i++)
+        if (la.xy[i][0] != lb.xy[i][0] || la.xy[i][1] != lb.xy[i][1]) ok = 0;
+    if (!ok) {
+        h_fail("%s: %d pixels vs %d", what, la.n, lb.n);
+        print_list("a", la.xy, la.n);
+        print_list("b", lb.xy, lb.n);
+    }
+}
