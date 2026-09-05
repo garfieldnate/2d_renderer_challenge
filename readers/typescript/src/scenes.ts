@@ -1,8 +1,9 @@
 import { type Color, color } from "./color.ts";
-import { type Canvas, canvas, fill, magnify, write_pixel } from "./canvas.ts";
+import { type Canvas, canvas, fill, magnify, pixel_at, write_pixel } from "./canvas.ts";
 import { decode } from "./srgb.ts";
 import { mix, set_linear_blending } from "./mix.ts";
-import { circle } from "./shape.ts";
+import { circle, thick_line } from "./shape.ts";
+import { line_bresenham, line_wu } from "./line.ts";
 import {
   coverage_at,
   coverage_buffer,
@@ -142,4 +143,61 @@ export function plate_02(): Canvas {
   }
   paint_through(c, both, INK);
   return magnify(c, 6);
+}
+
+// ---- chapter 3 -----------------------------------------------------------
+
+const RAY_PAPER = color(0.02, 0.02, 0.025);
+const RAY_INK = color(0.92, 0.92, 0.88);
+
+/** Twelve points 72 pixels from the middle of a 160 by 160 canvas. */
+export function ray_ends(): [number, number][] {
+  const ends: [number, number][] = [];
+  for (let k = 0; k <= 11; k++) {
+    const a = (k * 30 * Math.PI) / 180;
+    ends.push([
+      Math.round(80 + 72 * Math.cos(a)),
+      Math.round(80 + 72 * Math.sin(a)),
+    ]);
+  }
+  return ends;
+}
+
+export function fan_bresenham(): Canvas {
+  const c = canvas(160, 160);
+  fill(c, RAY_PAPER);
+  for (const [x, y] of ray_ends()) line_bresenham(c, 80, 80, x, y, RAY_INK);
+  return c;
+}
+
+/** fan_bresenham with line_wu in its place, and nothing else changed. */
+export function fan_wu(): Canvas {
+  const c = canvas(160, 160);
+  fill(c, RAY_PAPER);
+  for (const [x, y] of ray_ends()) line_wu(c, 80, 80, x, y, RAY_INK);
+  return c;
+}
+
+/** The same fan as twelve thin rectangles. Slow, and worth it. */
+export function fan_coverage(): Canvas {
+  const c = canvas(160, 160);
+  fill(c, RAY_PAPER);
+  for (const [x, y] of ray_ends()) {
+    const cov = rasterize(thick_line(80, 80, x, y, 1), 160, 160);
+    paint_through(c, cov, RAY_INK);
+  }
+  return magnify(c, 2);
+}
+
+export function plate_03(): Canvas {
+  const both = canvas(320, 160);
+  const a = fan_bresenham();
+  const b = fan_wu();
+  for (let y = 0; y <= 159; y++) {
+    for (let x = 0; x <= 159; x++) {
+      write_pixel(both, x, y, pixel_at(a, x, y));
+      write_pixel(both, x + 160, y, pixel_at(b, x, y));
+    }
+  }
+  return magnify(both, 2);
 }

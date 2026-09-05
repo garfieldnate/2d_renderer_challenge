@@ -26,6 +26,17 @@ Feature: A line is a thin rectangle
     And   coverage_at(cov, 3, 4) = 0
     And   ink(cov) = 7
 
+  Scenario: A wider line
+    Given s ← thick_line(0, 3, 7, 3, 3)
+    When  cov ← rasterize(s, 10, 10)
+    Then  coverage_at(cov, 3, 2) = 1
+    And   coverage_at(cov, 3, 3) = 1
+    And   coverage_at(cov, 3, 4) = 1
+    And   coverage_at(cov, 3, 1) = 0
+    And   coverage_at(cov, 3, 5) = 0
+    And   coverage_at(cov, 0, 3) = 0.5
+    And   ink(cov) = 21
+
   Scenario: An off-axis line runs through pixel centers, not corners
     Given s ← thick_line(2, 2, 11, 5, 1)
     When  cov ← rasterize(s, 16, 10)

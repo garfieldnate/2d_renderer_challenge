@@ -1,14 +1,16 @@
-// Write the book's pictures to out/. Chapter 1 as P3, chapter 2 as P6.
+// Write the book's pictures to out/. Chapter 1 as P3, chapters 2 and 3 as P6.
 import type { Canvas } from "./canvas.ts";
 import { canvas_to_p6, canvas_to_ppm } from "./ppm.ts";
 import {
   clamp_pair,
   disc_centers,
   disc_coverage,
+  fan_coverage,
   gray_match,
   painted_twice,
   plate_01,
   plate_02,
+  plate_03,
   quarter_match,
   ramp,
 } from "./scenes.ts";
@@ -26,6 +28,8 @@ const p6: [string, () => Canvas][] = [
   ["out/disc-coverage.ppm", disc_coverage],
   ["out/painted-twice.ppm", painted_twice],
   ["out/plate-02.ppm", plate_02],
+  ["out/fan-coverage.ppm", fan_coverage],
+  ["out/plate-03.ppm", plate_03],
 ];
 
 Deno.mkdirSync("out", { recursive: true });

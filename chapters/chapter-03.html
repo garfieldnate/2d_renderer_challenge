@@ -20,9 +20,9 @@
     <p class="num">Chapter Three</p>
     <h1>Lines</h1>
     <p class="hook">You already own a line renderer. A line is a very thin rectangle, a rectangle is four
-      half-planes, and chapter 2 will rasterize any shape you can describe. It takes twenty seconds to
-      draw twelve of them. This chapter is about why every renderer in history refused to wait that
-      long, what they did instead, and why you're going to stop doing it anyway.</p>
+      half-planes, and chapter 2 will rasterize any shape you can describe. It does twenty million
+      inside tests to draw twelve of them. This chapter is about why every renderer in history refused
+      to pay that, what they did instead, and why you're going to stop doing it anyway.</p>
   </header>
 
   <p>Lines are the oldest problem in computer graphics, and the first good answer is from 1962. Jack
@@ -57,7 +57,7 @@
     whole algorithm, and here it is, complete, because the book asks you to reproduce its exact
     pixels and there's more than one way to break ties:</p>
 
-<pre><code>line_bresenham(c, x0, y0, x1, y1, col):
+<pre><code>line_bresenham(c, x0, y0, x1, y1, col):          <span class="cm">// ranges are inclusive, as always</span>
   steep ← |y1 - y0| &gt; |x1 - x0|
   <span class="kw">if</span> steep:   swap x0 with y0, and x1 with y1        <span class="cm">// walk along y instead</span>
   <span class="kw">if</span> x0 &gt; x1: swap (x0, y0) with (x1, y1)             <span class="cm">// always walk left to right</span>
@@ -83,10 +83,12 @@
     called the start, which is a property you'll want in chapter 6 when polygon edges arrive in
     whatever order the file put them in.</p>
 
-  <p>The tie rule falls out of <code>err ← dx / 2</code> with integer division: when the ideal line
-    passes exactly halfway between two rows, this version stays on the row it's on for one more step.
-    Other books initialize the error differently and step early. Neither is more right; the tests pin
-    this one.</p>
+  <p>The tie rule falls out of <code>err ← dx / 2</code> rounded <em>down</em> when <code>dx</code>
+    is odd, together with the strict <code>err &lt; 0</code>: when the ideal line passes exactly
+    halfway between two rows, this version stays on the row it's on for one more step. Round the
+    half up, or test <code>err ≤ 0</code>, and it steps early instead. Other books do; neither is
+    more right, and the tests pin this one. Whether you keep <code>err</code> as an integer or a
+    real number doesn't change a single pixel, as long as you round the half down.</p>
 
   <p>To test a line you need to see which pixels it lit. <code>lit_pixels(c)</code> returns every
     pixel of the canvas that isn't black, as a list of <code>(x, y)</code> pairs in reading order:
@@ -196,10 +198,14 @@ fan_bresenham():
   <p>To light a pixel at a weight, you paint it: <code>mix(pixel_at(c, x, y), col, weight)</code>,
     written back with <code>write_pixel</code>. That's <code>paint_through</code> for one pixel, and
     it's worth its own little function, <code>plot(c, x, y, col, weight)</code>, that also drops
-    writes off the canvas and skips a weight of zero. With integer endpoints you can compute the
-    ideal <code>y</code> directly in floating point, as <code>y0 + (x - x0) * slope</code>, and split
-    it with <code>floor</code>. The same steep swap and left-to-right swap as before apply, for the
-    same reasons.</p>
+    writes off the canvas and, as a shortcut rather than a rule, skips a weight of zero. With integer
+    endpoints you can compute the ideal <code>y</code> directly in floating point, as
+    <code>y0 + (x - x0) * slope</code>, and split it with <code>floor</code>. Floor, not truncation
+    toward zero: they agree on positive numbers and part company below zero, and a line that starts
+    above the canvas has a negative <code>y</code> for a few columns. Casting to an integer is the
+    port bug this chapter sees most, and a scenario starts a line at row -1 to catch it. The same
+    steep swap and left-to-right swap as before apply, for the same reasons, and a line of one point
+    has <code>dx = 0</code>, which the slope guards against.</p>
 
 <pre><code>line_wu(c, x0, y0, x1, y1, col):
   steep ← |y1 - y0| &gt; |x1 - x0|
@@ -279,6 +285,19 @@ fan_bresenham():
     <span class="kw">And</span>   line_wu(c2, 3, 7, 1, 1, color(1, 1, 1))
     <span class="kw">Then</span>  max_channel_difference(canvas_to_p6(c1), canvas_to_p6(c2)) = 0
 
+  <span class="kw">Scenario</span>: A line that starts above the canvas
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_wu(c, 0, -1, 8, 3, color(1, 1, 1))
+    <span class="kw">Then</span>  pixel_at(c, 1, 0) = color(0.5, 0.5, 0.5)
+    <span class="kw">And</span>   pixel_at(c, 2, 0) = color(1, 1, 1)
+    <span class="kw">And</span>   total_ink(c) = 7.5
+
+  <span class="kw">Scenario</span>: A Wu line of one point
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_wu(c, 3, 3, 3, 3, color(1, 1, 1))
+    <span class="kw">Then</span>  lit_pixels(c) = [(3, 3)]
+    <span class="kw">And</span>   pixel_at(c, 3, 3) = color(1, 1, 1)
+
   <span class="kw">Scenario</span>: Sevenths
     <span class="kw">Given</span> c ← canvas(10, 10)
     <span class="kw">When</span>  line_wu(c, 0, 0, 7, 3, color(1, 1, 1))
@@ -313,8 +332,8 @@ fan_bresenham():
 
   <p>Look at what Wu's weights are. In a column, a one-pixel-wide band centered on the ideal line
     covers 70% of one pixel and 30% of the next, more or less. Wu's algorithm is computing the coverage
-    of a thin rectangle, badly, one column at a time. The <em>less</em> is the 18%: a rectangle one
-    pixel wide and ten long has area 10 at any angle, and Wu's two-pixels-per-column rule can't see
+    of a thin rectangle, badly, one column at a time. The 18% is the price of the "more or less": a
+    rectangle one pixel wide and ten long has area 10 at any angle, and Wu's two-pixels-per-column rule can't see
     that, because on a slanted line each column is a slanted slice through the band, and the slice
     is longer than the band is wide.</p>
 
@@ -330,7 +349,22 @@ fan_bresenham():
     <code>n</code> the unit normal, <code>(-d.y, d.x)</code>, the four are: through the start point
     facing along <code>d</code>; through the end point facing back along <code>-d</code>; and one
     along each side, offset by half the width along <code>n</code>, facing inward. A point is inside
-    the rectangle when it's inside all four. Your <code>inside</code> from chapter 2 grows one case.</p>
+    the rectangle when it's inside all four. Your <code>inside</code> from chapter 2 grows one case,
+    and <code>width</code> is a real number that this chapter mostly sets to 1; one scenario uses 3
+    so the parameter isn't decorative. Since the signs are the kind of thing that costs an evening,
+    here it is in full:</p>
+
+<pre><code>thick_line(x0, y0, x1, y1, width):
+  ax, ay ← x0 + 0.5, y0 + 0.5                <span class="cm">// pixel centers</span>
+  bx, by ← x1 + 0.5, y1 + 0.5
+  dx, dy ← (bx - ax, by - ay) / length       <span class="cm">// unit direction</span>
+  nx, ny ← -dy, dx                           <span class="cm">// unit normal</span>
+  h ← width / 2
+  <span class="kw">return</span> intersection of
+    half_plane(ax, ay, dx, dy),               <span class="cm">// ahead of the start</span>
+    half_plane(bx, by, -dx, -dy),             <span class="cm">// behind the end</span>
+    half_plane(ax + nx*h, ay + ny*h, -nx, -ny),   <span class="cm">// inside the left side</span>
+    half_plane(ax - nx*h, ay - ny*h, nx, ny)      <span class="cm">// inside the right side</span></code></pre>
 
   <p>Then the scenarios. A horizontal thick line covers its row fully, with half a pixel at each
     end, because the segment runs from pixel center to pixel center: ink 7 for a line 7 long. The
@@ -375,6 +409,17 @@ fan_bresenham():
     <span class="kw">And</span>   coverage_at(cov, 3, 4) = 0
     <span class="kw">And</span>   ink(cov) = 7
 
+  <span class="kw">Scenario</span>: A wider line
+    <span class="kw">Given</span> s ← thick_line(0, 3, 7, 3, 3)
+    <span class="kw">When</span>  cov ← rasterize(s, 10, 10)
+    <span class="kw">Then</span>  coverage_at(cov, 3, 2) = 1
+    <span class="kw">And</span>   coverage_at(cov, 3, 3) = 1
+    <span class="kw">And</span>   coverage_at(cov, 3, 4) = 1
+    <span class="kw">And</span>   coverage_at(cov, 3, 1) = 0
+    <span class="kw">And</span>   coverage_at(cov, 3, 5) = 0
+    <span class="kw">And</span>   coverage_at(cov, 0, 3) = 0.5
+    <span class="kw">And</span>   ink(cov) = 21
+
   <span class="kw">Scenario</span>: An off-axis line runs through pixel centers, not corners
     <span class="kw">Given</span> s ← thick_line(2, 2, 11, 5, 1)
     <span class="kw">When</span>  cov ← rasterize(s, 16, 10)
@@ -400,7 +445,9 @@ fan_bresenham():
   <span class="kw">Scenario</span>: Except that the grid is blind along the diagonal
     <span class="kw">Given</span> s ← thick_line(2, 2, 9, 9, 1)
     <span class="kw">When</span>  cov ← rasterize(s, 20, 20)
+    # what the sampler says, exactly
     <span class="kw">Then</span>  ink(cov) = 9.7188
+    # and how far that is from the true length, 7 * sqrt(2)
     <span class="kw">And</span>   ink(cov) = 9.8995 ± 0.25</code></pre>
   </div>
 
@@ -416,9 +463,12 @@ fan_bresenham():
   <span class="kw">return</span> magnify(c, 2)</code></pre>
 
   <p>It's slow. Twelve rasterizations of a 160-by-160 canvas at 64 samples a pixel is twenty million
-    inside tests, and in an interpreted language that's twenty seconds for one picture. Every ray is
-    the same weight now. Nothing flickers, nothing beads, and the diagonals are as heavy as the
-    axes. Then go back and look at the speed, because that's the actual lesson of this chapter.</p>
+    inside tests: ten to twenty seconds in Python or Ruby, a quarter of a second on a JIT or in a
+    compiled language, and either way about a thousand times the work Bresenham did for the same
+    picture. Every ray is the same weight now. Nothing flickers, nothing beads, and the slanted rays
+    are as heavy as the axes. The fan scenarios probe a pixel on the steep ray at 60° as well as the
+    shallow one at 30°, because a Bresenham that forgot its steep swap draws the shallow rays
+    perfectly. Then go back and look at the work, because that's the actual lesson of this chapter.</p>
 
   <p>Bresenham's and Wu's algorithms are fast because they know they're drawing a line and exploit
     everything about it. The rectangle is slow because chapter 2's rasterizer knows nothing about
@@ -459,7 +509,7 @@ fan_bresenham():
 
   <figure class="wide">
     <canvas id="fig34" role="img" aria-label="The same fan of twelve rays drawn as one-pixel-wide rectangles through the coverage rasterizer, every ray the same weight"></canvas>
-    <figcaption><span class="fig">Figure 3.4</span> The fan as twelve thin rectangles. Every ray weighs the same. It took twenty seconds, and it's the one you'll be drawing for the rest of the book.</figcaption>
+    <figcaption><span class="fig">Figure 3.4</span> The fan as twelve thin rectangles. Every ray weighs the same. It took twenty million inside tests, and it's the one you'll be drawing for the rest of the book.</figcaption>
   </figure>
 
   <div class="test" data-feature="chapter03-plate.feature">
@@ -481,6 +531,9 @@ fan_bresenham():
     <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (39, 39, 44) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 100, 91) = (39, 39, 44) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 100, 92) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 103, 120) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 102, 120) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 104, 120) = (39, 39, 44) ± 1
 
   <span class="kw">Scenario</span>: Wu's fan
     <span class="kw">Given</span> c ← fan_wu()
@@ -489,6 +542,8 @@ fan_bresenham():
     <span class="kw">And</span>   ppm_pixel(p6, 120, 80) = (246, 246, 241) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 100, 91) = (163, 163, 161) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 100, 92) = (199, 199, 196) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 103, 120) = (220, 220, 216) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 104, 120) = (130, 130, 129) ± 1
 
   <span class="kw">Scenario</span>: The fan as twelve thin rectangles
     <span class="kw">Given</span> c ← fan_coverage()

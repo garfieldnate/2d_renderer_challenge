@@ -117,3 +117,32 @@ export function assert_begins_with(bytes: Uint8Array, prefix: string): void {
 export function byte_of(bytes: Uint8Array, n: number): number {
   return bytes[n - 1];
 }
+
+/** Every pixel that isn't black, as (x, y), top row first, left to right. */
+export function lit_pixels(c: Canvas): [number, number][] {
+  const out: [number, number][] = [];
+  for (let y = 0; y < c.height; y++) {
+    for (let x = 0; x < c.width; x++) {
+      const p = c.pixels[y * c.width + x];
+      if (p.red !== 0 || p.green !== 0 || p.blue !== 0) out.push([x, y]);
+    }
+  }
+  return out;
+}
+
+export function assert_pixels(
+  a: [number, number][],
+  b: [number, number][],
+): void {
+  const show = (l: [number, number][]) => l.map(([x, y]) => `(${x}, ${y})`).join(", ");
+  if (a.length !== b.length || a.some((p, i) => p[0] !== b[i][0] || p[1] !== b[i][1])) {
+    throw new Error(`expected [${show(b)}], got [${show(a)}]`);
+  }
+}
+
+/** The sum of every pixel's red channel: how much white paint went down. */
+export function total_ink(c: Canvas): number {
+  let t = 0;
+  for (const p of c.pixels) t += p.red;
+  return t;
+}

@@ -48,6 +48,19 @@ Feature: Wu's line
     And   line_wu(c2, 3, 7, 1, 1, color(1, 1, 1))
     Then  max_channel_difference(canvas_to_p6(c1), canvas_to_p6(c2)) = 0
 
+  Scenario: A line that starts above the canvas
+    Given c ← canvas(10, 10)
+    When  line_wu(c, 0, -1, 8, 3, color(1, 1, 1))
+    Then  pixel_at(c, 1, 0) = color(0.5, 0.5, 0.5)
+    And   pixel_at(c, 2, 0) = color(1, 1, 1)
+    And   total_ink(c) = 7.5
+
+  Scenario: A Wu line of one point
+    Given c ← canvas(10, 10)
+    When  line_wu(c, 3, 3, 3, 3, color(1, 1, 1))
+    Then  lit_pixels(c) = [(3, 3)]
+    And   pixel_at(c, 3, 3) = color(1, 1, 1)
+
   Scenario: Sevenths
     Given c ← canvas(10, 10)
     When  line_wu(c, 0, 0, 7, 3, color(1, 1, 1))
