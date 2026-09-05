@@ -118,4 +118,81 @@ public static class Renders
         RampPair(c, 90, new Color(0.7, 0, 0), new Color(0, 0.3, 0.02));
         return c;
     }
+
+    private static readonly Color Paper = new(0.02, 0.02, 0.025);
+    private static readonly Color Ink = new(0.9, 0.55, 0.1);
+
+    /// <summary>A 40-pixel disc, rasterized by centers, painted orange on gray, magnified 8x.</summary>
+    public static Canvas DiscCenters()
+    {
+        var c = new Canvas(40, 40);
+        c.Fill(Paper);
+        var cov = Rasterizer.RasterizeCenters(new Circle(20, 20, 16), 40, 40);
+        Paint.PaintThrough(c, cov, Ink);
+        return Magnifier.Magnify(c, 8);
+    }
+
+    /// <summary>disc_centers with rasterize in place of rasterize_centers, nothing else changed.</summary>
+    public static Canvas DiscCoverage()
+    {
+        var c = new Canvas(40, 40);
+        c.Fill(Paper);
+        var cov = Rasterizer.Rasterize(new Circle(20, 20, 16), 40, 40);
+        Paint.PaintThrough(c, cov, Ink);
+        return Magnifier.Magnify(c, 8);
+    }
+
+    /// <summary>The same disc's coverage painted once on the left half, twice on the right.</summary>
+    public static Canvas PaintedTwice()
+    {
+        var c = new Canvas(80, 40);
+        c.Fill(Paper);
+        var cov = Rasterizer.Rasterize(new Circle(20, 20, 16), 40, 40);
+
+        var once = new CoverageBuffer(80, 40);
+        for (int y = 0; y <= 39; y++)
+        {
+            for (int x = 0; x <= 39; x++)
+            {
+                once.SetCoverage(x, y, cov.CoverageAt(x, y));
+                once.SetCoverage(x + 40, y, cov.CoverageAt(x, y));
+            }
+        }
+        Paint.PaintThrough(c, once, Ink);
+
+        var twice = new CoverageBuffer(80, 40);
+        for (int y = 0; y <= 39; y++)
+        {
+            for (int x = 0; x <= 39; x++)
+            {
+                twice.SetCoverage(x + 40, y, cov.CoverageAt(x, y));
+            }
+        }
+        Paint.PaintThrough(c, twice, Ink);
+
+        return Magnifier.Magnify(c, 6);
+    }
+
+    /// <summary>The same circle on the same grid, asked two different questions: centers on the left, coverage on the right.</summary>
+    public static Canvas Plate02()
+    {
+        var c = new Canvas(80, 40);
+        c.Fill(Paper);
+        var shape = new Circle(20, 20, 16);
+        var left = Rasterizer.RasterizeCenters(shape, 40, 40);
+        var right = Rasterizer.Rasterize(shape, 40, 40);
+
+        var both = new CoverageBuffer(80, 40);
+        for (int y = 0; y <= 39; y++)
+        {
+            for (int x = 0; x <= 39; x++)
+            {
+                both.SetCoverage(x, y, left.CoverageAt(x, y));
+                both.SetCoverage(x + 40, y, right.CoverageAt(x, y));
+            }
+        }
+        Paint.PaintThrough(c, both, Ink);
+
+        return Magnifier.Magnify(c, 6);
+    }
 }

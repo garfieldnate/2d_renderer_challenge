@@ -25,6 +25,18 @@ Feature: Binary PPM
     And   max_channel_difference(p3, p6) = 0
     And   distinct_values(p6) = 2
 
+  Scenario: Pixel bytes that look like whitespace are still pixel bytes
+    Given c ← canvas(2, 1)
+    When  write_pixel(c, 0, 0, color(0.00304, 0.01444, 0.00304))
+    And   write_pixel(c, 1, 0, color(1, 1, 1))
+    And   p6 ← canvas_to_p6(c)
+    Then  length(p6) = 17
+    And   byte 12 of p6 = 10
+    And   byte 13 of p6 = 32
+    And   ppm_pixel(p6, 0, 0) = (10, 32, 10)
+    And   ppm_pixel(p6, 1, 0) = (255, 255, 255)
+    And   max_channel_difference(canvas_to_ppm(c), p6) = 0
+
   Scenario: Sizes still have to match
     Given c1 ← canvas(2, 1)
     And   c2 ← canvas(1, 2)

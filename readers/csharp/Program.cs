@@ -469,10 +469,333 @@ runner.Run("chapter01-plate", "The plate", () =>
     Check.True(Mix.LinearBlending, "expected linear blending to be left on");
 });
 
+// ---------------------------------------------------------------------
+// features/chapter02-shapes.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter02-shapes", "A point inside a circle", () =>
+{
+    var s = new Circle(8, 8, 5);
+    Check.True(s.Inside(8, 8), "expected (8, 8) inside");
+    Check.True(s.Inside(12, 8), "expected (12, 8) inside");
+    Check.True(s.Inside(13, 8), "expected (13, 8) inside (boundary included)");
+    Check.True(!s.Inside(13.01, 8), "expected (13.01, 8) outside");
+    Check.True(!s.Inside(11.6, 11.6), "expected (11.6, 11.6) outside");
+});
+
+runner.Run("chapter02-shapes", "A point inside a rectangle", () =>
+{
+    var s = new Rectangle(1.25, 2.0, 4.75, 5.0);
+    Check.True(s.Inside(3, 3), "expected (3, 3) inside");
+    Check.True(s.Inside(1.25, 2.0), "expected (1.25, 2.0) inside (boundary included)");
+    Check.True(s.Inside(4.75, 5.0), "expected (4.75, 5.0) inside (boundary included)");
+    Check.True(!s.Inside(1.2, 3), "expected (1.2, 3) outside");
+    Check.True(!s.Inside(3, 5.1), "expected (3, 5.1) outside");
+});
+
+runner.Run("chapter02-shapes", "A point inside a half-plane", () =>
+{
+    var s = new HalfPlane(2.5, 0, 1, 0);
+    Check.True(s.Inside(2.5, 7), "expected (2.5, 7) inside");
+    Check.True(s.Inside(3, -4), "expected (3, -4) inside");
+    Check.True(!s.Inside(2.4, 0), "expected (2.4, 0) outside");
+});
+
+runner.Run("chapter02-shapes", "The normal picks the side", () =>
+{
+    var s = new HalfPlane(2.5, 0, -1, 0);
+    Check.True(s.Inside(2.4, 0), "expected (2.4, 0) inside");
+    Check.True(!s.Inside(3, 0), "expected (3, 0) outside");
+});
+
+// ---------------------------------------------------------------------
+// features/chapter02-p6.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter02-p6", "The header, then the bytes", () =>
+{
+    var c = new Canvas(2, 1);
+    c.WritePixel(0, 0, new Color(1, 0, 0));
+    c.WritePixel(1, 0, new Color(0, 0.5, 0));
+    var p6 = Ppm.CanvasToP6(c);
+    Check.True(Ppm.BeginsWith(p6, "P6\n2 1\n255\n"), "p6 does not begin with the expected header");
+    Check.IntEqual(17, p6.Length);
+    Check.IntEqual(255, Ppm.Byte(p6, 12));
+    Check.IntEqual(0, Ppm.Byte(p6, 13));
+    Check.IntEqual(188, Ppm.Byte(p6, 16));
+});
+
+runner.Run("chapter02-p6", "The same pixel comes back out of either format", () =>
+{
+    var c = new Canvas(2, 1);
+    c.WritePixel(1, 0, new Color(0, 0.5, 0));
+    var p3 = Ppm.CanvasToPpm(c);
+    var p6 = Ppm.CanvasToP6(c);
+    Check.TripleEqual((0, 188, 0), Ppm.PpmPixel(p6, 1, 0));
+    Check.TripleEqual((0, 188, 0), Ppm.PpmPixel(p3, 1, 0));
+    Check.IntEqual(0, Ppm.MaxChannelDifference(p3, p6));
+    Check.IntEqual(2, Ppm.DistinctValues(p6));
+});
+
+runner.Run("chapter02-p6", "Sizes still have to match", () =>
+{
+    var c1 = new Canvas(2, 1);
+    var c2 = new Canvas(1, 2);
+    var p6a = Ppm.CanvasToP6(c1);
+    var p6b = Ppm.CanvasToP6(c2);
+    Check.IntEqual(255, Ppm.MaxChannelDifference(p6a, p6b));
+});
+
+// ---------------------------------------------------------------------
+// features/chapter02-magnify.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter02-magnify", "Every pixel becomes a block", () =>
+{
+    var c = new Canvas(2, 1);
+    c.WritePixel(0, 0, new Color(1, 0, 0));
+    c.WritePixel(1, 0, new Color(0, 0.5, 0));
+    var m = Magnifier.Magnify(c, 3);
+    Check.IntEqual(6, m.Width);
+    Check.IntEqual(3, m.Height);
+    Check.ColorEqual(new Color(1, 0, 0), m.PixelAt(0, 0));
+    Check.ColorEqual(new Color(1, 0, 0), m.PixelAt(2, 2));
+    Check.ColorEqual(new Color(0, 0.5, 0), m.PixelAt(3, 0));
+    Check.ColorEqual(new Color(0, 0.5, 0), m.PixelAt(5, 2));
+
+    int redCount = m.AllPixels().Count(p => Check.NumbersEqual(p.Red, 1) && Check.NumbersEqual(p.Green, 0) && Check.NumbersEqual(p.Blue, 0));
+    Check.IntEqual(9, redCount);
+});
+
+runner.Run("chapter02-magnify", "Magnifying by one changes nothing", () =>
+{
+    var c = new Canvas(2, 1);
+    c.WritePixel(1, 0, new Color(0, 0.5, 0));
+    var m = Magnifier.Magnify(c, 1);
+    Check.IntEqual(0, Ppm.MaxChannelDifference(Ppm.CanvasToP6(c), Ppm.CanvasToP6(m)));
+});
+
+// ---------------------------------------------------------------------
+// features/chapter02-centers.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter02-centers", "A new coverage buffer is empty", () =>
+{
+    var cov = new CoverageBuffer(4, 3);
+    Check.IntEqual(4, cov.Width);
+    Check.IntEqual(3, cov.Height);
+    Check.Equal(0, cov.CoverageAt(2, 1));
+    Check.Equal(0, cov.Ink);
+});
+
+runner.Run("chapter02-centers", "Setting coverage", () =>
+{
+    var cov = new CoverageBuffer(4, 3);
+    cov.SetCoverage(2, 1, 0.75);
+    Check.Equal(0.75, cov.CoverageAt(2, 1));
+    Check.Equal(0, cov.CoverageAt(1, 2));
+    Check.Equal(0.75, cov.Ink);
+});
+
+runner.Run("chapter02-centers", "Setting coverage outside the buffer is ignored", () =>
+{
+    var cov = new CoverageBuffer(4, 3);
+    cov.SetCoverage(-1, 1, 1);
+    cov.SetCoverage(4, 1, 1);
+    cov.SetCoverage(1, 3, 1);
+    Check.Equal(0, cov.Ink);
+});
+
+runner.Run("chapter02-centers", "The center of pixel (x, y) is (x + 0.5, y + 0.5)", () =>
+{
+    var s = new HalfPlane(2.5, 0, 1, 0);
+    Check.IntEqual(1, Rasterizer.CenterInside(s, 2, 4));
+    Check.IntEqual(0, Rasterizer.CenterInside(s, 1, 4));
+
+    var t = new HalfPlane(2.6, 0, 1, 0);
+    Check.IntEqual(0, Rasterizer.CenterInside(t, 2, 4));
+});
+
+runner.Run("chapter02-centers", "A disc, by asking each center", () =>
+{
+    var s = new Circle(8, 8, 5);
+    var cov = Rasterizer.RasterizeCenters(s, 16, 16);
+    Check.IntEqual(16, cov.Width);
+    Check.IntEqual(16, cov.Height);
+    Check.Equal(1, cov.CoverageAt(8, 8));
+    Check.Equal(1, cov.CoverageAt(3, 8));
+    Check.Equal(1, cov.CoverageAt(12, 8));
+    Check.Equal(0, cov.CoverageAt(2, 8));
+    Check.Equal(0, cov.CoverageAt(13, 8));
+    Check.Equal(1, cov.CoverageAt(4, 4));
+    Check.Equal(0, cov.CoverageAt(3, 4));
+    Check.Equal(80, cov.Ink);
+});
+
+// ---------------------------------------------------------------------
+// features/chapter02-paint.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter02-paint", "Half coverage is half the paint", () =>
+{
+    var c = new Canvas(1, 1);
+    var cov = new CoverageBuffer(1, 1);
+    cov.SetCoverage(0, 0, 0.5);
+    Paint.PaintThrough(c, cov, new Color(1, 1, 1));
+    Check.ColorEqual(new Color(0.5, 0.5, 0.5), c.PixelAt(0, 0));
+});
+
+runner.Run("chapter02-paint", "Paint over something that isn't black", () =>
+{
+    var c = new Canvas(1, 1);
+    var cov = new CoverageBuffer(1, 1);
+    c.Fill(new Color(0.2, 0.2, 0.2));
+    cov.SetCoverage(0, 0, 0.25);
+    Paint.PaintThrough(c, cov, new Color(1, 0, 0));
+    Check.ColorEqual(new Color(0.4, 0.15, 0.15), c.PixelAt(0, 0));
+});
+
+runner.Run("chapter02-paint", "Zero leaves it alone and one replaces it", () =>
+{
+    var c = new Canvas(2, 1);
+    var cov = new CoverageBuffer(2, 1);
+    c.Fill(new Color(0.2, 0.2, 0.2));
+    cov.SetCoverage(1, 0, 1);
+    Paint.PaintThrough(c, cov, new Color(1, 0, 0));
+    Check.ColorEqual(new Color(0.2, 0.2, 0.2), c.PixelAt(0, 0));
+    Check.ColorEqual(new Color(1, 0, 0), c.PixelAt(1, 0));
+});
+
+runner.Run("chapter02-paint", "The arithmetic is on light", () =>
+{
+    var c = new Canvas(1, 1);
+    var cov = new CoverageBuffer(1, 1);
+    cov.SetCoverage(0, 0, 0.5);
+    Paint.PaintThrough(c, cov, new Color(1, 1, 1));
+    var ppm = Ppm.CanvasToPpm(c);
+    Check.TripleEqual((188, 188, 188), Ppm.PpmPixel(ppm, 0, 0));
+});
+
+runner.Run("chapter02-paint", "The disc by centers", () =>
+{
+    var c = Renders.DiscCenters();
+    var ppmRef = File.ReadAllBytes("reference/chapter-02/disc-centers.ppm");
+    var p6 = Ppm.CanvasToP6(c);
+    Check.IntEqual(320, c.Width);
+    Check.IntEqual(320, c.Height);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 160, 160), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 124, 36), 1);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 132, 36), 1);
+    Check.IntEqual(5, Ppm.DistinctValues(p6));
+    Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
+});
+
+// ---------------------------------------------------------------------
+// features/chapter02-coverage.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter02-coverage", "The sixty-four sample points", () =>
+{
+    var s = new HalfPlane(2.5, 0, 1, 0);
+    Check.Equal(0.5, Rasterizer.Coverage(s, 2, 4));
+    Check.Equal(0, Rasterizer.Coverage(s, 1, 4));
+    Check.Equal(1, Rasterizer.Coverage(s, 3, 4));
+});
+
+runner.Run("chapter02-coverage", "A rectangle is covered exactly, when its edges land on sample boundaries", () =>
+{
+    var s = new Rectangle(1.25, 2.0, 4.75, 5.0);
+    var cov = Rasterizer.Rasterize(s, 8, 8);
+    Check.Equal(0, cov.CoverageAt(0, 2));
+    Check.Equal(0.75, cov.CoverageAt(1, 2));
+    Check.Equal(1, cov.CoverageAt(2, 2));
+    Check.Equal(1, cov.CoverageAt(3, 2));
+    Check.Equal(0.75, cov.CoverageAt(4, 2));
+    Check.Equal(0, cov.CoverageAt(5, 2));
+    Check.Equal(0, cov.CoverageAt(2, 1));
+    Check.Equal(0, cov.CoverageAt(2, 5));
+    Check.Equal(10.5, cov.Ink);
+});
+
+runner.Run("chapter02-coverage", "A half-plane through a pixel center covers half of it", () =>
+{
+    var s = new HalfPlane(2.5, 4.5, 0.6, 0.8);
+    Check.Equal(0.5, Rasterizer.Coverage(s, 2, 4));
+});
+
+runner.Run("chapter02-coverage", "Except when the grid conspires", () =>
+{
+    var s = new HalfPlane(2.5, 4.5, 1, 1);
+    Check.Equal(0.5625, Rasterizer.Coverage(s, 2, 4));
+});
+
+runner.Run("chapter02-coverage", "A disc is only ever approximately covered", () =>
+{
+    var s = new Circle(8, 8, 5);
+    var cov = Rasterizer.Rasterize(s, 16, 16);
+    Check.Equal(1, cov.CoverageAt(8, 8));
+    Check.Equal(0.96875, cov.CoverageAt(3, 8));
+    Check.Equal(0.96875, cov.CoverageAt(12, 8));
+    Check.Equal(0.5625, cov.CoverageAt(4, 4));
+    Check.Equal(0, cov.CoverageAt(3, 4));
+    Check.Equal(78.5, cov.Ink);
+    Check.Equal(78.5398, cov.Ink, 0.1);
+});
+
+runner.Run("chapter02-coverage", "The disc by coverage", () =>
+{
+    var c = Renders.DiscCoverage();
+    var ppmRef = File.ReadAllBytes("reference/chapter-02/disc-coverage.ppm");
+    var p6 = Ppm.CanvasToP6(c);
+    Check.IntEqual(320, c.Width);
+    Check.IntEqual(320, c.Height);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 160, 160), 1);
+    Check.TripleEqual((157, 127, 64), Ppm.PpmPixel(p6, 124, 36), 1);
+    Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
+});
+
+// ---------------------------------------------------------------------
+// features/chapter02-twice.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter02-twice", "Half coverage, painted twice, is three quarters", () =>
+{
+    var c = new Canvas(1, 1);
+    var cov = new CoverageBuffer(1, 1);
+    cov.SetCoverage(0, 0, 0.5);
+    Paint.PaintThrough(c, cov, new Color(1, 1, 1));
+    Paint.PaintThrough(c, cov, new Color(1, 1, 1));
+    Check.ColorEqual(new Color(0.75, 0.75, 0.75), c.PixelAt(0, 0));
+});
+
+runner.Run("chapter02-twice", "The disc, once and twice", () =>
+{
+    var c = Renders.PaintedTwice();
+    var ppmRef = File.ReadAllBytes("reference/chapter-02/painted-twice.ppm");
+    var p6 = Ppm.CanvasToP6(c);
+    Check.IntEqual(480, c.Width);
+    Check.IntEqual(240, c.Height);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 120, 120), 1);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 360, 120), 1);
+    Check.TripleEqual((157, 127, 64), Ppm.PpmPixel(p6, 93, 27), 1);
+    Check.TripleEqual((194, 156, 74), Ppm.PpmPixel(p6, 333, 27), 1);
+    Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
+});
+
+// ---------------------------------------------------------------------
+// features/chapter02-plate.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter02-plate", "The plate", () =>
+{
+    var c = Renders.Plate02();
+    var ppmRef = File.ReadAllBytes("reference/chapter-02/plate-02.ppm");
+    var p6 = Ppm.CanvasToP6(c);
+    Check.IntEqual(480, c.Width);
+    Check.IntEqual(240, c.Height);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 120, 120), 1);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 360, 120), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 93, 27), 1);
+    Check.TripleEqual((157, 127, 64), Ppm.PpmPixel(p6, 333, 27), 1);
+    Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
+});
+
 runner.PrintSummary();
 
 // ---------------------------------------------------------------------
-// Write the five renders required by the assignment.
+// Write the renders required by the assignment.
 // ---------------------------------------------------------------------
 Directory.CreateDirectory("out");
 File.WriteAllText("out/gray-match.ppm", Ppm.CanvasToPpm(Renders.GrayMatch()));
@@ -480,7 +803,12 @@ File.WriteAllText("out/quarter-match.ppm", Ppm.CanvasToPpm(Renders.QuarterMatch(
 File.WriteAllText("out/ramp.ppm", Ppm.CanvasToPpm(Renders.Ramp()));
 File.WriteAllText("out/clamp-pair.ppm", Ppm.CanvasToPpm(Renders.ClampPair()));
 File.WriteAllText("out/plate-01.ppm", Ppm.CanvasToPpm(Renders.Plate01()));
+File.WriteAllBytes("out/disc-centers.ppm", Ppm.CanvasToP6(Renders.DiscCenters()));
+File.WriteAllBytes("out/disc-coverage.ppm", Ppm.CanvasToP6(Renders.DiscCoverage()));
+File.WriteAllBytes("out/painted-twice.ppm", Ppm.CanvasToP6(Renders.PaintedTwice()));
+File.WriteAllBytes("out/plate-02.ppm", Ppm.CanvasToP6(Renders.Plate02()));
 Console.WriteLine();
-Console.WriteLine("Wrote out/gray-match.ppm, out/quarter-match.ppm, out/ramp.ppm, out/clamp-pair.ppm, out/plate-01.ppm");
+Console.WriteLine("Wrote out/gray-match.ppm, out/quarter-match.ppm, out/ramp.ppm, out/clamp-pair.ppm, out/plate-01.ppm,");
+Console.WriteLine("      out/disc-centers.ppm, out/disc-coverage.ppm, out/painted-twice.ppm, out/plate-02.ppm");
 
 return runner.FailedCount == 0 ? 0 : 1;

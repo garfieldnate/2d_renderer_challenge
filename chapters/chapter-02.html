@@ -116,6 +116,14 @@
     <code>read_file</code> now returns bytes rather than text; a P3 file is text that happens to be
     stored in bytes, so nothing changes for chapter 1's tests.</p>
 
+  <p>One trap, and it's the reason the reader can't reuse chapter 1's "split on whitespace": a pixel
+    byte can be 10 or 32, which are the newline and space characters. Split a P6 file the way you
+    split a P3 and those pixels vanish. Read the header byte by byte until you've seen three numbers
+    and the one whitespace after the last, and treat every byte after that as pixel data no matter
+    what it looks like. There's a scenario whose first pixel is <code>10 32 10</code> for exactly this
+    reason. Bytes in the scenarios are numbered from 1, the same way lines are: byte 1 is the
+    <code>P</code>, and in a 2-by-1 file byte 12 is the first pixel byte.</p>
+
   <p>Keep the P3 writer. When something goes wrong, you'll still want to <code>cat</code> a file.</p>
 
   <div class="test" data-feature="chapter02-p6.feature">
@@ -147,6 +155,18 @@
     <span class="kw">And</span>   max_channel_difference(p3, p6) = 0
     <span class="kw">And</span>   distinct_values(p6) = 2
 
+  <span class="kw">Scenario</span>: Pixel bytes that look like whitespace are still pixel bytes
+    <span class="kw">Given</span> c ← canvas(2, 1)
+    <span class="kw">When</span>  write_pixel(c, 0, 0, color(0.00304, 0.01444, 0.00304))
+    <span class="kw">And</span>   write_pixel(c, 1, 0, color(1, 1, 1))
+    <span class="kw">And</span>   p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  length(p6) = 17
+    <span class="kw">And</span>   byte 12 of p6 = 10
+    <span class="kw">And</span>   byte 13 of p6 = 32
+    <span class="kw">And</span>   ppm_pixel(p6, 0, 0) = (10, 32, 10)
+    <span class="kw">And</span>   ppm_pixel(p6, 1, 0) = (255, 255, 255)
+    <span class="kw">And</span>   max_channel_difference(canvas_to_ppm(c), p6) = 0
+
   <span class="kw">Scenario</span>: Sizes still have to match
     <span class="kw">Given</span> c1 ← canvas(2, 1)
     <span class="kw">And</span>   c2 ← canvas(1, 2)
@@ -163,7 +183,10 @@
     taller, with every pixel repeated into a <code>k</code>-by-<code>k</code> block. No smoothing,
     no averaging, no cleverness. Image viewers do this when you zoom in, but doing it yourself means
     the file on disk is what you see, and you're not at the mercy of a viewer that decides to
-    "improve" the zoom with a blur.</p>
+    "improve" the zoom with a blur. The scenario magnifies a 2-by-1 canvas rather than a square one
+    on purpose: a magnifier with x and y swapped produces a perfect picture of any shape that's
+    symmetric about the diagonal, which the discs later in this chapter are, so this is the one
+    place the swap gets caught.</p>
 
   <div class="test" data-feature="chapter02-magnify.feature">
     <p class="label">features/chapter02-magnify.feature</p>
@@ -196,7 +219,9 @@
   <p>A coverage buffer is a canvas of numbers instead of colors. It has a width and a height, and
     one number per pixel, from 0 for "none of this pixel is inside" to 1 for "all of it". It starts
     at zero. You read it with <code>coverage_at</code> and write it with <code>set_coverage</code>,
-    and as with the canvas, writes outside the buffer are dropped. Its total, <code>ink</code>, is
+    and as with the canvas, writes outside the buffer are dropped and reads outside it are your
+    problem. Nothing in the book reads out of bounds, and <code>paint_through</code> is only ever
+    called with a canvas and a buffer of the same size. Its total, <code>ink</code>, is
     the sum of every value, and you'll use it constantly: it's the area of the shape, in pixels, as
     the buffer sees it.</p>
 
@@ -433,8 +458,9 @@
     <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
   </div>
 
-  <p>The disc's area, remember, is 78.54. The center test said 80. The sample test says 78.5, and
-    the difference isn't the point. The point is the edge. Render <code>disc_coverage</code>, which
+  <p>The disc's area, remember, is 78.54. The center test said 80. The sample test says 78.5, which
+    is why the scenario asserts the ink twice: once as the exact number the buffer holds, and once
+    against the true area with a tenth of a pixel to spare. The difference isn't the point. The point is the edge. Render <code>disc_coverage</code>, which
     is <code>disc_centers</code> with <code>rasterize</code> in place of
     <code>rasterize_centers</code> and nothing else changed, and look at the two files side by side.</p>
 
