@@ -924,6 +924,16 @@ function inside(shape, x, y) {
     const vx = x - shape.px;
     const vy = y - shape.py;
     return vx * shape.nx + vy * shape.ny >= 0;
+  } else if (shape instanceof ThickLine) {
+    // ThickLine is composed of four half-planes - must satisfy all four
+    for (const hp of shape.half_planes) {
+      const vx = x - hp.px;
+      const vy = y - hp.py;
+      if (vx * hp.nx + vy * hp.ny < 0) {
+        return false;
+      }
+    }
+    return true;
   }
   return false;
 }
@@ -1530,4 +1540,522 @@ test('Write chapter 2 output files', async () => {
   const c4 = plate_02();
   const p6d = canvas_to_p6(c4);
   await fs.writeFile('out/plate-02.ppm', p6d);
+});
+
+// ===========================
+// Chapter 3 - Lines
+// ===========================
+
+function lit_pixels(canvas) {
+  const pixels = [];
+  for (let y = 0; y < canvas.height; y++) {
+    for (let x = 0; x < canvas.width; x++) {
+      const pixel = canvas.pixel_at(x, y);
+      if (pixel.red > 0 || pixel.green > 0 || pixel.blue > 0) {
+        pixels.push([x, y]);
+      }
+    }
+  }
+  return pixels;
+}
+
+function line_bresenham(canvas, x0, y0, x1, y1, color) {
+  let steep = Math.abs(y1 - y0) > Math.abs(x1 - x0);
+
+  // Swap x0/y0 and x1/y1 if steep
+  if (steep) {
+    [x0, y0] = [y0, x0];
+    [x1, y1] = [y1, x1];
+  }
+
+  // Ensure we go left to right
+  if (x0 > x1) {
+    [x0, x1] = [x1, x0];
+    [y0, y1] = [y1, y0];
+  }
+
+  const dx = x1 - x0;
+  const dy = Math.abs(y1 - y0);
+  const ystep = y0 < y1 ? 1 : -1;
+  let err = Math.floor(dx / 2);
+  let y = y0;
+
+  for (let x = x0; x <= x1; x++) {
+    if (steep) {
+      canvas.write_pixel(y, x, color);
+    } else {
+      canvas.write_pixel(x, y, color);
+    }
+
+    err = err - dy;
+    if (err < 0) {
+      y = y + ystep;
+      err = err + dx;
+    }
+  }
+}
+
+function plot(canvas, x, y, color, weight) {
+  if (weight === 0) return;
+  if (x < 0 || x >= canvas.width || y < 0 || y >= canvas.height) return;
+
+  const current = canvas.pixel_at(x, y);
+  const blended = mix(current, color, weight);
+  canvas.write_pixel(x, y, blended);
+}
+
+function line_wu(canvas, x0, y0, x1, y1, color) {
+  let steep = Math.abs(y1 - y0) > Math.abs(x1 - x0);
+
+  // Swap x0/y0 and x1/y1 if steep
+  if (steep) {
+    [x0, y0] = [y0, x0];
+    [x1, y1] = [y1, x1];
+  }
+
+  // Ensure we go left to right
+  if (x0 > x1) {
+    [x0, x1] = [x1, x0];
+    [y0, y1] = [y1, y0];
+  }
+
+  const dx = x1 - x0;
+  const slope = dx === 0 ? 0 : (y1 - y0) / dx;
+
+  for (let x = x0; x <= x1; x++) {
+    const y = y0 + (x - x0) * slope;
+    const yi = Math.floor(y);
+    const f = y - yi;
+
+    if (steep) {
+      plot(canvas, yi, x, color, 1 - f);
+      plot(canvas, yi + 1, x, color, f);
+    } else {
+      plot(canvas, x, yi, color, 1 - f);
+      plot(canvas, x, yi + 1, color, f);
+    }
+  }
+}
+
+function total_ink(canvas) {
+  let sum = 0;
+  for (let y = 0; y < canvas.height; y++) {
+    for (let x = 0; x < canvas.width; x++) {
+      const pixel = canvas.pixel_at(x, y);
+      sum += pixel.red;
+    }
+  }
+  return sum;
+}
+
+class ThickLine extends Shape {
+  constructor(x0, y0, x1, y1, width) {
+    super();
+    // Convert pixel coordinates to centers
+    const px0 = x0 + 0.5;
+    const py0 = y0 + 0.5;
+    const px1 = x1 + 0.5;
+    const py1 = y1 + 0.5;
+
+    // Direction vector
+    const dx = px1 - px0;
+    const dy = py1 - py0;
+    const len = Math.sqrt(dx * dx + dy * dy);
+
+    let dsx = 0, dsy = 0, nsx = 0, nsy = 0;
+    if (len > 0) {
+      dsx = dx / len;
+      dsy = dy / len;
+      nsx = -dsy;
+      nsy = dsx;
+    }
+
+    const half_width = width / 2;
+
+    // Four half-planes: start cap, end cap, two sides
+    this.half_planes = [
+      // Start cap: through start point, facing along direction
+      new HalfPlane(px0, py0, dsx, dsy),
+      // End cap: through end point, facing back along -direction
+      new HalfPlane(px1, py1, -dsx, -dsy),
+      // Side 1: offset along normal, facing inward
+      new HalfPlane(px0 + nsx * half_width, py0 + nsy * half_width, -nsx, -nsy),
+      // Side 2: offset along -normal, facing inward
+      new HalfPlane(px0 - nsx * half_width, py0 - nsy * half_width, nsx, nsy)
+    ];
+  }
+}
+
+function thick_line(x0, y0, x1, y1, width) {
+  return new ThickLine(x0, y0, x1, y1, width);
+}
+
+function ray_ends() {
+  const ends = [];
+  for (let k = 0; k < 12; k++) {
+    const a = (k * 30) * Math.PI / 180;
+    const x = round(80 + 72 * Math.cos(a));
+    const y = round(80 + 72 * Math.sin(a));
+    ends.push([x, y]);
+  }
+  return ends;
+}
+
+function fan_bresenham() {
+  const c = new Canvas(160, 160);
+  c.fill(new Color(0.02, 0.02, 0.025));
+  const ends = ray_ends();
+  const ink_color = new Color(0.92, 0.92, 0.88);
+  for (const [x, y] of ends) {
+    line_bresenham(c, 80, 80, x, y, ink_color);
+  }
+  return c;
+}
+
+function fan_wu() {
+  const c = new Canvas(160, 160);
+  c.fill(new Color(0.02, 0.02, 0.025));
+  const ends = ray_ends();
+  const ink_color = new Color(0.92, 0.92, 0.88);
+  for (const [x, y] of ends) {
+    line_wu(c, 80, 80, x, y, ink_color);
+  }
+  return c;
+}
+
+function fan_coverage() {
+  const c = new Canvas(160, 160);
+  c.fill(new Color(0.02, 0.02, 0.025));
+  const ends = ray_ends();
+  const ink_color = new Color(0.92, 0.92, 0.88);
+  for (const [x, y] of ends) {
+    const cov = rasterize(thick_line(80, 80, x, y, 1), 160, 160);
+    paint_through(c, cov, ink_color);
+  }
+  return magnify(c, 2);
+}
+
+function plate_03() {
+  const both = new Canvas(320, 160);
+  const a = fan_bresenham();
+  const b = fan_wu();
+  for (let y = 0; y < 160; y++) {
+    for (let x = 0; x < 160; x++) {
+      both.write_pixel(x, y, a.pixel_at(x, y));
+      both.write_pixel(x + 160, y, b.pixel_at(x, y));
+    }
+  }
+  return magnify(both, 2);
+}
+
+// ===========================
+// Chapter 3 Tests
+// ===========================
+
+// Chapter 3 - Bresenham
+test('Bresenham: A diagonal', () => {
+  const c = new Canvas(10, 10);
+  line_bresenham(c, 0, 0, 5, 5, new Color(1, 1, 1));
+  const pixels = lit_pixels(c);
+  assert.deepStrictEqual(pixels, [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5]]);
+});
+
+test('Bresenham: A horizontal line lights one row and nothing else', () => {
+  const c = new Canvas(10, 10);
+  line_bresenham(c, 0, 3, 7, 3, new Color(1, 1, 1));
+  const pixels = lit_pixels(c);
+  assert.deepStrictEqual(pixels, [[0, 3], [1, 3], [2, 3], [3, 3], [4, 3], [5, 3], [6, 3], [7, 3]]);
+});
+
+test('Bresenham: A shallow line steps along x', () => {
+  const c = new Canvas(10, 10);
+  line_bresenham(c, 0, 0, 7, 3, new Color(1, 1, 1));
+  const pixels = lit_pixels(c);
+  assert.deepStrictEqual(pixels, [[0, 0], [1, 0], [2, 1], [3, 1], [4, 2], [5, 2], [6, 3], [7, 3]]);
+});
+
+test('Bresenham: A steep line steps along y', () => {
+  const c = new Canvas(10, 10);
+  line_bresenham(c, 1, 1, 3, 7, new Color(1, 1, 1));
+  const pixels = lit_pixels(c);
+  assert.deepStrictEqual(pixels, [[1, 1], [1, 2], [2, 3], [2, 4], [2, 5], [3, 6], [3, 7]]);
+});
+
+test('Bresenham: The pixels don\'t depend on which end you start from', () => {
+  const c1 = new Canvas(10, 10);
+  const c2 = new Canvas(10, 10);
+  line_bresenham(c1, 1, 1, 3, 7, new Color(1, 1, 1));
+  line_bresenham(c2, 3, 7, 1, 1, new Color(1, 1, 1));
+  const pixels1 = lit_pixels(c1);
+  const pixels2 = lit_pixels(c2);
+  assert.deepStrictEqual(pixels1, pixels2);
+  const p6a = canvas_to_p6(c1);
+  const p6b = canvas_to_p6(c2);
+  assert.strictEqual(max_channel_difference(p6a, p6b), 0);
+});
+
+test('Bresenham: A line going up and to the right', () => {
+  const c = new Canvas(10, 10);
+  line_bresenham(c, 0, 6, 7, 3, new Color(1, 1, 1));
+  const pixels = lit_pixels(c);
+  // Reading order: top row first, left to right
+  assert.deepStrictEqual(pixels, [[6, 3], [7, 3], [4, 4], [5, 4], [2, 5], [3, 5], [0, 6], [1, 6]]);
+});
+
+test('Bresenham: At an exact half the line stays on its row one step longer', () => {
+  const c = new Canvas(10, 10);
+  line_bresenham(c, 0, 0, 4, 2, new Color(1, 1, 1));
+  const pixels = lit_pixels(c);
+  assert.deepStrictEqual(pixels, [[0, 0], [1, 0], [2, 1], [3, 1], [4, 2]]);
+});
+
+test('Bresenham: A line of one point', () => {
+  const c = new Canvas(10, 10);
+  line_bresenham(c, 3, 3, 3, 3, new Color(1, 1, 1));
+  const pixels = lit_pixels(c);
+  assert.deepStrictEqual(pixels, [[3, 3]]);
+});
+
+test('Bresenham: A line may run off the canvas', () => {
+  const c = new Canvas(10, 10);
+  line_bresenham(c, 0, 0, 12, 6, new Color(1, 1, 1));
+  const pixels = lit_pixels(c);
+  assert.strictEqual(pixels.length, 10);
+});
+
+// Chapter 3 - Wu
+test('Wu: A half step lights two pixels equally', () => {
+  const c = new Canvas(10, 10);
+  line_wu(c, 0, 0, 4, 2, new Color(1, 1, 1));
+  assert_color_equal(c.pixel_at(0, 0), new Color(1, 1, 1));
+  assert_color_equal(c.pixel_at(1, 0), new Color(0.5, 0.5, 0.5));
+  assert_color_equal(c.pixel_at(1, 1), new Color(0.5, 0.5, 0.5));
+  assert_color_equal(c.pixel_at(2, 1), new Color(1, 1, 1));
+  assert_color_equal(c.pixel_at(2, 2), new Color(0, 0, 0));
+  assert_color_equal(c.pixel_at(4, 2), new Color(1, 1, 1));
+  assert_number_equal(total_ink(c), 5, 0.001);
+});
+
+test('Wu: A diagonal has uniform weights', () => {
+  const c = new Canvas(10, 10);
+  line_wu(c, 0, 0, 5, 5, new Color(1, 1, 1));
+  const pixels = lit_pixels(c);
+  assert.deepStrictEqual(pixels, [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5]]);
+  assert_color_equal(c.pixel_at(3, 3), new Color(1, 1, 1));
+  assert_number_equal(total_ink(c), 6, 0.001);
+});
+
+test('Wu: A horizontal line has weight 1 on its row and 0 on the neighbors', () => {
+  const c = new Canvas(10, 10);
+  line_wu(c, 0, 3, 7, 3, new Color(1, 1, 1));
+  const pixels = lit_pixels(c);
+  assert.deepStrictEqual(pixels, [[0, 3], [1, 3], [2, 3], [3, 3], [4, 3], [5, 3], [6, 3], [7, 3]]);
+  assert_color_equal(c.pixel_at(3, 3), new Color(1, 1, 1));
+  assert_color_equal(c.pixel_at(3, 2), new Color(0, 0, 0));
+  assert_color_equal(c.pixel_at(3, 4), new Color(0, 0, 0));
+  assert_number_equal(total_ink(c), 8, 0.001);
+});
+
+test('Wu: A steep line weights across columns', () => {
+  const c = new Canvas(10, 10);
+  line_wu(c, 1, 1, 3, 7, new Color(1, 1, 1));
+  assert_color_equal(c.pixel_at(1, 1), new Color(1, 1, 1));
+  assert_color_equal(c.pixel_at(1, 2), new Color(0.6667, 0.6667, 0.6667), 0.001);
+  assert_color_equal(c.pixel_at(2, 2), new Color(0.3333, 0.3333, 0.3333), 0.001);
+  assert_color_equal(c.pixel_at(2, 4), new Color(1, 1, 1));
+  assert_color_equal(c.pixel_at(3, 7), new Color(1, 1, 1));
+  assert_number_equal(total_ink(c), 7, 0.001);
+});
+
+test('Wu: The weights don\'t depend on which end you start from', () => {
+  const c1 = new Canvas(10, 10);
+  const c2 = new Canvas(10, 10);
+  line_wu(c1, 1, 1, 3, 7, new Color(1, 1, 1));
+  line_wu(c2, 3, 7, 1, 1, new Color(1, 1, 1));
+  const p6a = canvas_to_p6(c1);
+  const p6b = canvas_to_p6(c2);
+  assert.strictEqual(max_channel_difference(p6a, p6b), 0);
+});
+
+test('Wu: Sevenths', () => {
+  const c = new Canvas(10, 10);
+  line_wu(c, 0, 0, 7, 3, new Color(1, 1, 1));
+  assert_color_equal(c.pixel_at(1, 0), new Color(0.5714, 0.5714, 0.5714), 0.0001);
+  assert_color_equal(c.pixel_at(1, 1), new Color(0.4286, 0.4286, 0.4286), 0.0001);
+  assert_color_equal(c.pixel_at(2, 0), new Color(0.1429, 0.1429, 0.1429), 0.0001);
+  assert_color_equal(c.pixel_at(2, 1), new Color(0.8571, 0.8571, 0.8571), 0.0001);
+  assert_number_equal(total_ink(c), 8, 0.001);
+});
+
+test('Wu: The ink depends on the angle (12, 2)', () => {
+  const c = new Canvas(20, 20);
+  line_wu(c, 2, 2, 12, 2, new Color(1, 1, 1));
+  assert_number_equal(total_ink(c), 11, 0.001);
+});
+
+test('Wu: The ink depends on the angle (10, 8)', () => {
+  const c = new Canvas(20, 20);
+  line_wu(c, 2, 2, 10, 8, new Color(1, 1, 1));
+  assert_number_equal(total_ink(c), 9, 0.001);
+});
+
+test('Wu: The ink depends on the angle (8, 10)', () => {
+  const c = new Canvas(20, 20);
+  line_wu(c, 2, 2, 8, 10, new Color(1, 1, 1));
+  assert_number_equal(total_ink(c), 9, 0.001);
+});
+
+test('Wu: The ink depends on the angle (2, 12)', () => {
+  const c = new Canvas(20, 20);
+  line_wu(c, 2, 2, 2, 12, new Color(1, 1, 1));
+  assert_number_equal(total_ink(c), 11, 0.001);
+});
+
+// Chapter 3 - Thick Line / Quad
+test('Quad: Inside a thick line', () => {
+  const s = thick_line(0, 0, 4, 0, 1);
+  assert.strictEqual(inside(s, 2.5, 0.5), true);
+  assert.strictEqual(inside(s, 2.5, 1.0), true);
+  assert.strictEqual(inside(s, 2.5, 1.01), false);
+  assert.strictEqual(inside(s, 0.5, 0.5), true);
+  assert.strictEqual(inside(s, 0.4, 0.5), false);
+  assert.strictEqual(inside(s, 4.5, 0.5), true);
+  assert.strictEqual(inside(s, 4.6, 0.5), false);
+});
+
+test('Quad: A horizontal thick line covers its row, with half pixels at the ends', () => {
+  const s = thick_line(0, 3, 7, 3, 1);
+  const cov = rasterize(s, 10, 10);
+  assert_number_equal(coverage_at(cov, 0, 3), 0.5, 0.01);
+  assert_number_equal(coverage_at(cov, 1, 3), 1, 0.01);
+  assert_number_equal(coverage_at(cov, 6, 3), 1, 0.01);
+  assert_number_equal(coverage_at(cov, 7, 3), 0.5, 0.01);
+  assert_number_equal(coverage_at(cov, 8, 3), 0, 0.01);
+  assert_number_equal(coverage_at(cov, 3, 2), 0, 0.01);
+  assert_number_equal(coverage_at(cov, 3, 4), 0, 0.01);
+  assert_number_equal(ink(cov), 7, 0.01);
+});
+
+test('Quad: The ink is the length (12, 2)', () => {
+  const s = thick_line(2, 2, 12, 2, 1);
+  const cov = rasterize(s, 20, 20);
+  assert_number_equal(ink(cov), 10, 0.01);
+});
+
+test('Quad: The ink is the length (10, 8)', () => {
+  const s = thick_line(2, 2, 10, 8, 1);
+  const cov = rasterize(s, 20, 20);
+  assert_number_equal(ink(cov), 10, 0.01);
+});
+
+test('Quad: The ink is the length (8, 10)', () => {
+  const s = thick_line(2, 2, 8, 10, 1);
+  const cov = rasterize(s, 20, 20);
+  assert_number_equal(ink(cov), 10, 0.01);
+});
+
+test('Quad: The ink is the length (2, 12)', () => {
+  const s = thick_line(2, 2, 2, 12, 1);
+  const cov = rasterize(s, 20, 20);
+  assert_number_equal(ink(cov), 10, 0.01);
+});
+
+test('Quad: The grid is blind along the diagonal', () => {
+  const s = thick_line(2, 2, 9, 9, 1);
+  const cov = rasterize(s, 20, 20);
+  const ik = ink(cov);
+  assert_number_equal(ik, 9.7188, 0.001);
+  assert(Math.abs(ik - 9.8995) <= 0.25, `ink should be 9.8995 ± 0.25, got ${ik}`);
+});
+
+// Chapter 3 - Plate
+test('Plate: The ray endpoints', () => {
+  const ends = ray_ends();
+  const expected = [[152, 80], [142, 116], [116, 142], [80, 152], [44, 142], [18, 116], [8, 80], [18, 44], [44, 18], [80, 8], [116, 18], [142, 44]];
+  assert.deepStrictEqual(ends, expected);
+});
+
+test('Plate: Bresenham\'s fan', () => {
+  const c = fan_bresenham();
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(c.width, 160);
+  assert.strictEqual(c.height, 160);
+  const p1 = ppm_pixel(p6, 80, 80);
+  const p2 = ppm_pixel(p6, 120, 80);
+  const p3 = ppm_pixel(p6, 10, 10);
+  const p4 = ppm_pixel(p6, 100, 91);
+  const p5 = ppm_pixel(p6, 100, 92);
+  assert(Math.abs(p1[0] - 246) <= 1 && Math.abs(p1[1] - 246) <= 1 && Math.abs(p1[2] - 241) <= 1);
+  assert(Math.abs(p2[0] - 246) <= 1 && Math.abs(p2[1] - 246) <= 1 && Math.abs(p2[2] - 241) <= 1);
+  assert(Math.abs(p3[0] - 39) <= 1 && Math.abs(p3[1] - 39) <= 1 && Math.abs(p3[2] - 44) <= 1);
+  assert(Math.abs(p4[0] - 39) <= 1 && Math.abs(p4[1] - 39) <= 1 && Math.abs(p4[2] - 44) <= 1);
+  assert(Math.abs(p5[0] - 246) <= 1 && Math.abs(p5[1] - 246) <= 1 && Math.abs(p5[2] - 241) <= 1);
+});
+
+test('Plate: Wu\'s fan', () => {
+  const c = fan_wu();
+  const p6 = canvas_to_p6(c);
+  const p1 = ppm_pixel(p6, 80, 80);
+  const p2 = ppm_pixel(p6, 120, 80);
+  const p3 = ppm_pixel(p6, 100, 91);
+  const p4 = ppm_pixel(p6, 100, 92);
+  assert(Math.abs(p1[0] - 246) <= 1 && Math.abs(p1[1] - 246) <= 1 && Math.abs(p1[2] - 241) <= 1);
+  assert(Math.abs(p2[0] - 246) <= 1 && Math.abs(p2[1] - 246) <= 1 && Math.abs(p2[2] - 241) <= 1);
+  assert(Math.abs(p3[0] - 163) <= 1 && Math.abs(p3[1] - 163) <= 1 && Math.abs(p3[2] - 161) <= 1);
+  assert(Math.abs(p4[0] - 199) <= 1 && Math.abs(p4[1] - 199) <= 1 && Math.abs(p4[2] - 196) <= 1);
+});
+
+test('Plate: The fan as twelve thin rectangles', () => {
+  const c = fan_coverage();
+  const ref = read_file('reference/chapter-03/fan-coverage.ppm');
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(c.width, 320);
+  assert.strictEqual(c.height, 320);
+  const p1 = ppm_pixel(p6, 160, 160);
+  const p2 = ppm_pixel(p6, 10, 10);
+  const p3 = ppm_pixel(p6, 240, 160);
+  const p4 = ppm_pixel(p6, 240, 158);
+  const p5 = ppm_pixel(p6, 200, 183);
+  const p6pix = ppm_pixel(p6, 200, 185);
+  assert(Math.abs(p1[0] - 246) <= 1 && Math.abs(p1[1] - 246) <= 1 && Math.abs(p1[2] - 241) <= 1);
+  assert(Math.abs(p2[0] - 39) <= 1 && Math.abs(p2[1] - 39) <= 1 && Math.abs(p2[2] - 44) <= 1);
+  assert(Math.abs(p3[0] - 246) <= 1 && Math.abs(p3[1] - 246) <= 1 && Math.abs(p3[2] - 241) <= 1);
+  assert(Math.abs(p4[0] - 39) <= 1 && Math.abs(p4[1] - 39) <= 1 && Math.abs(p4[2] - 44) <= 1);
+  assert(Math.abs(p5[0] - 177) <= 1 && Math.abs(p5[1] - 177) <= 1 && Math.abs(p5[2] - 174) <= 1);
+  assert(Math.abs(p6pix[0] - 209) <= 1 && Math.abs(p6pix[1] - 209) <= 1 && Math.abs(p6pix[2] - 205) <= 1);
+  assert(max_channel_difference(p6, ref) <= 1);
+});
+
+test('Plate: Plate 3', () => {
+  const c = plate_03();
+  const ref = read_file('reference/chapter-03/plate-03.ppm');
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(c.width, 640);
+  assert.strictEqual(c.height, 320);
+  const p1 = ppm_pixel(p6, 160, 160);
+  const p2 = ppm_pixel(p6, 480, 160);
+  const p3 = ppm_pixel(p6, 10, 10);
+  const p4 = ppm_pixel(p6, 200, 183);
+  const p5 = ppm_pixel(p6, 200, 185);
+  const p6pix = ppm_pixel(p6, 520, 183);
+  const p7 = ppm_pixel(p6, 520, 185);
+  assert(Math.abs(p1[0] - 246) <= 1 && Math.abs(p1[1] - 246) <= 1 && Math.abs(p1[2] - 241) <= 1);
+  assert(Math.abs(p2[0] - 246) <= 1 && Math.abs(p2[1] - 246) <= 1 && Math.abs(p2[2] - 241) <= 1);
+  assert(Math.abs(p3[0] - 39) <= 1 && Math.abs(p3[1] - 39) <= 1 && Math.abs(p3[2] - 44) <= 1);
+  assert(Math.abs(p4[0] - 39) <= 1 && Math.abs(p4[1] - 39) <= 1 && Math.abs(p4[2] - 44) <= 1);
+  assert(Math.abs(p5[0] - 246) <= 1 && Math.abs(p5[1] - 246) <= 1 && Math.abs(p5[2] - 241) <= 1);
+  assert(Math.abs(p6pix[0] - 163) <= 1 && Math.abs(p6pix[1] - 163) <= 1 && Math.abs(p6pix[2] - 161) <= 1);
+  assert(Math.abs(p7[0] - 199) <= 1 && Math.abs(p7[1] - 199) <= 1 && Math.abs(p7[2] - 196) <= 1);
+  assert(max_channel_difference(p6, ref) <= 1);
+});
+
+// Write Chapter 3 output files
+test('Write chapter 3 output files', async () => {
+  const c1 = fan_coverage();
+  const p6a = canvas_to_p6(c1);
+  await fs.writeFile('out/fan-coverage.ppm', p6a);
+
+  const c2 = plate_03();
+  const p6b = canvas_to_p6(c2);
+  await fs.writeFile('out/plate-03.ppm', p6b);
 });
