@@ -16,7 +16,8 @@ java -cp classes Chapter03Tests
 Each run prints one `PASS`/`FAIL` line per scenario, a pass/fail total, and
 then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-3 as
 P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
-`out/plate-02.ppm`, `out/fan-coverage.ppm`, `out/plate-03.ppm`.
+`out/plate-02.ppm`, `out/fan-bresenham.ppm`, `out/fan-wu.ppm`,
+`out/fan-coverage.ppm`, `out/plate-03.ppm`.
 
 ## Chapter 3
 

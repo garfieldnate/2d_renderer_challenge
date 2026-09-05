@@ -4,7 +4,9 @@
  * square ends. Four half-planes: one through each endpoint, facing outward
  * along the segment's direction; one along each side, offset by half the
  * width along the segment's normal, facing back inward. Inside means inside
- * all four.
+ * all four. A line of no length has no direction, so it gets (1, 0) and its
+ * two ends are pushed apart by half the width each, which makes it a
+ * width-by-width square.
  */
 public final class ThickLine implements Shape {
     private final HalfPlane startCap;
@@ -17,14 +19,23 @@ public final class ThickLine implements Shape {
         double sy = y0 + 0.5;
         double ex = x1 + 0.5;
         double ey = y1 + 0.5;
+        double half = width / 2.0;
         double dx = ex - sx;
         double dy = ey - sy;
         double len = Math.hypot(dx, dy);
-        double ux = dx / len;
-        double uy = dy / len;
+        double ux;
+        double uy;
+        if (len == 0) {
+            ux = 1;
+            uy = 0;
+            sx = sx - half;
+            ex = ex + half;
+        } else {
+            ux = dx / len;
+            uy = dy / len;
+        }
         double nx = -uy;
         double ny = ux;
-        double half = width / 2.0;
 
         startCap = new HalfPlane(sx, sy, ux, uy);
         endCap = new HalfPlane(ex, ey, -ux, -uy);

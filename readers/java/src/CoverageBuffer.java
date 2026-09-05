@@ -22,6 +22,9 @@ public final class CoverageBuffer {
     }
 
     public double coverageAt(int x, int y) {
+        if (x < 0 || x >= width || y < 0 || y >= height) {
+            return 0;
+        }
         return values[y * width + x];
     }
 

@@ -284,6 +284,18 @@ public final class Chapter01Tests {
             }
         });
 
+        scenario("PPM: a line of exactly 70 characters is allowed", () -> {
+            Canvas c = new Canvas(8, 1);
+            c.fill(new Color(1, 0.1, 0));
+            c.writePixel(7, 0, new Color(1, 1, 1));
+            String ppm = Ppm.canvasToPpm(c);
+            String[] lines = Ppm.lines(ppm);
+            assertEquals("line 4", lines[3],
+                    "255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 255");
+            assertEquals("line 5", lines[4], "255");
+            assertEquals("line 4 length", lines[3].length(), 70);
+        });
+
         scenario("PPM: the file ends with a newline", () -> {
             Canvas c = new Canvas(5, 3);
             String ppm = Ppm.canvasToPpm(c);
@@ -300,6 +312,15 @@ public final class Chapter01Tests {
                     Arrays.equals(Ppm.ppmPixel(ppm, 1, 1), new int[] {0, 0, 0}));
         });
 
+        scenario("PPM: counting the distinct values in a file", () -> {
+            Canvas c = new Canvas(3, 1);
+            c.writePixel(0, 0, new Color(1, 0, 0));
+            c.writePixel(1, 0, new Color(0, 0.5, 0));
+            c.writePixel(2, 0, new Color(0, 0, 0.216));
+            String ppm = Ppm.canvasToPpm(c);
+            assertEquals("distinct_values(ppm)", Ppm.distinctValues(ppm), 4);
+        });
+
         scenario("PPM: comparing two files", () -> {
             Canvas c1 = new Canvas(2, 1);
             Canvas c2 = new Canvas(2, 1);
@@ -308,6 +329,22 @@ public final class Chapter01Tests {
             String ppm2 = Ppm.canvasToPpm(c2);
             assertEquals("max_channel_difference(ppm1, ppm1)", Ppm.maxChannelDifference(ppm1, ppm1), 0);
             assertEquals("max_channel_difference(ppm1, ppm2)", Ppm.maxChannelDifference(ppm1, ppm2), 188);
+        });
+
+        scenario("PPM: files of different sizes are as different as it gets", () -> {
+            Canvas c1 = new Canvas(5, 3);
+            Canvas c2 = new Canvas(3, 5);
+            String ppm1 = Ppm.canvasToPpm(c1);
+            String ppm2 = Ppm.canvasToPpm(c2);
+            assertEquals("max_channel_difference(ppm1, ppm2)", Ppm.maxChannelDifference(ppm1, ppm2), 255);
+        });
+
+        scenario("PPM: the same width with a different height is still a different size", () -> {
+            Canvas c1 = new Canvas(5, 3);
+            Canvas c2 = new Canvas(5, 4);
+            String ppm1 = Ppm.canvasToPpm(c1);
+            String ppm2 = Ppm.canvasToPpm(c2);
+            assertEquals("max_channel_difference(ppm1, ppm2)", Ppm.maxChannelDifference(ppm1, ppm2), 255);
         });
     }
 
@@ -459,7 +496,32 @@ public final class Chapter01Tests {
             Mixer.linearBlending = true;
         });
 
-        scenario("Mix: the ends of a mix are its inputs either way", () -> {
+        scenario("Mix: the light's way never clamps", () -> {
+            Color a = new Color(1.5, 0.5, -0.2);
+            Color b = new Color(0, 0, 0);
+            assertColorEq("mix(a, b, 0)", Mixer.mix(a, b, 0), new Color(1.5, 0.5, -0.2));
+            assertColorEq("mix(a, b, 0.5)", Mixer.mix(a, b, 0.5), new Color(0.75, 0.25, -0.1));
+        });
+
+        scenario("Mix: the switch can be passed instead of set", () -> {
+            Color a = new Color(0, 0, 0);
+            Color b = new Color(1, 1, 1);
+            assertColorEq("mix(a, b, 0.5, true)", Mixer.mix(a, b, 0.5, true), new Color(0.5, 0.5, 0.5));
+            assertColorEq("mix(a, b, 0.5, false)", Mixer.mix(a, b, 0.5, false),
+                    new Color(0.2140, 0.2140, 0.2140));
+            assertTrue("linear blending is on", Mixer.linearBlending);
+        });
+
+        scenario("Mix: the browser's way clamps each end before encoding it", () -> {
+            Mixer.linearBlending = false;
+            Color a = new Color(1.5, 0.5, -0.2);
+            Color b = new Color(0, 0, 0);
+            assertColorEq("mix(a, b, 0)", Mixer.mix(a, b, 0), new Color(1, 0.5, 0));
+            assertColorEq("mix(a, b, 0.5)", Mixer.mix(a, b, 0.5), new Color(0.2140, 0.1113, 0.0000));
+            Mixer.linearBlending = true;
+        });
+
+        scenario("Mix: the ends of a mix are its inputs either way, when they're in range", () -> {
             Mixer.linearBlending = false;
             Color a = new Color(0.7, 0, 0);
             Color b = new Color(0, 0.3, 0.02);

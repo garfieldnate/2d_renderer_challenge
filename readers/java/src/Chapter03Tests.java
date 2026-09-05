@@ -105,6 +105,15 @@ public final class Chapter03Tests {
 
     // features/chapter03-bresenham.feature
     private static void registerBresenham() {
+        scenario("Bresenham: lit_pixels reads like a page", () -> {
+            Canvas c = new Canvas(10, 10);
+            c.writePixel(5, 0, new Color(1, 1, 1));
+            c.writePixel(0, 2, new Color(1, 1, 1));
+            c.writePixel(2, 2, new Color(0.5, 0, 0));
+            assertPoints("lit_pixels(c)", Lines.litPixels(c),
+                    new int[][] {{5, 0}, {0, 2}, {2, 2}});
+        });
+
         scenario("Bresenham: a diagonal", () -> {
             Canvas c = new Canvas(10, 10);
             Lines.lineBresenham(c, 0, 0, 5, 5, new Color(1, 1, 1));
@@ -225,6 +234,21 @@ public final class Chapter03Tests {
                     Ppm.maxChannelDifference(Ppm.canvasToP6(c1), Ppm.canvasToP6(c2)), 0);
         });
 
+        scenario("Wu: a line that starts above the canvas", () -> {
+            Canvas c = new Canvas(10, 10);
+            Lines.lineWu(c, 0, -1, 8, 3, new Color(1, 1, 1));
+            assertColorEq("pixel_at(c, 1, 0)", c.pixelAt(1, 0), new Color(0.5, 0.5, 0.5));
+            assertColorEq("pixel_at(c, 2, 0)", c.pixelAt(2, 0), new Color(1, 1, 1));
+            assertDoubleEq("total_ink(c)", Lines.totalInk(c), 7.5);
+        });
+
+        scenario("Wu: a Wu line of one point", () -> {
+            Canvas c = new Canvas(10, 10);
+            Lines.lineWu(c, 3, 3, 3, 3, new Color(1, 1, 1));
+            assertPoints("lit_pixels(c)", Lines.litPixels(c), new int[][] {{3, 3}});
+            assertColorEq("pixel_at(c, 3, 3)", c.pixelAt(3, 3), new Color(1, 1, 1));
+        });
+
         scenario("Wu: sevenths", () -> {
             Canvas c = new Canvas(10, 10);
             Lines.lineWu(c, 0, 0, 7, 3, new Color(1, 1, 1));
@@ -272,6 +296,36 @@ public final class Chapter03Tests {
             assertDoubleEq("ink(cov)", cov.ink(), 7);
         });
 
+        scenario("Quad: a line of no length is a square", () -> {
+            Shape s = new ThickLine(3, 3, 3, 3, 1);
+            CoverageBuffer cov = Rasterizer.rasterize(s, 8, 8);
+            assertDoubleEq("coverage_at(cov, 3, 3)", cov.coverageAt(3, 3), 1);
+            assertDoubleEq("ink(cov)", cov.ink(), 1);
+        });
+
+        scenario("Quad: a wider line", () -> {
+            Shape s = new ThickLine(0, 3, 7, 3, 3);
+            CoverageBuffer cov = Rasterizer.rasterize(s, 10, 10);
+            assertDoubleEq("coverage_at(cov, 3, 2)", cov.coverageAt(3, 2), 1);
+            assertDoubleEq("coverage_at(cov, 3, 3)", cov.coverageAt(3, 3), 1);
+            assertDoubleEq("coverage_at(cov, 3, 4)", cov.coverageAt(3, 4), 1);
+            assertDoubleEq("coverage_at(cov, 3, 1)", cov.coverageAt(3, 1), 0);
+            assertDoubleEq("coverage_at(cov, 3, 5)", cov.coverageAt(3, 5), 0);
+            assertDoubleEq("coverage_at(cov, 0, 3)", cov.coverageAt(0, 3), 0.5);
+            assertDoubleEq("ink(cov)", cov.ink(), 21);
+        });
+
+        scenario("Quad: an off-axis line runs through pixel centers, not corners", () -> {
+            Shape s = new ThickLine(2, 2, 11, 5, 1);
+            CoverageBuffer cov = Rasterizer.rasterize(s, 16, 10);
+            assertDoubleEq("coverage_at(cov, 2, 2)", cov.coverageAt(2, 2), 0.484375);
+            assertDoubleEq("coverage_at(cov, 11, 5)", cov.coverageAt(11, 5), 0.484375);
+            assertDoubleEq("coverage_at(cov, 6, 3)", cov.coverageAt(6, 3), 0.6875);
+            assertDoubleEq("coverage_at(cov, 7, 3)", cov.coverageAt(7, 3), 0.359375);
+            assertDoubleEq("coverage_at(cov, 2, 1)", cov.coverageAt(2, 1), 0);
+            assertDoubleEq("ink(cov)", cov.ink(), 9.4063, 0.0001);
+        });
+
         int[][] quadAngles = {{12, 2}, {10, 8}, {8, 10}, {2, 12}};
         for (int[] row : quadAngles) {
             int x1 = row[0], y1 = row[1];
@@ -285,7 +339,7 @@ public final class Chapter03Tests {
         scenario("Quad: except that the grid is blind along the diagonal", () -> {
             Shape s = new ThickLine(2, 2, 9, 9, 1);
             CoverageBuffer cov = Rasterizer.rasterize(s, 20, 20);
-            assertDoubleEq("ink(cov)", cov.ink(), 9.7188);
+            assertDoubleEq("ink(cov)", cov.ink(), 9.71875);
             assertDoubleEq("ink(cov)", cov.ink(), 9.8995, 0.25);
         });
     }
@@ -306,6 +360,7 @@ public final class Chapter03Tests {
 
         scenario("Plate 3: Bresenham's fan", () -> {
             Canvas c = Figures.fanBresenham();
+            byte[] ref = readReference("fan-bresenham.ppm");
             byte[] p6 = Ppm.canvasToP6(c);
             assertEquals("c.width", c.width, 160);
             assertEquals("c.height", c.height, 160);
@@ -314,15 +369,23 @@ public final class Chapter03Tests {
             assertTriple("ppm_pixel(p6, 10, 10)", Ppm.ppmPixel(p6, 10, 10), new int[] {39, 39, 44}, 1);
             assertTriple("ppm_pixel(p6, 100, 91)", Ppm.ppmPixel(p6, 100, 91), new int[] {39, 39, 44}, 1);
             assertTriple("ppm_pixel(p6, 100, 92)", Ppm.ppmPixel(p6, 100, 92), new int[] {246, 246, 241}, 1);
+            assertTriple("ppm_pixel(p6, 103, 120)", Ppm.ppmPixel(p6, 103, 120), new int[] {246, 246, 241}, 1);
+            assertTriple("ppm_pixel(p6, 102, 120)", Ppm.ppmPixel(p6, 102, 120), new int[] {39, 39, 44}, 1);
+            assertTriple("ppm_pixel(p6, 104, 120)", Ppm.ppmPixel(p6, 104, 120), new int[] {39, 39, 44}, 1);
+            assertTrue("max_channel_difference(p6, ref) <= 1", Ppm.maxChannelDifference(p6, ref) <= 1);
         });
 
         scenario("Plate 3: Wu's fan", () -> {
             Canvas c = Figures.fanWu();
+            byte[] ref = readReference("fan-wu.ppm");
             byte[] p6 = Ppm.canvasToP6(c);
             assertTriple("ppm_pixel(p6, 80, 80)", Ppm.ppmPixel(p6, 80, 80), new int[] {246, 246, 241}, 1);
             assertTriple("ppm_pixel(p6, 120, 80)", Ppm.ppmPixel(p6, 120, 80), new int[] {246, 246, 241}, 1);
             assertTriple("ppm_pixel(p6, 100, 91)", Ppm.ppmPixel(p6, 100, 91), new int[] {163, 163, 161}, 1);
             assertTriple("ppm_pixel(p6, 100, 92)", Ppm.ppmPixel(p6, 100, 92), new int[] {199, 199, 196}, 1);
+            assertTriple("ppm_pixel(p6, 103, 120)", Ppm.ppmPixel(p6, 103, 120), new int[] {220, 220, 216}, 1);
+            assertTriple("ppm_pixel(p6, 104, 120)", Ppm.ppmPixel(p6, 104, 120), new int[] {130, 130, 129}, 1);
+            assertTrue("max_channel_difference(p6, ref) <= 1", Ppm.maxChannelDifference(p6, ref) <= 1);
         });
 
         scenario("Plate 3: the fan as twelve thin rectangles", () -> {
@@ -392,6 +455,8 @@ public final class Chapter03Tests {
 
     private static void writeRenders() throws IOException {
         Files.createDirectories(Path.of("out"));
+        writeOne("fan-bresenham.ppm", Figures.fanBresenham());
+        writeOne("fan-wu.ppm", Figures.fanWu());
         writeOne("fan-coverage.ppm", Figures.fanCoverage());
         writeOne("plate-03.ppm", Figures.plate03());
     }

@@ -143,6 +143,46 @@ public final class Chapter02Tests {
             assertEquals("distinct_values(p6)", Ppm.distinctValues(p6), 2);
         });
 
+        scenario("P6: rows go top to bottom", () -> {
+            Canvas c = new Canvas(1, 2);
+            c.writePixel(0, 0, new Color(1, 0, 0));
+            c.writePixel(0, 1, new Color(0, 0, 1));
+            byte[] p6 = Ppm.canvasToP6(c);
+            assertEquals("byte 12 of p6", unsignedByte(p6, 12), 255);
+            assertEquals("byte 17 of p6", unsignedByte(p6, 17), 255);
+            assertTrue("ppm_pixel(p6, 0, 0) = (255, 0, 0)",
+                    Arrays.equals(Ppm.ppmPixel(p6, 0, 0), new int[] {255, 0, 0}));
+            assertTrue("ppm_pixel(p6, 0, 1) = (0, 0, 255)",
+                    Arrays.equals(Ppm.ppmPixel(p6, 0, 1), new int[] {0, 0, 255}));
+        });
+
+        scenario("P6: the binary writer clamps too", () -> {
+            Canvas c = new Canvas(2, 1);
+            c.writePixel(0, 0, new Color(1.5, 0, -0.5));
+            byte[] p6 = Ppm.canvasToP6(c);
+            assertEquals("byte 12 of p6", unsignedByte(p6, 12), 255);
+            assertEquals("byte 13 of p6", unsignedByte(p6, 13), 0);
+            assertEquals("byte 14 of p6", unsignedByte(p6, 14), 0);
+            assertTrue("ppm_pixel(p6, 0, 0) = (255, 0, 0)",
+                    Arrays.equals(Ppm.ppmPixel(p6, 0, 0), new int[] {255, 0, 0}));
+        });
+
+        scenario("P6: pixel bytes that look like whitespace are still pixel bytes", () -> {
+            Canvas c = new Canvas(2, 1);
+            c.writePixel(0, 0, new Color(0.00304, 0.01444, 0.00304));
+            c.writePixel(1, 0, new Color(1, 1, 1));
+            byte[] p6 = Ppm.canvasToP6(c);
+            assertEquals("length(p6)", p6.length, 17);
+            assertEquals("byte 12 of p6", unsignedByte(p6, 12), 10);
+            assertEquals("byte 13 of p6", unsignedByte(p6, 13), 32);
+            assertTrue("ppm_pixel(p6, 0, 0) = (10, 32, 10)",
+                    Arrays.equals(Ppm.ppmPixel(p6, 0, 0), new int[] {10, 32, 10}));
+            assertTrue("ppm_pixel(p6, 1, 0) = (255, 255, 255)",
+                    Arrays.equals(Ppm.ppmPixel(p6, 1, 0), new int[] {255, 255, 255}));
+            assertEquals("max_channel_difference(canvas_to_ppm(c), p6)",
+                    Ppm.maxChannelDifference(Ppm.canvasToPpm(c), p6), 0);
+        });
+
         scenario("P6: sizes still have to match", () -> {
             Canvas c1 = new Canvas(2, 1);
             Canvas c2 = new Canvas(1, 2);
@@ -203,12 +243,15 @@ public final class Chapter02Tests {
             assertDoubleEq("ink(cov)", cov.ink(), 0.75);
         });
 
-        scenario("Centers: setting coverage outside the buffer is ignored", () -> {
+        scenario("Centers: setting coverage outside the buffer is ignored, and reading it gives 0", () -> {
             CoverageBuffer cov = new CoverageBuffer(4, 3);
             cov.setCoverage(-1, 1, 1);
             cov.setCoverage(4, 1, 1);
             cov.setCoverage(1, 3, 1);
             assertDoubleEq("ink(cov)", cov.ink(), 0);
+            assertDoubleEq("coverage_at(cov, -1, 1)", cov.coverageAt(-1, 1), 0);
+            assertDoubleEq("coverage_at(cov, 4, 1)", cov.coverageAt(4, 1), 0);
+            assertDoubleEq("coverage_at(cov, 1, 3)", cov.coverageAt(1, 3), 0);
         });
 
         scenario("Centers: the center of pixel (x, y) is (x + 0.5, y + 0.5)", () -> {
@@ -217,6 +260,35 @@ public final class Chapter02Tests {
             assertDoubleEq("center_inside(s, 1, 4)", Rasterizer.centerInside(s, 1, 4), 0);
             Shape t = new HalfPlane(2.6, 0, 1, 0);
             assertDoubleEq("center_inside(t, 2, 4)", Rasterizer.centerInside(t, 2, 4), 0);
+        });
+
+        scenario("Centers: the center question is not \"at least half\"", () -> {
+            Shape s = new HalfPlane(2.55, 0, 1, 0);
+            assertDoubleEq("center_inside(s, 2, 4)", Rasterizer.centerInside(s, 2, 4), 0);
+            assertDoubleEq("coverage(s, 2, 4)", Rasterizer.coverage(s, 2, 4), 0.5);
+        });
+
+        scenario("Centers: a buffer need not be square", () -> {
+            Shape s = new Rectangle(0, 0, 2, 1);
+            CoverageBuffer cov = Rasterizer.rasterizeCenters(s, 4, 2);
+            assertEquals("cov.width", cov.width, 4);
+            assertEquals("cov.height", cov.height, 2);
+            assertDoubleEq("coverage_at(cov, 1, 0)", cov.coverageAt(1, 0), 1);
+            assertDoubleEq("coverage_at(cov, 0, 1)", cov.coverageAt(0, 1), 0);
+            assertDoubleEq("ink(cov)", cov.ink(), 2);
+        });
+
+        scenario("Centers: a rectangle, by asking each center", () -> {
+            Shape s = new Rectangle(1.25, 2.0, 4.75, 5.0);
+            CoverageBuffer cov = Rasterizer.rasterizeCenters(s, 8, 8);
+            assertDoubleEq("coverage_at(cov, 1, 4)", cov.coverageAt(1, 4), 1);
+            assertDoubleEq("coverage_at(cov, 4, 1)", cov.coverageAt(4, 1), 0);
+            assertDoubleEq("coverage_at(cov, 4, 4)", cov.coverageAt(4, 4), 1);
+            assertDoubleEq("coverage_at(cov, 0, 3)", cov.coverageAt(0, 3), 0);
+            assertDoubleEq("coverage_at(cov, 5, 3)", cov.coverageAt(5, 3), 0);
+            assertDoubleEq("coverage_at(cov, 2, 1)", cov.coverageAt(2, 1), 0);
+            assertDoubleEq("coverage_at(cov, 2, 5)", cov.coverageAt(2, 5), 0);
+            assertDoubleEq("ink(cov)", cov.ink(), 12);
         });
 
         scenario("Centers: a disc, by asking each center", () -> {
@@ -312,6 +384,17 @@ public final class Chapter02Tests {
             assertDoubleEq("coverage_at(cov, 2, 1)", cov.coverageAt(2, 1), 0);
             assertDoubleEq("coverage_at(cov, 2, 5)", cov.coverageAt(2, 5), 0);
             assertDoubleEq("ink(cov)", cov.ink(), 10.5);
+        });
+
+        scenario("Coverage: neither need the buffer be square here", () -> {
+            Shape s = new Rectangle(0, 0, 2, 1);
+            CoverageBuffer cov = Rasterizer.rasterize(s, 4, 2);
+            assertEquals("cov.width", cov.width, 4);
+            assertEquals("cov.height", cov.height, 2);
+            assertDoubleEq("coverage_at(cov, 1, 0)", cov.coverageAt(1, 0), 1);
+            assertDoubleEq("coverage_at(cov, 2, 0)", cov.coverageAt(2, 0), 0);
+            assertDoubleEq("coverage_at(cov, 0, 1)", cov.coverageAt(0, 1), 0);
+            assertDoubleEq("ink(cov)", cov.ink(), 2);
         });
 
         scenario("Coverage: a half-plane through a pixel center covers half of it", () -> {
