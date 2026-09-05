@@ -1,0 +1,53 @@
+# Chapter 1 feedback — C# / .NET 8 reader
+
+## Ambiguities
+
+- **Rounding tie rule.** The prose says "any tie-breaking rule your language ships with is acceptable" for `round(x)`. C#'s `Math.Round` defaults to banker's rounding (round-half-to-even), which is a different tie rule than most languages' round-half-up. I used `MidpointRounding.AwayFromZero` to match the more common convention, but never actually hit a tie case in any scenario — the chapter's promise held.
+- **`decode(128 / 255)` — integer or float division?** The pseudo-code for `gray_match()` writes `g ← decode(128 / 255)`. In a language with C-style integer division, `128 / 255` is `0`, which would make the whole middle band black instead of the intended file-value-128 gray. This is exactly the kind of trap the book elsewhere warns readers about (§1.6's `x / 255` in `ramp()` has the identical hazard), but it's never called out explicitly for `gray_match`, and there's no scenario that would fail loudly with a clear message if you got it wrong — it would just silently render the wrong picture. I used floating-point division throughout. Worth an explicit one-line warning in the prose, the same way the "watch for inclusive ranges" aside already exists.
+- **`mix`'s "browser way" clamping.** The trap paragraph says "the browser's way clamps each end before encoding it," and the scenario "The browser's way can't see past 1" confirms clamping happens on both directions (it clamps `-0.2` to `0`, not just values `>1`). But the section header ("can't see past 1") only mentions the upper bound, and I had to infer from the single test value that negative clamping was also intended, since no `t≠0` case with an out-of-range end after interpolation is given to be sure the clamp happens *before* interpolation rather than after. I clamp both ends before encoding, per the trap text, and the tests passed, but I'd have appreciated a "also clamp negative" scenario explicitly, since a plausible partial implementation clamps only `> 1` (matching the section title) and passes only by luck on this test's value.
+- **`ppm_pixel`'s tolerance ± 1 applies per-channel, not to the whole triple.** The notation section says "each of the three may be off by one," which I read as an independent per-channel tolerance (not, say, a combined magnitude of 1 across all three). This reading matches how the numbers work out but isn't stated with total precision.
+
+## Hard to translate
+
+- **The global `linear blending` switch is only mildly awkward.** With no test framework of my own that has hooks, I put the reset ("every scenario that doesn't say otherwise expects it on") directly inside my custom `TestRunner.Run` method, which runs before every scenario body. That's exactly the "reset before each scenario" option the chapter offers, and it works fine, but it did mean writing my own tiny piece of test-framework plumbing rather than getting it for free from xUnit's fixture lifecycle — a direct cost of not having NuGet available, not of the chapter's design.
+- **Scenario Outlines** (the two in `chapter01-srgb.feature`) had no native equivalent in a hand-rolled runner, so I just wrote a C# array of tuples and a `foreach` loop generating one `Run(...)` call per row. Mechanical, no real friction.
+- **"lines N-M of ppm are"** required a small 1-based line-slicing helper (`Ppm.LineRange`) since C# arrays are 0-based and Gherkin's phrasing is 1-based inclusive. Trivial once noticed, but is the kind of detail that's easy to get off-by-one on if you're moving fast — I initially wrote it 0-based and had to catch myself.
+
+## Failures
+
+None. All 60 expanded scenarios (7 feature files, two of them with scenario outlines) pass, and all five required renders (`gray-match.ppm`, `quarter-match.ppm`, `ramp.ppm`, `clamp-pair.ppm`, `plate-01.ppm`) come out **byte-for-byte identical** to the shipped reference files, not just within the allowed ±1 tolerance.
+
+## Mistakes that stay green
+
+I deliberately broke the implementation five ways and re-ran the suite each time.
+
+1. **Wrong rounding (truncate instead of round).** Caught immediately — 7 scenarios fail across `chapter01-ppm` and `chapter01-limits`. Good coverage.
+2. **Wrong sRGB branch (swap which formula applies on which side of the threshold).** Caught massively — 30 of 60 scenarios fail. Excellent coverage; the chapter's own claim that "the scenarios test on both sides of both thresholds" holds up completely.
+3. **Forgot to clamp before encoding in the PPM writer.** Caught by exactly 2 scenarios (`Colors out of range are clamped, not wrapped`, and `Clamping changes the color, not only the brightness`). Adequate, but thin — if either scenario were ever dropped, this regression would sail through silently, since nothing else in the suite feeds an out-of-range color into `canvas_to_ppm`.
+4. **Off-by-one at the 70-character line-wrap boundary** (`>= 70` instead of `> 70`, i.e. wrapping one character too early). Caught by **exactly one** scenario — "A line of exactly 70 characters is allowed" — and only because that scenario happens to assert the line length is *exactly* 70, not just "at most 70." Every other PPM scenario would have passed unchanged. This is a single point of failure for an entire category of off-by-one bugs at that boundary.
+5. **Swapped x and y arguments in the `gray_match()` checkerboard writer** (`write_pixel(c, y, x, color)` instead of `write_pixel(c, x, y, color)`), i.e. exactly the mistake the chapter calls out by name ("everyone does it once"). **This one stays completely green — the output is not merely within tolerance, it is byte-for-byte identical to the reference PPM.** The reason: the checkerboard's predicate `(x + y) % 2 == 0` is symmetric under transposition, and the checkerboard region is a 100×100 *square*, so swapping the write coordinates within that block relocates each color to a position that was going to get the same color anyway. The chapter's canvas-feature scenario ("x is the column and y is the row") does catch a swap at the level of a single `write_pixel` call with asymmetric test data (`write_pixel(c,2,3,red)` vs. checking `pixel_at(3,2)` and `pixel_at(2,3)` on a 10×20, non-square canvas) — but that protection does not transfer to a render function whose fill pattern is itself symmetric under (x,y)→(y,x). No scenario in `chapter01-gray-match.feature` would catch this specific mistake, because every asserted pixel and pixel count is also invariant under the swap (checking `pixel_at(1,0)` vs `pixel_at(0,1)`, both black, doesn't help — they're supposed to differ from each other but the test never checks that a value moved to the *wrong* place versus swapped with its transpose twin, which happens to hold the same value). This is worth a targeted fix: an asserted pixel at a non-symmetric point of the checkerboard (e.g., one where `x ≠ y` and confirming it specifically, which the existing test already sort of does at (1,0)/(0,1) but those are symmetric partners) wouldn't help either — what's needed is a check that would fail if x and y were consistently swapped throughout the whole function, e.g. asserting the picture is *not* symmetric across the diagonal by checking a rectangular sub-region rather than the (accidentally symmetric) 100×100 corner. `quarter_match()`'s pattern (`(x+y) mod 4`) has the identical symmetry and the identical blind spot.
+
+## Prose
+
+- The chapter is clear and reads in a sensible order: notation → color → canvas → the sRGB trap (the real payload) → PPM output → the two illustrative renders → mixing → edge cases → the final plate. Nothing needed re-reading twice except the two points noted below.
+- §1.1's rule "A triple of whole numbers... compare exactly unless a ± 1 says otherwise, in which case each of the three may be off by one" is fine, but I had to re-read it once to confirm "each... may be off by one" meant independently per-channel and not that the *sum* of the three differences must be ≤ 1.
+- The pseudocode for `gray_match()` (§1.6) writes `g ← decode(128 / 255)` with no comment on the division, and the section that actually discusses fractional-division hazards in this kind of expression (the ramp, and its "inclusive ranges" aside) is §1.8, two sections later. A reader implementing `gray_match()` first hits the hazard with no warning in sight. A one-line footnote ("this must be floating-point division") would close the gap cheaply.
+- Everything else — the ordering of the transfer-function derivation, the "why 8 bits and a clamp misbehave" section, the plate assembly — read in one pass with no confusion.
+
+## Would change
+
+1. Add a scenario (or strengthen an existing one) in `chapter01-ppm.feature` that pins the PPM clamp behavior with more than two data points, since only two scenarios currently exercise it and a regression there is invisible to the rest of the suite.
+2. Add a second boundary case for the 70-character line wrap — e.g., a canvas whose row wraps at 69 characters if off-by-one — so more than one scenario is defending that boundary.
+3. The checkerboard predicate itself (`(x+y) % k == 0`) is symmetric under x/y swap no matter which pixel you sample, so no amount of extra `pixel_at` assertions on `gray_match`/`quarter_match` can expose this mistake — the fix has to change the pattern, not the assertions. A one-line prose callout would be cheap and honest: "this particular render can't catch you swapping x and y, because a checkerboard looks the same either way — the ramp and clamp renders later in the chapter can, so trust those, or check the width/height scenario in the canvas feature directly."
+4. A one-line footnote by `gray_match`'s pseudocode flagging integer-division as a hazard, matching the existing care taken elsewhere in the chapter.
+
+## Results
+
+- **Total scenarios:** 60 (after expanding both Scenario Outlines row by row: 3 equality + 6 colors + 6 canvas + 20 sRGB + 10 PPM + 8 mix + 3 gray-match + 3 limits + 1 plate)
+- **Passed:** 60
+- **Failed:** 0
+- **Time:** the whole suite plus writing all five output files runs in well under a second (`dotnet run` end-to-end ≈ 0.8s, dominated by CLR startup, not test or render work). No hotspots — this genuinely was an evening-sized chapter, and most of the wall-clock time in this exercise went to reading the chapter and constructing/verifying the mutation tests in step 4, not to writing or running the renderer itself.
+
+## Environment note
+
+NuGet was unavailable, so this uses a hand-rolled `TestRunner`/`Check` assertion library (see `Testing.cs`) instead of xUnit/NUnit — `dotnet new console` and `dotnet build`/`dotnet run` all worked fully offline against the locally installed .NET 8 SDK.

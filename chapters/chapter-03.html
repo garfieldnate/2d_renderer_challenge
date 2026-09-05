@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 3 · Lines — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 3 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-02.html">← 2</a> · <a href="#plate">Plate&nbsp;3</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Three</p>
+    <h1>Lines</h1>
+    <p class="hook">You already own a line renderer. A line is a very thin rectangle, a rectangle is four
+      half-planes, and chapter 2 will rasterize any shape you can describe. It takes twenty seconds to
+      draw twelve of them. This chapter is about why every renderer in history refused to wait that
+      long, what they did instead, and why you're going to stop doing it anyway.</p>
+  </header>
+
+  <p>Lines are the oldest problem in computer graphics, and the first good answer is from 1962. Jack
+    Bresenham was working on a plotter, and the question was how to move a pen that could only step
+    one unit at a time along a path that wasn't aligned to the steps. His answer used no
+    multiplication, no division and no floating point, because the machine had none of those to
+    spare, and it has been copied into every graphics library written since. It's beautiful, and you
+    should write it once.</p>
+
+  <p>Then you should write Xiaolin Wu's version from 1991, which looks enormously better for about
+    four more lines of code. And then you should notice what Wu's version is actually computing,
+    because once you see it you'll understand why the rest of this book never special-cases a line
+    again.</p>
+
+  <h2><span class="sec">§ 3.1</span> Bresenham</h2>
+
+  <p>Here's the idea. A line from <code>(x0, y0)</code> to <code>(x1, y1)</code>, with integer
+    endpoints, and suppose for now it's more horizontal than vertical. Then it visits every column
+    from <code>x0</code> to <code>x1</code> exactly once, and in each column there's exactly one pixel
+    to light: the one whose center is nearest the ideal line. Walk along x one step at a time, and
+    keep track of how far the ideal line has drifted from the row you're on. When the drift passes
+    half a pixel, step to the next row and subtract a pixel from the drift.</p>
+
+  <figure>
+    <canvas id="fig31" role="img" aria-label="An ideal line crossing a pixel grid from lower left to upper right, with the one pixel per column nearest the line filled in, showing the staircase Bresenham produces"></canvas>
+    <figcaption><span class="fig">Figure 3.1</span> One pixel per column, whichever is nearest the ideal line. The error term tracks the vertical gap between the line and the row you're on, and a row step happens when it passes a half.</figcaption>
+  </figure>
+
+  <p>The trick that makes it integer-only is to scale the drift by <code>dx</code>, so that "half a
+    pixel" is <code>dx / 2</code> and "the line rose by <code>dy / dx</code>" is "add
+    <code>dy</code>". Every quantity is a whole number and the comparison is against zero. That's the
+    whole algorithm, and here it is, complete, because the book asks you to reproduce its exact
+    pixels and there's more than one way to break ties:</p>
+
+<pre><code>line_bresenham(c, x0, y0, x1, y1, col):
+  steep ← |y1 - y0| &gt; |x1 - x0|
+  <span class="kw">if</span> steep:   swap x0 with y0, and x1 with y1        <span class="cm">// walk along y instead</span>
+  <span class="kw">if</span> x0 &gt; x1: swap (x0, y0) with (x1, y1)             <span class="cm">// always walk left to right</span>
+
+  dx    ← x1 - x0
+  dy    ← |y1 - y0|
+  ystep ← y0 &lt; y1 ? 1 : -1
+  err   ← dx / 2                                       <span class="cm">// integer division</span>
+  y     ← y0
+
+  <span class="kw">for</span> x <span class="kw">in</span> x0..x1:
+    <span class="kw">if</span> steep: write_pixel(c, y, x, col)               <span class="cm">// swap back on the way out</span>
+    <span class="kw">else</span>:     write_pixel(c, x, y, col)
+    err ← err - dy
+    <span class="kw">if</span> err &lt; 0:
+      y   ← y + ystep
+      err ← err + dx</code></pre>
+
+  <p>Two things in there are load-bearing. The <code>steep</code> swap makes a line that's more
+    vertical than horizontal walk along y instead of x, and then swaps the coordinates back when it
+    writes each pixel. Without it a steep line has gaps, because each column would get one pixel when
+    it needs several. The left-to-right swap means the pixels you get don't depend on which end you
+    called the start, which is a property you'll want in chapter 6 when polygon edges arrive in
+    whatever order the file put them in.</p>
+
+  <p>The tie rule falls out of <code>err ← dx / 2</code> with integer division: when the ideal line
+    passes exactly halfway between two rows, this version stays on the row it's on for one more step.
+    Other books initialize the error differently and step early. Neither is more right; the tests pin
+    this one.</p>
+
+  <p>To test a line you need to see which pixels it lit. <code>lit_pixels(c)</code> returns every
+    pixel of the canvas that isn't black, as a list of <code>(x, y)</code> pairs in reading order:
+    top row first, left to right within a row. It's a test helper, not a renderer function, and it's
+    three lines.</p>
+
+  <div class="test" data-feature="chapter03-bresenham.feature">
+    <p class="label">features/chapter03-bresenham.feature</p>
+<pre><code><span class="kw">Feature</span>: Bresenham's line
+  One pixel per step along the longer axis, chosen with integer arithmetic,
+  both endpoints included. lit_pixels(c) lists every pixel of a canvas that
+  isn't black, in reading order: top row first, left to right.
+
+  <span class="kw">Scenario</span>: A diagonal
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_bresenham(c, 0, 0, 5, 5, color(1, 1, 1))
+    <span class="kw">Then</span>  lit_pixels(c) = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]
+
+  <span class="kw">Scenario</span>: A horizontal line lights one row and nothing else
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_bresenham(c, 0, 3, 7, 3, color(1, 1, 1))
+    <span class="kw">Then</span>  lit_pixels(c) = [(0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3)]
+
+  <span class="kw">Scenario</span>: A shallow line steps along x
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_bresenham(c, 0, 0, 7, 3, color(1, 1, 1))
+    <span class="kw">Then</span>  lit_pixels(c) = [(0, 0), (1, 0), (2, 1), (3, 1), (4, 2), (5, 2), (6, 3), (7, 3)]
+
+  <span class="kw">Scenario</span>: A steep line steps along y
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_bresenham(c, 1, 1, 3, 7, color(1, 1, 1))
+    <span class="kw">Then</span>  lit_pixels(c) = [(1, 1), (1, 2), (2, 3), (2, 4), (2, 5), (3, 6), (3, 7)]
+
+  <span class="kw">Scenario</span>: The pixels don't depend on which end you start from
+    <span class="kw">Given</span> c1 ← canvas(10, 10)
+    <span class="kw">And</span>   c2 ← canvas(10, 10)
+    <span class="kw">When</span>  line_bresenham(c1, 1, 1, 3, 7, color(1, 1, 1))
+    <span class="kw">And</span>   line_bresenham(c2, 3, 7, 1, 1, color(1, 1, 1))
+    <span class="kw">Then</span>  lit_pixels(c1) = lit_pixels(c2)
+    <span class="kw">And</span>   max_channel_difference(canvas_to_p6(c1), canvas_to_p6(c2)) = 0
+
+  <span class="kw">Scenario</span>: A line going up and to the right
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_bresenham(c, 0, 6, 7, 3, color(1, 1, 1))
+    <span class="kw">Then</span>  lit_pixels(c) = [(6, 3), (7, 3), (4, 4), (5, 4), (2, 5), (3, 5), (0, 6), (1, 6)]
+
+  <span class="kw">Scenario</span>: At an exact half the line stays on its row one step longer
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_bresenham(c, 0, 0, 4, 2, color(1, 1, 1))
+    <span class="kw">Then</span>  lit_pixels(c) = [(0, 0), (1, 0), (2, 1), (3, 1), (4, 2)]
+
+  <span class="kw">Scenario</span>: A line of one point
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_bresenham(c, 3, 3, 3, 3, color(1, 1, 1))
+    <span class="kw">Then</span>  lit_pixels(c) = [(3, 3)]
+
+  <span class="kw">Scenario</span>: A line may run off the canvas
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_bresenham(c, 0, 0, 12, 6, color(1, 1, 1))
+    <span class="kw">Then</span>  length(lit_pixels(c)) = 10</code></pre>
+  </div>
+
+  <p>Now draw something with it. Twelve rays from the center of a 160-by-160 canvas to points 72
+    pixels out, one every 30 degrees, in an off-white on a near-black paper. The endpoints are
+    rounded to integers, and <code>ray_ends()</code> returns them so the tests can check yours match:</p>
+
+<pre><code>ray_ends():
+  ends ← []
+  <span class="kw">for</span> k <span class="kw">in</span> 0..11:
+    a ← k * 30 degrees
+    ends.append( (round(80 + 72 * cos(a)), round(80 + 72 * sin(a))) )
+  <span class="kw">return</span> ends
+
+fan_bresenham():
+  c ← canvas(160, 160)
+  fill(c, color(0.02, 0.02, 0.025))
+  <span class="kw">for</span> (x, y) <span class="kw">in</span> ray_ends():
+    line_bresenham(c, 80, 80, x, y, color(0.92, 0.92, 0.88))
+  <span class="kw">return</span> c</code></pre>
+
+  <p>Open it and look at the rays. The horizontal and vertical ones are solid bars. The diagonals are
+    a string of beads, thinner and lighter, because a 45° line lights one pixel per column but the
+    pixels only touch at their corners. The ones at 30° and 60° are the worst: a run of two, a run of
+    one, a run of two, and the runs are the same everywhere along the ray, so your eye picks up the
+    period and reads it as a texture. Every ray is drawn with the same rule and the same color, and
+    they don't look like the same line.</p>
+
+  <h2><span class="sec">§ 3.2</span> Wu</h2>
+
+  <p>The fix is almost embarrassingly small. In each column, the ideal line sits at some
+    <code>y</code> that isn't a whole number, say <code>y = 4.3</code>. Bresenham lights row 4 and
+    ignores the 0.3. Wu lights row 4 at 70% and row 5 at 30%. Two pixels per column instead of one,
+    with weights that always sum to 1, and the beads join up into a line.</p>
+
+  <figure>
+    <canvas id="fig32" role="img" aria-label="The same ideal line over a grid, with two pixels per column shaded in proportion to how close each is to the line"></canvas>
+    <figcaption><span class="fig">Figure 3.2</span> Wu's rule. In each column, the line's height splits into a whole part and a fraction. The row below gets 1 minus the fraction; the row above gets the fraction.</figcaption>
+  </figure>
+
+  <p>To light a pixel at a weight, you paint it: <code>mix(pixel_at(c, x, y), col, weight)</code>,
+    written back with <code>write_pixel</code>. That's <code>paint_through</code> for one pixel, and
+    it's worth its own little function, <code>plot(c, x, y, col, weight)</code>, that also drops
+    writes off the canvas and skips a weight of zero. With integer endpoints you can compute the
+    ideal <code>y</code> directly in floating point, as <code>y0 + (x - x0) * slope</code>, and split
+    it with <code>floor</code>. The same steep swap and left-to-right swap as before apply, for the
+    same reasons.</p>
+
+<pre><code>line_wu(c, x0, y0, x1, y1, col):
+  steep ← |y1 - y0| &gt; |x1 - x0|
+  <span class="kw">if</span> steep:   swap x0 with y0, and x1 with y1
+  <span class="kw">if</span> x0 &gt; x1: swap (x0, y0) with (x1, y1)
+
+  dx    ← x1 - x0
+  slope ← dx = 0 ? 0 : (y1 - y0) / dx                 <span class="cm">// real division</span>
+
+  <span class="kw">for</span> x <span class="kw">in</span> x0..x1:
+    y  ← y0 + (x - x0) * slope
+    yi ← floor(y)
+    f  ← y - yi
+    <span class="kw">if</span> steep: plot(c, yi, x, col, 1 - f);  plot(c, yi + 1, x, col, f)
+    <span class="kw">else</span>:     plot(c, x, yi, col, 1 - f);  plot(c, x, yi + 1, col, f)</code></pre>
+
+  <p>Wu's original handles endpoints that aren't on pixel centers, and that's where every
+    implementation quietly breaks: the first and last steps need partial weights of their own, and
+    near-horizontal and near-vertical lines expose any mistake in them. This chapter sidesteps all of
+    it by allowing integer endpoints only. Chapter 4 brings real coordinates, and by then you won't
+    be using this function.</p>
+
+  <p>To measure a line rather than look at it, sum the paint. <code>total_ink(c)</code> adds up the
+    red channel of every pixel on the canvas, which for a white line on black is exactly how much
+    paint went down. For Wu it's always the number of columns, because each column's two weights sum
+    to 1. Keep that in mind for the next section.</p>
+
+  <div class="test" data-feature="chapter03-wu.feature">
+    <p class="label">features/chapter03-wu.feature</p>
+<pre><code><span class="kw">Feature</span>: Wu's line
+  Two pixels per step along the longer axis, weighted by where the ideal line
+  falls between them, painted with mix. Integer endpoints only, for now.
+  total_ink(c) is the sum of every pixel's red channel, which for a white
+  line on black is how much paint went down.
+
+  <span class="kw">Scenario</span>: A half step lights two pixels equally
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_wu(c, 0, 0, 4, 2, color(1, 1, 1))
+    <span class="kw">Then</span>  pixel_at(c, 0, 0) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(c, 1, 0) = color(0.5, 0.5, 0.5)
+    <span class="kw">And</span>   pixel_at(c, 1, 1) = color(0.5, 0.5, 0.5)
+    <span class="kw">And</span>   pixel_at(c, 2, 1) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(c, 2, 2) = color(0, 0, 0)
+    <span class="kw">And</span>   pixel_at(c, 4, 2) = color(1, 1, 1)
+    <span class="kw">And</span>   total_ink(c) = 5
+
+  <span class="kw">Scenario</span>: A diagonal has uniform weights
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_wu(c, 0, 0, 5, 5, color(1, 1, 1))
+    <span class="kw">Then</span>  lit_pixels(c) = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]
+    <span class="kw">And</span>   pixel_at(c, 3, 3) = color(1, 1, 1)
+    <span class="kw">And</span>   total_ink(c) = 6
+
+  <span class="kw">Scenario</span>: A horizontal line has weight 1 on its row and 0 on the neighbors
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_wu(c, 0, 3, 7, 3, color(1, 1, 1))
+    <span class="kw">Then</span>  lit_pixels(c) = [(0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3)]
+    <span class="kw">And</span>   pixel_at(c, 3, 3) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(c, 3, 2) = color(0, 0, 0)
+    <span class="kw">And</span>   pixel_at(c, 3, 4) = color(0, 0, 0)
+    <span class="kw">And</span>   total_ink(c) = 8
+
+  <span class="kw">Scenario</span>: A steep line weights across columns
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_wu(c, 1, 1, 3, 7, color(1, 1, 1))
+    <span class="kw">Then</span>  pixel_at(c, 1, 1) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(c, 1, 2) = color(0.6667, 0.6667, 0.6667)
+    <span class="kw">And</span>   pixel_at(c, 2, 2) = color(0.3333, 0.3333, 0.3333)
+    <span class="kw">And</span>   pixel_at(c, 2, 4) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(c, 3, 7) = color(1, 1, 1)
+    <span class="kw">And</span>   total_ink(c) = 7
+
+  <span class="kw">Scenario</span>: The weights don't depend on which end you start from
+    <span class="kw">Given</span> c1 ← canvas(10, 10)
+    <span class="kw">And</span>   c2 ← canvas(10, 10)
+    <span class="kw">When</span>  line_wu(c1, 1, 1, 3, 7, color(1, 1, 1))
+    <span class="kw">And</span>   line_wu(c2, 3, 7, 1, 1, color(1, 1, 1))
+    <span class="kw">Then</span>  max_channel_difference(canvas_to_p6(c1), canvas_to_p6(c2)) = 0
+
+  <span class="kw">Scenario</span>: Sevenths
+    <span class="kw">Given</span> c ← canvas(10, 10)
+    <span class="kw">When</span>  line_wu(c, 0, 0, 7, 3, color(1, 1, 1))
+    <span class="kw">Then</span>  pixel_at(c, 1, 0) = color(0.5714, 0.5714, 0.5714)
+    <span class="kw">And</span>   pixel_at(c, 1, 1) = color(0.4286, 0.4286, 0.4286)
+    <span class="kw">And</span>   pixel_at(c, 2, 0) = color(0.1429, 0.1429, 0.1429)
+    <span class="kw">And</span>   pixel_at(c, 2, 1) = color(0.8571, 0.8571, 0.8571)
+    <span class="kw">And</span>   total_ink(c) = 8
+
+  <span class="kw">Scenario Outline</span>: The ink depends on the angle
+    <span class="kw">Given</span> c ← canvas(20, 20)
+    <span class="kw">When</span>  line_wu(c, 2, 2, &lt;x1&gt;, &lt;y1&gt;, color(1, 1, 1))
+    <span class="kw">Then</span>  total_ink(c) = &lt;ink&gt;
+
+    <span class="kw">Examples</span>:
+      | x1 | y1 | ink |
+      | 12 | 2  | 11  |
+      | 10 | 8  | 9   |
+      | 8  | 10 | 9   |
+      | 2  | 12 | 11  |</code></pre>
+  </div>
+
+  <p>Render <code>fan_wu</code>, which is <code>fan_bresenham</code> with <code>line_wu</code> in
+    place of <code>line_bresenham</code> and nothing else changed, and put the two files side by
+    side. The beads are gone. Then look at the last scenario, the one with the outline. Four lines of
+    exactly the same length, ten pixels, and the ink comes to 11 for the axis-aligned ones and 9 for
+    the ones at an angle. Wu's rays look smooth, but the diagonal ones are carrying 18% less paint
+    than the horizontal ones, and if you squint at the fan you can see it: the 45° rays are
+    thinner.</p>
+
+  <h2><span class="sec">§ 3.3</span> The reveal</h2>
+
+  <p>Look at what Wu's weights are. In a column, a one-pixel-wide band centered on the ideal line
+    covers 70% of one pixel and 30% of the next, more or less. Wu's algorithm is computing the coverage
+    of a thin rectangle, badly, one column at a time. The <em>less</em> is the 18%: a rectangle one
+    pixel wide and ten long has area 10 at any angle, and Wu's two-pixels-per-column rule can't see
+    that, because at 45° each column is a diagonal slice through the band and the slice is longer
+    than the band is wide.</p>
+
+  <figure>
+    <canvas id="fig33" role="img" aria-label="A thin rectangle one pixel wide drawn at an angle across a pixel grid, defined by four half-planes, with each cell shaded by the fraction the rectangle covers"></canvas>
+    <figcaption><span class="fig">Figure 3.3</span> A line is a rectangle one pixel wide. Four half-planes: two across the ends, two along the sides. Chapter 2's rasterizer already knows what to do with it.</figcaption>
+  </figure>
+
+  <p>So describe the rectangle honestly and let the supersampler do the work. <code>thick_line(x0,
+    y0, x1, y1, width)</code> is a shape: the rectangle of that width centered on the segment from the
+    center of pixel <code>(x0, y0)</code> to the center of pixel <code>(x1, y1)</code>, with square
+    ends. Build it from four half-planes. With <code>d</code> the unit direction of the segment and
+    <code>n</code> the unit normal, <code>(-d.y, d.x)</code>, the four are: through the start point
+    facing along <code>d</code>; through the end point facing back along <code>-d</code>; and one
+    along each side, offset by half the width along <code>n</code>, facing inward. A point is inside
+    the rectangle when it's inside all four. Your <code>inside</code> from chapter 2 grows one case.</p>
+
+  <p>Then the scenarios. A horizontal thick line covers its row fully, with half a pixel at each
+    end, because the segment runs from pixel center to pixel center: ink 7 for a line 7 long. And the
+    outline: four lines of length 10, at four angles, and every one of them has ink 10. Not 11, not 9.
+    The line has become an area, and an area doesn't care which way it's pointing.</p>
+
+  <p>The last scenario keeps you honest. The 45° line of length 9.9 comes out at 9.72, off by
+    nearly 2%, and it's the same grid blindness from chapter 2: the rectangle's edges run along the
+    diagonals of the sample grid. Everything in Part II fixes this properly. For now it's a known
+    number, and it's a great deal better than 18%.</p>
+
+  <div class="test" data-feature="chapter03-quad.feature">
+    <p class="label">features/chapter03-quad.feature</p>
+<pre><code><span class="kw">Feature</span>: A line is a thin rectangle
+  thick_line(x0, y0, x1, y1, width) is a shape: the rectangle of that width
+  centered on the segment from the center of pixel (x0, y0) to the center of
+  pixel (x1, y1), with square ends. Four half-planes, and chapter 2's
+  rasterizer does the rest.
+
+  <span class="kw">Scenario</span>: Inside a thick line
+    <span class="kw">Given</span> s ← thick_line(0, 0, 4, 0, 1)
+    <span class="kw">Then</span>  inside(s, 2.5, 0.5) = true
+    <span class="kw">And</span>   inside(s, 2.5, 1.0) = true
+    <span class="kw">And</span>   inside(s, 2.5, 1.01) = false
+    <span class="kw">And</span>   inside(s, 0.5, 0.5) = true
+    <span class="kw">And</span>   inside(s, 0.4, 0.5) = false
+    <span class="kw">And</span>   inside(s, 4.5, 0.5) = true
+    <span class="kw">And</span>   inside(s, 4.6, 0.5) = false
+
+  <span class="kw">Scenario</span>: A horizontal thick line covers its row, with half pixels at the ends
+    <span class="kw">Given</span> s ← thick_line(0, 3, 7, 3, 1)
+    <span class="kw">When</span>  cov ← rasterize(s, 10, 10)
+    <span class="kw">Then</span>  coverage_at(cov, 0, 3) = 0.5
+    <span class="kw">And</span>   coverage_at(cov, 1, 3) = 1
+    <span class="kw">And</span>   coverage_at(cov, 6, 3) = 1
+    <span class="kw">And</span>   coverage_at(cov, 7, 3) = 0.5
+    <span class="kw">And</span>   coverage_at(cov, 8, 3) = 0
+    <span class="kw">And</span>   coverage_at(cov, 3, 2) = 0
+    <span class="kw">And</span>   coverage_at(cov, 3, 4) = 0
+    <span class="kw">And</span>   ink(cov) = 7
+
+  <span class="kw">Scenario Outline</span>: The ink is the length, whatever the angle
+    <span class="kw">Given</span> s ← thick_line(2, 2, &lt;x1&gt;, &lt;y1&gt;, 1)
+    <span class="kw">When</span>  cov ← rasterize(s, 20, 20)
+    <span class="kw">Then</span>  ink(cov) = 10
+
+    <span class="kw">Examples</span>:
+      | x1 | y1 |
+      | 12 | 2  |
+      | 10 | 8  |
+      | 8  | 10 |
+      | 2  | 12 |
+
+  <span class="kw">Scenario</span>: Except that the grid is blind along the diagonal
+    <span class="kw">Given</span> s ← thick_line(2, 2, 9, 9, 1)
+    <span class="kw">When</span>  cov ← rasterize(s, 20, 20)
+    <span class="kw">Then</span>  ink(cov) = 9.7188
+    <span class="kw">And</span>   ink(cov) = 9.8995 ± 0.25</code></pre>
+  </div>
+
+  <p>Render the fan a third time, <code>fan_coverage</code>: each ray a <code>thick_line</code> of
+    width 1, rasterized and painted through in turn, then magnified by 2 so you can see the edges.</p>
+
+<pre><code>fan_coverage():
+  c ← canvas(160, 160)
+  fill(c, color(0.02, 0.02, 0.025))
+  <span class="kw">for</span> (x, y) <span class="kw">in</span> ray_ends():
+    cov ← rasterize(thick_line(80, 80, x, y, 1), 160, 160)
+    paint_through(c, cov, color(0.92, 0.92, 0.88))
+  <span class="kw">return</span> magnify(c, 2)</code></pre>
+
+  <p>It's slow. Twelve rasterizations of a 160-by-160 canvas at 64 samples a pixel is twenty million
+    inside tests, and in an interpreted language that's twenty seconds for one picture. Every ray is
+    the same weight now. Nothing flickers, nothing beads, and the diagonals are as heavy as the
+    axes. Then go back and look at the speed, because that's the actual lesson of this chapter.</p>
+
+  <p>Bresenham's and Wu's algorithms are fast because they know they're drawing a line and exploit
+    everything about it. The rectangle is slow because chapter 2's rasterizer knows nothing about
+    anything: it asks every pixel on the canvas 64 questions, whether the shape is anywhere near it
+    or not. But the rectangle is <em>right</em>, and it's right for the same reason it's right for
+    circles and, from chapter 5, for every polygon and curve you'll ever draw. Special-purpose
+    primitives are a local optimum. The book spent this chapter there so it could leave on purpose,
+    and the way out isn't a faster line algorithm. It's a faster rasterizer, which is what chapters
+    6 and 7 are.</p>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>The Pencil and the Brush, in Photoshop and every raster editor since MacPaint. A 1px Pencil is
+      §3.1 with the antialiasing switched off, which is exactly why pixel artists reach for it: they
+      want the staircase. The Brush at 1px is §3.3, a coverage-filled stroke, and it never gives you
+      a crisp pixel no matter how hard you try.</p>
+  </aside>
+
+  <h2><span class="sec">§ 3.4</span> Putting it together</h2>
+
+  <p>Bresenham's fan and Wu's, side by side, magnified twice so the beads and the weights are
+    visible at arm's length:</p>
+
+<pre><code>plate_03():
+  both ← canvas(320, 160)
+  a ← fan_bresenham()
+  b ← fan_wu()
+  <span class="kw">for</span> y <span class="kw">in</span> 0..159:
+    <span class="kw">for</span> x <span class="kw">in</span> 0..159:
+      write_pixel(both, x,       y, pixel_at(a, x, y))
+      write_pixel(both, x + 160, y, pixel_at(b, x, y))
+  <span class="kw">return</span> magnify(both, 2)</code></pre>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate3" role="img" aria-label="Two fans of twelve rays: Bresenham's on the left with beaded, uneven diagonals, and Wu's on the right with smooth rays of slightly varying weight"></canvas>
+    <figcaption><span class="fig">Plate 3</span> Bresenham's fan, then Wu's. The left-hand rays flicker: beads on the diagonals, stripes at 30° and 60°. The right-hand ones are smooth, and if you look closely, the diagonals are a shade lighter than the axes. Figure 3.4 is the version where they aren't.</figcaption>
+  </figure>
+
+  <figure class="wide">
+    <canvas id="fig34" role="img" aria-label="The same fan of twelve rays drawn as one-pixel-wide rectangles through the coverage rasterizer, every ray the same weight"></canvas>
+    <figcaption><span class="fig">Figure 3.4</span> The fan as twelve thin rectangles. Every ray weighs the same. It took twenty seconds, and it's the one you'll be drawing for the rest of the book.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter03-plate.feature">
+    <p class="label">features/chapter03-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 3
+  Twelve rays from the center of a 160 by 160 canvas to points 72 pixels
+  out, every 30 degrees, drawn three ways.
+
+  <span class="kw">Scenario</span>: The ray endpoints
+    <span class="kw">Then</span>  ray_ends() = [(152, 80), (142, 116), (116, 142), (80, 152), (44, 142), (18, 116), (8, 80), (18, 44), (44, 18), (80, 8), (116, 18), (142, 44)]
+
+  <span class="kw">Scenario</span>: Bresenham's fan
+    <span class="kw">Given</span> c ← fan_bresenham()
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 160
+    <span class="kw">And</span>   c.height = 160
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 80) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 120, 80) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 100, 91) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 100, 92) = (246, 246, 241) ± 1
+
+  <span class="kw">Scenario</span>: Wu's fan
+    <span class="kw">Given</span> c ← fan_wu()
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  ppm_pixel(p6, 80, 80) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 120, 80) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 100, 91) = (163, 163, 161) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 100, 92) = (199, 199, 196) ± 1
+
+  <span class="kw">Scenario</span>: The fan as twelve thin rectangles
+    <span class="kw">Given</span> c ← fan_coverage()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-03/fan-coverage.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 320
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 160) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 160) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 158) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 200, 183) = (177, 177, 174) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 200, 185) = (209, 209, 205) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The plate
+    <span class="kw">Given</span> c ← plate_03()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-03/plate-03.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 640
+    <span class="kw">And</span>   c.height = 320
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 160) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 480, 160) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 200, 183) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 200, 185) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 520, 183) = (163, 163, 161) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 520, 185) = (199, 199, 196) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <nav class="endnav">
+    <a href="chapter-02.html">← 2 · Coverage</a>
+    <span>Chapter 3 · Lines</span>
+    <span>Next: 4 · Points, Vectors, Transforms (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+function toByte(light) {
+  var v = light < 0 ? 0 : light > 1 ? 1 : light;
+  return Math.floor(Plate.l2s(v) * 255 + 0.5);
+}
+function lerp3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+function blit(ctx, pixels, pw, ph, scale, ox, oy) {
+  var img = ctx.createImageData(pw, ph);
+  for (var i = 0; i < pw * ph; i++) {
+    img.data[i * 4] = pixels[i][0]; img.data[i * 4 + 1] = pixels[i][1];
+    img.data[i * 4 + 2] = pixels[i][2]; img.data[i * 4 + 3] = 255;
+  }
+  var off = Plate.offcan(pw, ph);
+  off.getContext('2d').putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, ox, oy, pw * scale, ph * scale);
+}
+var INK = [0.92, 0.92, 0.88], PAPER = [0.02, 0.02, 0.025];
+
+/* a tiny float canvas: light values, painted by weight, exactly as the chapter's programs do */
+function Buf(w, h) { this.w = w; this.h = h; this.p = []; for (var i = 0; i < w * h; i++) this.p.push(PAPER.slice()); }
+Buf.prototype.plot = function (x, y, col, k) {
+  if (x < 0 || y < 0 || x >= this.w || y >= this.h || k <= 0) return;
+  this.p[y * this.w + x] = lerp3(this.p[y * this.w + x], col, k);
+};
+Buf.prototype.bytes = function () { return this.p.map(function (c) { return c.map(toByte); }); };
+
+function bresenham(b, x0, y0, x1, y1, col) {
+  var steep = Math.abs(y1 - y0) > Math.abs(x1 - x0), t;
+  if (steep) { t = x0; x0 = y0; y0 = t; t = x1; x1 = y1; y1 = t; }
+  if (x0 > x1) { t = x0; x0 = x1; x1 = t; t = y0; y0 = y1; y1 = t; }
+  var dx = x1 - x0, dy = Math.abs(y1 - y0), ystep = y0 < y1 ? 1 : -1, err = Math.floor(dx / 2), y = y0;
+  for (var x = x0; x <= x1; x++) {
+    if (steep) b.plot(y, x, col, 1); else b.plot(x, y, col, 1);
+    err -= dy; if (err < 0) { y += ystep; err += dx; }
+  }
+}
+function wu(b, x0, y0, x1, y1, col) {
+  var steep = Math.abs(y1 - y0) > Math.abs(x1 - x0), t;
+  if (steep) { t = x0; x0 = y0; y0 = t; t = x1; x1 = y1; y1 = t; }
+  if (x0 > x1) { t = x0; x0 = x1; x1 = t; t = y0; y0 = y1; y1 = t; }
+  var dx = x1 - x0, slope = dx === 0 ? 0 : (y1 - y0) / dx;
+  for (var x = x0; x <= x1; x++) {
+    var y = y0 + (x - x0) * slope, yi = Math.floor(y), f = y - yi;
+    if (steep) { b.plot(yi, x, col, 1 - f); b.plot(yi + 1, x, col, f); }
+    else { b.plot(x, yi, col, 1 - f); b.plot(x, yi + 1, col, f); }
+  }
+}
+function rayEnds() {
+  var out = [];
+  for (var k = 0; k < 12; k++) {
+    var a = k * 30 * Math.PI / 180;
+    out.push([Math.round(80 + 72 * Math.cos(a)), Math.round(80 + 72 * Math.sin(a))]);
+  }
+  return out;
+}
+/* thick_line as four half-planes, and the 8x8 supersampler */
+function thickLine(x0, y0, x1, y1, w) {
+  var ax = x0 + 0.5, ay = y0 + 0.5, bx = x1 + 0.5, by = y1 + 0.5, dx = bx - ax, dy = by - ay;
+  var L = Math.hypot(dx, dy); dx /= L; dy /= L;
+  var nx = -dy, ny = dx, h = w / 2;
+  var sides = [[ax, ay, dx, dy], [bx, by, -dx, -dy], [ax + nx * h, ay + ny * h, -nx, -ny], [ax - nx * h, ay - ny * h, nx, ny]];
+  return function (x, y) {
+    for (var i = 0; i < 4; i++) { var s = sides[i]; if ((x - s[0]) * s[2] + (y - s[1]) * s[3] < 0) return false; }
+    return true;
+  };
+}
+function coverage(inside, px, py) {
+  var n = 0;
+  for (var j = 0; j < 8; j++) for (var i = 0; i < 8; i++) if (inside(px + (i + 0.5) / 8, py + (j + 0.5) / 8)) n++;
+  return n / 64;
+}
+
+/* ---------- Figure 3.1 — one pixel per column ---------- */
+Plate.add('fig31', 0.5, function (ctx, w, h, p) {
+  var cols = 14, cs = Math.floor((w - 20) / cols), rows = Math.floor((h - 20) / cs), ox = 10, oy = 10;
+  var x0 = 1, y0 = rows - 2, x1 = cols - 2, y1 = 1;
+  var b = new Buf(cols, rows); bresenham(b, x0, y0, x1, y1, [1, 1, 1]);
+  for (var y = 0; y < rows; y++) for (var x = 0; x < cols; x++) {
+    if (b.p[y * cols + x][0] > 0.5) { ctx.fillStyle = Plate.rgba(p.magenta, 0.75); ctx.fillRect(ox + x * cs, oy + y * cs, cs, cs); }
+  }
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.5); ctx.lineWidth = 1;
+  for (var i = 0; i <= cols; i++) { ctx.beginPath(); ctx.moveTo(ox + i * cs, oy); ctx.lineTo(ox + i * cs, oy + rows * cs); ctx.stroke(); }
+  for (var j = 0; j <= rows; j++) { ctx.beginPath(); ctx.moveTo(ox, oy + j * cs); ctx.lineTo(ox + cols * cs, oy + j * cs); ctx.stroke(); }
+  ctx.strokeStyle = p.ink; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(ox + (x0 + 0.5) * cs, oy + (y0 + 0.5) * cs); ctx.lineTo(ox + (x1 + 0.5) * cs, oy + (y1 + 0.5) * cs); ctx.stroke();
+  for (var x2 = x0; x2 <= x1; x2++) {
+    var yy = y0 + (x2 - x0) * (y1 - y0) / (x1 - x0);
+    ctx.fillStyle = p.ink; ctx.beginPath(); ctx.arc(ox + (x2 + 0.5) * cs, oy + (yy + 0.5) * cs, 2.5, 0, Math.PI * 2); ctx.fill();
+  }
+});
+
+/* ---------- Figure 3.2 — two pixels per column ---------- */
+Plate.add('fig32', 0.5, function (ctx, w, h, p) {
+  var cols = 14, cs = Math.floor((w - 20) / cols), rows = Math.floor((h - 20) / cs), ox = 10, oy = 10;
+  var x0 = 1, y0 = rows - 2, x1 = cols - 2, y1 = 1;
+  var b = new Buf(cols, rows); wu(b, x0, y0, x1, y1, [1, 1, 1]);
+  for (var y = 0; y < rows; y++) for (var x = 0; x < cols; x++) {
+    var k = (b.p[y * cols + x][0] - PAPER[0]) / (1 - PAPER[0]);
+    if (k > 0.001) { ctx.fillStyle = Plate.rgba(p.magenta, 0.12 + 0.7 * k); ctx.fillRect(ox + x * cs, oy + y * cs, cs, cs); }
+  }
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.5); ctx.lineWidth = 1;
+  for (var i = 0; i <= cols; i++) { ctx.beginPath(); ctx.moveTo(ox + i * cs, oy); ctx.lineTo(ox + i * cs, oy + rows * cs); ctx.stroke(); }
+  for (var j = 0; j <= rows; j++) { ctx.beginPath(); ctx.moveTo(ox, oy + j * cs); ctx.lineTo(ox + cols * cs, oy + j * cs); ctx.stroke(); }
+  ctx.strokeStyle = p.ink; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(ox + (x0 + 0.5) * cs, oy + (y0 + 0.5) * cs); ctx.lineTo(ox + (x1 + 0.5) * cs, oy + (y1 + 0.5) * cs); ctx.stroke();
+  var xm = Math.floor((x0 + x1) / 2), ym = y0 + (xm - x0) * (y1 - y0) / (x1 - x0), yi = Math.floor(ym), f = ym - yi;
+  Plate.label(ctx, (1 - f).toFixed(2), ox + (xm + 0.5) * cs, oy + (yi + 0.5) * cs + 4, p.ink, 10, 'center');
+  Plate.label(ctx, f.toFixed(2), ox + (xm + 0.5) * cs, oy + (yi + 1.5) * cs + 4, p.ink, 10, 'center');
+});
+
+/* ---------- Figure 3.3 — the thin rectangle ---------- */
+Plate.add('fig33', 0.5, function (ctx, w, h, p) {
+  var cols = 14, cs = Math.floor((w - 20) / cols), rows = Math.floor((h - 20) / cs), ox = 10, oy = 10;
+  var x0 = 1, y0 = rows - 2, x1 = cols - 2, y1 = 1, inside = thickLine(x0, y0, x1, y1, 1);
+  for (var y = 0; y < rows; y++) for (var x = 0; x < cols; x++) {
+    var k = coverage(inside, x, y);
+    if (k > 0) { ctx.fillStyle = Plate.rgba(p.magenta, 0.12 + 0.7 * k); ctx.fillRect(ox + x * cs, oy + y * cs, cs, cs); }
+  }
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.5); ctx.lineWidth = 1;
+  for (var i = 0; i <= cols; i++) { ctx.beginPath(); ctx.moveTo(ox + i * cs, oy); ctx.lineTo(ox + i * cs, oy + rows * cs); ctx.stroke(); }
+  for (var j = 0; j <= rows; j++) { ctx.beginPath(); ctx.moveTo(ox, oy + j * cs); ctx.lineTo(ox + cols * cs, oy + j * cs); ctx.stroke(); }
+  /* the rectangle outline */
+  var ax = x0 + 0.5, ay = y0 + 0.5, bx = x1 + 0.5, by = y1 + 0.5, dx = bx - ax, dy = by - ay, L = Math.hypot(dx, dy);
+  var nx = -dy / L * 0.5, ny = dx / L * 0.5;
+  ctx.strokeStyle = p.ink; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.moveTo(ox + (ax + nx) * cs, oy + (ay + ny) * cs); ctx.lineTo(ox + (bx + nx) * cs, oy + (by + ny) * cs);
+  ctx.lineTo(ox + (bx - nx) * cs, oy + (by - ny) * cs); ctx.lineTo(ox + (ax - nx) * cs, oy + (ay - ny) * cs); ctx.closePath(); ctx.stroke();
+  ctx.setLineDash([3, 3]); ctx.strokeStyle = Plate.rgba(p.cyan, 0.9); ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(ox + ax * cs, oy + ay * cs); ctx.lineTo(ox + bx * cs, oy + by * cs); ctx.stroke(); ctx.setLineDash([]);
+});
+
+/* ---------- Plate 3 — plate_03(), pixel for pixel ---------- */
+Plate.add('plate3', 0.5, function (ctx, w, h, p) {
+  var a = new Buf(160, 160), b = new Buf(160, 160), ends = rayEnds();
+  ends.forEach(function (e) { bresenham(a, 80, 80, e[0], e[1], INK); wu(b, 80, 80, e[0], e[1], INK); });
+  var ab = a.bytes(), bb = b.bytes(), px = [];
+  for (var y = 0; y < 160; y++) for (var x = 0; x < 320; x++) px.push(x < 160 ? ab[y * 160 + x] : bb[y * 160 + x - 160]);
+  var scale = Math.max(1, Math.floor(Math.min(w / 320, h / 160))), ox = (w - 320 * scale) / 2;
+  blit(ctx, px, 320, 160, scale, ox, 0);
+  Plate.label(ctx, 'BRESENHAM', ox + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+  Plate.label(ctx, 'WU', ox + 160 * scale + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+});
+
+/* ---------- Figure 3.4 — fan_coverage(), pixel for pixel ---------- */
+Plate.add('fig34', 0.5, function (ctx, w, h, p) {
+  var b = new Buf(160, 160), ends = rayEnds();
+  ends.forEach(function (e) {
+    var inside = thickLine(80, 80, e[0], e[1], 1);
+    var minx = Math.max(0, Math.min(80, e[0]) - 2), maxx = Math.min(159, Math.max(80, e[0]) + 2);
+    var miny = Math.max(0, Math.min(80, e[1]) - 2), maxy = Math.min(159, Math.max(80, e[1]) + 2);
+    for (var y = miny; y <= maxy; y++) for (var x = minx; x <= maxx; x++) b.plot(x, y, INK, coverage(inside, x, y));
+  });
+  var scale = Math.max(1, Math.floor(Math.min(w / 160, h / 160))), ox = (w - 160 * scale) / 2;
+  blit(ctx, b.bytes(), 160, 160, scale, ox, 0);
+  Plate.label(ctx, 'COVERAGE', ox + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, Buf, bresenham, wu, rayEnds, thickLine, coverage].concat(Plate.helpers).map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>

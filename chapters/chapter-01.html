@@ -65,7 +65,12 @@
     <li>Operators stand for whatever your language does. If it has operator overloading,
       <code>c1 + c2</code> is an overloaded plus. If it doesn't, it's a function, and the book's
       names for them are <code>add</code>, <code>subtract</code>, <code>scale</code> for a color
-      times a number and <code>multiply</code> for a color times a color.</li>
+      times a number and <code>multiply</code> for a color times a color. Some typed languages
+      refuse <code>c * 2</code> because the literal wants to become a color; write
+      <code>c * 2.0</code> or use <code>scale</code>.</li>
+    <li><code>a ≤ b</code>, and <code>=</code> between two whole numbers such as a count, are exact.</li>
+    <li><em>line 4 of ppm is</em> followed by a quoted string compares that one line exactly, and
+      <em>ppm ends with a newline character</em> means what it says.</li>
     <li>The names in the scenarios, <code>write_pixel</code>, <code>canvas_to_ppm</code> and so on,
       are the names the tests call. Rename them if your language's conventions insist, but rename them
       in your step definitions too, and don't rename them casually: later chapters refer back to them.</li>
@@ -215,7 +220,10 @@
     one; if yours throws, good.</p>
 
   <p>The last operation, <code>fill</code>, sets every pixel to one color. You'll use it for
-    backgrounds from here to the end of the book.</p>
+    backgrounds from here to the end of the book. The pseudo-code in this book writes
+    <code>write_pixel</code> and <code>fill</code> as statements that change the canvas in place. In
+    a language without mutable values, have them return the new canvas and assign it back; nothing
+    else changes.</p>
 
   <div class="test" data-feature="chapter01-canvas.feature">
     <p class="label">features/chapter01-canvas.feature</p>
@@ -407,9 +415,9 @@ encode(l) = l ≤ 0.0031308
 
   <p>One oddity to respect: some very old PPM readers choke on lines longer than 70 characters. The
     rule you'll implement is greedy word packing. Emit channel values one at a time, separated by
-    single spaces; before adding one, if the line would end up longer than 70 characters, start a
-    new line instead. Exactly 70 is fine, and a pixel's three numbers may end up split across two
-    lines. Each row of pixels starts on a fresh line regardless. Two scenarios pin it,
+    single spaces; before adding one, if the line would end up longer than 70 characters counting
+    the space, that is if <code>length(line) + 1 + length(value) &gt; 70</code>, start a new line
+    instead. Exactly 70 is fine, and a pixel's three numbers may end up split across two lines. Each row of pixels starts on a fresh line regardless. Two scenarios pin it,
     one where a ten-pixel row breaks and one whose first line lands on exactly 70 characters, so
     there's nothing to guess. It's a strange little constraint to be honoring in the third decade
     of the twenty-first century, and it takes four lines of code, and if you skip it the one tool you
@@ -420,7 +428,8 @@ encode(l) = l ≤ 0.0031308
     text on whitespace, read the width and height out of the second and third tokens, and treat
     everything after the fourth token as pixel data. <code>ppm_pixel(ppm, x, y)</code> returns the
     three whole numbers at pixel (x, y), which is where the width comes in.
-    <code>distinct_values(ppm)</code> returns how many different numbers appear in the pixel data.
+    <code>distinct_values(ppm)</code> returns how many different channel numbers appear in the
+    pixel data: a file whose pixels are all <code>255 0 0</code> and <code>0 188 0</code> has four.
     <code>max_channel_difference(a, b)</code> takes two files and returns the largest absolute
     difference between any pair of corresponding pixel numbers, headers excluded, with one rule on
     top: if the two files don't have the same width and height, either one, the answer is 255. Without that rule a transposed render compares as a
@@ -698,8 +707,12 @@ mix(a, b, t) = a + (b - a) * t</code></pre>
     the end of any scenario that turns it off. If your test runner runs tests in parallel by default,
     as Rust's and some JUnit setups do, a plain global will leak between scenarios and fail at random;
     make it thread-local or run those tests serially. If your language objects to a mutable global on
-    principle, as Swift 6 does, give <code>mix</code> an optional last argument whose default is the
-    switch. The plate's scenario checks that the switch was left on when the plate was done.</p>
+    principle, as Swift 6 and every pure functional language do, <code>mix</code> also accepts the
+    switch as an optional fourth argument, <code>mix(a, b, t, linear)</code>, and the pseudo-code
+    for the plate uses that form so it never has to touch the global. In a pure language the step
+    <em>linear blending is off</em> means "pass false", and a scenario that says nothing means
+    "pass true". The light's way never clamps, and there's a scenario for that too: a color of 1.5
+    stays 1.5 until the file writer sees it.</p>
 
   <div class="test" data-feature="chapter01-mix.feature">
     <p class="label">features/chapter01-mix.feature</p>
@@ -738,6 +751,19 @@ mix(a, b, t) = a + (b - a) * t</code></pre>
     <span class="kw">And</span>   b ← color(0, 0.3, 0.02)
     <span class="kw">Then</span>  mix(a, b, 0.5) = color(0.1527, 0.0693, 0.0067)
 
+  <span class="kw">Scenario</span>: The light's way never clamps
+    <span class="kw">Given</span> a ← color(1.5, 0.5, -0.2)
+    <span class="kw">And</span>   b ← color(0, 0, 0)
+    <span class="kw">Then</span>  mix(a, b, 0) = color(1.5, 0.5, -0.2)
+    <span class="kw">And</span>   mix(a, b, 0.5) = color(0.75, 0.25, -0.1)
+
+  <span class="kw">Scenario</span>: The switch can be passed instead of set
+    <span class="kw">Given</span> a ← color(0, 0, 0)
+    <span class="kw">And</span>   b ← color(1, 1, 1)
+    <span class="kw">Then</span>  mix(a, b, 0.5, true) = color(0.5, 0.5, 0.5)
+    <span class="kw">And</span>   mix(a, b, 0.5, false) = color(0.2140, 0.2140, 0.2140)
+    <span class="kw">And</span>   linear blending is on
+
   <span class="kw">Scenario</span>: The browser's way clamps each end before encoding it
     <span class="kw">Given</span> linear blending is off
     <span class="kw">And</span>   a ← color(1.5, 0.5, -0.2)
@@ -745,7 +771,7 @@ mix(a, b, t) = a + (b - a) * t</code></pre>
     <span class="kw">Then</span>  mix(a, b, 0) = color(1, 0.5, 0)
     <span class="kw">And</span>   mix(a, b, 0.5) = color(0.2140, 0.1113, 0.0000)
 
-  <span class="kw">Scenario</span>: The ends of a mix are its inputs either way
+  <span class="kw">Scenario</span>: The ends of a mix are its inputs either way, when they're in range
     <span class="kw">Given</span> linear blending is off
     <span class="kw">And</span>   a ← color(0.7, 0, 0)
     <span class="kw">And</span>   b ← color(0, 0.3, 0.02)
@@ -861,12 +887,8 @@ mix(a, b, t) = a + (b - a) * t</code></pre>
 <pre><code>ramp_pair(c, top, a, b):
   <span class="kw">for</span> x <span class="kw">in</span> 0..399:
     t ← x / 399
-
-    <span class="kw">set</span> linear blending off
-    naive ← mix(a, b, t)
-    <span class="kw">set</span> linear blending on
-    light ← mix(a, b, t)
-
+    naive ← mix(a, b, t, false)       <span class="cm">// the browser's way</span>
+    light ← mix(a, b, t, true)        <span class="cm">// the light's way</span>
     <span class="kw">for</span> y <span class="kw">in</span> top .. top + 39:       write_pixel(c, x, y, naive)
     <span class="kw">for</span> y <span class="kw">in</span> top + 45 .. top + 84:  write_pixel(c, x, y, light)
 
@@ -874,14 +896,14 @@ plate_01():
   c ← canvas(400, 180)
   ramp_pair(c, 0,  color(0, 0, 0),   color(1, 1, 1))
   ramp_pair(c, 90, color(0.7, 0, 0), color(0, 0.3, 0.02))
-  <span class="kw">set</span> linear blending on      <span class="cm">// leave it as you found it</span>
   <span class="kw">return</span> c</code></pre>
 
   <p>Four bands of forty rows, starting at rows 0, 45, 90 and 135, each followed by five black
     rows: 40 to 44, 85 to 89 and 130 to 134 between the bands, and 175 to 179 as the bottom margin.
-    The last line of <code>plate_01</code> turns the switch back on explicitly rather than trusting
-    the order of two statements inside a loop. Run it, open the file, and compare your output to
-    this:</p>
+    One number worth knowing when you debug this: at <code>x = 200</code>, <code>t</code> is
+    200/399, which is 0.50125 and not 0.5, and that hair past the middle is why the gray midpoints
+    land on 128 and 188 rather than teetering on 127 and 187. Run it, open the file, and compare
+    your output to this:</p>
 
   <figure class="plate wide" id="plate">
     <canvas id="plate1" role="img" aria-label="Two pairs of color ramps: black to white and red to green, each blended the browser's way above and in linear light below"></canvas>
@@ -912,8 +934,7 @@ plate_01():
     <span class="kw">And</span>   ppm_pixel(ppm, 200, 87) = (0, 0, 0) ± 1
     <span class="kw">And</span>   ppm_pixel(ppm, 200, 132) = (0, 0, 0) ± 1
     <span class="kw">And</span>   ppm_pixel(ppm, 200, 177) = (0, 0, 0) ± 1
-    <span class="kw">And</span>   max_channel_difference(ppm, ref) ≤ 1
-    <span class="kw">And</span>   linear blending is on</code></pre>
+    <span class="kw">And</span>   max_channel_difference(ppm, ref) ≤ 1</code></pre>
   </div>
 
   <nav class="endnav">

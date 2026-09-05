@@ -33,6 +33,19 @@ Feature: Mixing two colors
     And   b ← color(0, 0.3, 0.02)
     Then  mix(a, b, 0.5) = color(0.1527, 0.0693, 0.0067)
 
+  Scenario: The light's way never clamps
+    Given a ← color(1.5, 0.5, -0.2)
+    And   b ← color(0, 0, 0)
+    Then  mix(a, b, 0) = color(1.5, 0.5, -0.2)
+    And   mix(a, b, 0.5) = color(0.75, 0.25, -0.1)
+
+  Scenario: The switch can be passed instead of set
+    Given a ← color(0, 0, 0)
+    And   b ← color(1, 1, 1)
+    Then  mix(a, b, 0.5, true) = color(0.5, 0.5, 0.5)
+    And   mix(a, b, 0.5, false) = color(0.2140, 0.2140, 0.2140)
+    And   linear blending is on
+
   Scenario: The browser's way clamps each end before encoding it
     Given linear blending is off
     And   a ← color(1.5, 0.5, -0.2)
@@ -40,7 +53,7 @@ Feature: Mixing two colors
     Then  mix(a, b, 0) = color(1, 0.5, 0)
     And   mix(a, b, 0.5) = color(0.2140, 0.1113, 0.0000)
 
-  Scenario: The ends of a mix are its inputs either way
+  Scenario: The ends of a mix are its inputs either way, when they're in range
     Given linear blending is off
     And   a ← color(0.7, 0, 0)
     And   b ← color(0, 0.3, 0.02)

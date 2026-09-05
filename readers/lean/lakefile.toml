@@ -1,0 +1,14 @@
+name = "renderer"
+version = "0.1.0"
+defaultTargets = ["tests", "render"]
+
+[[lean_lib]]
+name = "Renderer"
+
+[[lean_exe]]
+name = "tests"
+root = "Tests"
+
+[[lean_exe]]
+name = "render"
+root = "Render"

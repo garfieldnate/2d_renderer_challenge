@@ -21,4 +21,3 @@ Feature: Plate 1
     And   ppm_pixel(ppm, 200, 132) = (0, 0, 0) ± 1
     And   ppm_pixel(ppm, 200, 177) = (0, 0, 0) ± 1
     And   max_channel_difference(ppm, ref) ≤ 1
-    And   linear blending is on

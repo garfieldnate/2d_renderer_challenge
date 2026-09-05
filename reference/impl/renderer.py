@@ -131,18 +131,40 @@ def canvas_to_ppm(c):
     return "\n".join(lines) + "\n"
 
 
+def parse_ppm(data):
+    """(width, height, [values]) from a P3 string or bytes, or a P6 bytes.
+    Chapter 1 only writes P3; chapter 2 adds P6 and teaches this to read both."""
+    if isinstance(data, str):
+        data = data.encode("latin-1")
+    magic = data[:2]
+    if magic == b"P3":
+        toks = data.split()
+        return int(toks[1]), int(toks[2]), [int(t) for t in toks[4:]]
+    if magic == b"P6":
+        # header: magic, width, height, maxval, then exactly one whitespace byte
+        toks, i, tok = [], 2, b""
+        while len(toks) < 3:
+            ch = data[i:i + 1]
+            i += 1
+            if ch.isspace():
+                if tok:
+                    toks.append(tok)
+                    tok = b""
+            else:
+                tok += ch
+        w, h = int(toks[0]), int(toks[1])
+        return w, h, list(data[i:i + w * h * 3])
+    raise ValueError("not a PPM file")
+
+
 def ppm_values(ppm):
     """the numbers after the header, as ints"""
-    toks = ppm.split()
-    assert toks[0] == "P3", "not a P3 file"
-    return [int(t) for t in toks[4:]]
+    return parse_ppm(ppm)[2]
 
 
 def ppm_pixel(ppm, x, y):
-    """the three numbers for pixel (x, y), read back out of the text"""
-    toks = ppm.split()
-    w = int(toks[1])
-    v = ppm_values(ppm)
+    """the three numbers for pixel (x, y), read back out of the file"""
+    w, h, v = parse_ppm(ppm)
     i = (y * w + x) * 3
     return (v[i], v[i + 1], v[i + 2])
 
@@ -154,11 +176,9 @@ def distinct_values(ppm):
 def max_channel_difference(ppm_a, ppm_b):
     """the largest difference between corresponding numbers; 255 if the
     two files don't have the same width and height"""
-    ha, hb = ppm_a.split()[:4], ppm_b.split()[:4]
-    if ha != hb:
-        return 255
-    a, b = ppm_values(ppm_a), ppm_values(ppm_b)
-    if len(a) != len(b):
+    wa, ha, a = parse_ppm(ppm_a)
+    wb, hb, b = parse_ppm(ppm_b)
+    if (wa, ha) != (wb, hb) or len(a) != len(b):
         return 255
     return max(abs(x - y) for x, y in zip(a, b)) if a else 0
 
@@ -178,8 +198,10 @@ def lerp(a, b, t):
     return a + (b - a) * t
 
 
-def mix(a, b, t):
-    if LINEAR_BLENDING:
+def mix(a, b, t, linear=None):
+    if linear is None:
+        linear = LINEAR_BLENDING
+    if linear:
         return Color(lerp(a.red, b.red, t), lerp(a.green, b.green, t), lerp(a.blue, b.blue, t))
     # the way browsers do it: blend the file values, then pretend the result is
     # light. encode is only defined on 0..1, so clamp on the way in.
@@ -254,10 +276,8 @@ def plate_01():
         top = i * 90
         for x in range(400):
             t = x / 399
-            set_linear_blending(False)
-            naive = mix(a, b, t)
-            set_linear_blending(True)
-            linear = mix(a, b, t)
+            naive = mix(a, b, t, False)
+            linear = mix(a, b, t, True)
             for y in range(top, top + 40):
                 write_pixel(c, x, y, naive)
             for y in range(top + 45, top + 85):

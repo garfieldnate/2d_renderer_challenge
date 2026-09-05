@@ -17,7 +17,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import importlib
 import renderer as R  # noqa: E402
+
+CHAPTERS = [importlib.import_module(p.stem) for p in
+            sorted(Path(__file__).resolve().parent.glob("chapter*.py"))]
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -27,13 +31,18 @@ class StepError(AssertionError):
 
 
 def read_file(rel):
-    return (ROOT / rel).read_text(encoding="utf-8")
+    return (ROOT / rel).read_bytes()
 
 
 def make_env():
     env = {n: getattr(R, n) for n in dir(R) if not n.startswith("_")}
+    for m in CHAPTERS:
+        env.update({n: getattr(m, n) for n in dir(m) if not n.startswith("_")})
     env["read_file"] = read_file
     env["round"] = lambda v: int(math.floor(v + 0.5))
+    env["length"] = len
+    env["true"], env["false"] = True, False
+    env["sqrt"] = math.sqrt
     return env
 
 
@@ -52,8 +61,10 @@ def evaluate(expr, env):
 def approx_equal(a, b, eps):
     if isinstance(a, R.Color) or isinstance(b, R.Color):
         return a.approx(b, eps)
-    if isinstance(a, tuple) and isinstance(b, tuple):
-        return len(a) == len(b) and all(abs(x - y) <= eps for x, y in zip(a, b))
+    if isinstance(a, (tuple, list)) and isinstance(b, (tuple, list)):
+        return len(a) == len(b) and all(approx_equal(x, y, eps) for x, y in zip(a, b))
+    if isinstance(a, (str, bytes, bool)) or isinstance(b, (str, bytes, bool)):
+        return a == b
     return abs(a - b) <= eps
 
 
@@ -85,7 +96,7 @@ def run_step(text, doc, env):
         elif not R.LINEAR_BLENDING:
             raise StepError("linear blending is off")
         return
-    m = re.match(r"(write_pixel|fill)\((.+)\)$", text)
+    m = re.match(r"(write_pixel|fill|set_coverage|paint_through|line_bresenham|line_wu)\((.+)\)$", text)
     if m:
         evaluate(text, env)
         return
@@ -115,6 +126,21 @@ def run_step(text, doc, env):
         for i, line in enumerate(env[m.group(1)].split("\n")):
             if len(line) > int(m.group(2)):
                 raise StepError("line %d is %d characters" % (i + 1, len(line)))
+        return
+    m = re.match(r'(\w+) begins with "(.*)"$', text)
+    if m:
+        want = eval('"' + m.group(2) + '"')
+        got = env[m.group(1)]
+        if isinstance(got, bytes):
+            want = want.encode("latin-1")
+        if not got.startswith(want):
+            raise StepError("begins with %r" % got[:len(want) + 4])
+        return
+    m = re.match(r"byte (\d+) of (\w+) = (\d+)$", text)
+    if m:
+        got = env[m.group(2)][int(m.group(1)) - 1]
+        if got != int(m.group(3)):
+            raise StepError("byte was %d" % got)
         return
     m = re.match(r"(\w+) ends with a newline character$", text)
     if m:
@@ -182,7 +208,7 @@ def parse(path):
 
 
 def main(argv):
-    targets = [Path(a) for a in argv] or sorted((ROOT / "features").glob("chapter01-*.feature"))
+    targets = [Path(a) for a in argv] or sorted((ROOT / "features").glob("chapter*.feature"))
     total = failed = 0
     for f in targets:
         for name, steps in parse(f):

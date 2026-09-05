@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 2 · Coverage — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 2 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-01.html">← 1</a> · <a href="#plate">Plate&nbsp;2</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Two</p>
+    <h1>Coverage</h1>
+    <p class="hook">Draw a circle. You have a canvas and a way to write pixels, so the plan is obvious: for
+      every pixel, decide whether it's in the circle or not, and color the ones that are. That plan is
+      wrong, and the way it's wrong is the subject of the next twenty-two chapters.</p>
+  </header>
+
+  <p>Here's the trouble. A pixel isn't a point. It's a little square, and a circle's edge doesn't
+    care about little squares: it slices through them wherever it likes, leaving a third of one inside
+    and two thirds of the next. Ask "is this pixel inside?" and you've forced a yes-or-no answer onto
+    a question whose honest answer is "40%". Stack a few hundred of those forced answers along an edge
+    and you get the staircase everybody recognizes.</p>
+
+  <figure>
+    <canvas id="fig21" role="img" aria-label="A circle's edge crossing a pixel grid, each cell shaded by the fraction of it that lies inside, with pixel centers marked as inside or outside"></canvas>
+    <figcaption><span class="fig">Figure 2.1</span> An edge doesn't respect the grid. Each cell is shaded by how much of it is inside the shape. The dots are pixel centers: the binary question only sees those.</figcaption>
+  </figure>
+
+  <p>The right question is "how much of this pixel is inside?" and its answer is a number between 0
+    and 1 called <em>coverage</em>. This chapter builds a buffer to hold coverage, a brutally simple
+    way to compute it, and a way to push paint through it onto the canvas. The picture at the end is
+    the same circle drawn both ways, side by side, and once you've seen it you won't want to go back.</p>
+
+  <p>Everything after this chapter is a faster way to compute the same number.</p>
+
+  <h2><span class="sec">§ 2.1</span> Shapes are questions</h2>
+
+  <p>Before you can ask how much of a pixel is inside a shape, you need shapes, and you need them to
+    answer one question: <em>is this point inside you?</em> That's the whole interface. A shape is a
+    function from a point to yes or no, and for this chapter, three of them will do.</p>
+
+  <ul>
+    <li>A <strong>circle</strong>, given its center and radius. Inside means within the radius,
+      boundary included.</li>
+    <li>A <strong>rectangle</strong>, given its left, top, right and bottom edges as
+      <code>rectangle(x0, y0, x1, y1)</code>. Boundary included.</li>
+    <li>A <strong>half-plane</strong>, which is everything on one side of a line. You describe it
+      with a point on the line and a normal vector pointing into the half you want:
+      <code>half_plane(px, py, nx, ny)</code>. A point is inside when the vector from
+      <code>(px, py)</code> to it has a non-negative dot product with the normal. The normal needn't
+      have length 1. Half-planes look useless now and turn out to be the building block of chapter 3.</li>
+  </ul>
+
+  <p>Coordinates are real numbers here, not pixel indices. The point <code>(3, 3)</code> is a
+    mathematical point; the pixel whose top-left corner is at <code>(3, 3)</code> is a different thing,
+    and keeping those two apart is most of what this chapter is about.</p>
+
+  <div class="test" data-feature="chapter02-shapes.feature">
+    <p class="label">features/chapter02-shapes.feature</p>
+<pre><code><span class="kw">Feature</span>: Shapes are questions
+  A shape is anything that can answer one question: is this point inside you?
+  Three shapes to start with. The circle and the rectangle include their
+  boundary. The half-plane is everything on the side its normal points to,
+  boundary included.
+
+  <span class="kw">Scenario</span>: A point inside a circle
+    <span class="kw">Given</span> s ← circle(8, 8, 5)
+    <span class="kw">Then</span>  inside(s, 8, 8) = true
+    <span class="kw">And</span>   inside(s, 12, 8) = true
+    <span class="kw">And</span>   inside(s, 13, 8) = true
+    <span class="kw">And</span>   inside(s, 13.01, 8) = false
+    <span class="kw">And</span>   inside(s, 11.6, 11.6) = false
+
+  <span class="kw">Scenario</span>: A point inside a rectangle
+    <span class="kw">Given</span> s ← rectangle(1.25, 2.0, 4.75, 5.0)
+    <span class="kw">Then</span>  inside(s, 3, 3) = true
+    <span class="kw">And</span>   inside(s, 1.25, 2.0) = true
+    <span class="kw">And</span>   inside(s, 4.75, 5.0) = true
+    <span class="kw">And</span>   inside(s, 1.2, 3) = false
+    <span class="kw">And</span>   inside(s, 3, 5.1) = false
+
+  <span class="kw">Scenario</span>: A point inside a half-plane
+    <span class="kw">Given</span> s ← half_plane(2.5, 0, 1, 0)
+    <span class="kw">Then</span>  inside(s, 2.5, 7) = true
+    <span class="kw">And</span>   inside(s, 3, -4) = true
+    <span class="kw">And</span>   inside(s, 2.4, 0) = false
+
+  <span class="kw">Scenario</span>: The normal picks the side
+    <span class="kw">Given</span> s ← half_plane(2.5, 0, -1, 0)
+    <span class="kw">Then</span>  inside(s, 2.4, 0) = true
+    <span class="kw">And</span>   inside(s, 3, 0) = false</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 2.2</span> A faster file</h2>
+
+  <p>A quick detour, because the pictures in this chapter are about to get bigger. PPM has a binary
+    sibling, <code>P6</code>. Same three header lines, with a 6 in place of the 3, then exactly one
+    newline, then the pixel data as raw bytes: one byte per channel, nothing in between. A 2-by-1
+    canvas is 11 bytes of header and 6 bytes of pixels. The file is a quarter the size of the P3
+    version and considerably faster to write, and from here on the book's reference images are P6.</p>
+
+  <p>Write <code>canvas_to_p6</code>. The bytes are the same numbers your P3 writer computes, clamp
+    then encode then scale then round, so share that code. Then teach <code>ppm_pixel</code>,
+    <code>distinct_values</code> and <code>max_channel_difference</code> to read either format: look
+    at the first two bytes, and if they're <code>P6</code>, read the three header numbers, skip the
+    single whitespace byte after the last one, and take the rest as pixel bytes. Your
+    <code>read_file</code> now returns bytes rather than text; a P3 file is text that happens to be
+    stored in bytes, so nothing changes for chapter 1's tests.</p>
+
+  <p>Keep the P3 writer. When something goes wrong, you'll still want to <code>cat</code> a file.</p>
+
+  <div class="test" data-feature="chapter02-p6.feature">
+    <p class="label">features/chapter02-p6.feature</p>
+<pre><code><span class="kw">Feature</span>: Binary PPM
+  P6 is P3 with the numbers written as bytes. The header is the same three
+  lines with a 6 in place of the 3, followed by exactly one newline, and then
+  one byte per channel with nothing between them. From this chapter on, the
+  book's reference images are P6, and your PPM readers accept both.
+
+  <span class="kw">Scenario</span>: The header, then the bytes
+    <span class="kw">Given</span> c ← canvas(2, 1)
+    <span class="kw">When</span>  write_pixel(c, 0, 0, color(1, 0, 0))
+    <span class="kw">And</span>   write_pixel(c, 1, 0, color(0, 0.5, 0))
+    <span class="kw">And</span>   p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  p6 begins with "P6\n2 1\n255\n"
+    <span class="kw">And</span>   length(p6) = 17
+    <span class="kw">And</span>   byte 12 of p6 = 255
+    <span class="kw">And</span>   byte 13 of p6 = 0
+    <span class="kw">And</span>   byte 16 of p6 = 188
+
+  <span class="kw">Scenario</span>: The same pixel comes back out of either format
+    <span class="kw">Given</span> c ← canvas(2, 1)
+    <span class="kw">When</span>  write_pixel(c, 1, 0, color(0, 0.5, 0))
+    <span class="kw">And</span>   p3 ← canvas_to_ppm(c)
+    <span class="kw">And</span>   p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  ppm_pixel(p6, 1, 0) = (0, 188, 0)
+    <span class="kw">And</span>   ppm_pixel(p3, 1, 0) = (0, 188, 0)
+    <span class="kw">And</span>   max_channel_difference(p3, p6) = 0
+    <span class="kw">And</span>   distinct_values(p6) = 2
+
+  <span class="kw">Scenario</span>: Sizes still have to match
+    <span class="kw">Given</span> c1 ← canvas(2, 1)
+    <span class="kw">And</span>   c2 ← canvas(1, 2)
+    <span class="kw">When</span>  p6a ← canvas_to_p6(c1)
+    <span class="kw">And</span>   p6b ← canvas_to_p6(c2)
+    <span class="kw">Then</span>  max_channel_difference(p6a, p6b) = 255</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 2.3</span> A loupe</h2>
+
+  <p>The discs in this chapter are 40 pixels across, because 40-pixel discs are quick to render and
+    small enough to reason about pixel by pixel. They're also too small to see. So the second tool is
+    a magnifier: <code>magnify(canvas, k)</code> returns a canvas <code>k</code> times wider and
+    taller, with every pixel repeated into a <code>k</code>-by-<code>k</code> block. No smoothing,
+    no averaging, no cleverness. Image viewers do this when you zoom in, but doing it yourself means
+    the file on disk is what you see, and you're not at the mercy of a viewer that decides to
+    "improve" the zoom with a blur.</p>
+
+  <div class="test" data-feature="chapter02-magnify.feature">
+    <p class="label">features/chapter02-magnify.feature</p>
+<pre><code><span class="kw">Feature</span>: Magnify
+  magnify(canvas, k) returns a canvas k times wider and taller, every pixel
+  repeated into a k by k block. No smoothing, no averaging.
+
+  <span class="kw">Scenario</span>: Every pixel becomes a block
+    <span class="kw">Given</span> c ← canvas(2, 1)
+    <span class="kw">When</span>  write_pixel(c, 0, 0, color(1, 0, 0))
+    <span class="kw">And</span>   write_pixel(c, 1, 0, color(0, 0.5, 0))
+    <span class="kw">And</span>   m ← magnify(c, 3)
+    <span class="kw">Then</span>  m.width = 6
+    <span class="kw">And</span>   m.height = 3
+    <span class="kw">And</span>   pixel_at(m, 0, 0) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_at(m, 2, 2) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_at(m, 3, 0) = color(0, 0.5, 0)
+    <span class="kw">And</span>   pixel_at(m, 5, 2) = color(0, 0.5, 0)
+    <span class="kw">And</span>   exactly 9 pixels of m are color(1, 0, 0)
+
+  <span class="kw">Scenario</span>: Magnifying by one changes nothing
+    <span class="kw">Given</span> c ← canvas(2, 1)
+    <span class="kw">When</span>  write_pixel(c, 1, 0, color(0, 0.5, 0))
+    <span class="kw">And</span>   m ← magnify(c, 1)
+    <span class="kw">Then</span>  max_channel_difference(canvas_to_p6(c), canvas_to_p6(m)) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 2.4</span> The coverage buffer, and the first question</h2>
+
+  <p>A coverage buffer is a canvas of numbers instead of colors. It has a width and a height, and
+    one number per pixel, from 0 for "none of this pixel is inside" to 1 for "all of it". It starts
+    at zero. You read it with <code>coverage_at</code> and write it with <code>set_coverage</code>,
+    and as with the canvas, writes outside the buffer are dropped. Its total, <code>ink</code>, is
+    the sum of every value, and you'll use it constantly: it's the area of the shape, in pixels, as
+    the buffer sees it.</p>
+
+  <p>The first way to fill one is the binary question. Pixel <code>(x, y)</code> is the square from
+    <code>(x, y)</code> to <code>(x + 1, y + 1)</code>, so its center is <code>(x + 0.5, y + 0.5)</code>.
+    Ask the shape whether the center is inside. If so, coverage 1; if not, 0. Do that for every pixel
+    and you've got <code>rasterize_centers</code>, which is what every renderer did until the
+    nineties and what a few still do when you turn antialiasing off.</p>
+
+  <p>That half-pixel offset is the one thing here that people get wrong. If you test
+    <code>(x, y)</code> instead of <code>(x + 0.5, y + 0.5)</code>, every shape you ever draw will sit
+    half a pixel up and to the left of where it should, and you'll never notice until you draw the
+    same shape two ways and they don't line up. There's a scenario for it.</p>
+
+  <div class="test" data-feature="chapter02-centers.feature">
+    <p class="label">features/chapter02-centers.feature</p>
+<pre><code><span class="kw">Feature</span>: The coverage buffer, and the first question
+  A coverage buffer is a canvas of numbers instead of colors: for each pixel,
+  how much of it the shape covers, from 0 to 1. The first way to fill one is
+  to ask whether the pixel's center is inside.
+
+  <span class="kw">Scenario</span>: A new coverage buffer is empty
+    <span class="kw">Given</span> cov ← coverage_buffer(4, 3)
+    <span class="kw">Then</span>  cov.width = 4
+    <span class="kw">And</span>   cov.height = 3
+    <span class="kw">And</span>   coverage_at(cov, 2, 1) = 0
+    <span class="kw">And</span>   ink(cov) = 0
+
+  <span class="kw">Scenario</span>: Setting coverage
+    <span class="kw">Given</span> cov ← coverage_buffer(4, 3)
+    <span class="kw">When</span>  set_coverage(cov, 2, 1, 0.75)
+    <span class="kw">Then</span>  coverage_at(cov, 2, 1) = 0.75
+    <span class="kw">And</span>   coverage_at(cov, 1, 2) = 0
+    <span class="kw">And</span>   ink(cov) = 0.75
+
+  <span class="kw">Scenario</span>: Setting coverage outside the buffer is ignored
+    <span class="kw">Given</span> cov ← coverage_buffer(4, 3)
+    <span class="kw">When</span>  set_coverage(cov, -1, 1, 1)
+    <span class="kw">And</span>   set_coverage(cov, 4, 1, 1)
+    <span class="kw">And</span>   set_coverage(cov, 1, 3, 1)
+    <span class="kw">Then</span>  ink(cov) = 0
+
+  <span class="kw">Scenario</span>: The center of pixel (x, y) is (x + 0.5, y + 0.5)
+    <span class="kw">Given</span> s ← half_plane(2.5, 0, 1, 0)
+    <span class="kw">Then</span>  center_inside(s, 2, 4) = 1
+    <span class="kw">And</span>   center_inside(s, 1, 4) = 0
+    <span class="kw">Given</span> t ← half_plane(2.6, 0, 1, 0)
+    <span class="kw">Then</span>  center_inside(t, 2, 4) = 0
+
+  <span class="kw">Scenario</span>: A disc, by asking each center
+    <span class="kw">Given</span> s ← circle(8, 8, 5)
+    <span class="kw">When</span>  cov ← rasterize_centers(s, 16, 16)
+    <span class="kw">Then</span>  cov.width = 16
+    <span class="kw">And</span>   cov.height = 16
+    <span class="kw">And</span>   coverage_at(cov, 8, 8) = 1
+    <span class="kw">And</span>   coverage_at(cov, 3, 8) = 1
+    <span class="kw">And</span>   coverage_at(cov, 12, 8) = 1
+    <span class="kw">And</span>   coverage_at(cov, 2, 8) = 0
+    <span class="kw">And</span>   coverage_at(cov, 13, 8) = 0
+    <span class="kw">And</span>   coverage_at(cov, 4, 4) = 1
+    <span class="kw">And</span>   coverage_at(cov, 3, 4) = 0
+    <span class="kw">And</span>   ink(cov) = 80</code></pre>
+  </div>
+
+  <p>The disc in the last scenario has radius 5, so its area is 25π, about 78.5 pixels. The center
+    test says 80. Close, and every one of those 80 pixels is either fully on or fully off, so the
+    edge is a staircase. Hold that thought.</p>
+
+  <h2><span class="sec">§ 2.5</span> Paint through it</h2>
+
+  <p>A coverage buffer is a stencil. To get a picture out of it you push paint through:
+    <code>paint_through(canvas, coverage, color)</code> moves every pixel of the canvas toward the
+    color by that pixel's coverage. Zero coverage leaves a pixel alone, full coverage replaces it,
+    and in between it's <code>mix(pixel, color, coverage)</code>, the same mix as chapter 1, in
+    light. This is the one place the renderer touches the canvas, from here to the end of the book.</p>
+
+  <p>That last sentence is worth reading again. Chapters 3 through 8 are about producing better
+    coverage buffers faster. Chapters 9 through 12 are about producing fancier paint. Neither side
+    needs to know about the other, and the seam between them is this one function.</p>
+
+  <div class="test" data-feature="chapter02-paint.feature">
+    <p class="label">features/chapter02-paint.feature</p>
+<pre><code><span class="kw">Feature</span>: Painting through coverage
+  paint_through(canvas, coverage, color) moves every pixel of the canvas
+  toward the color by the pixel's coverage, using mix. Zero coverage leaves
+  a pixel alone; full coverage replaces it.
+
+  <span class="kw">Scenario</span>: Half coverage is half the paint
+    <span class="kw">Given</span> c ← canvas(1, 1)
+    <span class="kw">And</span>   cov ← coverage_buffer(1, 1)
+    <span class="kw">When</span>  set_coverage(cov, 0, 0, 0.5)
+    <span class="kw">And</span>   paint_through(c, cov, color(1, 1, 1))
+    <span class="kw">Then</span>  pixel_at(c, 0, 0) = color(0.5, 0.5, 0.5)
+
+  <span class="kw">Scenario</span>: Paint over something that isn't black
+    <span class="kw">Given</span> c ← canvas(1, 1)
+    <span class="kw">And</span>   cov ← coverage_buffer(1, 1)
+    <span class="kw">When</span>  fill(c, color(0.2, 0.2, 0.2))
+    <span class="kw">And</span>   set_coverage(cov, 0, 0, 0.25)
+    <span class="kw">And</span>   paint_through(c, cov, color(1, 0, 0))
+    <span class="kw">Then</span>  pixel_at(c, 0, 0) = color(0.4, 0.15, 0.15)
+
+  <span class="kw">Scenario</span>: Zero leaves it alone and one replaces it
+    <span class="kw">Given</span> c ← canvas(2, 1)
+    <span class="kw">And</span>   cov ← coverage_buffer(2, 1)
+    <span class="kw">When</span>  fill(c, color(0.2, 0.2, 0.2))
+    <span class="kw">And</span>   set_coverage(cov, 1, 0, 1)
+    <span class="kw">And</span>   paint_through(c, cov, color(1, 0, 0))
+    <span class="kw">Then</span>  pixel_at(c, 0, 0) = color(0.2, 0.2, 0.2)
+    <span class="kw">And</span>   pixel_at(c, 1, 0) = color(1, 0, 0)
+
+  <span class="kw">Scenario</span>: The arithmetic is on light
+    <span class="kw">Given</span> c ← canvas(1, 1)
+    <span class="kw">And</span>   cov ← coverage_buffer(1, 1)
+    <span class="kw">When</span>  set_coverage(cov, 0, 0, 0.5)
+    <span class="kw">And</span>   paint_through(c, cov, color(1, 1, 1))
+    <span class="kw">And</span>   ppm ← canvas_to_ppm(c)
+    <span class="kw">Then</span>  ppm_pixel(ppm, 0, 0) = (188, 188, 188)
+
+  <span class="kw">Scenario</span>: The disc by centers
+    <span class="kw">Given</span> c ← disc_centers()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-02/disc-centers.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 320
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 160) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 124, 36) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 132, 36) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   distinct_values(p6) = 5
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <p>The last scenario is your first picture: a 40-by-40 canvas painted a dark gray, a disc of
+    radius 16 centered at <code>(20, 20)</code> rasterized by centers, painted through in an orange,
+    and magnified eight times.</p>
+
+<pre><code>disc_centers():
+  c ← canvas(40, 40)
+  fill(c, color(0.02, 0.02, 0.025))
+  cov ← rasterize_centers(circle(20, 20, 16), 40, 40)
+  paint_through(c, cov, color(0.9, 0.55, 0.1))
+  <span class="kw">return</span> magnify(c, 8)</code></pre>
+
+  <p>Write it out as P6, open it, and look at the edge. Every step is a full pixel. It's a
+    perfectly good circle and it looks like it was drawn in 1985, because this is exactly how
+    circles were drawn in 1985.</p>
+
+  <h2><span class="sec">§ 2.6</span> The better question</h2>
+
+  <p>Now ask how much of the pixel is inside. The honest answer is an area, and computing the exact
+    area of a pixel clipped by a circle is a genuinely annoying piece of geometry that you're not
+    going to do. Instead, you're going to cheat in the most obvious way possible: throw a handful of
+    points into the pixel and count how many land inside the shape.</p>
+
+  <figure>
+    <canvas id="fig22" role="img" aria-label="A single pixel divided into an 8 by 8 grid of sample points with a curved edge passing through, sample points inside the shape filled and those outside hollow"></canvas>
+    <figcaption><span class="fig">Figure 2.2</span> Sixty-four sample points in one pixel, one at the center of each cell of an 8-by-8 grid. Coverage is the fraction that land inside. Here it's 24 of 64.</figcaption>
+  </figure>
+
+  <p>Specifically: divide the pixel into an 8-by-8 grid and put one sample point at the center of
+    each cell, so the sample in row <code>j</code>, column <code>i</code> of pixel <code>(x, y)</code>
+    is at <code>(x + (i + 0.5) / 8, y + (j + 0.5) / 8)</code>. Ask the shape about all 64. Coverage
+    is the count divided by 64. That's <code>coverage(shape, x, y)</code>, and
+    <code>rasterize(shape, w, h)</code> is a buffer full of it.</p>
+
+  <p>It's slow. Sixty-four shape queries per pixel, for every pixel on the canvas, whether the shape
+    is anywhere near it or not. It's also correct to within 1/64 for anything with a straight edge,
+    and it's so simple that it's very hard to get wrong. That combination is why it stays in the book
+    for good: from here on, whenever a chapter builds a faster rasterizer, this one is what the fast
+    one gets checked against. It's your reference renderer, and you've written it in ten lines.</p>
+
+  <p>The rectangle scenario below is exact, not approximate: its edges at 1.25 and 4.75 land on
+    sample boundaries, so 6 of the 8 columns of samples fall inside and the coverage is 0.75 on the
+    nose. The half-plane scenarios show the method's one honest weakness. A vertical line through a
+    pixel center covers exactly half the samples, and so does a line at most angles. But a line at
+    exactly 45° through the center runs straight through a diagonal of sample points, every one of
+    which counts as inside, and the answer comes out 0.5625. A regular grid has a few directions it's
+    blind to; renderers that care use a rotated or jittered grid. You'll live with it, and you'll
+    know what it is when you see it.</p>
+
+  <div class="test" data-feature="chapter02-coverage.feature">
+    <p class="label">features/chapter02-coverage.feature</p>
+<pre><code><span class="kw">Feature</span>: The better question
+  How much of this pixel is inside the shape? Answered by brute force: an
+  8 by 8 grid of sample points, one at the center of each cell of the pixel,
+  and count.
+
+  <span class="kw">Scenario</span>: The sixty-four sample points
+    <span class="kw">Given</span> s ← half_plane(2.5, 0, 1, 0)
+    <span class="kw">Then</span>  coverage(s, 2, 4) = 0.5
+    <span class="kw">And</span>   coverage(s, 1, 4) = 0
+    <span class="kw">And</span>   coverage(s, 3, 4) = 1
+
+  <span class="kw">Scenario</span>: A rectangle is covered exactly, when its edges land on sample boundaries
+    <span class="kw">Given</span> s ← rectangle(1.25, 2.0, 4.75, 5.0)
+    <span class="kw">When</span>  cov ← rasterize(s, 8, 8)
+    <span class="kw">Then</span>  coverage_at(cov, 0, 2) = 0
+    <span class="kw">And</span>   coverage_at(cov, 1, 2) = 0.75
+    <span class="kw">And</span>   coverage_at(cov, 2, 2) = 1
+    <span class="kw">And</span>   coverage_at(cov, 3, 2) = 1
+    <span class="kw">And</span>   coverage_at(cov, 4, 2) = 0.75
+    <span class="kw">And</span>   coverage_at(cov, 5, 2) = 0
+    <span class="kw">And</span>   coverage_at(cov, 2, 1) = 0
+    <span class="kw">And</span>   coverage_at(cov, 2, 5) = 0
+    <span class="kw">And</span>   ink(cov) = 10.5
+
+  <span class="kw">Scenario</span>: A half-plane through a pixel center covers half of it
+    <span class="kw">Given</span> s ← half_plane(2.5, 4.5, 0.6, 0.8)
+    <span class="kw">Then</span>  coverage(s, 2, 4) = 0.5
+
+  <span class="kw">Scenario</span>: Except when the grid conspires
+    <span class="kw">Given</span> s ← half_plane(2.5, 4.5, 1, 1)
+    <span class="kw">Then</span>  coverage(s, 2, 4) = 0.5625
+
+  <span class="kw">Scenario</span>: A disc is only ever approximately covered
+    <span class="kw">Given</span> s ← circle(8, 8, 5)
+    <span class="kw">When</span>  cov ← rasterize(s, 16, 16)
+    <span class="kw">Then</span>  coverage_at(cov, 8, 8) = 1
+    <span class="kw">And</span>   coverage_at(cov, 3, 8) = 0.96875
+    <span class="kw">And</span>   coverage_at(cov, 12, 8) = 0.96875
+    <span class="kw">And</span>   coverage_at(cov, 4, 4) = 0.5625
+    <span class="kw">And</span>   coverage_at(cov, 3, 4) = 0
+    <span class="kw">And</span>   ink(cov) = 78.5
+    <span class="kw">And</span>   ink(cov) = 78.5398 ± 0.1
+
+  <span class="kw">Scenario</span>: The disc by coverage
+    <span class="kw">Given</span> c ← disc_coverage()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-02/disc-coverage.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 320
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 160) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 124, 36) = (157, 127, 64) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <p>The disc's area, remember, is 78.54. The center test said 80. The sample test says 78.5, and
+    the difference isn't the point. The point is the edge. Render <code>disc_coverage</code>, which
+    is <code>disc_centers</code> with <code>rasterize</code> in place of
+    <code>rasterize_centers</code> and nothing else changed, and look at the two files side by side.</p>
+
+  <p>Notice what didn't happen. Nobody blurred anything. There's no smoothing pass, no filter, no
+    post-processing. The edge pixels are the colors they are because that's how much of each pixel
+    the circle covers. Antialiasing isn't something you do to a picture afterwards. It's what you get
+    when you ask the right question in the first place.</p>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>The <em>Anti-alias</em> checkbox in the options bar of Photoshop's Elliptical Marquee, Lasso and
+      shape tools. Off is §2.4; on is §2.6. It's off by default for the rectangular marquee, because
+      a rectangle on integer coordinates covers every pixel fully or not at all, and it's on for
+      everything else.</p>
+  </aside>
+
+  <h2><span class="sec">§ 2.7</span> Coverage is not opacity</h2>
+
+  <p>Here is the trap, and unlike chapter 1's it doesn't announce itself.</p>
+
+  <p>Paint the disc once through its coverage. An edge pixel with coverage 0.5 ends up halfway
+    between the paper and the orange. Now paint the same disc again, through the same coverage. The
+    interior doesn't change: it was fully orange and it stays fully orange. But that edge pixel moves
+    halfway again, from 0.5 to 0.75, and the edge of the disc gets visibly fatter. Paint it ten times
+    and the disc grows a hard rim.</p>
+
+  <figure class="wide">
+    <canvas id="fig23" role="img" aria-label="Two magnified discs: one painted once through its coverage, one painted twice through the same coverage, with the second showing a thicker, harder edge"></canvas>
+    <figcaption><span class="fig">Figure 2.3</span> Once and twice. Same shape, same coverage, same color. The second disc is larger, because every partial pixel got pushed further toward the paint.</figcaption>
+  </figure>
+
+  <p>Nothing is wrong with the code. The problem is a confusion of two different quantities that
+    look identical. Coverage says <em>how much of the pixel the shape occupies</em>. Opacity says
+    <em>how much of the light the paint lets through</em>. A pixel half covered by opaque paint and a
+    pixel fully covered by half-transparent paint end up the same color, and every renderer stores
+    them the same way, as an alpha of 0.5. But they're not the same thing, and the difference bites
+    the moment two shapes share an edge. Two adjacent shapes with coverage 0.5 on the same pixel
+    should make that pixel 100% painted; composite them as two 50% opacities and you get 75%, and a
+    faint seam runs along every boundary in your drawing. Every 2D renderer on earth has that seam
+    and nobody mentions it. Chapter 9 does.</p>
+
+  <p>For now, render it, so you'll recognize it later.</p>
+
+<pre><code>painted_twice():
+  c ← canvas(80, 40)
+  fill(c, color(0.02, 0.02, 0.025))
+  cov ← rasterize(circle(20, 20, 16), 40, 40)
+
+  once ← coverage_buffer(80, 40)         <span class="cm">// the disc in both halves</span>
+  <span class="kw">for</span> y <span class="kw">in</span> 0..39:
+    <span class="kw">for</span> x <span class="kw">in</span> 0..39:
+      set_coverage(once, x, y,      coverage_at(cov, x, y))
+      set_coverage(once, x + 40, y, coverage_at(cov, x, y))
+  paint_through(c, once, color(0.9, 0.55, 0.1))
+
+  twice ← coverage_buffer(80, 40)        <span class="cm">// the disc in the right half only</span>
+  <span class="kw">for</span> y <span class="kw">in</span> 0..39:
+    <span class="kw">for</span> x <span class="kw">in</span> 0..39:
+      set_coverage(twice, x + 40, y, coverage_at(cov, x, y))
+  paint_through(c, twice, color(0.9, 0.55, 0.1))
+
+  <span class="kw">return</span> magnify(c, 6)</code></pre>
+
+  <div class="test" data-feature="chapter02-twice.feature">
+    <p class="label">features/chapter02-twice.feature</p>
+<pre><code><span class="kw">Feature</span>: Coverage is not opacity
+  Painting the same shape twice through the same coverage doesn't give you the
+  shape twice. It gives you a thicker edge.
+
+  <span class="kw">Scenario</span>: Half coverage, painted twice, is three quarters
+    <span class="kw">Given</span> c ← canvas(1, 1)
+    <span class="kw">And</span>   cov ← coverage_buffer(1, 1)
+    <span class="kw">When</span>  set_coverage(cov, 0, 0, 0.5)
+    <span class="kw">And</span>   paint_through(c, cov, color(1, 1, 1))
+    <span class="kw">And</span>   paint_through(c, cov, color(1, 1, 1))
+    <span class="kw">Then</span>  pixel_at(c, 0, 0) = color(0.75, 0.75, 0.75)
+
+  <span class="kw">Scenario</span>: The disc, once and twice
+    <span class="kw">Given</span> c ← painted_twice()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-02/painted-twice.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 480
+    <span class="kw">And</span>   c.height = 240
+    <span class="kw">And</span>   ppm_pixel(p6, 120, 120) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 360, 120) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 93, 27) = (157, 127, 64) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 333, 27) = (194, 156, 74) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 2.8</span> Putting it together</h2>
+
+  <p>The same circle, the same grid, the two questions. Centers on the left, coverage on the right.</p>
+
+<pre><code>plate_02():
+  c ← canvas(80, 40)
+  fill(c, color(0.02, 0.02, 0.025))
+  shape ← circle(20, 20, 16)
+  left  ← rasterize_centers(shape, 40, 40)
+  right ← rasterize(shape, 40, 40)
+
+  both ← coverage_buffer(80, 40)
+  <span class="kw">for</span> y <span class="kw">in</span> 0..39:
+    <span class="kw">for</span> x <span class="kw">in</span> 0..39:
+      set_coverage(both, x, y,      coverage_at(left, x, y))
+      set_coverage(both, x + 40, y, coverage_at(right, x, y))
+
+  paint_through(c, both, color(0.9, 0.55, 0.1))
+  <span class="kw">return</span> magnify(c, 6)</code></pre>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate2" role="img" aria-label="Two magnified discs side by side: the left drawn by testing pixel centers with a staircase edge, the right drawn by measuring coverage with a smooth edge"></canvas>
+    <figcaption><span class="fig">Plate 2</span> Left: is my center inside? Right: how much of me is inside? Same circle, same grid, same paint. Everything from here on is a faster way of computing the right-hand picture.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter02-plate.feature">
+    <p class="label">features/chapter02-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 2
+  The same circle on the same grid, asked two different questions, magnified
+  so you can see the answers.
+
+  <span class="kw">Scenario</span>: The plate
+    <span class="kw">Given</span> c ← plate_02()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-02/plate-02.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 480
+    <span class="kw">And</span>   c.height = 240
+    <span class="kw">And</span>   ppm_pixel(p6, 120, 120) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 360, 120) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 93, 27) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 333, 27) = (157, 127, 64) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <nav class="endnav">
+    <a href="chapter-01.html">← 1 · The Canvas and the Color</a>
+    <span>Chapter 2 · Coverage</span>
+    <a href="chapter-03.html">Next: 3 · Lines →</a>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+/* the reference implementation's byte conversion, so figures agree with the tests */
+function toByte(light) {
+  var v = light < 0 ? 0 : light > 1 ? 1 : light;
+  return Math.floor(Plate.l2s(v) * 255 + 0.5);
+}
+function lerp3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+function insideCircle(cx, cy, r, x, y) { var dx = x - cx, dy = y - cy; return dx * dx + dy * dy <= r * r; }
+function coverage(cx, cy, r, px, py) {
+  var n = 0;
+  for (var j = 0; j < 8; j++) for (var i = 0; i < 8; i++)
+    if (insideCircle(cx, cy, r, px + (i + 0.5) / 8, py + (j + 0.5) / 8)) n++;
+  return n / 64;
+}
+/* draw a small canvas of raw pixels at an integer scale, no resampling */
+function blit(ctx, pixels, pw, ph, scale, ox, oy) {
+  var img = ctx.createImageData(pw, ph);
+  for (var i = 0; i < pw * ph; i++) {
+    img.data[i * 4] = pixels[i][0]; img.data[i * 4 + 1] = pixels[i][1];
+    img.data[i * 4 + 2] = pixels[i][2]; img.data[i * 4 + 3] = 255;
+  }
+  var off = Plate.offcan(pw, ph);
+  off.getContext('2d').putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, ox, oy, pw * scale, ph * scale);
+}
+var INK = [0.9, 0.55, 0.1], PAPER = [0.02, 0.02, 0.025];
+
+/* ---------- Figure 2.1 — an edge across the grid ---------- */
+Plate.add('fig21', 0.5, function (ctx, w, h, p) {
+  var cols = 12, cs = Math.floor((w - 20) / cols), rows = Math.floor((h - 20) / cs), ox = 10, oy = 10;
+  var cx = 2.3, cy = rows + 1.2, r = rows + 0.6;   /* in cell units: a big circle, its edge crossing the grid */
+  for (var y = 0; y < rows; y++) for (var x = 0; x < cols; x++) {
+    var k = coverage(cx, cy, r, x, y);
+    ctx.fillStyle = Plate.rgba(p.magenta, 0.12 + 0.7 * k);
+    if (k > 0) ctx.fillRect(ox + x * cs, oy + y * cs, cs, cs);
+  }
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.5); ctx.lineWidth = 1;
+  for (var i = 0; i <= cols; i++) { ctx.beginPath(); ctx.moveTo(ox + i * cs, oy); ctx.lineTo(ox + i * cs, oy + rows * cs); ctx.stroke(); }
+  for (var j = 0; j <= rows; j++) { ctx.beginPath(); ctx.moveTo(ox, oy + j * cs); ctx.lineTo(ox + cols * cs, oy + j * cs); ctx.stroke(); }
+  /* the true edge */
+  ctx.save(); ctx.beginPath(); ctx.rect(ox, oy, cols * cs, rows * cs); ctx.clip();
+  ctx.strokeStyle = p.ink; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(ox + cx * cs, oy + cy * cs, r * cs, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+  /* the centers */
+  for (var y2 = 0; y2 < rows; y2++) for (var x2 = 0; x2 < cols; x2++) {
+    var inside = insideCircle(cx, cy, r, x2 + 0.5, y2 + 0.5);
+    ctx.beginPath(); ctx.arc(ox + (x2 + 0.5) * cs, oy + (y2 + 0.5) * cs, 2.6, 0, Math.PI * 2);
+    ctx.fillStyle = inside ? p.ink : p.plate; ctx.strokeStyle = p.ink; ctx.lineWidth = 1;
+    ctx.fill(); ctx.stroke();
+  }
+});
+
+/* ---------- Figure 2.2 — sixty-four samples in one pixel ---------- */
+Plate.add('fig22', 0.62, function (ctx, w, h, p) {
+  var s = Math.min(w, h) - 30, ox = (w - s) / 2, oy = 12, cell = s / 8;
+  /* a circle whose edge crosses this pixel: center to the lower left, in pixel units */
+  var cx = -1.1, cy = 1.9, r = 2.05;
+  ctx.fillStyle = Plate.rgba(p.magenta, 0.10); ctx.fillRect(ox, oy, s, s);
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.45); ctx.lineWidth = 1;
+  for (var i = 0; i <= 8; i++) {
+    ctx.beginPath(); ctx.moveTo(ox + i * cell, oy); ctx.lineTo(ox + i * cell, oy + s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ox, oy + i * cell); ctx.lineTo(ox + s, oy + i * cell); ctx.stroke();
+  }
+  ctx.strokeStyle = p.ink; ctx.lineWidth = 2.5; ctx.strokeRect(ox, oy, s, s);
+  ctx.save(); ctx.beginPath(); ctx.rect(ox, oy, s, s); ctx.clip();
+  ctx.strokeStyle = p.magenta; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(ox + cx * s, oy + cy * s, r * s, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+  var n = 0;
+  for (var j = 0; j < 8; j++) for (var k = 0; k < 8; k++) {
+    var sx = (k + 0.5) / 8, sy = (j + 0.5) / 8, inside = insideCircle(cx, cy, r, sx, sy);
+    if (inside) n++;
+    ctx.beginPath(); ctx.arc(ox + sx * s, oy + sy * s, 3, 0, Math.PI * 2);
+    ctx.fillStyle = inside ? p.magenta : p.plate; ctx.strokeStyle = inside ? p.magenta : p.ink3; ctx.lineWidth = 1;
+    ctx.fill(); ctx.stroke();
+  }
+  Plate.label(ctx, n + ' OF 64 INSIDE  →  COVERAGE ' + (n / 64).toFixed(4), w / 2, h - 5, p.ink3, 9.5, 'center');
+});
+
+/* the chapter's discs, as the reference program draws them */
+function discPixels(mode, W, H, offx) {
+  var px = [];
+  for (var y = 0; y < H; y++) for (var x = 0; x < W; x++) {
+    var k = mode === 'centers' ? (insideCircle(20, 20, 16, x - offx + 0.5, y + 0.5) ? 1 : 0)
+                               : coverage(20, 20, 16, x - offx, y);
+    px.push(lerp3(PAPER, INK, k).map(toByte));
+  }
+  return px;
+}
+
+/* ---------- Figure 2.3 — painted once, painted twice ---------- */
+Plate.add('fig23', 0.5, function (ctx, w, h, p) {
+  var px = [];
+  for (var y = 0; y < 40; y++) for (var x = 0; x < 80; x++) {
+    var k = coverage(20, 20, 16, x % 40, y), c = lerp3(PAPER, INK, k);
+    if (x >= 40) c = lerp3(c, INK, k);
+    px.push(c.map(toByte));
+  }
+  var scale = Math.floor(Math.min(w / 80, h / 40)), ox = (w - 80 * scale) / 2;
+  blit(ctx, px, 80, 40, scale, ox, 0);
+  Plate.label(ctx, 'ONCE', ox + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+  Plate.label(ctx, 'TWICE', ox + 40 * scale + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+});
+
+/* ---------- Plate 2 — plate_02(), pixel for pixel ---------- */
+Plate.add('plate2', 0.5, function (ctx, w, h, p) {
+  var left = discPixels('centers', 40, 40, 0), right = discPixels('coverage', 40, 40, 0), px = [];
+  for (var y = 0; y < 40; y++) for (var x = 0; x < 80; x++) px.push(x < 40 ? left[y * 40 + x] : right[y * 40 + x - 40]);
+  var scale = Math.floor(Math.min(w / 80, h / 40)), ox = (w - 80 * scale) / 2;
+  blit(ctx, px, 80, 40, scale, ox, 0);
+  Plate.label(ctx, 'CENTERS', ox + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+  Plate.label(ctx, 'COVERAGE', ox + 40 * scale + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, insideCircle, coverage, blit, discPixels].concat(Plate.helpers).map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>
