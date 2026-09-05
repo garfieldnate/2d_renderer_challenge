@@ -10,11 +10,11 @@ node test.js
 ```
 
 This runs:
-- **Chapter 1**: 60 tests covering colors, canvas, sRGB, PPM I/O, and compositing
-- **Chapter 2**: 29 tests covering shapes, coverage buffers, magnification, and coverage-based rasterization
-- **Chapter 3**: 32 tests covering Bresenham line rasterization, Wu's antialiased lines, and thick lines as rectangles
+- **Chapter 1**: 67 tests covering colors, canvas, sRGB, PPM I/O, and compositing
+- **Chapter 2**: 36 tests covering shapes, coverage buffers, magnification, and coverage-based rasterization
+- **Chapter 3**: 38 tests covering Bresenham line rasterization, Wu's antialiased lines, and thick lines as rectangles
 
-All 121 tests should pass.
+All 141 tests should pass.
 
 ## Generating Output Files
 
@@ -26,6 +26,8 @@ node test.js
 Output files are written to `out/`:
 
 Chapter 3:
+- `fan-bresenham.ppm` - Twelve rays drawn with Bresenham's line (160×160, binary P6 format)
+- `fan-wu.ppm` - Twelve rays drawn with Wu's antialiased line (160×160, binary P6 format)
 - `fan-coverage.ppm` - Twelve rays as thick lines (coverage-based, 320×320, binary P6 format)
 - `plate-03.ppm` - Bresenham's fan (left) vs Wu's fan (right), magnified 2× (640×320, binary P6 format)
 

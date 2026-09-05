@@ -190,8 +190,8 @@ function set_linear_blending(value) {
   linearBlending = value;
 }
 
-function mix(a, b, t) {
-  if (linearBlending) {
+function mix(a, b, t, useLinear = linearBlending) {
+  if (useLinear) {
     // Correct: linear interpolation in light space
     return new Color(
       a.red + (b.red - a.red) * t,
@@ -199,9 +199,12 @@ function mix(a, b, t) {
       a.blue + (b.blue - a.blue) * t
     );
   } else {
-    // Wrong: browser way - interpolate in encoded space
-    const encA = new Color(encode(a.red), encode(a.green), encode(a.blue));
-    const encB = new Color(encode(b.red), encode(b.green), encode(b.blue));
+    // Wrong: browser way - interpolate in encoded space. Each end is
+    // clamped to [0, 1] before it is encoded.
+    const clampedA = new Color(clamp(a.red), clamp(a.green), clamp(a.blue));
+    const clampedB = new Color(clamp(b.red), clamp(b.green), clamp(b.blue));
+    const encA = new Color(encode(clampedA.red), encode(clampedA.green), encode(clampedA.blue));
+    const encB = new Color(encode(clampedB.red), encode(clampedB.green), encode(clampedB.blue));
     const mixed = new Color(
       encA.red + (encB.red - encA.red) * t,
       encA.green + (encB.green - encA.green) * t,
@@ -590,6 +593,19 @@ test('PPM: Every row starts a new line, and no line exceeds 70 characters', () =
   }
 });
 
+test('PPM: A line of exactly 70 characters is allowed', () => {
+  const c = new Canvas(8, 1);
+  c.fill(new Color(1, 0.1, 0));
+  c.write_pixel(7, 0, new Color(1, 1, 1));
+  const ppm = canvas_to_ppm(c);
+  const lines = ppm.split('\n');
+  const expectedLine1 = '255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 89 0 255 255';
+  const expectedLine2 = '255';
+  assert.strictEqual(lines[3], expectedLine1);
+  assert.strictEqual(lines[3].length, 70);
+  assert.strictEqual(lines[4], expectedLine2);
+});
+
 test('PPM: The file ends with a newline character', () => {
   const c = new Canvas(5, 3);
   const ppm = canvas_to_ppm(c);
@@ -606,6 +622,15 @@ test('PPM: Reading a pixel back out of the text', () => {
   assert.deepStrictEqual(p2, [0, 0, 0]);
 });
 
+test('PPM: Counting the distinct values in a file', () => {
+  const c = new Canvas(3, 1);
+  c.write_pixel(0, 0, new Color(1, 0, 0));
+  c.write_pixel(1, 0, new Color(0, 0.5, 0));
+  c.write_pixel(2, 0, new Color(0, 0, 0.216));
+  const ppm = canvas_to_ppm(c);
+  assert.strictEqual(distinct_values(ppm), 4);
+});
+
 test('PPM: Comparing two files', () => {
   const c1 = new Canvas(2, 1);
   const c2 = new Canvas(2, 1);
@@ -614,6 +639,22 @@ test('PPM: Comparing two files', () => {
   const ppm2 = canvas_to_ppm(c2);
   assert.strictEqual(max_channel_difference(ppm1, ppm1), 0);
   assert.strictEqual(max_channel_difference(ppm1, ppm2), 188);
+});
+
+test('PPM: Files of different sizes are as different as it gets', () => {
+  const c1 = new Canvas(5, 3);
+  const c2 = new Canvas(3, 5);
+  const ppm1 = canvas_to_ppm(c1);
+  const ppm2 = canvas_to_ppm(c2);
+  assert.strictEqual(max_channel_difference(ppm1, ppm2), 255);
+});
+
+test('PPM: The same width with a different height is still a different size', () => {
+  const c1 = new Canvas(5, 3);
+  const c2 = new Canvas(5, 4);
+  const ppm1 = canvas_to_ppm(c1);
+  const ppm2 = canvas_to_ppm(c2);
+  assert.strictEqual(max_channel_difference(ppm1, ppm2), 255);
 });
 
 // Chapter 1 - Gray Match
@@ -787,12 +828,38 @@ test('Mix: Red to green, the way browsers do it', () => {
   set_linear_blending(true);
 });
 
+test("Mix: The light's way never clamps", () => {
+  set_linear_blending(true);
+  const a = new Color(1.5, 0.5, -0.2);
+  const b = new Color(0, 0, 0);
+  assert_color_equal(mix(a, b, 0), new Color(1.5, 0.5, -0.2));
+  assert_color_equal(mix(a, b, 0.5), new Color(0.75, 0.25, -0.1));
+});
+
 test('Mix: The ends of a mix are its inputs either way', () => {
   set_linear_blending(false);
   const a = new Color(0.7, 0, 0);
   const b = new Color(0, 0.3, 0.02);
   assert_color_equal(mix(a, b, 0), a);
   assert_color_equal(mix(a, b, 1), b);
+  set_linear_blending(true);
+});
+
+test('Mix: The switch can be passed instead of set', () => {
+  set_linear_blending(true);
+  const a = new Color(0, 0, 0);
+  const b = new Color(1, 1, 1);
+  assert_color_equal(mix(a, b, 0.5, true), new Color(0.5, 0.5, 0.5));
+  assert_color_equal(mix(a, b, 0.5, false), new Color(0.2140, 0.2140, 0.2140), 0.0001);
+  assert.strictEqual(linearBlending, true);
+});
+
+test("Mix: The browser's way clamps each end before encoding it", () => {
+  set_linear_blending(false);
+  const a = new Color(1.5, 0.5, -0.2);
+  const b = new Color(0, 0, 0);
+  assert_color_equal(mix(a, b, 0), new Color(1, 0.5, 0), 0.0001);
+  assert_color_equal(mix(a, b, 0.5), new Color(0.2140, 0.1113, 0.0000), 0.0001);
   set_linear_blending(true);
 });
 
@@ -1142,7 +1209,9 @@ function paint_through(canvas, coverage_buf, color) {
       const cov = coverage_at(coverage_buf, x, y);
       if (cov > 0) {
         const current = canvas.pixel_at(x, y);
-        const blended = mix(current, color, cov);
+        // paint_through always mixes on light, regardless of the global
+        // linear-blending switch.
+        const blended = mix(current, color, cov, true);
         canvas.write_pixel(x, y, blended);
       }
     }
@@ -1283,6 +1352,40 @@ test('P6: The same pixel comes back out of either format', () => {
   assert.strictEqual(distinct_values(p6), 2);
 });
 
+test('P6: Rows go top to bottom', () => {
+  const c = new Canvas(1, 2);
+  c.write_pixel(0, 0, new Color(1, 0, 0));
+  c.write_pixel(0, 1, new Color(0, 0, 1));
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(p6[11], 255); // byte 12
+  assert.strictEqual(p6[16], 255); // byte 17
+  assert.deepStrictEqual(ppm_pixel(p6, 0, 0), [255, 0, 0]);
+  assert.deepStrictEqual(ppm_pixel(p6, 0, 1), [0, 0, 255]);
+});
+
+test('P6: The binary writer clamps too', () => {
+  const c = new Canvas(2, 1);
+  c.write_pixel(0, 0, new Color(1.5, 0, -0.5));
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(p6[11], 255); // byte 12
+  assert.strictEqual(p6[12], 0);   // byte 13
+  assert.strictEqual(p6[13], 0);   // byte 14
+  assert.deepStrictEqual(ppm_pixel(p6, 0, 0), [255, 0, 0]);
+});
+
+test('P6: Pixel bytes that look like whitespace are still pixel bytes', () => {
+  const c = new Canvas(2, 1);
+  c.write_pixel(0, 0, new Color(0.00304, 0.01444, 0.00304));
+  c.write_pixel(1, 0, new Color(1, 1, 1));
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(p6.length, 17);
+  assert.strictEqual(p6[11], 10); // byte 12
+  assert.strictEqual(p6[12], 32); // byte 13
+  assert.deepStrictEqual(ppm_pixel(p6, 0, 0), [10, 32, 10]);
+  assert.deepStrictEqual(ppm_pixel(p6, 1, 0), [255, 255, 255]);
+  assert.strictEqual(max_channel_difference(canvas_to_ppm(c), p6), 0);
+});
+
 test('P6: Sizes still have to match', () => {
   const c1 = new Canvas(2, 1);
   const c2 = new Canvas(1, 2);
@@ -1338,12 +1441,15 @@ test('Coverage: Setting coverage', () => {
   assert.strictEqual(ink(cov), 0.75);
 });
 
-test('Coverage: Setting coverage outside the buffer is ignored', () => {
+test('Coverage: Setting coverage outside the buffer is ignored, and reading it gives 0', () => {
   const cov = coverage_buffer(4, 3);
   set_coverage(cov, -1, 1, 1);
   set_coverage(cov, 4, 1, 1);
   set_coverage(cov, 1, 3, 1);
   assert.strictEqual(ink(cov), 0);
+  assert.strictEqual(coverage_at(cov, -1, 1), 0);
+  assert.strictEqual(coverage_at(cov, 4, 1), 0);
+  assert.strictEqual(coverage_at(cov, 1, 3), 0);
 });
 
 test('Coverage: The center of pixel (x, y) is (x + 0.5, y + 0.5)', () => {
@@ -1352,6 +1458,35 @@ test('Coverage: The center of pixel (x, y) is (x + 0.5, y + 0.5)', () => {
   assert.strictEqual(center_inside(s, 1, 4), 0);
   const t = half_plane(2.6, 0, 1, 0);
   assert.strictEqual(center_inside(t, 2, 4), 0);
+});
+
+test('Coverage: The center question is not "at least half"', () => {
+  const s = half_plane(2.55, 0, 1, 0);
+  assert.strictEqual(center_inside(s, 2, 4), 0);
+  assert.strictEqual(coverage(s, 2, 4), 0.5);
+});
+
+test('Coverage: A buffer need not be square', () => {
+  const s = rectangle(0, 0, 2, 1);
+  const cov = rasterize_centers(s, 4, 2);
+  assert.strictEqual(cov.width, 4);
+  assert.strictEqual(cov.height, 2);
+  assert.strictEqual(coverage_at(cov, 1, 0), 1);
+  assert.strictEqual(coverage_at(cov, 0, 1), 0);
+  assert.strictEqual(ink(cov), 2);
+});
+
+test('Coverage: A rectangle, by asking each center', () => {
+  const s = rectangle(1.25, 2.0, 4.75, 5.0);
+  const cov = rasterize_centers(s, 8, 8);
+  assert.strictEqual(coverage_at(cov, 1, 4), 1);
+  assert.strictEqual(coverage_at(cov, 4, 1), 0);
+  assert.strictEqual(coverage_at(cov, 4, 4), 1);
+  assert.strictEqual(coverage_at(cov, 0, 3), 0);
+  assert.strictEqual(coverage_at(cov, 5, 3), 0);
+  assert.strictEqual(coverage_at(cov, 2, 1), 0);
+  assert.strictEqual(coverage_at(cov, 2, 5), 0);
+  assert.strictEqual(ink(cov), 12);
 });
 
 test('Coverage: A disc, by asking each center', () => {
@@ -1389,6 +1524,17 @@ test('Coverage method: A rectangle is covered exactly, when its edges land on sa
   assert.strictEqual(coverage_at(cov, 2, 1), 0);
   assert.strictEqual(coverage_at(cov, 2, 5), 0);
   assert_number_equal(ink(cov), 10.5, 0.01);
+});
+
+test('Coverage method: Neither need the buffer be square here', () => {
+  const s = rectangle(0, 0, 2, 1);
+  const cov = rasterize(s, 4, 2);
+  assert.strictEqual(cov.width, 4);
+  assert.strictEqual(cov.height, 2);
+  assert.strictEqual(coverage_at(cov, 1, 0), 1);
+  assert.strictEqual(coverage_at(cov, 2, 0), 0);
+  assert.strictEqual(coverage_at(cov, 0, 1), 0);
+  assert.strictEqual(ink(cov), 2);
 });
 
 test('Coverage method: A half-plane through a pixel center covers half of it', () => {
@@ -1440,13 +1586,16 @@ test('Paint: Zero leaves it alone and one replaces it', () => {
   assert_color_equal(c.pixel_at(1, 0), new Color(1, 0, 0));
 });
 
-test('Paint: The arithmetic is on light', () => {
+test('Paint: The arithmetic is on light, whatever the switch says', () => {
+  set_linear_blending(false);
   const c = new Canvas(1, 1);
   const cov = coverage_buffer(1, 1);
   set_coverage(cov, 0, 0, 0.5);
   paint_through(c, cov, new Color(1, 1, 1));
   const ppm = canvas_to_ppm(c);
+  assert_color_equal(c.pixel_at(0, 0), new Color(0.5, 0.5, 0.5));
   assert.deepStrictEqual(ppm_pixel(ppm, 0, 0), [188, 188, 188]);
+  set_linear_blending(true);
 });
 
 test('Paint: The disc by centers', () => {
@@ -1652,25 +1801,35 @@ class ThickLine extends Shape {
   constructor(x0, y0, x1, y1, width) {
     super();
     // Convert pixel coordinates to centers
-    const px0 = x0 + 0.5;
-    const py0 = y0 + 0.5;
-    const px1 = x1 + 0.5;
-    const py1 = y1 + 0.5;
+    let px0 = x0 + 0.5;
+    let py0 = y0 + 0.5;
+    let px1 = x1 + 0.5;
+    let py1 = y1 + 0.5;
 
     // Direction vector
     const dx = px1 - px0;
     const dy = py1 - py0;
     const len = Math.sqrt(dx * dx + dy * dy);
 
-    let dsx = 0, dsy = 0, nsx = 0, nsy = 0;
+    const half_width = width / 2;
+
+    let dsx, dsy;
     if (len > 0) {
       dsx = dx / len;
       dsy = dy / len;
-      nsx = -dsy;
-      nsy = dsx;
+    } else {
+      // A line of no length has no direction, so it gets (1, 0) and its
+      // two ends are pushed apart by half the width each, which makes it
+      // a width-by-width square.
+      dsx = 1;
+      dsy = 0;
+      px0 -= half_width * dsx;
+      py0 -= half_width * dsy;
+      px1 += half_width * dsx;
+      py1 += half_width * dsy;
     }
-
-    const half_width = width / 2;
+    const nsx = -dsy;
+    const nsy = dsx;
 
     // Four half-planes: start cap, end cap, two sides
     this.half_planes = [
@@ -1753,6 +1912,14 @@ function plate_03() {
 // ===========================
 
 // Chapter 3 - Bresenham
+test('Bresenham: lit_pixels reads like a page', () => {
+  const c = new Canvas(10, 10);
+  c.write_pixel(5, 0, new Color(1, 1, 1));
+  c.write_pixel(0, 2, new Color(1, 1, 1));
+  c.write_pixel(2, 2, new Color(0.5, 0, 0));
+  assert.deepStrictEqual(lit_pixels(c), [[5, 0], [0, 2], [2, 2]]);
+});
+
 test('Bresenham: A diagonal', () => {
   const c = new Canvas(10, 10);
   line_bresenham(c, 0, 0, 5, 5, new Color(1, 1, 1));
@@ -1877,6 +2044,21 @@ test('Wu: The weights don\'t depend on which end you start from', () => {
   assert.strictEqual(max_channel_difference(p6a, p6b), 0);
 });
 
+test('Wu: A line that starts above the canvas', () => {
+  const c = new Canvas(10, 10);
+  line_wu(c, 0, -1, 8, 3, new Color(1, 1, 1));
+  assert_color_equal(c.pixel_at(1, 0), new Color(0.5, 0.5, 0.5));
+  assert_color_equal(c.pixel_at(2, 0), new Color(1, 1, 1));
+  assert_number_equal(total_ink(c), 7.5, 0.001);
+});
+
+test('Wu: A Wu line of one point', () => {
+  const c = new Canvas(10, 10);
+  line_wu(c, 3, 3, 3, 3, new Color(1, 1, 1));
+  assert.deepStrictEqual(lit_pixels(c), [[3, 3]]);
+  assert_color_equal(c.pixel_at(3, 3), new Color(1, 1, 1));
+});
+
 test('Wu: Sevenths', () => {
   const c = new Canvas(10, 10);
   line_wu(c, 0, 0, 7, 3, new Color(1, 1, 1));
@@ -1934,6 +2116,36 @@ test('Quad: A horizontal thick line covers its row, with half pixels at the ends
   assert_number_equal(coverage_at(cov, 3, 2), 0, 0.01);
   assert_number_equal(coverage_at(cov, 3, 4), 0, 0.01);
   assert_number_equal(ink(cov), 7, 0.01);
+});
+
+test('Quad: A line of no length is a square', () => {
+  const s = thick_line(3, 3, 3, 3, 1);
+  const cov = rasterize(s, 8, 8);
+  assert_number_equal(coverage_at(cov, 3, 3), 1, 0.01);
+  assert_number_equal(ink(cov), 1, 0.01);
+});
+
+test('Quad: A wider line', () => {
+  const s = thick_line(0, 3, 7, 3, 3);
+  const cov = rasterize(s, 10, 10);
+  assert_number_equal(coverage_at(cov, 3, 2), 1, 0.01);
+  assert_number_equal(coverage_at(cov, 3, 3), 1, 0.01);
+  assert_number_equal(coverage_at(cov, 3, 4), 1, 0.01);
+  assert_number_equal(coverage_at(cov, 3, 1), 0, 0.01);
+  assert_number_equal(coverage_at(cov, 3, 5), 0, 0.01);
+  assert_number_equal(coverage_at(cov, 0, 3), 0.5, 0.01);
+  assert_number_equal(ink(cov), 21, 0.01);
+});
+
+test('Quad: An off-axis line runs through pixel centers, not corners', () => {
+  const s = thick_line(2, 2, 11, 5, 1);
+  const cov = rasterize(s, 16, 10);
+  assert_number_equal(coverage_at(cov, 2, 2), 0.484375, 0.001);
+  assert_number_equal(coverage_at(cov, 11, 5), 0.484375, 0.001);
+  assert_number_equal(coverage_at(cov, 6, 3), 0.6875, 0.001);
+  assert_number_equal(coverage_at(cov, 7, 3), 0.359375, 0.001);
+  assert_number_equal(coverage_at(cov, 2, 1), 0, 0.001);
+  assert_number_equal(ink(cov), 9.4063, 0.0001);
 });
 
 test('Quad: The ink is the length (12, 2)', () => {
@@ -2051,6 +2263,14 @@ test('Plate: Plate 3', () => {
 
 // Write Chapter 3 output files
 test('Write chapter 3 output files', async () => {
+  const cb = fan_bresenham();
+  const p6b_bres = canvas_to_p6(cb);
+  await fs.writeFile('out/fan-bresenham.ppm', p6b_bres);
+
+  const cw = fan_wu();
+  const p6w = canvas_to_p6(cw);
+  await fs.writeFile('out/fan-wu.ppm', p6w);
+
   const c1 = fan_coverage();
   const p6a = canvas_to_p6(c1);
   await fs.writeFile('out/fan-coverage.ppm', p6a);
