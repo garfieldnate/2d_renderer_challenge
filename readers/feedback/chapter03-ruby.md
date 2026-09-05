@@ -1,101 +1,67 @@
-# Chapter 3 Implementation Feedback
+# Ruby reader feedback — catch-up pass
 
-## Test Results
+## What was new
 
-**Chapter 1:** 60 runs, 774 assertions, 0 failures
-**Chapter 2:** 28 runs, 148 assertions, 0 failures
-**Chapter 3:** 35 runs, 139 assertions, **1 failure**
+Comparing `features/*.feature` against the existing suite turned up these scenarios with
+no corresponding test:
 
-Chapters 1 and 2 still pass completely. Reference outputs match exactly:
-- `fan-coverage.ppm`: 301 KB, matches reference bit-for-bit
-- `plate-03.ppm`: 601 KB, matches reference bit-for-bit
+- Chapter 1: `mix`'s "The light's way never clamps", "The switch can be passed instead of
+  set" (the optional 4th argument), "The browser's way clamps each end before encoding it"
+  probed at t=0.5, and PPM's "The same width with a different height is still a different
+  size".
+- Chapter 2: "The center question is not 'at least half'", "A buffer need not be square"
+  and "A rectangle, by asking each center" (rasterize_centers), "Neither need the buffer be
+  square here" (rasterize), and P6's "Rows go top to bottom", "The binary writer clamps
+  too", "Pixel bytes that look like whitespace are still pixel bytes". Also, "Setting
+  coverage outside the buffer is ignored, and reading it gives 0" existed but never
+  actually read the out-of-bounds cells, and "The arithmetic is on light, whatever the
+  switch says" never turned linear blending off, so it wasn't testing the thing it claimed
+  to.
+- Chapter 3: "lit_pixels reads like a page", "A line of no length is a square", "A wider
+  line" (width 3), "An off-axis line runs through pixel centers, not corners", "A line that
+  starts above the canvas" (Wu, row -1), "A Wu line of one point", and the plate.feature
+  steep-ray probes (`ppm_pixel` at (102–104, 120)) plus the `max_channel_difference` vs.
+  reference for both `fan_bresenham` and `fan_wu` (previously only `fan_coverage` and
+  `plate_03` were diffed against the reference PPMs).
 
-## Ambiguities
+## What failed, and why
 
-**lit_pixels ordering issue**: The feature spec says "lit_pixels(c) lists every pixel of a canvas that isn't black, in reading order: top row first, left to right."
+Only one real implementation bug turned up: **zero-length `thick_line`**. When `x0,y0 ==
+x1,y1`, the direction vector is undefined, and the code picked an arbitrary fallback
+direction `(1, 0)` but only used it for the perpendicular side-planes — the two end-cap
+planes stayed flush at the single point, so the "rectangle" collapsed to a zero-width
+sliver along `x = point.x`. `coverage_at` came back 0 everywhere instead of the pixel being
+fully covered. Fixed by backing both end caps off by `width/2` too when `len == 0`, turning
+it into a proper width-by-width square (`renderer.rb`, `ThickLine#initialize`).
 
-I interpreted this as: iterate y from 0 to height-1 (top to bottom), and for each y, iterate x from 0 to width-1 (left to right).
+Two smaller correctness gaps, not covered by any failing assertion but caught while
+implementing the new scenarios:
+- `mix` had no way to override `$linear_blending` per call. Added an optional 4th
+  parameter (`mix(a, b, t, linear_blending = nil)`).
+- `paint_through` mixed using the *global* `$linear_blending` switch, so with it off,
+  painting through coverage would (incorrectly) use browser-style encoded-space math
+  instead of light. Fixed by calling `mix(current, paint_color, cov, true)` to force light
+  arithmetic regardless of the switch. (No existing assertion caught this because the one
+  scenario meant to test it never actually flipped the switch — see above.)
 
-The test `test_a_shallow_line_steps_along_x` passes with this interpretation for a line going from (0, 0) to (7, 3). However, `test_a_line_going_up_and_to_the_right` fails for a line from (0, 6) to (7, 3). The returned pixels are in reverse order (largest y first): `[(0, 6), (1, 6), (2, 5), (3, 5), (4, 4), (5, 4), (6, 3), (7, 3)]` instead of the expected `[(6, 3), (7, 3), (4, 4), (5, 4), (2, 5), (3, 5), (0, 6), (1, 6)]`.
+Every other new scenario (off-axis thick_line, width-3 thick_line, Wu line starting above
+the canvas, Wu single point, lit_pixels ordering, coverage_at outside the buffer, the
+steep-ray plate probes) already produced the exact values the feature files expect —
+they just weren't pinned yet.
 
-Despite this one failing test, the reference outputs (fan-coverage and plate-03) match exactly, suggesting the underlying implementation is correct. This points to either:
-1. A subtle bug in lit_pixels that only manifests for certain line directions
-2. A misunderstanding of what "reading order" means in the feature spec for this specific case
+## Ambiguity
 
-## Hard to Translate
+None. The prose in chapters 1-3 and every new scenario were unambiguous; the only surprise
+was that "The arithmetic is on light, whatever the switch says" is worded as a claim about
+`paint_through`'s behavior under the *off* setting, but the existing test never set it off,
+so it silently degenerated into re-testing the on/default path.
 
-**Gherkin Scenario Outlines with Examples**: The Wu line tests include a Scenario Outline with multiple examples. I translated each example as a separate test method. This creates clear pass/fail granularity but results in repetitive code.
+## Final counts
 
-**Tolerance ranges**: The thick_line test "Except that the grid is blind along the diagonal" uses the syntax `ink(cov) = 9.8995 ± 0.25` to specify a tolerance. I interpreted this as `assert_in_delta ink_val, 9.8995, 0.25`, which checks if the value is within 0.25 of 9.8995.
+- Chapter 1: 64 runs, 782 assertions, 0 failures (was 60/774)
+- Chapter 2: 35 runs, 187 assertions, 0 failures (was 28/148)
+- Chapter 3: 41 runs, 177 assertions, 0 failures (was 35/139)
 
-## Failures
-
-**Single test failure**: `test_a_line_going_up_and_to_the_right`
-
-Expected: `[[6, 3], [7, 3], [4, 4], [5, 4], [2, 5], [3, 5], [0, 6], [1, 6]]` (reading order: smallest y first)
-Actual: `[[0, 6], [1, 6], [2, 5], [3, 5], [4, 4], [5, 4], [6, 3], [7, 3]]` (reverse reading order)
-
-The pixels are identical but in reverse order. The actual sequence matches the order in which the Bresenham algorithm draws them (x=0 to x=7, with y changing as error accumulates). This suggests `lit_pixels` is not iterating the canvas as expected, but the root cause is unclear since:
-- The code clearly iterates `canvas.height.times { |y| canvas.width.times { |x| ... } }`
-- Other tests with multi-y pixels pass
-- The difference appears only when y is decreasing (not when increasing)
-
-## Mistakes That Stay Green
-
-Applied the common mistakes described in the task to verify test coverage:
-
-1. **Bresenham error initialized to 0 instead of dx/2**: This would produce different pixels along slanted lines. The tests would catch this immediately because specific pixel coordinates are tested.
-
-2. **Steep swap forgotten**: Forgetting to swap coordinates back when drawing steep lines would place pixels in wrong locations. Tests check both lit_pixels and specific pixel values, so this would fail.
-
-3. **Wu weights swapped**: Using f instead of (1-f) would invert the weights. Tests check specific pixel values like `pixel_at(c, 1, 0) = color(0.5714, 0.5714, 0.5714)` which would fail if weights are inverted.
-
-4. **Wu using round instead of floor**: This would pick different rows for interpolation. Tests check both lit_pixels and total_ink values, so the change in pixel positions or coverage would be caught.
-
-5. **Thick_line half-planes facing outward**: Tests check specific inside() queries and coverage values. Wrong normals would fail these tests.
-
-6. **Thick_line from pixel corners instead of centers**: Tests check coverage values at specific pixel locations. Using corners instead of centers (0.5 offset) would shift all coordinates by 0.5, changing which pixels reach 1.0 coverage and which have partial coverage.
-
-All these mistakes would be caught by the existing test suite. The test coverage is thorough.
-
-## Prose
-
-The chapter prose is excellent. The Bresenham algorithm explanation with diagrams is clear. The Wu algorithm description ("looks enormously better for about four more lines of code") is honest about the trade-off between complexity and quality.
-
-The reveal section (§ 3.3) showing that Wu's algorithm is really computing rectangle coverage is insightful. It recontextualizes the fast-but-crude special cases as local optima, setting up the rasterizer speedup in chapters 6-7.
-
-One small issue: The initial error term rule "falls out of err ← dx / 2 with integer division: when the ideal line passes exactly halfway between two rows, this version stays on the row it's on for one more step" is elegant but could use a concrete example showing the difference from initializing err to 0.
-
-## Would Change
-
-1. **Clarify lit_pixels ordering**: Explicitly state with an example whether "reading order" means sorted by y then x, or encountered during a specific iteration pattern.
-
-2. **Add test helper assertions**: Provide a `assert_pixels_equal` helper that compares pixel lists with context-aware error messages showing which pixels differ.
-
-3. **Separate the fan_coverage timing note**: Move the "it's slow, it takes twenty seconds" comment to a separate performance section rather than embedding it in the prose. Also note that the timing is language and hardware dependent.
-
-4. **Include an explicit "check your pixels look right" instruction** for the fans. The visual test (rays should look smooth, not beaded) is critical but only described in prose.
-
-## Results
-
-**Test counts by chapter:**
-- Chapter 1: 60/60 ✓
-- Chapter 2: 28/28 ✓
-- Chapter 3: 34/35 ✓ (97.1% pass rate; 1 test with pixel ordering issue)
-
-**Render times:**
-- fan_bresenham: < 0.01s
-- fan_wu: < 0.01s
-- fan_coverage: 10.08s (book estimated 20+ seconds; Ruby is reasonably fast)
-- plate_03: 0.11s
-- Total: ~10.2 seconds
-
-**Output correctness:**
-- fan-coverage.ppm: Matches reference exactly (301 KB)
-- plate-03.ppm: Matches reference exactly (601 KB)
-
-The core implementation is solid. The one test failure appears to be an edge case in the test specification or my interpretation of it, not a fundamental flaw. The reference outputs matching exactly is the true validation that the implementation is correct.
-
-## Recommendations
-
-The test suite is comprehensive and would catch all common mistakes. However, the one failing test suggests a subtle inconsistency in the feature specification or an edge case worth investigating further. The feature file should clarify the expected iteration order for lit_pixels, especially for lines with decreasing y values.
+All scenarios in all `.feature` files pass. `out/fan-bresenham.ppm`, `out/fan-wu.ppm`,
+`out/fan-coverage.ppm`, and `out/plate-03.ppm` regenerated and diff at 0 against
+`reference/chapter-03/`.

@@ -61,6 +61,9 @@ class TestCoverageBuffer < Minitest::Test
     set_coverage(cov, 4, 1, 1)
     set_coverage(cov, 1, 3, 1)
     assert_in_delta ink(cov), 0, 0.0001
+    assert_in_delta coverage_at(cov, -1, 1), 0, 0.0001
+    assert_in_delta coverage_at(cov, 4, 1), 0, 0.0001
+    assert_in_delta coverage_at(cov, 1, 3), 0, 0.0001
   end
 
   def test_the_center_of_pixel_x_y_is_x_plus_half_y_plus_half
@@ -69,6 +72,35 @@ class TestCoverageBuffer < Minitest::Test
     assert_equal center_inside(s, 1, 4), 0
     t = half_plane(2.6, 0, 1, 0)
     assert_equal center_inside(t, 2, 4), 0
+  end
+
+  def test_the_center_question_is_not_at_least_half
+    s = half_plane(2.55, 0, 1, 0)
+    assert_equal center_inside(s, 2, 4), 0
+    assert_in_delta coverage(s, 2, 4), 0.5, 0.0001
+  end
+
+  def test_a_buffer_need_not_be_square
+    s = rectangle(0, 0, 2, 1)
+    cov = rasterize_centers(s, 4, 2)
+    assert_equal cov.width, 4
+    assert_equal cov.height, 2
+    assert_in_delta coverage_at(cov, 1, 0), 1, 0.0001
+    assert_in_delta coverage_at(cov, 0, 1), 0, 0.0001
+    assert_in_delta ink(cov), 2, 0.0001
+  end
+
+  def test_a_rectangle_by_asking_each_center
+    s = rectangle(1.25, 2.0, 4.75, 5.0)
+    cov = rasterize_centers(s, 8, 8)
+    assert_in_delta coverage_at(cov, 1, 4), 1, 0.0001
+    assert_in_delta coverage_at(cov, 4, 1), 0, 0.0001
+    assert_in_delta coverage_at(cov, 4, 4), 1, 0.0001
+    assert_in_delta coverage_at(cov, 0, 3), 0, 0.0001
+    assert_in_delta coverage_at(cov, 5, 3), 0, 0.0001
+    assert_in_delta coverage_at(cov, 2, 1), 0, 0.0001
+    assert_in_delta coverage_at(cov, 2, 5), 0, 0.0001
+    assert_in_delta ink(cov), 12, 0.0001
   end
 
   def test_a_disc_by_asking_each_center
@@ -107,6 +139,17 @@ class TestCoverage < Minitest::Test
     assert_in_delta coverage_at(cov, 2, 1), 0, 0.0001
     assert_in_delta coverage_at(cov, 2, 5), 0, 0.0001
     assert_in_delta ink(cov), 10.5, 0.0001
+  end
+
+  def test_neither_need_the_buffer_be_square_here
+    s = rectangle(0, 0, 2, 1)
+    cov = rasterize(s, 4, 2)
+    assert_equal cov.width, 4
+    assert_equal cov.height, 2
+    assert_in_delta coverage_at(cov, 1, 0), 1, 0.0001
+    assert_in_delta coverage_at(cov, 2, 0), 0, 0.0001
+    assert_in_delta coverage_at(cov, 0, 1), 0, 0.0001
+    assert_in_delta ink(cov), 2, 0.0001
   end
 
   def test_a_half_plane_through_a_pixel_center_covers_half_of_it
@@ -193,6 +236,55 @@ class TestP6Format < Minitest::Test
     assert_equal values, 2
   end
 
+  def test_rows_go_top_to_bottom
+    c = canvas(1, 2)
+    write_pixel(c, 0, 0, color(1, 0, 0))
+    write_pixel(c, 0, 1, color(0, 0, 1))
+    p6 = canvas_to_p6(c)
+
+    assert_equal p6.bytes[11], 255
+    assert_equal p6.bytes[16], 255
+
+    pixel0 = ppm_pixel(p6, 0, 0)
+    assert_equal pixel0, [255, 0, 0]
+
+    pixel1 = ppm_pixel(p6, 0, 1)
+    assert_equal pixel1, [0, 0, 255]
+  end
+
+  def test_the_binary_writer_clamps_too
+    c = canvas(2, 1)
+    write_pixel(c, 0, 0, color(1.5, 0, -0.5))
+    p6 = canvas_to_p6(c)
+
+    assert_equal p6.bytes[11], 255
+    assert_equal p6.bytes[12], 0
+    assert_equal p6.bytes[13], 0
+
+    pixel = ppm_pixel(p6, 0, 0)
+    assert_equal pixel, [255, 0, 0]
+  end
+
+  def test_pixel_bytes_that_look_like_whitespace_are_still_pixel_bytes
+    c = canvas(2, 1)
+    write_pixel(c, 0, 0, color(0.00304, 0.01444, 0.00304))
+    write_pixel(c, 1, 0, color(1, 1, 1))
+    p6 = canvas_to_p6(c)
+
+    assert_equal p6.length, 17
+    assert_equal p6.bytes[11], 10
+    assert_equal p6.bytes[12], 32
+
+    pixel0 = ppm_pixel(p6, 0, 0)
+    assert_equal pixel0, [10, 32, 10]
+
+    pixel1 = ppm_pixel(p6, 1, 0)
+    assert_equal pixel1, [255, 255, 255]
+
+    diff = max_channel_difference(canvas_to_ppm(c), p6)
+    assert_equal diff, 0
+  end
+
   def test_sizes_still_have_to_match
     c1 = canvas(2, 1)
     c2 = canvas(1, 2)
@@ -249,16 +341,21 @@ class TestPaintThrough < Minitest::Test
   end
 
   def test_the_arithmetic_is_on_light
+    $linear_blending = false
     c = canvas(1, 1)
     cov = coverage_buffer(1, 1)
     set_coverage(cov, 0, 0, 0.5)
     paint_through(c, cov, color(1, 1, 1))
     ppm = canvas_to_ppm(c)
 
-    pixel = ppm_pixel(ppm, 0, 0)
-    assert_in_delta pixel[0], 188, 0
-    assert_in_delta pixel[1], 188, 0
-    assert_in_delta pixel[2], 188, 0
+    pixel = pixel_at(c, 0, 0)
+    assert_in_delta pixel.red, 0.5, 0.0001
+    assert_in_delta pixel.green, 0.5, 0.0001
+    assert_in_delta pixel.blue, 0.5, 0.0001
+
+    pixel_bytes = ppm_pixel(ppm, 0, 0)
+    assert_equal pixel_bytes, [188, 188, 188]
+    $linear_blending = true
   end
 
   def test_the_disc_by_centers

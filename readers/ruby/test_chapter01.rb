@@ -428,6 +428,30 @@ class TestMixing < Minitest::Test
     assert mix(a, b, 1) == b
     $linear_blending = true
   end
+
+  def test_the_lights_way_never_clamps
+    a = color(1.5, 0.5, -0.2)
+    b = color(0, 0, 0)
+    assert mix(a, b, 0) == color(1.5, 0.5, -0.2)
+    assert mix(a, b, 0.5) == color(0.75, 0.25, -0.1)
+  end
+
+  def test_the_switch_can_be_passed_instead_of_set
+    a = color(0, 0, 0)
+    b = color(1, 1, 1)
+    assert mix(a, b, 0.5, true) == color(0.5, 0.5, 0.5)
+    assert mix(a, b, 0.5, false).equal_within?(color(0.2140, 0.2140, 0.2140), 0.0001)
+    assert_equal $linear_blending, true
+  end
+
+  def test_the_browsers_way_clamps_each_end_before_encoding_it
+    $linear_blending = false
+    a = color(1.5, 0.5, -0.2)
+    b = color(0, 0, 0)
+    assert mix(a, b, 0) == color(1, 0.5, 0)
+    assert mix(a, b, 0.5).equal_within?(color(0.2140, 0.1113, 0.0000), 0.0001)
+    $linear_blending = true
+  end
 end
 
 class TestPPM < Minitest::Test
@@ -534,6 +558,15 @@ class TestPPM < Minitest::Test
   def test_files_of_different_sizes_are_as_different_as_it_gets
     c1 = canvas(5, 3)
     c2 = canvas(3, 5)
+    ppm1 = canvas_to_ppm(c1)
+    ppm2 = canvas_to_ppm(c2)
+
+    assert_equal max_channel_difference(ppm1, ppm2), 255
+  end
+
+  def test_the_same_width_with_a_different_height_is_still_a_different_size
+    c1 = canvas(5, 3)
+    c2 = canvas(5, 4)
     ppm1 = canvas_to_ppm(c1)
     ppm2 = canvas_to_ppm(c2)
 

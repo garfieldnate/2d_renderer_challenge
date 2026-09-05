@@ -110,8 +110,11 @@ def to_byte(light)
 end
 
 # Mix two colors with optional linear blending
-def mix(a, b, t)
-  if $linear_blending
+# A fourth argument overrides the global $linear_blending switch for this
+# call only, without changing the switch itself.
+def mix(a, b, t, linear_blending = nil)
+  linear_blending = $linear_blending if linear_blending.nil?
+  if linear_blending
     # Linear blending: interpolate in light space
     Color.new(
       a.red + (b.red - a.red) * t,
@@ -802,8 +805,11 @@ def paint_through(canvas, coverage_buffer, paint_color)
       cov = coverage_at(coverage_buffer, x, y)
       if cov > 0
         current = pixel_at(canvas, x, y)
-        # Mix current color with paint color based on coverage
-        new_color = mix(current, paint_color, cov)
+        # Mix current color with paint color based on coverage. The
+        # arithmetic is always on light, regardless of the linear-blending
+        # switch: this isn't a browser-style color mix, it's a physical
+        # blend of photons over the exposed area.
+        new_color = mix(current, paint_color, cov, true)
         write_pixel(canvas, x, y, new_color)
       end
     end
@@ -1059,12 +1065,17 @@ class ThickLine < Shape
     # Half-width offset
     half_width = width / 2.0
 
+    # A zero-length line has no direction to be flush against, so the two
+    # end caps back off by half_width too, turning the "rectangle" into a
+    # width-by-width square centered on the single point.
+    cap_offset = len == 0 ? half_width : 0
+
     # Four half-planes:
     # 1. Start point, facing along direction
-    plane1 = HalfPlane.new(x0_f, y0_f, dir_x, dir_y)
+    plane1 = HalfPlane.new(x0_f - dir_x * cap_offset, y0_f - dir_y * cap_offset, dir_x, dir_y)
 
     # 2. End point, facing back along -direction
-    plane2 = HalfPlane.new(x1_f, y1_f, -dir_x, -dir_y)
+    plane2 = HalfPlane.new(x1_f + dir_x * cap_offset, y1_f + dir_y * cap_offset, -dir_x, -dir_y)
 
     # 3. Side 1: offset by +half_width along normal, facing inward (-normal)
     side1_x = x0_f + norm_x * half_width

@@ -6,6 +6,14 @@ require_relative 'renderer'
 # Chapter 3: Lines Tests
 
 class TestBresenhamLine < Minitest::Test
+  def test_lit_pixels_reads_like_a_page
+    c = canvas(10, 10)
+    write_pixel(c, 5, 0, color(1, 1, 1))
+    write_pixel(c, 0, 2, color(1, 1, 1))
+    write_pixel(c, 2, 2, color(0.5, 0, 0))
+    assert_equal lit_pixels(c), [[5, 0], [0, 2], [2, 2]]
+  end
+
   def test_a_diagonal
     c = canvas(10, 10)
     line_bresenham(c, 0, 0, 5, 5, color(1, 1, 1))
@@ -114,6 +122,21 @@ class TestWuLine < Minitest::Test
     assert_equal max_channel_difference(canvas_to_p6(c1), canvas_to_p6(c2)), 0
   end
 
+  def test_a_line_that_starts_above_the_canvas
+    c = canvas(10, 10)
+    line_wu(c, 0, -1, 8, 3, color(1, 1, 1))
+    assert pixel_at(c, 1, 0) == color(0.5, 0.5, 0.5)
+    assert pixel_at(c, 2, 0) == color(1, 1, 1)
+    assert_in_delta total_ink(c), 7.5, 0.0001
+  end
+
+  def test_a_wu_line_of_one_point
+    c = canvas(10, 10)
+    line_wu(c, 3, 3, 3, 3, color(1, 1, 1))
+    assert_equal lit_pixels(c), [[3, 3]]
+    assert pixel_at(c, 3, 3) == color(1, 1, 1)
+  end
+
   def test_sevenths
     c = canvas(10, 10)
     line_wu(c, 0, 0, 7, 3, color(1, 1, 1))
@@ -172,6 +195,36 @@ class TestThickLine < Minitest::Test
     assert_in_delta coverage_at(cov, 3, 2), 0, 0.0001
     assert_in_delta coverage_at(cov, 3, 4), 0, 0.0001
     assert_in_delta ink(cov), 7, 0.0001
+  end
+
+  def test_a_line_of_no_length_is_a_square
+    s = thick_line(3, 3, 3, 3, 1)
+    cov = rasterize(s, 8, 8)
+    assert_in_delta coverage_at(cov, 3, 3), 1, 0.0001
+    assert_in_delta ink(cov), 1, 0.0001
+  end
+
+  def test_a_wider_line
+    s = thick_line(0, 3, 7, 3, 3)
+    cov = rasterize(s, 10, 10)
+    assert_in_delta coverage_at(cov, 3, 2), 1, 0.0001
+    assert_in_delta coverage_at(cov, 3, 3), 1, 0.0001
+    assert_in_delta coverage_at(cov, 3, 4), 1, 0.0001
+    assert_in_delta coverage_at(cov, 3, 1), 0, 0.0001
+    assert_in_delta coverage_at(cov, 3, 5), 0, 0.0001
+    assert_in_delta coverage_at(cov, 0, 3), 0.5, 0.0001
+    assert_in_delta ink(cov), 21, 0.0001
+  end
+
+  def test_an_off_axis_line_runs_through_pixel_centers_not_corners
+    s = thick_line(2, 2, 11, 5, 1)
+    cov = rasterize(s, 16, 10)
+    assert_in_delta coverage_at(cov, 2, 2), 0.484375, 0.0001
+    assert_in_delta coverage_at(cov, 11, 5), 0.484375, 0.0001
+    assert_in_delta coverage_at(cov, 6, 3), 0.6875, 0.0001
+    assert_in_delta coverage_at(cov, 7, 3), 0.359375, 0.0001
+    assert_in_delta coverage_at(cov, 2, 1), 0, 0.0001
+    assert_in_delta ink(cov), 9.4063, 0.0001
   end
 
   def test_ink_is_length_horizontal
@@ -252,6 +305,22 @@ class TestFanRendering < Minitest::Test
     assert_in_delta pixel[0], 246, 1
     assert_in_delta pixel[1], 246, 1
     assert_in_delta pixel[2], 241, 1
+    # Steep-ray probes, straddling a step
+    pixel = ppm_pixel(p6, 103, 120)
+    assert_in_delta pixel[0], 246, 1
+    assert_in_delta pixel[1], 246, 1
+    assert_in_delta pixel[2], 241, 1
+    pixel = ppm_pixel(p6, 102, 120)
+    assert_in_delta pixel[0], 39, 1
+    assert_in_delta pixel[1], 39, 1
+    assert_in_delta pixel[2], 44, 1
+    pixel = ppm_pixel(p6, 104, 120)
+    assert_in_delta pixel[0], 39, 1
+    assert_in_delta pixel[1], 39, 1
+    assert_in_delta pixel[2], 44, 1
+
+    ref = read_file("reference/chapter-03/fan-bresenham.ppm")
+    assert max_channel_difference(p6, ref) <= 1
   end
 
   def test_wu_fan_dimensions
@@ -285,6 +354,18 @@ class TestFanRendering < Minitest::Test
     assert_in_delta pixel[0], 199, 1
     assert_in_delta pixel[1], 199, 1
     assert_in_delta pixel[2], 196, 1
+    # Steep-ray probes, straddling a step
+    pixel = ppm_pixel(p6, 103, 120)
+    assert_in_delta pixel[0], 220, 1
+    assert_in_delta pixel[1], 220, 1
+    assert_in_delta pixel[2], 216, 1
+    pixel = ppm_pixel(p6, 104, 120)
+    assert_in_delta pixel[0], 130, 1
+    assert_in_delta pixel[1], 130, 1
+    assert_in_delta pixel[2], 129, 1
+
+    ref = read_file("reference/chapter-03/fan-wu.ppm")
+    assert max_channel_difference(p6, ref) <= 1
   end
 
   def test_fan_coverage_dimensions
