@@ -9,8 +9,8 @@ Cucumber scenarios, no library dependencies, no printed implementation, and a pi
 end of every chapter. Where that book renders a sphere, this one renders the Ghostscript
 tiger.
 
-**Status:** outline complete, chapter 1 drafted. 24 chapters across 6 parts, plus two bonus
-tracks. Start at [`plan.html`](plan.html).
+**Status:** outline complete, chapter 1 written and reader-tested. 24 chapters across 6 parts,
+plus two bonus tracks. Start at [`plan.html`](plan.html).
 
 ---
 
@@ -31,7 +31,11 @@ Three-quarters of the book is teaching them to see that.
 | `assets/book.css` | Shared chapter styling — palette, type, reading column. |
 | `assets/book.js` | The figure scaffold. `Plate.add(id, aspect, draw)` plus theme handling and the source panels. |
 | `features/` | Cucumber scenarios, one file per chapter section, exactly as printed in the text. |
+| `reference/chapter-NN/` | The reference PPMs that golden-image scenarios diff against. Shipped with the book. |
+| `reference/impl/` | Author-side reference implementation and the runner that executes every `.feature` against it. Not printed, never shown to readers. |
+| `tools/sync_features.py` | Copies each feature file into the chapter that prints it, so the text can't drift from the tests. |
 | `build.py` | Inlines CSS and JS into a single self-contained file in `dist/`. |
+| `CLAUDE.md` | The rules for writing a chapter: every step pinned by Gherkin, no exercises left to the reader, how to test a chapter with reader agents. |
 
 ## Reading it
 
@@ -57,6 +61,10 @@ These are set out properly in `plan.html`; the short version:
 
 - **Output is PPM.** Plain-text P3 in chapter 1 so you can `cat` it, binary P6 from chapter 2.
   No image libraries, no canvas API, no windowing. If a pixel is on the screen, you put it there.
+- **The canvas stores linear light.** Only the PPM writer knows about sRGB. Blending happens on
+  light, with a one-line switch to do it the browser's way when you need to compare.
+- **Every step has a test.** Including the small "render this and look" pictures, which come with
+  reference images to diff against. Nothing is left as an exercise.
 - **An XML library is allowed** for chapter 20's SVG renderer. It's ubiquitous and
   pedagogically empty. You still hand-write the path-data parser, which is the part that
   teaches something.
@@ -73,7 +81,15 @@ These are set out properly in `plan.html`; the short version:
 `plan.html` has a section called *The rhythm of a chapter* that specifies the format: the
 five-step concept → test → implement → look loop, what an *In the GUI* aside may and may not
 contain, what qualifies as a chapter's payoff plate, and the voice. It includes a worked
-example of a good aside and a bad one. Read it before drafting.
+example of a good aside and a bad one. Read it before drafting. `CLAUDE.md` holds the
+mechanical rules: where the numbers come from, how the test blocks stay in sync, and how a
+chapter is tested by having agents implement it cold in several languages.
+
+```sh
+./reference/impl/run_features.py     # every scenario passes against the reference
+./reference/impl/render.py           # regenerate reference/chapter-NN/*.ppm
+./tools/sync_features.py --check     # the chapter prints exactly what features/ contains
+```
 
 The short version of the voice: casual, funny, second person, contractions. Never *simply*,
 *just*, *obviously* or *trivially* — each one tells a stuck reader that the problem is them.

@@ -314,10 +314,10 @@ details.src code{font-family:var(--mono);font-size:11px;line-height:1.55;backgro
     <span class="kw">When</span>  cov ← rasterize(c)
     <span class="kw">Then</span>  cov[3,8] = 0.5 <span class="hi">± 0.001</span>   <span class="cm"># tier two: tolerance, not equality</span></code></pre>
     <p>Two practical notes. Tolerances are written into the scenario itself, in the open, so nobody wonders whether
-      a test is fudged — the three tiers are set out in <a href="#testing">chapter 0</a>. And because plenty of
-      languages have no Cucumber runner, every scenario ships twice: as a <code>.feature</code> file and as a plain
-      table the reader can translate into whatever their test framework is. Ray Tracer Challenge readers already do
-      this by hand; the book should just admit it up front.</p>
+      a test is fudged — the convention is set out once, in chapter 1's <em>How to read a test</em>, and the
+      three tiers are described under <a href="#testing">Testing</a>. Gherkin is readable without a runner, and
+      plenty of languages have no Cucumber, so the book presumes the reader translates each scenario into their own
+      test framework by hand. Ray Tracer Challenge readers already do this; the book admits it up front.</p>
   </div>
 
   <div class="sub">
@@ -439,10 +439,10 @@ details.src code{font-family:var(--mono);font-size:11px;line-height:1.55;backgro
       book depends on: the numbers in an image file are not proportional to light. Encode and decode sRGB, and blend
       two colors both ways to see the difference.</p>
     <dl class="spec">
-      <dt>Builds</dt><dd><code>Color</code>, <code>Canvas</code>, <code>canvas_to_ppm</code>, sRGB transfer functions.</dd>
+      <dt>Builds</dt><dd><code>Color</code>, <code>Canvas</code> (storing linear light), <code>fill</code>, <code>canvas_to_ppm</code> (encoding on the way out), sRGB transfer functions, <code>mix</code> with a linear-blending switch, <code>ppm_pixel</code> and <code>max_channel_difference</code> for reading files back in tests.</dd>
       <dt>Insight</dt><dd>Storage is perceptual, arithmetic is physical. Averaging encoded values averages the wrong quantity.</dd>
       <dt>Trap</dt><dd class="trap">Doing it correctly makes your output look <em>different from every browser</em>, which blend in encoded space. The book must pick a lane loudly in chapter 1 rather than apologize in chapter 9.</dd>
-      <dt>Tests</dt><dd>Exact scalar checks on the transfer functions; a PPM header byte-for-byte; a 3-pixel canvas round-trip.</dd>
+      <dt>Tests</dt><dd>Exact scalar checks on the transfer functions on both sides of both knees; PPM output byte-for-byte including the 70-column wrap; five small renders (the gray match, one-in-four, a 256-step ramp, a clamp pair, and the plate) pinned by pixel values and diffed against shipped reference PPMs with a budget of 1.</dd>
     </dl>
     <aside class="gui">
       <h4>In the GUI</h4>
@@ -1887,9 +1887,10 @@ for x in span step 4:
     <p>Jamis's Gherkin scenarios work because ray–sphere intersection has an exact scalar answer you can write in
       a feature file. Most of this book's output does not. A test that asserts an exact 400×400 image is unwritable,
       unreadable, and breaks on every legitimate refactor.</p>
-    <p>So the book opens with a short chapter 0 that establishes three tiers, and every later chapter labels which
-      tier its tests belong to. Being explicit about this up front is what stops the reader from concluding halfway
-      through that the tests are unreliable.</p>
+    <p>So the tests come in three tiers, and every chapter labels which tier its tests belong to. Chapter 1 opens
+      with the notation and the tolerance rule, and uses all three tiers before it ends, so the reader has met each
+      kind before chapter 2. Being explicit about this up front is what stops the reader from concluding halfway
+      through that the tests are unreliable. Whether the tiers also deserve a chapter 0 of their own is still open.</p>
   </div>
   <div class="tablewrap" style="margin-top:26px">
   <table>
@@ -1923,9 +1924,11 @@ for x in span step 4:
     </div></li>
     <li><span class="qn">02</span><div>
       <p>Linear-light or encoded-space blending?</p>
-      <p>Correct is linear. Matching what readers see in Figma and Chrome is encoded. My recommendation: blend in
-        linear throughout, but ship a one-line switch and a side-by-side plate in chapter 1, because the reader
-        <em>will</em> compare their output to a browser and needs to know why it differs.</p>
+      <p><strong>Settled.</strong> Correct is linear. Matching what readers see in Figma and Chrome is encoded. The
+        book blends in linear throughout: the canvas stores light from chapter 1 and only the PPM writer encodes.
+        Chapter 1 ships <code>mix(a, b, t)</code> with a global linear-blending switch, pinned both ways in Gherkin,
+        and a side-by-side plate, because the reader <em>will</em> compare their output to a browser and needs to
+        know why it differs.</p>
     </div></li>
     <li><span class="qn">03</span><div>
       <p>How much of the JSON glyph format do you specify up front?</p>

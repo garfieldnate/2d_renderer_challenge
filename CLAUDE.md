@@ -1,0 +1,108 @@
+# The 2D Renderer Challenge — working notes for Claude
+
+A test-driven book that builds a 2D vector renderer from nothing, modeled on *The Ray Tracer
+Challenge*. Read `plan.html` (the outline and writing guide) and `README.md` before touching
+a chapter. This file holds the rules that aren't derivable from the code.
+
+## The iron rule: every step is pinned by Gherkin
+
+The first draft of chapter 1 failed because it left things to the reader. Never again.
+
+- **Every step a chapter asks the reader to take has a scenario.** If the prose says "write
+  this", "decide what happens when", "try", or "render this and look", there is a `.feature`
+  scenario that pins the result. No exercise is ever left to the reader to figure out.
+- **Every suggested implementation is specified**, including the "one-off fun" renders (the
+  checkerboard match, the 256-step ramp, the clamp pair). These are exactly the tests that find
+  real bugs: transposed x/y, truncation instead of rounding, the wrong branch of a transfer
+  function. Each render is a named function that returns a canvas (`gray_match()`,
+  `plate_01()`), so scenarios can call it, and each has a reference PPM under
+  `reference/chapter-NN/` that a scenario diffs against with an explicit budget.
+- **Chapter-end programs are printed** as short pseudo-code (30 lines or fewer) *and* pinned by
+  a scenario. Pseudo-code ranges are inclusive at both ends, and the chapter says so.
+- **No exercises section.** Anything that would have been an exercise becomes a numbered
+  section with its own scenario and figure, or it is cut.
+- **Nothing is left implicit that a reader in a different language could get wrong.** Rounding
+  mode, clamping order, line-wrapping rule, default state of any global switch, what happens
+  out of bounds: all stated in prose *and* pinned by a scenario.
+
+## How scenarios are written
+
+- `←` assigns. `a = b` on floats means within `0.0001`; a different tolerance is written in the
+  open as `± ε`. Colors compare component-wise with the same rule. Integer triples like
+  `(0, 188, 255)` are file pixel values and compare exactly unless `± 1` is written.
+- Three tiers, as in `plan.html` → Testing: exact scalars, scalars with tolerance, and golden
+  image diffs (`max_channel_difference(ppm, ref) ≤ 1`). Chapter 1 uses all three.
+- Never pin a byte whose pre-rounding value sits near `.5`; check margins with the reference
+  implementation before pinning (the encoded-space half gray lands on 127.4999 and flips).
+- Scenario names say what is being shown, not what function is called: "x is the column and y
+  is the row", not "test pixel_at".
+- One `.feature` file per chapter section, named `chapterNN-<section>.feature`. The chapter
+  prints every scenario in each file, whole, via a `data-feature` block (see below).
+- Scenarios that toggle global state (`Given linear blending is off`) are explicit; every other
+  scenario expects the default, and the chapter tells the reader to reset between scenarios.
+
+## Ground truth lives in `reference/`
+
+- `reference/impl/renderer.py` is the author-side reference implementation. It mirrors the book's
+  API names exactly, is never printed, and exists so that every number in a scenario was produced
+  by running code.
+- `reference/impl/run_features.py` executes every `.feature` file against it with a tiny
+  step-pattern runner. **It must pass before any commit that touches `features/` or the
+  reference.** When you add a new step shape to a scenario, teach the runner that shape.
+- `reference/impl/render.py` regenerates `reference/chapter-NN/*.ppm`. Regenerate after any
+  change to a render, and commit the PPMs (`.gitignore` allows `reference/**/*.ppm`).
+- Numbers quoted in prose (188, 0.7354, 183 distinct values) come from the reference, never from
+  memory or a calculator.
+
+## Chapter HTML
+
+- Chapters live in `chapters/chapter-NN.html`, zero-padded, linking `../assets/book.css` and
+  `../assets/book.js`. No build step to read them; `./build.py` inlines for publishing.
+- Test blocks are `<div class="test" data-feature="chapterNN-x.feature"><p class="label">…</p>
+  <pre><code></code></pre></div>`. **Never hand-edit the `<pre><code>` contents.** Run
+  `./tools/sync_features.py` to fill them from `features/`; `--check` fails if they drift or if
+  a chapter's feature file isn't printed. Run it before committing.
+- Figures are drawn with `Plate.add(id, aspect, draw)` in a `<script>` at the end. A figure that
+  depicts a render the reader makes must reproduce it from the same program (same dimensions,
+  colors and byte conversion), not an approximation.
+- Available boxes: `.test` (scenarios), `.trap` (the chapter's trap), `.gui` (In the GUI aside,
+  ≤60 words, real control names), `.note` (how to read the book: notation, where files live).
+
+## Voice (see `plan.html` → The rhythm of a chapter, which is authoritative)
+
+Casual, funny, second person, contractions. Never *simply*, *just*, *obviously*, *trivially*,
+*of course*, *clearly*, never *we* meaning *you*, no exclamation marks. Open on a concrete
+problem. Admit when something is horrible. Jokes come out of the material. Check with:
+`sed -e 's/<[^>]*>//g' chapters/chapter-NN.html | grep -n -iwE 'simply|just|obviously|trivially|of course|clearly|we'`
+
+## Architectural decisions already made (don't reopen)
+
+- The canvas stores **linear light** from chapter 1. `color(0.5, 0.5, 0.5)` is half the photons.
+  `canvas_to_ppm` clamps, encodes, scales to 255 and rounds to nearest, in that order.
+- Output is plain-text P3 in chapter 1, binary P6 from chapter 2.
+- `mix(a, b, t)` is the book's one blending primitive, with a global linear-blending switch that
+  defaults on. Off means encode, lerp, decode, which is what browsers do.
+- Writes outside the canvas are silently ignored.
+- Readers are presumed able to read Gherkin. No plain-table duplicates of scenarios.
+
+## Testing a chapter with reader agents
+
+Before declaring a chapter done, have subagents implement it cold, as readers:
+
+1. Build the single-file chapter (`./build.py`) and copy it, `features/chapterNN-*.feature`, and
+   `reference/chapter-NN/` into an isolated scratch directory per agent. Nothing else: no
+   `plan.html`, no reference implementation, no other agents' work.
+2. Spread agents across model tiers (haiku, sonnet, opus) and language families (dynamic, managed,
+   systems). Tell them to translate every scenario, write the renders to `out/` with the
+   reference filenames, and write a candid `FEEDBACK.md` (ambiguities, hard-to-translate steps,
+   failures with actual vs expected, prose problems, concrete changes).
+3. Diff their `out/*.ppm` against `reference/` with `max_channel_difference`. Anything > 1 is a
+   bug in the chapter, the reference, or the agent; find out which.
+4. Every ambiguity two or more agents report is a chapter bug. Fix the prose or the scenario,
+   re-sync, re-run the reference runner, and re-test.
+
+## Git
+
+- No `Co-Authored-By` trailers of any kind.
+- Commit as work lands. Never push unless explicitly asked.
+- Before committing: `./reference/impl/run_features.py && ./tools/sync_features.py --check`.
