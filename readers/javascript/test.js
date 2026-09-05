@@ -838,6 +838,9 @@ test('Plate: The switch was left on', () => {
 });
 
 // Write output files
+import { mkdirSync } from 'node:fs';
+mkdirSync('out', { recursive: true });
+
 test('Write output files', async () => {
   set_linear_blending(true);
 

@@ -376,3 +376,426 @@ def plate_01():
     set_linear_blending(True)
 
     return c
+
+
+# ============================================================
+# Chapter 2: Coverage
+# ============================================================
+
+
+class Shape:
+    """Base class for shapes."""
+    pass
+
+
+class Circle(Shape):
+    """A circle defined by center and radius."""
+    def __init__(self, cx, cy, r):
+        self.cx = cx
+        self.cy = cy
+        self.r = r
+
+
+class Rectangle(Shape):
+    """A rectangle defined by left, top, right, bottom."""
+    def __init__(self, x0, y0, x1, y1):
+        self.x0 = x0
+        self.y0 = y0
+        self.x1 = x1
+        self.y1 = y1
+
+
+class HalfPlane(Shape):
+    """A half-plane defined by a point and normal vector."""
+    def __init__(self, px, py, nx, ny):
+        self.px = px
+        self.py = py
+        self.nx = nx
+        self.ny = ny
+
+
+def circle(cx, cy, r):
+    """Create a circle."""
+    return Circle(cx, cy, r)
+
+
+def rectangle(x0, y0, x1, y1):
+    """Create a rectangle."""
+    return Rectangle(x0, y0, x1, y1)
+
+
+def half_plane(px, py, nx, ny):
+    """Create a half-plane."""
+    return HalfPlane(px, py, nx, ny)
+
+
+def inside(shape, x, y):
+    """Test if a point (x, y) is inside a shape."""
+    if isinstance(shape, Circle):
+        # Distance from center
+        dx = x - shape.cx
+        dy = y - shape.cy
+        dist_sq = dx * dx + dy * dy
+        return dist_sq <= shape.r * shape.r
+    elif isinstance(shape, Rectangle):
+        return (shape.x0 <= x <= shape.x1 and
+                shape.y0 <= y <= shape.y1)
+    elif isinstance(shape, HalfPlane):
+        # Vector from point on line to test point
+        dx = x - shape.px
+        dy = y - shape.py
+        # Dot product with normal
+        dot = dx * shape.nx + dy * shape.ny
+        return dot >= 0
+    return False
+
+
+def canvas_to_p6(canvas):
+    """Convert canvas to PPM P6 format (binary)."""
+    # Build header
+    header = f"P6\n{canvas.width} {canvas.height}\n255\n"
+    header_bytes = header.encode('ascii')
+
+    # Build pixel data
+    pixel_data = bytearray()
+    for y in range(canvas.height):
+        for x in range(canvas.width):
+            c = canvas.pixels[y][x]
+            r = color_to_byte(c.red)
+            g = color_to_byte(c.green)
+            b = color_to_byte(c.blue)
+            pixel_data.append(r)
+            pixel_data.append(g)
+            pixel_data.append(b)
+
+    return header_bytes + pixel_data
+
+
+def ppm_pixel(ppm_data, x, y):
+    """Extract a pixel value (r, g, b) from PPM data (P3 text or P6 binary)."""
+    # Convert to bytes if string
+    if isinstance(ppm_data, str):
+        ppm_bytes = ppm_data.encode('latin-1')
+    else:
+        ppm_bytes = ppm_data
+
+    # Check if P6 or P3
+    if ppm_bytes.startswith(b'P6'):
+        # Binary P6 format
+        # Find the end of header (3 newlines: after P6, dimensions, and 255)
+        count = 0
+        pos = 0
+        while count < 3 and pos < len(ppm_bytes):
+            if ppm_bytes[pos:pos+1] == b'\n':
+                count += 1
+            pos += 1
+
+        # Parse header to get width
+        header_str = ppm_bytes[:pos].decode('ascii')
+        lines = header_str.split('\n')
+        width = int(lines[1].split()[0])
+
+        # pixel_bytes starts after the header
+        pixel_bytes = ppm_bytes[pos:]
+
+        # Calculate pixel index
+        idx = y * width * 3 + x * 3
+        return (pixel_bytes[idx], pixel_bytes[idx + 1], pixel_bytes[idx + 2])
+    else:
+        # Text P3 format
+        ppm_str = ppm_bytes.decode('latin-1')
+        tokens = ppm_str.split()
+        skip = 4
+        values = [int(t) for t in tokens[skip:]]
+        width = int(tokens[1])
+        idx = y * width * 3 + x * 3
+        return (values[idx], values[idx + 1], values[idx + 2])
+
+
+def read_file(path):
+    """Read a file and return its contents (as bytes for binary, str for text)."""
+    with open(path, 'rb') as f:
+        data = f.read()
+    # Try to detect if it's P6 or P3
+    if data.startswith(b'P6'):
+        return data
+    else:
+        # P3 format - return as string for compatibility
+        return data.decode('utf-8')
+
+
+def distinct_values(ppm_data):
+    """Count the number of distinct pixel values in a PPM file."""
+    # Convert to bytes if string
+    if isinstance(ppm_data, str):
+        ppm_bytes = ppm_data.encode('latin-1')
+    else:
+        ppm_bytes = ppm_data
+
+    if ppm_bytes.startswith(b'P6'):
+        # Binary P6
+        # Find end of header (3 newlines)
+        count = 0
+        pos = 0
+        while count < 3 and pos < len(ppm_bytes):
+            if ppm_bytes[pos:pos+1] == b'\n':
+                count += 1
+            pos += 1
+
+        # Get pixel data
+        pixel_bytes = ppm_bytes[pos:]
+        values = list(pixel_bytes)
+        return len(set(values))
+    else:
+        # P3 text format
+        ppm_str = ppm_bytes.decode('latin-1')
+        tokens = ppm_str.split()
+        values = [int(t) for t in tokens[4:]]
+        return len(set(values))
+
+
+def max_channel_difference(ppm1_data, ppm2_data):
+    """Find the maximum difference between any channel in two PPM files."""
+    # Convert both to bytes
+    if isinstance(ppm1_data, str):
+        ppm1_bytes = ppm1_data.encode('latin-1')
+    else:
+        ppm1_bytes = ppm1_data
+
+    if isinstance(ppm2_data, str):
+        ppm2_bytes = ppm2_data.encode('latin-1')
+    else:
+        ppm2_bytes = ppm2_data
+
+    # Parse dimensions from headers
+    width1, height1 = None, None
+    width2, height2 = None, None
+
+    # Parse file 1
+    if ppm1_bytes.startswith(b'P6'):
+        # P6 format
+        count = 0
+        pos = 0
+        while count < 3 and pos < len(ppm1_bytes):
+            if ppm1_bytes[pos:pos+1] == b'\n':
+                count += 1
+            pos += 1
+        ppm1_header = ppm1_bytes[:pos].decode('ascii')
+        lines = ppm1_header.split('\n')
+        dims = lines[1].split()
+        width1, height1 = int(dims[0]), int(dims[1])
+        values1 = list(ppm1_bytes[pos:])
+    else:
+        # P3 format
+        ppm1_str = ppm1_bytes.decode('latin-1')
+        tokens1 = ppm1_str.split()
+        width1, height1 = int(tokens1[1]), int(tokens1[2])
+        values1 = [int(t) for t in tokens1[4:]]
+
+    # Parse file 2
+    if ppm2_bytes.startswith(b'P6'):
+        # P6 format
+        count = 0
+        pos = 0
+        while count < 3 and pos < len(ppm2_bytes):
+            if ppm2_bytes[pos:pos+1] == b'\n':
+                count += 1
+            pos += 1
+        ppm2_header = ppm2_bytes[:pos].decode('ascii')
+        lines = ppm2_header.split('\n')
+        dims = lines[1].split()
+        width2, height2 = int(dims[0]), int(dims[1])
+        values2 = list(ppm2_bytes[pos:])
+    else:
+        # P3 format
+        ppm2_str = ppm2_bytes.decode('latin-1')
+        tokens2 = ppm2_str.split()
+        width2, height2 = int(tokens2[1]), int(tokens2[2])
+        values2 = [int(t) for t in tokens2[4:]]
+
+    # Check if dimensions match
+    if width1 != width2 or height1 != height2:
+        return 255
+
+    # Handle size mismatch in pixel data
+    if len(values1) != len(values2):
+        return 255
+
+    max_diff = 0
+    for v1, v2 in zip(values1, values2):
+        diff = abs(v1 - v2)
+        if diff > max_diff:
+            max_diff = diff
+
+    return max_diff
+
+
+def magnify(canvas, k):
+    """Magnify a canvas by factor k, repeating each pixel into a k×k block."""
+    new_width = canvas.width * k
+    new_height = canvas.height * k
+    new_canvas = Canvas(new_width, new_height)
+
+    for y in range(canvas.height):
+        for x in range(canvas.width):
+            pixel = canvas.pixels[y][x]
+            # Repeat this pixel into a k×k block
+            for dy in range(k):
+                for dx in range(k):
+                    new_x = x * k + dx
+                    new_y = y * k + dy
+                    new_canvas.pixels[new_y][new_x] = pixel
+
+    return new_canvas
+
+
+class CoverageBuffer:
+    """A buffer of coverage values (0-1) instead of colors."""
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+        self.coverage = [[0.0 for _ in range(width)] for _ in range(height)]
+
+    def __repr__(self):
+        return f"CoverageBuffer({self.width}, {self.height})"
+
+
+def coverage_buffer(width, height):
+    """Create a coverage buffer."""
+    return CoverageBuffer(width, height)
+
+
+def coverage_at(cov, x, y):
+    """Read coverage at a pixel."""
+    if 0 <= x < cov.width and 0 <= y < cov.height:
+        return cov.coverage[y][x]
+    return 0.0
+
+
+def set_coverage(cov, x, y, value):
+    """Set coverage at a pixel. Out-of-bounds writes are ignored."""
+    if 0 <= x < cov.width and 0 <= y < cov.height:
+        cov.coverage[y][x] = value
+
+
+def ink(cov):
+    """Sum of all coverage values in the buffer."""
+    total = 0.0
+    for row in cov.coverage:
+        for val in row:
+            total += val
+    return total
+
+
+def center_inside(shape, x, y):
+    """Test if the center of pixel (x, y) is inside the shape.
+    The center is at (x + 0.5, y + 0.5)."""
+    return 1 if inside(shape, x + 0.5, y + 0.5) else 0
+
+
+def rasterize_centers(shape, width, height):
+    """Rasterize by asking if each pixel's center is inside."""
+    cov = CoverageBuffer(width, height)
+    for y in range(height):
+        for x in range(width):
+            cov.coverage[y][x] = 1.0 if inside(shape, x + 0.5, y + 0.5) else 0.0
+    return cov
+
+
+def coverage(shape, x, y):
+    """Compute coverage using 8×8 supersampling.
+    Each pixel is divided into 64 sample points in an 8×8 grid."""
+    count = 0
+    for j in range(8):
+        for i in range(8):
+            # Sample point at center of cell (i, j) within pixel (x, y)
+            sx = x + (i + 0.5) / 8.0
+            sy = y + (j + 0.5) / 8.0
+            if inside(shape, sx, sy):
+                count += 1
+    return count / 64.0
+
+
+def rasterize(shape, width, height):
+    """Rasterize using 8×8 supersampling."""
+    cov = CoverageBuffer(width, height)
+    for y in range(height):
+        for x in range(width):
+            cov.coverage[y][x] = coverage(shape, x, y)
+    return cov
+
+
+def paint_through(canvas, cov, color):
+    """Paint through a coverage buffer onto a canvas.
+    Uses mix to blend the paint color with existing pixels."""
+    for y in range(min(canvas.height, cov.height)):
+        for x in range(min(canvas.width, cov.width)):
+            coverage_val = coverage_at(cov, x, y)
+            if coverage_val > 0:
+                current = pixel_at(canvas, x, y)
+                painted = mix(current, color, coverage_val)
+                write_pixel(canvas, x, y, painted)
+
+
+def disc_centers():
+    """Render a disc using center sampling.
+    40×40 canvas, circle at (20, 20) with radius 16, magnified 8×."""
+    c = Canvas(40, 40)
+    fill(c, Color(0.02, 0.02, 0.025))
+    cov = rasterize_centers(circle(20, 20, 16), 40, 40)
+    paint_through(c, cov, Color(0.9, 0.55, 0.1))
+    return magnify(c, 8)
+
+
+def painted_twice():
+    """Demonstrate that painting twice gives different results than opacity.
+    80×40 canvas: left half painted once, right half painted twice."""
+    c = Canvas(80, 40)
+    fill(c, Color(0.02, 0.02, 0.025))
+    cov = rasterize(circle(20, 20, 16), 40, 40)
+
+    # Left half: painted once
+    once = CoverageBuffer(80, 40)
+    for y in range(40):
+        for x in range(40):
+            set_coverage(once, x, y, coverage_at(cov, x, y))
+    paint_through(c, once, Color(0.9, 0.55, 0.1))
+
+    # Right half: painted twice
+    twice = CoverageBuffer(80, 40)
+    for y in range(40):
+        for x in range(40):
+            set_coverage(twice, x + 40, y, coverage_at(cov, x, y))
+    paint_through(c, twice, Color(0.9, 0.55, 0.1))
+    paint_through(c, twice, Color(0.9, 0.55, 0.1))
+
+    return magnify(c, 6)
+
+
+def disc_coverage():
+    """Render a disc using coverage-based sampling.
+    Same as disc_centers but with rasterize instead of rasterize_centers."""
+    c = Canvas(40, 40)
+    fill(c, Color(0.02, 0.02, 0.025))
+    cov = rasterize(circle(20, 20, 16), 40, 40)
+    paint_through(c, cov, Color(0.9, 0.55, 0.1))
+    return magnify(c, 8)
+
+
+def plate_02():
+    """Side-by-side comparison of centers vs coverage sampling.
+    80×40 canvas: left half with centers, right half with coverage."""
+    c = Canvas(80, 40)
+    fill(c, Color(0.02, 0.02, 0.025))
+    shape = circle(20, 20, 16)
+    left = rasterize_centers(shape, 40, 40)
+    right = rasterize(shape, 40, 40)
+
+    both = CoverageBuffer(80, 40)
+    for y in range(40):
+        for x in range(40):
+            set_coverage(both, x, y, coverage_at(left, x, y))
+            set_coverage(both, x + 40, y, coverage_at(right, x, y))
+
+    paint_through(c, both, Color(0.9, 0.55, 0.1))
+    return magnify(c, 6)

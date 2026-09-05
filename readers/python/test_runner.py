@@ -165,11 +165,17 @@ def evaluate_expression(expr_str, ctx):
             'encode': renderer.encode,
             'decode': renderer.decode,
             'round': round,
+            'length': len,
+            'true': True,
+            'false': False,
+            'True': True,
+            'False': False,
             'write_pixel': renderer.write_pixel,
             'pixel_at': renderer.pixel_at,
             'fill': renderer.fill,
             'mix': renderer.mix,
             'canvas_to_ppm': renderer.canvas_to_ppm,
+            'canvas_to_p6': renderer.canvas_to_p6,
             'ppm_pixel': renderer.ppm_pixel,
             'max_channel_difference': renderer.max_channel_difference,
             'read_file': renderer.read_file,
@@ -179,6 +185,25 @@ def evaluate_expression(expr_str, ctx):
             'ramp': renderer.ramp,
             'clamp_pair': renderer.clamp_pair,
             'plate_01': renderer.plate_01,
+            # Chapter 2
+            'circle': renderer.circle,
+            'rectangle': renderer.rectangle,
+            'half_plane': renderer.half_plane,
+            'inside': renderer.inside,
+            'magnify': renderer.magnify,
+            'coverage_buffer': renderer.coverage_buffer,
+            'coverage_at': renderer.coverage_at,
+            'set_coverage': renderer.set_coverage,
+            'ink': renderer.ink,
+            'center_inside': renderer.center_inside,
+            'rasterize_centers': renderer.rasterize_centers,
+            'coverage': renderer.coverage,
+            'rasterize': renderer.rasterize,
+            'paint_through': renderer.paint_through,
+            'disc_centers': renderer.disc_centers,
+            'painted_twice': renderer.painted_twice,
+            'disc_coverage': renderer.disc_coverage,
+            'plate_02': renderer.plate_02,
         }
         namespace.update(ctx.variables)
 
@@ -249,6 +274,24 @@ def execute_step(step_keyword, step_text, ctx, docstring=None):
                     if canvas.pixels[y][x] != expected_color:
                         return False, f"Pixel at ({x}, {y}) is {canvas.pixels[y][x]}, expected {expected_color}"
             return True, None
+
+    # Handle "byte N of var = M" (before generic comparison)
+    # Note: byte numbering in tests is 1-indexed
+    match = re.match(r'byte\s+(\d+)\s+of\s+(\w+)\s*=\s*(\d+)', step_text)
+    if match:
+        byte_idx = int(match.group(1)) - 1  # Convert from 1-indexed to 0-indexed
+        var_name = match.group(2)
+        expected_val = int(match.group(3))
+        value = ctx.get(var_name)
+        if isinstance(value, bytes):
+            actual_val = value[byte_idx]
+        else:
+            # Convert string to bytes
+            value_bytes = value.encode('latin-1')
+            actual_val = value_bytes[byte_idx]
+        if actual_val != expected_val:
+            return False, f"byte {byte_idx + 1} of {var_name} = {actual_val}, expected {expected_val}"
+        return True, None
 
     # Handle comparisons
     if any(op in step_text for op in ['=', '≠', '!=', '<', '<=', '>', '>=']):
@@ -397,6 +440,36 @@ def execute_step(step_keyword, step_text, ctx, docstring=None):
         for line in ppm_text.split('\n'):
             if len(line) > max_len:
                 return False, f"Line too long: {len(line)} > {max_len}: {line}"
+        return True, None
+
+    # Handle "p6 begins with ..."
+    match = re.match(r'(\w+)\s+begins with\s+"(.*?)"', step_text)
+    if match:
+        var_name = match.group(1)
+        expected_start = match.group(2)
+        # Unescape the expected string
+        expected_start = expected_start.replace('\\n', '\n')
+        value = ctx.get(var_name)
+        if isinstance(value, bytes):
+            value_str = value.decode('latin-1')
+        else:
+            value_str = value
+        if not value_str.startswith(expected_start):
+            return False, f"'{var_name}' does not begin with '{expected_start}', got '{value_str[:len(expected_start)]}...'"
+        return True, None
+
+    # Handle "length(var) = N"
+    match = re.match(r'length\((\w+)\)\s*=\s*(\d+)', step_text)
+    if match:
+        var_name = match.group(1)
+        expected_len = int(match.group(2))
+        value = ctx.get(var_name)
+        if isinstance(value, bytes):
+            actual_len = len(value)
+        else:
+            actual_len = len(value)
+        if actual_len != expected_len:
+            return False, f"length({var_name}) = {actual_len}, expected {expected_len}"
         return True, None
 
     return True, None
