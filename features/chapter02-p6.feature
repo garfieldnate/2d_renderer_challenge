@@ -25,6 +25,16 @@ Feature: Binary PPM
     And   max_channel_difference(p3, p6) = 0
     And   distinct_values(p6) = 2
 
+  Scenario: Rows go top to bottom
+    Given c ← canvas(1, 2)
+    When  write_pixel(c, 0, 0, color(1, 0, 0))
+    And   write_pixel(c, 0, 1, color(0, 0, 1))
+    And   p6 ← canvas_to_p6(c)
+    Then  byte 12 of p6 = 255
+    And   byte 17 of p6 = 255
+    And   ppm_pixel(p6, 0, 0) = (255, 0, 0)
+    And   ppm_pixel(p6, 0, 1) = (0, 0, 255)
+
   Scenario: The binary writer clamps too
     Given c ← canvas(2, 1)
     When  write_pixel(c, 0, 0, color(1.5, 0, -0.5))

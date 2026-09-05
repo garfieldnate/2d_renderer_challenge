@@ -229,9 +229,9 @@ static void feature_gray_match(void) {
         EQP(ppm, 1, 0, 0, 0, 0);
         EQP(ppm, 150, 50, 128, 128, 128);
         EQP(ppm, 250, 50, 188, 188, 188);
-        char *ref = read_file("reference/chapter-01/gray-match.ppm");
-        if (!ref) h_fail("could not read reference/chapter-01/gray-match.ppm");
-        else { LEI(max_channel_difference(ppm, ref), 1); free(ref); }
+        Bytes ref = read_file("reference/chapter-01/gray-match.ppm");
+        if (!ref.data) h_fail("could not read reference/chapter-01/gray-match.ppm");
+        else { LEI(max_channel_difference(ppm, ref), 1); free(ref.data); }
         free(ppm); canvas_free(c);
     }
     S(F, "One pixel in four") {
@@ -246,9 +246,9 @@ static void feature_gray_match(void) {
         EQI(count_pixels(c, color(1, 1, 1)), 2500);
         char *ppm = canvas_to_ppm(c);
         EQP(ppm, 150, 50, 137, 137, 137);
-        char *ref = read_file("reference/chapter-01/quarter-match.ppm");
-        if (!ref) h_fail("could not read reference/chapter-01/quarter-match.ppm");
-        else { LEI(max_channel_difference(ppm, ref), 1); free(ref); }
+        Bytes ref = read_file("reference/chapter-01/quarter-match.ppm");
+        if (!ref.data) h_fail("could not read reference/chapter-01/quarter-match.ppm");
+        else { LEI(max_channel_difference(ppm, ref), 1); free(ref.data); }
         free(ppm); canvas_free(c);
     }
 }
@@ -315,9 +315,9 @@ static void feature_limits(void) {
         EQP(ppm, 76, 0, 148, 148, 148);
         EQP(ppm, 254, 0, 255, 255, 255);
         EQI(distinct_values(ppm), 183);
-        char *ref = read_file("reference/chapter-01/ramp.ppm");
-        if (!ref) h_fail("could not read reference/chapter-01/ramp.ppm");
-        else { LEI(max_channel_difference(ppm, ref), 1); free(ref); }
+        Bytes ref = read_file("reference/chapter-01/ramp.ppm");
+        if (!ref.data) h_fail("could not read reference/chapter-01/ramp.ppm");
+        else { LEI(max_channel_difference(ppm, ref), 1); free(ref.data); }
         free(got); free(ppm); canvas_free(c);
     }
     S(F, "Clamping changes the color, not only the brightness") {
@@ -329,9 +329,9 @@ static void feature_limits(void) {
         char *ppm = canvas_to_ppm(c);
         EQP(ppm, 50, 50, 255, 188, 188);
         EQP(ppm, 150, 50, 255, 137, 137);
-        char *ref = read_file("reference/chapter-01/clamp-pair.ppm");
-        if (!ref) h_fail("could not read reference/chapter-01/clamp-pair.ppm");
-        else { LEI(max_channel_difference(ppm, ref), 1); free(ref); }
+        Bytes ref = read_file("reference/chapter-01/clamp-pair.ppm");
+        if (!ref.data) h_fail("could not read reference/chapter-01/clamp-pair.ppm");
+        else { LEI(max_channel_difference(ppm, ref), 1); free(ref.data); }
         free(ppm); canvas_free(c);
     }
 }
@@ -355,15 +355,326 @@ static void feature_plate(void) {
         EQP1(ppm, 200, 110, 109,  75,  19);
         EQP1(ppm, 200, 155, 160, 108,  26);
         EQP (ppm, 200,  87,   0,   0,   0);
-        char *ref = read_file("reference/chapter-01/plate-01.ppm");
-        if (!ref) h_fail("could not read reference/chapter-01/plate-01.ppm");
-        else { LEI(max_channel_difference(ppm, ref), 1); free(ref); }
+        Bytes ref = read_file("reference/chapter-01/plate-01.ppm");
+        if (!ref.data) h_fail("could not read reference/chapter-01/plate-01.ppm");
+        else { LEI(max_channel_difference(ppm, ref), 1); free(ref.data); }
         free(ppm); canvas_free(c);
     }
     S(F, "The switch was left on") {
         Canvas *c = plate_01();
         TRUEP(linear_blending);
         canvas_free(c);
+    }
+}
+
+/* ============ features/chapter02-shapes.feature ====================== */
+static void feature_shapes(void) {
+    const char *F = "Shapes are questions";
+
+    S(F, "A point inside a circle") {
+        Shape s = circle(8, 8, 5);
+        TRUEP (inside(s, 8, 8));
+        TRUEP (inside(s, 12, 8));
+        TRUEP (inside(s, 13, 8));
+        FALSEP(inside(s, 13.01, 8));
+        FALSEP(inside(s, 11.6, 11.6));
+    }
+    S(F, "A point inside a rectangle") {
+        Shape s = rectangle(1.25, 2.0, 4.75, 5.0);
+        TRUEP (inside(s, 3, 3));
+        TRUEP (inside(s, 1.25, 2.0));
+        TRUEP (inside(s, 4.75, 5.0));
+        FALSEP(inside(s, 1.2, 3));
+        FALSEP(inside(s, 3, 5.1));
+    }
+    S(F, "A point inside a half-plane") {
+        Shape s = half_plane(2.5, 0, 1, 0);
+        TRUEP (inside(s, 2.5, 7));
+        TRUEP (inside(s, 3, -4));
+        FALSEP(inside(s, 2.4, 0));
+    }
+    S(F, "The normal picks the side") {
+        Shape s = half_plane(2.5, 0, -1, 0);
+        TRUEP (inside(s, 2.4, 0));
+        FALSEP(inside(s, 3, 0));
+    }
+}
+
+/* ============ features/chapter02-p6.feature ========================== */
+static void feature_p6(void) {
+    const char *F = "Binary PPM";
+
+    S(F, "The header, then the bytes") {
+        Canvas *c = canvas(2, 1);
+        write_pixel(c, 0, 0, color(1, 0, 0));
+        write_pixel(c, 1, 0, color(0, 0.5, 0));
+        Bytes p6 = canvas_to_p6(c);
+        TRUEP(p6.len >= 11 && memcmp(p6.data, "P6\n2 1\n255\n", 11) == 0);
+        EQI((long)p6.len, 17);
+        EQI(p6.data[11], 255);   /* byte 12, counting from 1 */
+        EQI(p6.data[12], 0);     /* byte 13 */
+        EQI(p6.data[15], 188);   /* byte 16 */
+        free(p6.data); canvas_free(c);
+    }
+    S(F, "The same pixel comes back out of either format") {
+        Canvas *c = canvas(2, 1);
+        write_pixel(c, 1, 0, color(0, 0.5, 0));
+        char *p3 = canvas_to_ppm(c);
+        Bytes p6 = canvas_to_p6(c);
+        EQP(p6, 1, 0, 0, 188, 0);
+        EQP(p3, 1, 0, 0, 188, 0);
+        EQI(max_channel_difference(p3, p6), 0);
+        EQI(distinct_values(p6), 2);
+        free(p3); free(p6.data); canvas_free(c);
+    }
+    S(F, "Sizes still have to match") {
+        Canvas *c1 = canvas(2, 1), *c2 = canvas(1, 2);
+        Bytes p6a = canvas_to_p6(c1), p6b = canvas_to_p6(c2);
+        EQI(max_channel_difference(p6a, p6b), 255);
+        free(p6a.data); free(p6b.data); canvas_free(c1); canvas_free(c2);
+    }
+}
+
+/* ============ features/chapter02-magnify.feature ===================== */
+static void feature_magnify(void) {
+    const char *F = "Magnify";
+
+    S(F, "Every pixel becomes a block") {
+        Canvas *c = canvas(2, 1);
+        write_pixel(c, 0, 0, color(1, 0, 0));
+        write_pixel(c, 1, 0, color(0, 0.5, 0));
+        Canvas *m = magnify(c, 3);
+        EQI(m->width, 6);
+        EQI(m->height, 3);
+        EQC(pixel_at(m, 0, 0), 1, 0, 0);
+        EQC(pixel_at(m, 2, 2), 1, 0, 0);
+        EQC(pixel_at(m, 3, 0), 0, 0.5, 0);
+        EQC(pixel_at(m, 5, 2), 0, 0.5, 0);
+        EQI(count_pixels(m, color(1, 0, 0)), 9);
+        canvas_free(m); canvas_free(c);
+    }
+    S(F, "Magnifying by one changes nothing") {
+        Canvas *c = canvas(2, 1);
+        write_pixel(c, 1, 0, color(0, 0.5, 0));
+        Canvas *m = magnify(c, 1);
+        Bytes a = canvas_to_p6(c), b = canvas_to_p6(m);
+        EQI(max_channel_difference(a, b), 0);
+        free(a.data); free(b.data); canvas_free(m); canvas_free(c);
+    }
+}
+
+/* ============ features/chapter02-centers.feature ===================== */
+static void feature_centers(void) {
+    const char *F = "The coverage buffer, and the first question";
+
+    S(F, "A new coverage buffer is empty") {
+        CoverageBuffer *cov = coverage_buffer(4, 3);
+        EQI(cov->width, 4);
+        EQI(cov->height, 3);
+        EQ(coverage_at(cov, 2, 1), 0);
+        EQ(ink(cov), 0);
+        coverage_free(cov);
+    }
+    S(F, "Setting coverage") {
+        CoverageBuffer *cov = coverage_buffer(4, 3);
+        set_coverage(cov, 2, 1, 0.75);
+        EQ(coverage_at(cov, 2, 1), 0.75);
+        EQ(coverage_at(cov, 1, 2), 0);
+        EQ(ink(cov), 0.75);
+        coverage_free(cov);
+    }
+    S(F, "Setting coverage outside the buffer is ignored") {
+        CoverageBuffer *cov = coverage_buffer(4, 3);
+        set_coverage(cov, -1, 1, 1);
+        set_coverage(cov, 4, 1, 1);
+        set_coverage(cov, 1, 3, 1);
+        EQ(ink(cov), 0);
+        coverage_free(cov);
+    }
+    S(F, "The center of pixel (x, y) is (x + 0.5, y + 0.5)") {
+        Shape s = half_plane(2.5, 0, 1, 0);
+        EQ(center_inside(s, 2, 4), 1);
+        EQ(center_inside(s, 1, 4), 0);
+        Shape t = half_plane(2.6, 0, 1, 0);
+        EQ(center_inside(t, 2, 4), 0);
+    }
+    S(F, "A disc, by asking each center") {
+        Shape s = circle(8, 8, 5);
+        CoverageBuffer *cov = rasterize_centers(s, 16, 16);
+        EQI(cov->width, 16);
+        EQI(cov->height, 16);
+        EQ(coverage_at(cov,  8, 8), 1);
+        EQ(coverage_at(cov,  3, 8), 1);
+        EQ(coverage_at(cov, 12, 8), 1);
+        EQ(coverage_at(cov,  2, 8), 0);
+        EQ(coverage_at(cov, 13, 8), 0);
+        EQ(coverage_at(cov,  4, 4), 1);
+        EQ(coverage_at(cov,  3, 4), 0);
+        EQ(ink(cov), 80);
+        coverage_free(cov);
+    }
+}
+
+/* ============ features/chapter02-paint.feature ======================= */
+static void feature_paint(void) {
+    const char *F = "Painting through coverage";
+
+    S(F, "Half coverage is half the paint") {
+        Canvas *c = canvas(1, 1);
+        CoverageBuffer *cov = coverage_buffer(1, 1);
+        set_coverage(cov, 0, 0, 0.5);
+        paint_through(c, cov, color(1, 1, 1));
+        EQC(pixel_at(c, 0, 0), 0.5, 0.5, 0.5);
+        coverage_free(cov); canvas_free(c);
+    }
+    S(F, "Paint over something that isn't black") {
+        Canvas *c = canvas(1, 1);
+        CoverageBuffer *cov = coverage_buffer(1, 1);
+        fill(c, color(0.2, 0.2, 0.2));
+        set_coverage(cov, 0, 0, 0.25);
+        paint_through(c, cov, color(1, 0, 0));
+        EQC(pixel_at(c, 0, 0), 0.4, 0.15, 0.15);
+        coverage_free(cov); canvas_free(c);
+    }
+    S(F, "Zero leaves it alone and one replaces it") {
+        Canvas *c = canvas(2, 1);
+        CoverageBuffer *cov = coverage_buffer(2, 1);
+        fill(c, color(0.2, 0.2, 0.2));
+        set_coverage(cov, 1, 0, 1);
+        paint_through(c, cov, color(1, 0, 0));
+        EQC(pixel_at(c, 0, 0), 0.2, 0.2, 0.2);
+        EQC(pixel_at(c, 1, 0), 1, 0, 0);
+        coverage_free(cov); canvas_free(c);
+    }
+    S(F, "The arithmetic is on light") {
+        Canvas *c = canvas(1, 1);
+        CoverageBuffer *cov = coverage_buffer(1, 1);
+        set_coverage(cov, 0, 0, 0.5);
+        paint_through(c, cov, color(1, 1, 1));
+        char *ppm = canvas_to_ppm(c);
+        EQP(ppm, 0, 0, 188, 188, 188);
+        free(ppm); coverage_free(cov); canvas_free(c);
+    }
+    S(F, "The disc by centers") {
+        Canvas *c = disc_centers();
+        Bytes ref = read_file("reference/chapter-02/disc-centers.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 320);
+        EQI(c->height, 320);
+        EQP1(p6, 160, 160, 243, 196, 89);
+        EQP1(p6, 124,  36,  39,  39, 44);
+        EQP1(p6, 132,  36, 243, 196, 89);
+        EQI(distinct_values(p6), 5);
+        if (!ref.data) h_fail("could not read reference/chapter-02/disc-centers.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
+    }
+}
+
+/* ============ features/chapter02-coverage.feature ==================== */
+static void feature_coverage(void) {
+    const char *F = "The better question";
+
+    S(F, "The sixty-four sample points") {
+        Shape s = half_plane(2.5, 0, 1, 0);
+        EQ(coverage(s, 2, 4), 0.5);
+        EQ(coverage(s, 1, 4), 0);
+        EQ(coverage(s, 3, 4), 1);
+    }
+    S(F, "A rectangle is covered exactly, when its edges land on sample boundaries") {
+        Shape s = rectangle(1.25, 2.0, 4.75, 5.0);
+        CoverageBuffer *cov = rasterize(s, 8, 8);
+        EQ(coverage_at(cov, 0, 2), 0);
+        EQ(coverage_at(cov, 1, 2), 0.75);
+        EQ(coverage_at(cov, 2, 2), 1);
+        EQ(coverage_at(cov, 3, 2), 1);
+        EQ(coverage_at(cov, 4, 2), 0.75);
+        EQ(coverage_at(cov, 5, 2), 0);
+        EQ(coverage_at(cov, 2, 1), 0);
+        EQ(coverage_at(cov, 2, 5), 0);
+        EQ(ink(cov), 10.5);
+        coverage_free(cov);
+    }
+    S(F, "A half-plane through a pixel center covers half of it") {
+        Shape s = half_plane(2.5, 4.5, 0.6, 0.8);
+        EQ(coverage(s, 2, 4), 0.5);
+    }
+    S(F, "Except when the grid conspires") {
+        Shape s = half_plane(2.5, 4.5, 1, 1);
+        EQ(coverage(s, 2, 4), 0.5625);
+    }
+    S(F, "A disc is only ever approximately covered") {
+        Shape s = circle(8, 8, 5);
+        CoverageBuffer *cov = rasterize(s, 16, 16);
+        EQ(coverage_at(cov,  8, 8), 1);
+        EQ(coverage_at(cov,  3, 8), 0.96875);
+        EQ(coverage_at(cov, 12, 8), 0.96875);
+        EQ(coverage_at(cov,  4, 4), 0.5625);
+        EQ(coverage_at(cov,  3, 4), 0);
+        EQ(ink(cov), 78.5);
+        EQ_EPS(ink(cov), 78.5398, 0.1);
+        coverage_free(cov);
+    }
+    S(F, "The disc by coverage") {
+        Canvas *c = disc_coverage();
+        Bytes ref = read_file("reference/chapter-02/disc-coverage.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 320);
+        EQI(c->height, 320);
+        EQP1(p6, 160, 160, 243, 196, 89);
+        EQP1(p6, 124,  36, 157, 127, 64);
+        if (!ref.data) h_fail("could not read reference/chapter-02/disc-coverage.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
+    }
+}
+
+/* ============ features/chapter02-twice.feature ======================= */
+static void feature_twice(void) {
+    const char *F = "Coverage is not opacity";
+
+    S(F, "Half coverage, painted twice, is three quarters") {
+        Canvas *c = canvas(1, 1);
+        CoverageBuffer *cov = coverage_buffer(1, 1);
+        set_coverage(cov, 0, 0, 0.5);
+        paint_through(c, cov, color(1, 1, 1));
+        paint_through(c, cov, color(1, 1, 1));
+        EQC(pixel_at(c, 0, 0), 0.75, 0.75, 0.75);
+        coverage_free(cov); canvas_free(c);
+    }
+    S(F, "The disc, once and twice") {
+        Canvas *c = painted_twice();
+        Bytes ref = read_file("reference/chapter-02/painted-twice.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 480);
+        EQI(c->height, 240);
+        EQP1(p6, 120, 120, 243, 196, 89);
+        EQP1(p6, 360, 120, 243, 196, 89);
+        EQP1(p6,  93,  27, 157, 127, 64);
+        EQP1(p6, 333,  27, 194, 156, 74);
+        if (!ref.data) h_fail("could not read reference/chapter-02/painted-twice.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
+    }
+}
+
+/* ============ features/chapter02-plate.feature ======================= */
+static void feature_plate_02(void) {
+    const char *F = "Plate 2";
+
+    S(F, "The plate") {
+        Canvas *c = plate_02();
+        Bytes ref = read_file("reference/chapter-02/plate-02.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 480);
+        EQI(c->height, 240);
+        EQP1(p6, 120, 120, 243, 196, 89);
+        EQP1(p6, 360, 120, 243, 196, 89);
+        EQP1(p6,  93,  27,  39,  39, 44);
+        EQP1(p6, 333,  27, 157, 127, 64);
+        if (!ref.data) h_fail("could not read reference/chapter-02/plate-02.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
     }
 }
 
@@ -380,6 +691,17 @@ int main(void) {
     T(feature_mix);
     T(feature_limits);
     T(feature_plate);
+    h_subtotal("chapter 1");
+
+    T(feature_shapes);
+    T(feature_p6);
+    T(feature_magnify);
+    T(feature_centers);
+    T(feature_paint);
+    T(feature_coverage);
+    T(feature_twice);
+    T(feature_plate_02);
+    h_subtotal("chapter 2");
     h_report();
     return h_failed ? 1 : 0;
 }

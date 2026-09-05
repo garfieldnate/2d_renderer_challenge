@@ -162,6 +162,16 @@
     <span class="kw">And</span>   max_channel_difference(p3, p6) = 0
     <span class="kw">And</span>   distinct_values(p6) = 2
 
+  <span class="kw">Scenario</span>: Rows go top to bottom
+    <span class="kw">Given</span> c ← canvas(1, 2)
+    <span class="kw">When</span>  write_pixel(c, 0, 0, color(1, 0, 0))
+    <span class="kw">And</span>   write_pixel(c, 0, 1, color(0, 0, 1))
+    <span class="kw">And</span>   p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  byte 12 of p6 = 255
+    <span class="kw">And</span>   byte 17 of p6 = 255
+    <span class="kw">And</span>   ppm_pixel(p6, 0, 0) = (255, 0, 0)
+    <span class="kw">And</span>   ppm_pixel(p6, 0, 1) = (0, 0, 255)
+
   <span class="kw">Scenario</span>: The binary writer clamps too
     <span class="kw">Given</span> c ← canvas(2, 1)
     <span class="kw">When</span>  write_pixel(c, 0, 0, color(1.5, 0, -0.5))
@@ -288,6 +298,11 @@
     <span class="kw">Then</span>  center_inside(s, 2, 4) = 1
     <span class="kw">And</span>   center_inside(s, 1, 4) = 0
     <span class="kw">And</span>   center_inside(t, 2, 4) = 0
+
+  <span class="kw">Scenario</span>: The center question is not "at least half"
+    <span class="kw">Given</span> s ← half_plane(2.55, 0, 1, 0)
+    <span class="kw">Then</span>  center_inside(s, 2, 4) = 0
+    <span class="kw">And</span>   coverage(s, 2, 4) = 0.5
 
   <span class="kw">Scenario</span>: A disc, by asking each center
     <span class="kw">Given</span> s ← circle(8, 8, 5)

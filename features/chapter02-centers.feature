@@ -31,6 +31,11 @@ Feature: The coverage buffer, and the first question
     And   center_inside(s, 1, 4) = 0
     And   center_inside(t, 2, 4) = 0
 
+  Scenario: The center question is not "at least half"
+    Given s ← half_plane(2.55, 0, 1, 0)
+    Then  center_inside(s, 2, 4) = 0
+    And   coverage(s, 2, 4) = 0.5
+
   Scenario: A disc, by asking each center
     Given s ← circle(8, 8, 5)
     When  cov ← rasterize_centers(s, 16, 16)

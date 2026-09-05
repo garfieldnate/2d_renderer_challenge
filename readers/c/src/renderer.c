@@ -119,61 +119,113 @@ char *canvas_to_ppm(const Canvas *c) {
     return b.s;
 }
 
-char *read_file(const char *path) {
+/* P6: the same header with a 6, one newline, then one byte per channel. */
+Bytes canvas_to_p6(const Canvas *c) {
+    char head[32];
+    int hn = snprintf(head, sizeof head, "P6\n%d %d\n255\n", c->width, c->height);
+    size_t body = (size_t)c->width * (size_t)c->height * 3;
+    unsigned char *out = malloc((size_t)hn + body + 1);
+    if (!out) abort();
+    memcpy(out, head, (size_t)hn);
+    size_t i = (size_t)hn;
+    for (int y = 0; y < c->height; y++)
+        for (int x = 0; x < c->width; x++) {
+            Color p = pixel_at(c, x, y);
+            out[i++] = (unsigned char)channel_to_file(p.red);
+            out[i++] = (unsigned char)channel_to_file(p.green);
+            out[i++] = (unsigned char)channel_to_file(p.blue);
+        }
+    out[i] = '\0';
+    Bytes b = { out, i };
+    return b;
+}
+
+Bytes bytes_of(const char *s) {
+    Bytes b = { (unsigned char *)s, s ? strlen(s) : 0 };
+    return b;
+}
+
+Bytes read_file(const char *path) {
+    Bytes b = {NULL, 0};
     FILE *f = fopen(path, "rb");
-    if (!f) { fprintf(stderr, "read_file: cannot open %s\n", path); return NULL; }
+    if (!f) { fprintf(stderr, "read_file: cannot open %s\n", path); return b; }
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
-    char *s = malloc((size_t)n + 1);
+    unsigned char *s = malloc((size_t)n + 1);
     if (!s) abort();
     size_t got = fread(s, 1, (size_t)n, f);
-    s[got] = '\0';
+    s[got] = '\0';           /* so a P3 file is still usable as a string */
     fclose(f);
-    return s;
+    b.data = s; b.len = got;
+    return b;
 }
 
-static int isspace_like(char ch) {
+static int isspace_like(unsigned char ch) {
     return ch == ' ' || ch == '\n' || ch == '\t' || ch == '\r' || ch == '\v' || ch == '\f';
 }
 
-/* split on whitespace; returns the numbers after the four header tokens */
-static int *ppm_numbers(const char *ppm, int *count, int *width) {
+/* The channel values of either format, in order, plus the width.
+   P3: whitespace-separated numbers after the four header tokens.
+   P6: the raw bytes after the header's single trailing whitespace byte. */
+static int *ppm_numbers(Bytes ppm, int *count, int *width) {
+    const unsigned char *p = ppm.data, *end = ppm.data + ppm.len;
+    if (width) *width = 0;
+    *count = 0;
+    if (!p) return NULL;
+
+    if (ppm.len >= 2 && p[0] == 'P' && p[1] == '6') {
+        int header[3] = {0, 0, 0};
+        p += 2;
+        for (int i = 0; i < 3; i++) {
+            while (p < end && isspace_like(*p)) p++;
+            int v = 0;
+            while (p < end && *p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
+            header[i] = v;
+        }
+        if (p < end) p++;                  /* exactly one whitespace byte */
+        if (width) *width = header[0];
+        int n = (int)(end - p);
+        int *v = malloc((size_t)(n ? n : 1) * sizeof *v);
+        if (!v) abort();
+        for (int i = 0; i < n; i++) v[i] = p[i];
+        *count = n;
+        return v;
+    }
+
     int cap = 256, n = 0, tok = 0;
     int *v = malloc((size_t)cap * sizeof *v);
     if (!v) abort();
-    if (width) *width = 0;
-    const char *p = ppm;
-    while (*p) {
-        while (*p && isspace_like(*p)) p++;
-        if (!*p) break;
-        const char *start = p;
-        while (*p && !isspace_like(*p)) p++;
+    while (p < end) {
+        while (p < end && isspace_like(*p)) p++;
+        if (p >= end) break;
+        const unsigned char *start = p;
+        while (p < end && !isspace_like(*p)) p++;
         tok++;
-        if (tok == 2 && width) *width = atoi(start);
+        if (tok == 2 && width) *width = atoi((const char *)start);
         if (tok <= 4) continue;            /* P3, width, height, maxval */
         if (n == cap) { cap *= 2; v = realloc(v, (size_t)cap * sizeof *v); if (!v) abort(); }
-        v[n++] = atoi(start);
+        v[n++] = atoi((const char *)start);
     }
     *count = n;
     return v;
 }
 
-void ppm_pixel(const char *ppm, int x, int y, int out[3]) {
+void ppm_pixel_bytes(Bytes ppm, int x, int y, int out[3]) {
     int n, w;
     int *v = ppm_numbers(ppm, &n, &w);
     long i = ((long)y * w + x) * 3;
-    if (i < 0 || i + 2 >= n) { out[0] = out[1] = out[2] = -1; }
+    if (!v || i < 0 || i + 2 >= n) { out[0] = out[1] = out[2] = -1; }
     else { out[0] = v[i]; out[1] = v[i+1]; out[2] = v[i+2]; }
     free(v);
 }
 
-int max_channel_difference(const char *a, const char *b) {
+int max_channel_difference_bytes(Bytes a, Bytes b) {
     int na, nb, wa, wb;
     int *va = ppm_numbers(a, &na, &wa);
     int *vb = ppm_numbers(b, &nb, &wb);
     int n = na < nb ? na : nb;
-    int worst = (na == nb) ? 0 : 255;   /* different sizes: not comparable */
+    int worst = (na == nb && wa == wb) ? 0 : 255;   /* different sizes: not comparable */
     for (int i = 0; i < n; i++) {
         int d = va[i] - vb[i];
         if (d < 0) d = -d;
@@ -183,7 +235,7 @@ int max_channel_difference(const char *a, const char *b) {
     return worst;
 }
 
-int distinct_values(const char *ppm) {
+int distinct_values_bytes(Bytes ppm) {
     int n, w;
     int *v = ppm_numbers(ppm, &n, &w);
     char seen[256] = {0};
@@ -193,6 +245,108 @@ int distinct_values(const char *ppm) {
     }
     free(v);
     return count;
+}
+
+/* ---- magnify ---------------------------------------------------------- */
+Canvas *magnify(const Canvas *c, int k) {
+    Canvas *m = canvas(c->width * k, c->height * k);
+    for (int y = 0; y < m->height; y++)
+        for (int x = 0; x < m->width; x++)
+            write_pixel(m, x, y, pixel_at(c, x / k, y / k));
+    return m;
+}
+
+/* ---- shapes ----------------------------------------------------------- */
+Shape circle(double cx, double cy, double r) {
+    Shape s = {SHAPE_CIRCLE, cx, cy, r, 0};
+    return s;
+}
+Shape rectangle(double x0, double y0, double x1, double y1) {
+    Shape s = {SHAPE_RECTANGLE, x0, y0, x1, y1};
+    return s;
+}
+Shape half_plane(double px, double py, double nx, double ny) {
+    Shape s = {SHAPE_HALF_PLANE, px, py, nx, ny};
+    return s;
+}
+
+bool inside(Shape s, double x, double y) {
+    switch (s.kind) {
+    case SHAPE_CIRCLE: {
+        double dx = x - s.a, dy = y - s.b;
+        return dx * dx + dy * dy <= s.c * s.c;          /* boundary included */
+    }
+    case SHAPE_RECTANGLE:
+        return x >= s.a && x <= s.c && y >= s.b && y <= s.d;
+    case SHAPE_HALF_PLANE:
+        return (x - s.a) * s.c + (y - s.b) * s.d >= 0;  /* normal points inward */
+    }
+    return false;
+}
+
+/* ---- the coverage buffer ---------------------------------------------- */
+CoverageBuffer *coverage_buffer(int width, int height) {
+    CoverageBuffer *cov = malloc(sizeof *cov);
+    if (!cov) abort();
+    cov->width = width;
+    cov->height = height;
+    cov->values = calloc((size_t)width * (size_t)height, sizeof *cov->values);
+    if (!cov->values) abort();
+    return cov;   /* calloc gives every pixel coverage 0 */
+}
+
+void coverage_free(CoverageBuffer *cov) { if (cov) { free(cov->values); free(cov); } }
+
+void set_coverage(CoverageBuffer *cov, int x, int y, double v) {
+    if (x < 0 || y < 0 || x >= cov->width || y >= cov->height) return;  /* dropped */
+    cov->values[(size_t)y * cov->width + x] = v;
+}
+
+double coverage_at(const CoverageBuffer *cov, int x, int y) {
+    if (x < 0 || y < 0 || x >= cov->width || y >= cov->height) return 0;
+    return cov->values[(size_t)y * cov->width + x];
+}
+
+double ink(const CoverageBuffer *cov) {
+    double total = 0;
+    size_t n = (size_t)cov->width * cov->height;
+    for (size_t i = 0; i < n; i++) total += cov->values[i];
+    return total;
+}
+
+/* ---- the two questions ------------------------------------------------ */
+/* Pixel (x, y) is the square from (x, y) to (x+1, y+1); its center is
+   (x + 0.5, y + 0.5). Getting that half pixel wrong shifts every shape. */
+double center_inside(Shape s, int x, int y) {
+    return inside(s, x + 0.5, y + 0.5) ? 1.0 : 0.0;
+}
+
+#define SAMPLES 8   /* an 8 by 8 grid of sample points inside each pixel */
+
+double coverage(Shape s, int x, int y) {
+    int n = 0;
+    for (int j = 0; j < SAMPLES; j++)
+        for (int i = 0; i < SAMPLES; i++)
+            if (inside(s, x + (i + 0.5) / SAMPLES, y + (j + 0.5) / SAMPLES)) n++;
+    return (double)n / (SAMPLES * SAMPLES);
+}
+
+static CoverageBuffer *rasterize_with(Shape s, int w, int h, double (*ask)(Shape, int, int)) {
+    CoverageBuffer *cov = coverage_buffer(w, h);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            set_coverage(cov, x, y, ask(s, x, y));
+    return cov;
+}
+
+CoverageBuffer *rasterize_centers(Shape s, int w, int h) { return rasterize_with(s, w, h, center_inside); }
+CoverageBuffer *rasterize(Shape s, int w, int h)         { return rasterize_with(s, w, h, coverage); }
+
+/* ---- the one place the renderer touches the canvas -------------------- */
+void paint_through(Canvas *c, const CoverageBuffer *cov, Color col) {
+    for (int y = 0; y < c->height; y++)
+        for (int x = 0; x < c->width; x++)
+            write_pixel(c, x, y, mix(pixel_at(c, x, y), col, coverage_at(cov, x, y)));
 }
 
 /* ---- the pictures ----------------------------------------------------- */
@@ -260,4 +414,70 @@ Canvas *plate_01(void) {
         }
     }
     return c;
+}
+
+
+/* ---- chapter 2's pictures --------------------------------------------- */
+static const Color PAPER = {0.02, 0.02, 0.025};
+static const Color INK   = {0.9, 0.55, 0.1};
+
+static Canvas *disc(bool by_coverage) {
+    Canvas *c = canvas(40, 40);
+    fill(c, PAPER);
+    Shape s = circle(20, 20, 16);
+    CoverageBuffer *cov = by_coverage ? rasterize(s, 40, 40) : rasterize_centers(s, 40, 40);
+    paint_through(c, cov, INK);
+    coverage_free(cov);
+    Canvas *m = magnify(c, 8);
+    canvas_free(c);
+    return m;
+}
+
+Canvas *disc_centers(void)  { return disc(false); }
+Canvas *disc_coverage(void) { return disc(true); }
+
+Canvas *painted_twice(void) {
+    Canvas *c = canvas(80, 40);
+    fill(c, PAPER);
+    CoverageBuffer *cov = rasterize(circle(20, 20, 16), 40, 40);
+
+    CoverageBuffer *once = coverage_buffer(80, 40);   /* the disc in both halves */
+    for (int y = 0; y <= 39; y++)
+        for (int x = 0; x <= 39; x++) {
+            set_coverage(once, x, y, coverage_at(cov, x, y));
+            set_coverage(once, x + 40, y, coverage_at(cov, x, y));
+        }
+    paint_through(c, once, INK);
+
+    CoverageBuffer *twice = coverage_buffer(80, 40);  /* the right half again */
+    for (int y = 0; y <= 39; y++)
+        for (int x = 0; x <= 39; x++)
+            set_coverage(twice, x + 40, y, coverage_at(cov, x, y));
+    paint_through(c, twice, INK);
+
+    coverage_free(cov); coverage_free(once); coverage_free(twice);
+    Canvas *m = magnify(c, 6);
+    canvas_free(c);
+    return m;
+}
+
+Canvas *plate_02(void) {
+    Canvas *c = canvas(80, 40);
+    fill(c, PAPER);
+    Shape shape = circle(20, 20, 16);
+    CoverageBuffer *left  = rasterize_centers(shape, 40, 40);
+    CoverageBuffer *right = rasterize(shape, 40, 40);
+
+    CoverageBuffer *both = coverage_buffer(80, 40);
+    for (int y = 0; y <= 39; y++)
+        for (int x = 0; x <= 39; x++) {
+            set_coverage(both, x, y, coverage_at(left, x, y));
+            set_coverage(both, x + 40, y, coverage_at(right, x, y));
+        }
+    paint_through(c, both, INK);
+
+    coverage_free(left); coverage_free(right); coverage_free(both);
+    Canvas *m = magnify(c, 6);
+    canvas_free(c);
+    return m;
 }

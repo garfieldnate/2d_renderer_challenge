@@ -26,6 +26,14 @@ void h_fail(const char *fmt, ...) {
     va_end(ap);
 }
 
+static int h_mark_total = 0, h_mark_failed = 0;
+
+void h_subtotal(const char *label) {
+    int t = h_total - h_mark_total, f = h_failed - h_mark_failed;
+    printf("%s: %d scenarios, %d passed, %d failed\n", label, t, t - f, f);
+    h_mark_total = h_total; h_mark_failed = h_failed;
+}
+
 void h_report(void) {
     printf("\n%d scenarios, %d passed, %d failed\n", h_total, h_total - h_failed, h_failed);
 }
@@ -56,7 +64,7 @@ void h_nec(const char *what, Color a, Color b, double eps) {
     if (ceq(a, b, eps)) h_fail("%s: (%.6g, %.6g, %.6g) equals (%.6g, %.6g, %.6g)",
                                what, a.red, a.green, a.blue, b.red, b.green, b.blue);
 }
-void h_eqp(const char *ppm, int x, int y, int r, int g, int b, int tol) {
+void h_eqp(Bytes ppm, int x, int y, int r, int g, int b, int tol) {
     int got[3];
     ppm_pixel(ppm, x, y, got);
     int want[3] = {r, g, b};

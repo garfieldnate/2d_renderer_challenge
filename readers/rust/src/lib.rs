@@ -210,8 +210,11 @@ pub fn canvas_to_ppm(c: &Canvas) -> String {
     out
 }
 
-pub fn read_file(path: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|e| panic!("could not read {path}: {e}"))
+/// Reads bytes, not text: a P3 file is text that happens to be stored in
+/// bytes, so nothing changes for chapter 1's tests, and a P6 file's pixel
+/// data is only meaningful as bytes in the first place.
+pub fn read_file(path: &str) -> Vec<u8> {
+    fs::read(path).unwrap_or_else(|e| panic!("could not read {path}: {e}"))
 }
 
 /// Split a PPM's pixel data into whole numbers, skipping the four header
@@ -230,20 +233,75 @@ fn ppm_width(ppm: &str) -> usize {
         .expect("ppm has no width header")
 }
 
+fn ppm_height(ppm: &str) -> usize {
+    ppm.split_whitespace()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .expect("ppm has no height header")
+}
+
+/// Read a P6 header: "P6", whitespace, width, whitespace, height,
+/// whitespace, maxval, then exactly one whitespace byte before the raw
+/// pixel bytes begin. Returns (width, height, offset of the pixel data).
+fn p6_header(bytes: &[u8]) -> (usize, usize, usize) {
+    fn skip_ws(bytes: &[u8], i: &mut usize) {
+        while *i < bytes.len() && bytes[*i].is_ascii_whitespace() {
+            *i += 1;
+        }
+    }
+    fn read_num(bytes: &[u8], i: &mut usize) -> usize {
+        let start = *i;
+        while *i < bytes.len() && bytes[*i].is_ascii_digit() {
+            *i += 1;
+        }
+        std::str::from_utf8(&bytes[start..*i])
+            .unwrap()
+            .parse()
+            .unwrap_or_else(|e| panic!("bad p6 header number: {e}"))
+    }
+
+    let mut i = 2; // skip the "P6" magic
+    skip_ws(bytes, &mut i);
+    let width = read_num(bytes, &mut i);
+    skip_ws(bytes, &mut i);
+    let height = read_num(bytes, &mut i);
+    skip_ws(bytes, &mut i);
+    let _maxval = read_num(bytes, &mut i);
+    i += 1; // the single whitespace byte after the last header number
+    (width, height, i)
+}
+
+/// The width, height, and whole-number channel values of a PPM file, read
+/// as either P3 (whitespace-separated ASCII digits) or P6 (raw bytes),
+/// distinguished by the first two bytes of the file.
+fn ppm_dims_and_values(ppm: &[u8]) -> (usize, usize, Vec<i64>) {
+    if ppm.starts_with(b"P6") {
+        let (width, height, offset) = p6_header(ppm);
+        let values = ppm[offset..].iter().map(|b| *b as i64).collect();
+        (width, height, values)
+    } else {
+        let text = std::str::from_utf8(ppm).expect("P3 ppm is not valid UTF-8");
+        (ppm_width(text), ppm_height(text), ppm_values(text))
+    }
+}
+
 /// The three whole numbers at pixel (x, y) of a PPM, as a test helper for
-/// reading files back.
-pub fn ppm_pixel(ppm: &str, x: usize, y: usize) -> (i64, i64, i64) {
-    let width = ppm_width(ppm);
-    let values = ppm_values(ppm);
+/// reading files back. Accepts either P3 or P6.
+pub fn ppm_pixel<T: AsRef<[u8]>>(ppm: T, x: usize, y: usize) -> (i64, i64, i64) {
+    let (width, _height, values) = ppm_dims_and_values(ppm.as_ref());
     let idx = (y * width + x) * 3;
     (values[idx], values[idx + 1], values[idx + 2])
 }
 
 /// The largest difference between any pair of corresponding numbers in two
-/// PPM files.
-pub fn max_channel_difference(a: &str, b: &str) -> i64 {
-    let va = ppm_values(a);
-    let vb = ppm_values(b);
+/// PPM files. Files of different dimensions can't be compared pixel for
+/// pixel, so they're treated as maximally different.
+pub fn max_channel_difference<A: AsRef<[u8]>, B: AsRef<[u8]>>(a: A, b: B) -> i64 {
+    let (wa, ha, va) = ppm_dims_and_values(a.as_ref());
+    let (wb, hb, vb) = ppm_dims_and_values(b.as_ref());
+    if wa != wb || ha != hb {
+        return 255;
+    }
     va.iter()
         .zip(vb.iter())
         .map(|(x, y)| (x - y).abs())
@@ -252,9 +310,27 @@ pub fn max_channel_difference(a: &str, b: &str) -> i64 {
 }
 
 /// The set of all distinct whole numbers after the header.
-pub fn distinct_values(ppm: &str) -> usize {
-    let set: BTreeSet<i64> = ppm_values(ppm).into_iter().collect();
+pub fn distinct_values<T: AsRef<[u8]>>(ppm: T) -> usize {
+    let (_width, _height, values) = ppm_dims_and_values(ppm.as_ref());
+    let set: BTreeSet<i64> = values.into_iter().collect();
     set.len()
+}
+
+/// Chapter 2's binary sibling of `canvas_to_ppm`: the same header, with a
+/// 6 in place of the 3, and the pixel bytes written raw -- clamp, encode,
+/// scale, round, same as the P3 writer, just not turned into decimal text.
+pub fn canvas_to_p6(c: &Canvas) -> Vec<u8> {
+    let mut out = Vec::with_capacity(11 + c.width * c.height * 3);
+    out.extend_from_slice(format!("P6\n{} {}\n255\n", c.width, c.height).as_bytes());
+    for y in 0..c.height {
+        for x in 0..c.width {
+            let col = pixel_at(c, x as i64, y as i64);
+            for value in [col.red, col.green, col.blue] {
+                out.push(channel_to_byte(value) as u8);
+            }
+        }
+    }
+    out
 }
 
 /// Test helper: the lines of a ppm, 0-indexed.
@@ -405,4 +481,274 @@ pub fn plate_01() -> Canvas {
     }
 
     c
+}
+
+// ---------------------------------------------------------------------
+// Chapter 2: Coverage
+// ---------------------------------------------------------------------
+//
+// § 2.1 Shapes are questions
+// ---------------------------------------------------------------------
+
+/// A shape answers one question: is this point inside you? Coordinates
+/// are real numbers, not pixel indices -- (3, 3) is a mathematical point,
+/// not the pixel whose top-left corner sits there.
+#[derive(Debug, Clone, Copy)]
+pub enum Shape {
+    Circle { cx: f64, cy: f64, r: f64 },
+    Rectangle { x0: f64, y0: f64, x1: f64, y1: f64 },
+    HalfPlane { px: f64, py: f64, nx: f64, ny: f64 },
+}
+
+/// A circle given its center and radius. Inside means within the radius,
+/// boundary included.
+pub fn circle(cx: f64, cy: f64, r: f64) -> Shape {
+    Shape::Circle { cx, cy, r }
+}
+
+/// A rectangle given its left, top, right and bottom edges. Boundary
+/// included.
+pub fn rectangle(x0: f64, y0: f64, x1: f64, y1: f64) -> Shape {
+    Shape::Rectangle { x0, y0, x1, y1 }
+}
+
+/// Everything on one side of a line: a point on the line, and a normal
+/// vector (needn't be unit length) pointing into the half you want. A
+/// point is inside when the vector from (px, py) to it has a
+/// non-negative dot product with the normal.
+pub fn half_plane(px: f64, py: f64, nx: f64, ny: f64) -> Shape {
+    Shape::HalfPlane { px, py, nx, ny }
+}
+
+pub fn inside(s: Shape, x: f64, y: f64) -> bool {
+    match s {
+        Shape::Circle { cx, cy, r } => {
+            let dx = x - cx;
+            let dy = y - cy;
+            dx * dx + dy * dy <= r * r
+        }
+        Shape::Rectangle { x0, y0, x1, y1 } => x >= x0 && x <= x1 && y >= y0 && y <= y1,
+        Shape::HalfPlane { px, py, nx, ny } => {
+            let dx = x - px;
+            let dy = y - py;
+            dx * nx + dy * ny >= 0.0
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 2.3 A loupe: magnify
+// ---------------------------------------------------------------------
+
+/// Returns a canvas k times wider and taller, every pixel repeated into a
+/// k-by-k block. No smoothing, no averaging, no cleverness.
+pub fn magnify(c: &Canvas, k: usize) -> Canvas {
+    let mut m = canvas(c.width * k, c.height * k);
+    for y in 0..c.height {
+        for x in 0..c.width {
+            let col = pixel_at(c, x as i64, y as i64);
+            for dy in 0..k {
+                for dx in 0..k {
+                    write_pixel(&mut m, (x * k + dx) as i64, (y * k + dy) as i64, col);
+                }
+            }
+        }
+    }
+    m
+}
+
+// ---------------------------------------------------------------------
+// § 2.4 The coverage buffer, and the first question
+// ---------------------------------------------------------------------
+
+/// A canvas of numbers instead of colors: one number per pixel, from 0
+/// ("none of this pixel is inside") to 1 ("all of it"). Starts at zero.
+#[derive(Debug, Clone)]
+pub struct CoverageBuffer {
+    pub width: usize,
+    pub height: usize,
+    values: Vec<f64>,
+}
+
+pub fn coverage_buffer(width: usize, height: usize) -> CoverageBuffer {
+    CoverageBuffer { width, height, values: vec![0.0; width * height] }
+}
+
+pub fn coverage_at(cov: &CoverageBuffer, x: i64, y: i64) -> f64 {
+    let (x, y) = (x as usize, y as usize);
+    cov.values[y * cov.width + x]
+}
+
+/// Writes outside the buffer are dropped, same rule as `write_pixel`.
+pub fn set_coverage(cov: &mut CoverageBuffer, x: i64, y: i64, value: f64) {
+    if x < 0 || y < 0 {
+        return;
+    }
+    let (x, y) = (x as usize, y as usize);
+    if x >= cov.width || y >= cov.height {
+        return;
+    }
+    cov.values[y * cov.width + x] = value;
+}
+
+/// The sum of every value in the buffer: the area of the shape, in
+/// pixels, as the buffer sees it.
+pub fn ink(cov: &CoverageBuffer) -> f64 {
+    cov.values.iter().sum()
+}
+
+/// Pixel (x, y) is the square from (x, y) to (x + 1, y + 1); its center
+/// is (x + 0.5, y + 0.5). This is the one thing in the chapter that's
+/// easy to get wrong: test (x, y) instead and every shape drawn sits half
+/// a pixel up and to the left of where it should.
+pub fn center_inside(s: Shape, x: i64, y: i64) -> bool {
+    inside(s, x as f64 + 0.5, y as f64 + 0.5)
+}
+
+/// The binary question, once per pixel: is the center inside? What every
+/// renderer did until the nineties, and what some still do with
+/// antialiasing off.
+pub fn rasterize_centers(s: Shape, width: usize, height: usize) -> CoverageBuffer {
+    let mut cov = coverage_buffer(width, height);
+    for y in 0..height as i64 {
+        for x in 0..width as i64 {
+            let value = if center_inside(s, x, y) { 1.0 } else { 0.0 };
+            set_coverage(&mut cov, x, y, value);
+        }
+    }
+    cov
+}
+
+// ---------------------------------------------------------------------
+// § 2.5 Paint through it
+// ---------------------------------------------------------------------
+
+/// Moves every pixel of the canvas toward `col` by that pixel's coverage:
+/// zero coverage leaves a pixel alone, full coverage replaces it, and in
+/// between it's `mix(pixel, col, coverage)`, in light. The one place the
+/// renderer touches the canvas.
+pub fn paint_through(c: &mut Canvas, cov: &CoverageBuffer, col: Color) {
+    let width = c.width.min(cov.width);
+    let height = c.height.min(cov.height);
+    for y in 0..height as i64 {
+        for x in 0..width as i64 {
+            let coverage = coverage_at(cov, x, y);
+            let old = pixel_at(c, x, y);
+            write_pixel(c, x, y, mix(old, col, coverage));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 2.6 The better question
+// ---------------------------------------------------------------------
+
+/// How much of pixel (x, y) is inside the shape, brute forced: an 8-by-8
+/// grid of sample points, one at the center of each cell, counted and
+/// divided by 64.
+pub fn coverage(s: Shape, x: i64, y: i64) -> f64 {
+    let mut count = 0;
+    for j in 0..8 {
+        for i in 0..8 {
+            let px = x as f64 + (i as f64 + 0.5) / 8.0;
+            let py = y as f64 + (j as f64 + 0.5) / 8.0;
+            if inside(s, px, py) {
+                count += 1;
+            }
+        }
+    }
+    count as f64 / 64.0
+}
+
+/// A buffer full of `coverage`: slow (64 shape queries per pixel), but
+/// correct to within 1/64 for anything with a straight edge, and simple
+/// enough to trust. The reference every faster rasterizer gets checked
+/// against.
+pub fn rasterize(s: Shape, width: usize, height: usize) -> CoverageBuffer {
+    let mut cov = coverage_buffer(width, height);
+    for y in 0..height as i64 {
+        for x in 0..width as i64 {
+            set_coverage(&mut cov, x, y, coverage(s, x, y));
+        }
+    }
+    cov
+}
+
+// ---------------------------------------------------------------------
+// § 2.4 / § 2.6 / § 2.7 / § 2.8 The figures
+// ---------------------------------------------------------------------
+
+const DISC: Color = Color { red: 0.9, green: 0.55, blue: 0.1 };
+const PAPER: Color = Color { red: 0.02, green: 0.02, blue: 0.025 };
+
+/// A 40x40 canvas, a disc of radius 16 centered at (20, 20) rasterized by
+/// asking each pixel's center, painted through in orange, magnified
+/// eight times: every step a full pixel, drawn the way circles were
+/// drawn until antialiasing.
+pub fn disc_centers() -> Canvas {
+    let mut c = canvas(40, 40);
+    fill(&mut c, PAPER);
+    let cov = rasterize_centers(circle(20.0, 20.0, 16.0), 40, 40);
+    paint_through(&mut c, &cov, DISC);
+    magnify(&c, 8)
+}
+
+/// `disc_centers`, with `rasterize` in place of `rasterize_centers` and
+/// nothing else changed: the same circle, asked the better question.
+pub fn disc_coverage() -> Canvas {
+    let mut c = canvas(40, 40);
+    fill(&mut c, PAPER);
+    let cov = rasterize(circle(20.0, 20.0, 16.0), 40, 40);
+    paint_through(&mut c, &cov, DISC);
+    magnify(&c, 8)
+}
+
+/// The same disc painted once (left half) and painted again through the
+/// same coverage (right half): coverage is not opacity, and the second
+/// pass pushes every partial pixel further toward the paint, fattening
+/// the edge.
+pub fn painted_twice() -> Canvas {
+    let mut c = canvas(80, 40);
+    fill(&mut c, PAPER);
+    let cov = rasterize(circle(20.0, 20.0, 16.0), 40, 40);
+
+    let mut once = coverage_buffer(80, 40);
+    for y in 0..40i64 {
+        for x in 0..40i64 {
+            let v = coverage_at(&cov, x, y);
+            set_coverage(&mut once, x, y, v);
+            set_coverage(&mut once, x + 40, y, v);
+        }
+    }
+    paint_through(&mut c, &once, DISC);
+
+    let mut twice = coverage_buffer(80, 40);
+    for y in 0..40i64 {
+        for x in 0..40i64 {
+            set_coverage(&mut twice, x + 40, y, coverage_at(&cov, x, y));
+        }
+    }
+    paint_through(&mut c, &twice, DISC);
+
+    magnify(&c, 6)
+}
+
+/// Plate 2: the same circle on the same grid, asked two different
+/// questions. Left: centers. Right: coverage.
+pub fn plate_02() -> Canvas {
+    let mut c = canvas(80, 40);
+    fill(&mut c, PAPER);
+    let shape = circle(20.0, 20.0, 16.0);
+    let left = rasterize_centers(shape, 40, 40);
+    let right = rasterize(shape, 40, 40);
+
+    let mut both = coverage_buffer(80, 40);
+    for y in 0..40i64 {
+        for x in 0..40i64 {
+            set_coverage(&mut both, x, y, coverage_at(&left, x, y));
+            set_coverage(&mut both, x + 40, y, coverage_at(&right, x, y));
+        }
+    }
+    paint_through(&mut c, &both, DISC);
+    magnify(&c, 6)
 }

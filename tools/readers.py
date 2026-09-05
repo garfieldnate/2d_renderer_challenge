@@ -21,8 +21,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 # never copied back into the repo
-EXCLUDE = ["out/", "reference/", "features/", "chapter-*.html", "FEEDBACK.md",
-           "target/", "classes/", "bin/", "obj/", ".build/", "__pycache__/",
+# build products are anchored to the reader's root: rust keeps its src/bin/
+EXCLUDE = ["/out/", "/reference/", "/features/", "/chapter-*.html", "/FEEDBACK.md",
+           "/target/", "/classes/", "/bin/", "/obj/", "/.build/", "__pycache__/",
            "node_modules/", ".lake/", "*.olean", "*.ilean", "*.o", "*.class",
            "*.pyc", ".DS_Store"]
 
