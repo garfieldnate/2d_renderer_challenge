@@ -87,3 +87,10 @@ Feature: PPM output
     When  ppm1 ← canvas_to_ppm(c1)
     And   ppm2 ← canvas_to_ppm(c2)
     Then  max_channel_difference(ppm1, ppm2) = 255
+
+  Scenario: The same width with a different height is still a different size
+    Given c1 ← canvas(5, 3)
+    And   c2 ← canvas(5, 4)
+    When  ppm1 ← canvas_to_ppm(c1)
+    And   ppm2 ← canvas_to_ppm(c2)
+    Then  max_channel_difference(ppm1, ppm2) = 255

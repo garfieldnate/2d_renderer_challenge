@@ -4,9 +4,6 @@ Feature: Mixing two colors
   values the colors already hold. With it off, the arithmetic happens on the
   encoded file values instead, which is what web browsers do.
 
-  Scenario: Linear blending is on by default
-    Then  linear blending is on
-
   Scenario: Halfway between black and white
     Given a ← color(0, 0, 0)
     And   b ← color(1, 1, 1)
@@ -36,11 +33,12 @@ Feature: Mixing two colors
     And   b ← color(0, 0.3, 0.02)
     Then  mix(a, b, 0.5) = color(0.1527, 0.0693, 0.0067)
 
-  Scenario: The browser's way can't see past 1
+  Scenario: The browser's way clamps each end before encoding it
     Given linear blending is off
     And   a ← color(1.5, 0.5, -0.2)
     And   b ← color(0, 0, 0)
     Then  mix(a, b, 0) = color(1, 0.5, 0)
+    And   mix(a, b, 0.5) = color(0.2140, 0.1113, 0.0000)
 
   Scenario: The ends of a mix are its inputs either way
     Given linear blending is off

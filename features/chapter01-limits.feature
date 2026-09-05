@@ -11,23 +11,23 @@ Feature: The edges of the range
 
   Scenario: Encoding stretches the dark end and squeezes the bright end
     Given c ← ramp()
+    And   ref ← read_file("reference/chapter-01/ramp.ppm")
     When  ppm ← canvas_to_ppm(c)
     Then  line 4 of ppm is "0 0 0 13 13 13 22 22 22 28 28 28 34 34 34 38 38 38 42 42 42 46 46 46"
     And   ppm_pixel(ppm, 75, 0) = (148, 148, 148) ± 1
     And   ppm_pixel(ppm, 76, 0) = (148, 148, 148) ± 1
     And   ppm_pixel(ppm, 254, 0) = (255, 255, 255) ± 1
     And   distinct_values(ppm) = 183
-    And   ref ← read_file("reference/chapter-01/ramp.ppm")
     And   max_channel_difference(ppm, ref) ≤ 1
 
   Scenario: Clamping changes the color, not only the brightness
     Given c ← clamp_pair()
+    And   ref ← read_file("reference/chapter-01/clamp-pair.ppm")
+    When  ppm ← canvas_to_ppm(c)
     Then  c.width = 200
     And   c.height = 100
     And   pixel_at(c, 50, 50) = color(2, 0.5, 0.5)
     And   pixel_at(c, 150, 50) = color(1, 0.25, 0.25)
-    When  ppm ← canvas_to_ppm(c)
-    Then  ppm_pixel(ppm, 50, 50) = (255, 188, 188) ± 1
+    And   ppm_pixel(ppm, 50, 50) = (255, 188, 188) ± 1
     And   ppm_pixel(ppm, 150, 50) = (255, 137, 137) ± 1
-    And   ref ← read_file("reference/chapter-01/clamp-pair.ppm")
     And   max_channel_difference(ppm, ref) ≤ 1

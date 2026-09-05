@@ -48,7 +48,16 @@ The first draft of chapter 1 failed because it left things to the reader. Never 
 - **Helpers that tests depend on get their own scenarios**, including their failure modes:
   `max_channel_difference` on files of different sizes returns 255, and there is a scenario for it,
   because otherwise a transposed render compares as identical.
-- Step order is legal Gherkin: `Given` never follows `When` or `Then`. Use `And`.
+- Step order is legal Gherkin: `Given` and `When` never follow `Then`. Load reference files in a
+  `Given`, produce the PPM in a `When`, and put every assertion after.
+- **Probe a clamp somewhere the placement matters.** Round 2 found that clamping the result of
+  the browser-mode mix instead of its ends passed every scenario, because the only probe was at
+  t = 0 where both agree. Test at t = 0.5.
+- **Probe each half of a compound rule separately.** The size rule was tested with 5×3 vs 3×5,
+  where widths already differ; a width-only check passed. Add the 5×3 vs 5×4 case.
+- A render whose pattern is symmetric under x↔y (a checkerboard in a square) can't detect a
+  transposed writer, and doesn't need to: the output is identical. Don't contort the picture
+  for that; the canvas feature's asymmetric scenario is what catches a swapped convention.
 - In render scenarios every `ppm_pixel` probe carries `± 1`, consistently, for the same reason the
   reference diff does. Unit scenarios for the PPM writer stay exact.
 
