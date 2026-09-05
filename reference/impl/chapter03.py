@@ -95,11 +95,14 @@ def thick_line(x0, y0, x1, y1, width):
     ax, ay, bx, by = x0 + 0.5, y0 + 0.5, x1 + 0.5, y1 + 0.5
     dx, dy = bx - ax, by - ay
     length = math.hypot(dx, dy)
+    h = width / 2
     if length == 0:
-        dx, dy, length = 1.0, 0.0, 1.0   # a zero-length line is a width-by-width square
+        # a zero-length line is a width-by-width square: pick a direction and
+        # push the ends out by half the width
+        dx, dy, length = 1.0, 0.0, 1.0
+        ax, bx = ax - h, bx + h
     dx, dy = dx / length, dy / length
     nx, ny = -dy, dx
-    h = width / 2
     sides = [
         half_plane(ax, ay, dx, dy),
         half_plane(bx, by, -dx, -dy),

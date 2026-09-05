@@ -350,8 +350,9 @@ fan_bresenham():
   <p>So describe the rectangle honestly and let the supersampler do the work. <code>thick_line(x0,
     y0, x1, y1, width)</code> is a shape: the rectangle of that width centered on the segment from the
     center of pixel <code>(x0, y0)</code> to the center of pixel <code>(x1, y1)</code>, with square
-    ends. A line of no length has no direction, so it gets <code>(1, 0)</code> and becomes a
-    width-by-width square; there's a scenario, because chapter 6 will hand you degenerate edges.
+    ends. A line of no length has no direction, so it gets <code>(1, 0)</code> and its two ends are
+    pushed apart by half the width each, which makes it a width-by-width square; there's a scenario,
+    because chapter 6 will hand you degenerate edges.
     Build it from four half-planes. With <code>d</code> the unit direction of the segment and
     <code>n</code> the unit normal, <code>(-d.y, d.x)</code>, the four are: through the start point
     facing along <code>d</code>; through the end point facing back along <code>-d</code>; and one
@@ -364,9 +365,13 @@ fan_bresenham():
 <pre><code>thick_line(x0, y0, x1, y1, width):
   ax, ay ← x0 + 0.5, y0 + 0.5                <span class="cm">// pixel centers</span>
   bx, by ← x1 + 0.5, y1 + 0.5
-  dx, dy ← (bx - ax, by - ay) / length       <span class="cm">// unit direction</span>
-  nx, ny ← -dy, dx                           <span class="cm">// unit normal</span>
   h ← width / 2
+  <span class="kw">if</span> length = 0:                             <span class="cm">// no direction: make it a square</span>
+    dx, dy ← 1, 0
+    ax, bx ← ax - h, bx + h
+  <span class="kw">else</span>:
+    dx, dy ← (bx - ax, by - ay) / length     <span class="cm">// unit direction</span>
+  nx, ny ← -dy, dx                           <span class="cm">// unit normal</span>
   <span class="kw">return</span> intersection of
     half_plane(ax, ay, dx, dy),               <span class="cm">// ahead of the start</span>
     half_plane(bx, by, -dx, -dy),             <span class="cm">// behind the end</span>
@@ -430,6 +435,12 @@ fan_bresenham():
     <span class="kw">And</span>   coverage_at(cov, 3, 4) = 0
     <span class="kw">And</span>   ink(cov) = 7
 
+  <span class="kw">Scenario</span>: A line of no length is a square
+    <span class="kw">Given</span> s ← thick_line(3, 3, 3, 3, 1)
+    <span class="kw">When</span>  cov ← rasterize(s, 8, 8)
+    <span class="kw">Then</span>  coverage_at(cov, 3, 3) = 1
+    <span class="kw">And</span>   ink(cov) = 1
+
   <span class="kw">Scenario</span>: A wider line
     <span class="kw">Given</span> s ← thick_line(0, 3, 7, 3, 3)
     <span class="kw">When</span>  cov ← rasterize(s, 10, 10)
@@ -466,8 +477,8 @@ fan_bresenham():
   <span class="kw">Scenario</span>: Except that the grid is blind along the diagonal
     <span class="kw">Given</span> s ← thick_line(2, 2, 9, 9, 1)
     <span class="kw">When</span>  cov ← rasterize(s, 20, 20)
-    # what the sampler says, exactly
-    <span class="kw">Then</span>  ink(cov) = 9.7188
+    # what the sampler says, exactly: 622 of the 640 samples the band could cover
+    <span class="kw">Then</span>  ink(cov) = 9.71875
     # and how far that is from the true length, 7 * sqrt(2)
     <span class="kw">And</span>   ink(cov) = 9.8995 ± 0.25</code></pre>
   </div>
@@ -544,6 +555,7 @@ fan_bresenham():
 
   <span class="kw">Scenario</span>: Bresenham's fan
     <span class="kw">Given</span> c ← fan_bresenham()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-03/fan-bresenham.ppm")
     <span class="kw">When</span>  p6 ← canvas_to_p6(c)
     <span class="kw">Then</span>  c.width = 160
     <span class="kw">And</span>   c.height = 160
@@ -555,9 +567,11 @@ fan_bresenham():
     <span class="kw">And</span>   ppm_pixel(p6, 103, 120) = (246, 246, 241) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 102, 120) = (39, 39, 44) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 104, 120) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
 
   <span class="kw">Scenario</span>: Wu's fan
     <span class="kw">Given</span> c ← fan_wu()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-03/fan-wu.ppm")
     <span class="kw">When</span>  p6 ← canvas_to_p6(c)
     <span class="kw">Then</span>  ppm_pixel(p6, 80, 80) = (246, 246, 241) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 120, 80) = (246, 246, 241) ± 1
@@ -565,6 +579,7 @@ fan_bresenham():
     <span class="kw">And</span>   ppm_pixel(p6, 100, 92) = (199, 199, 196) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 103, 120) = (220, 220, 216) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 104, 120) = (130, 130, 129) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
 
   <span class="kw">Scenario</span>: The fan as twelve thin rectangles
     <span class="kw">Given</span> c ← fan_coverage()
