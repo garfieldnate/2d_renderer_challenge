@@ -17,12 +17,15 @@ Feature: The coverage buffer, and the first question
     And   coverage_at(cov, 1, 2) = 0
     And   ink(cov) = 0.75
 
-  Scenario: Setting coverage outside the buffer is ignored
+  Scenario: Setting coverage outside the buffer is ignored, and reading it gives 0
     Given cov ← coverage_buffer(4, 3)
     When  set_coverage(cov, -1, 1, 1)
     And   set_coverage(cov, 4, 1, 1)
     And   set_coverage(cov, 1, 3, 1)
     Then  ink(cov) = 0
+    And   coverage_at(cov, -1, 1) = 0
+    And   coverage_at(cov, 4, 1) = 0
+    And   coverage_at(cov, 1, 3) = 0
 
   Scenario: The center of pixel (x, y) is (x + 0.5, y + 0.5)
     Given s ← half_plane(2.5, 0, 1, 0)
@@ -35,6 +38,15 @@ Feature: The coverage buffer, and the first question
     Given s ← half_plane(2.55, 0, 1, 0)
     Then  center_inside(s, 2, 4) = 0
     And   coverage(s, 2, 4) = 0.5
+
+  Scenario: A buffer need not be square
+    Given s ← rectangle(0, 0, 2, 1)
+    When  cov ← rasterize_centers(s, 4, 2)
+    Then  cov.width = 4
+    And   cov.height = 2
+    And   coverage_at(cov, 1, 0) = 1
+    And   coverage_at(cov, 0, 1) = 0
+    And   ink(cov) = 2
 
   Scenario: A rectangle, by asking each center
     Given s ← rectangle(1.25, 2.0, 4.75, 5.0)

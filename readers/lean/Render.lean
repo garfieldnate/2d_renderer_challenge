@@ -1,18 +1,28 @@
 /-
-  Writes the chapter's five pictures into out/.
+  Writes every chapter's pictures into out/.
+  Chapter 1's are P3 (text); chapter 2's are P6 (bytes).
 -/
 import Renderer
 open Renderer
 
-def save (name : String) (c : Canvas) : IO Unit := do
+def saveP3 (name : String) (c : Canvas) : IO Unit := do
   let path := System.FilePath.mk s!"out/{name}"
   IO.FS.writeFile path (canvasToPpm c)
-  IO.println s!"wrote {path} ({c.width}x{c.height})"
+  IO.println s!"wrote {path} ({c.width}x{c.height}, P3)"
+
+def saveP6 (name : String) (c : Canvas) : IO Unit := do
+  let path := System.FilePath.mk s!"out/{name}"
+  IO.FS.writeBinFile path (canvasToP6 c)
+  IO.println s!"wrote {path} ({c.width}x{c.height}, P6)"
 
 def main : IO Unit := do
   IO.FS.createDirAll "out"
-  save "gray-match.ppm" grayMatch
-  save "quarter-match.ppm" quarterMatch
-  save "ramp.ppm" ramp
-  save "clamp-pair.ppm" clampPair
-  save "plate-01.ppm" (← plate01)
+  saveP3 "gray-match.ppm" grayMatch
+  saveP3 "quarter-match.ppm" quarterMatch
+  saveP3 "ramp.ppm" ramp
+  saveP3 "clamp-pair.ppm" clampPair
+  saveP3 "plate-01.ppm" (← plate01)
+  saveP6 "disc-centers.ppm" (← discCenters)
+  saveP6 "disc-coverage.ppm" (← discCoverage)
+  saveP6 "painted-twice.ppm" (← paintedTwice)
+  saveP6 "plate-02.ppm" (← plate02)

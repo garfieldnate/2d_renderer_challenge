@@ -139,7 +139,17 @@ def canvasToPpm (c : Canvas) : String := Id.run do
     out := out ++ line ++ "\n"
   return out
 
-/-! ### Reading PPM text back (test helpers, not renderer functions) -/
+/-! ### Reading a PPM back (test helpers, not renderer functions)
+
+From chapter 2 on a PPM may be P3 (text) or P6 (bytes), so the readers work on
+bytes and accept either: the `PpmBytes` class lets a `String` and a `ByteArray`
+be passed to the same function. -/
+
+class PpmBytes (α : Type) where
+  ppmBytes : α → ByteArray
+
+instance : PpmBytes ByteArray := ⟨id⟩
+instance : PpmBytes String := ⟨String.toUTF8⟩
 
 def ppmTokens (s : String) : Array String :=
   let flat := ((s.replace "\r" " ").replace "\n" " ").replace "\t" " "
@@ -151,34 +161,65 @@ structure PpmInfo where
   data : Array Nat
 deriving Inhabited
 
-def parsePpm (s : String) : PpmInfo :=
-  let toks := ppmTokens s
-  let w := (toks[1]!).toNat!
-  let h := (toks[2]!).toNat!
-  let data := (toks.extract 4 toks.size).map (·.toNat!)
-  { width := w, height := h, data := data }
+private def isSpaceByte (b : UInt8) : Bool :=
+  b == 32 || b == 9 || b == 10 || b == 11 || b == 12 || b == 13
 
-/-- The three whole numbers at pixel (x, y) of a PPM's text. -/
-def ppmPixel (s : String) (x y : Nat) : Nat × Nat × Nat :=
+/-- Skips whitespace, then reads one ASCII whole number.
+    Returns the number and the index just past its last digit. -/
+private def readHeaderNat (b : ByteArray) (i0 : Nat) : Nat × Nat := Id.run do
+  let mut i := i0
+  while i < b.size && isSpaceByte b[i]! do
+    i := i + 1
+  let mut v := 0
+  while i < b.size && b[i]! >= 48 && b[i]! <= 57 do
+    v := v * 10 + (b[i]!.toNat - 48)
+    i := i + 1
+  return (v, i)
+
+def parsePpmBytes (b : ByteArray) : PpmInfo :=
+  if b.size >= 2 && b[0]! == 80 && b[1]! == 54 then
+    -- "P6": three header numbers, exactly one whitespace byte, then raw bytes.
+    let (w, i) := readHeaderNat b 2
+    let (h, i) := readHeaderNat b i
+    let (_maxval, i) := readHeaderNat b i
+    let start := i + 1
+    let n := min (3 * w * h) (b.size - start)
+    { width := w, height := h,
+      data := Id.run do
+        let mut d := Array.emptyWithCapacity n
+        for k in [0:n] do
+          d := d.push b[start + k]!.toNat
+        return d }
+  else
+    -- "P3": whitespace-separated decimal text.
+    let toks := ppmTokens (String.fromUTF8! b)
+    { width := (toks[1]!).toNat!, height := (toks[2]!).toNat!,
+      data := (toks.extract 4 toks.size).map (·.toNat!) }
+
+def parsePpm [PpmBytes α] (s : α) : PpmInfo := parsePpmBytes (PpmBytes.ppmBytes s)
+
+/-- The three whole numbers at pixel (x, y) of a PPM. -/
+def ppmPixel [PpmBytes α] (s : α) (x y : Nat) : Nat × Nat × Nat :=
   let p := parsePpm s
   let i := (y * p.width + x) * 3
   (p.data[i]!, p.data[i+1]!, p.data[i+2]!)
 
-/-- How many different numbers appear in the pixel data. -/
-def distinctValues (s : String) : Nat :=
-  let d := (parsePpm s).data.qsort (fun a b => a < b)
-  Id.run do
-    let mut n := 0
-    let mut prev : Option Nat := none
-    for v in d do
-      if prev != some v then
-        n := n + 1
-        prev := some v
-    return n
+/-- How many different numbers appear in the pixel data.
+    Counted with a bucket per value: `Array.qsort` is quadratic on the long
+    runs of equal bytes a P6 image is mostly made of. -/
+def distinctValues [PpmBytes α] (s : α) : Nat := Id.run do
+  let d := (parsePpm s).data
+  let mut seen := Array.replicate (d.foldl max 0 + 1) false
+  let mut n := 0
+  for v in d do
+    if !seen[v]! then
+      seen := seen.set! v true
+      n := n + 1
+  return n
 
 /-- Largest absolute difference between corresponding pixel numbers.
     Files of different sizes are as different as it gets. -/
-def maxChannelDifference (a b : String) : Nat :=
+def maxChannelDifference [PpmBytes α] [PpmBytes β] (a : α) (b : β) : Nat :=
   let pa := parsePpm a
   let pb := parsePpm b
   if pa.width != pb.width || pa.height != pb.height then 255
@@ -192,7 +233,9 @@ def maxChannelDifference (a b : String) : Nat :=
       if d > m then m := d
     return m
 
-def readFile (path : String) : IO String := IO.FS.readFile path
+/-- Reference images are bytes from chapter 2 on; a P3 file is just text that
+    happens to be stored in bytes. -/
+def readFile (path : String) : IO ByteArray := IO.FS.readBinFile path
 
 /-! ## § 1.7  Two ways to mix
 
@@ -217,8 +260,12 @@ def mixEncoded (a b : Color) (t : Float) : Color :=
 def mixWith (linear : Bool) (a b : Color) (t : Float) : Color :=
   if linear then mixLinear a b t else mixEncoded a b t
 
-def mix (a b : Color) (t : Float) : IO Color := do
-  return mixWith (← linearBlendingIsOn) a b t
+/-- The switch can be passed instead of set; passing it does not touch the
+    global one. -/
+def mix (a b : Color) (t : Float) (linear : Option Bool := none) : IO Color := do
+  match linear with
+  | some l => return mixWith l a b t
+  | none   => return mixWith (← linearBlendingIsOn) a b t
 
 /-! ## § 1.6, 1.8, 1.9  The renders -/
 
@@ -283,5 +330,186 @@ def plate01 : IO Canvas := do
   c ← rampPair c 90 (color 0.7 0 0) (color 0 0.3 0.02)
   setLinearBlending true   -- leave it as you found it
   return c
+
+/-! # Chapter 2 -- Coverage -/
+
+/-! ## § 2.1  Shapes are questions
+
+A shape is a function from a point to yes or no. In Lean that is one structure
+with one function field: any `Shape` is built by handing `Shape.mk` a
+predicate, so "the interface" costs nothing and new shapes need no new type. -/
+
+structure Shape where
+  isInside : Float → Float → Bool
+
+/-- Is this point inside you? -/
+def inside (s : Shape) (x y : Float) : Bool := s.isInside x y
+
+/-- Inside means within the radius, boundary included. -/
+def circle (cx cy r : Float) : Shape :=
+  ⟨fun x y => (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r⟩
+
+/-- left, top, right, bottom. Boundary included. -/
+def rectangle (x0 y0 x1 y1 : Float) : Shape :=
+  ⟨fun x y => x0 <= x && x <= x1 && y0 <= y && y <= y1⟩
+
+/-- A point on the line and a normal pointing into the half you want.
+    Inside when the dot product is non-negative; the normal needn't be unit. -/
+def halfPlane (px py nx ny : Float) : Shape :=
+  ⟨fun x y => (x - px) * nx + (y - py) * ny >= 0.0⟩
+
+/-! ## § 2.2  A faster file
+
+Same numbers as the P3 writer, written as bytes. -/
+
+def canvasToP6 (c : Canvas) : ByteArray := Id.run do
+  let header := s!"P6\n{c.width} {c.height}\n255\n".toUTF8
+  let mut out := ByteArray.emptyWithCapacity (header.size + 3 * c.width * c.height)
+  out := out ++ header
+  for p in c.pixels do
+    out := out.push (channelToByte p.red).toUInt8
+    out := out.push (channelToByte p.green).toUInt8
+    out := out.push (channelToByte p.blue).toUInt8
+  return out
+
+/-! ## § 2.3  A loupe -/
+
+/-- `k` times wider and taller, every pixel repeated into a k-by-k block. -/
+def magnify (c : Canvas) (k : Nat) : Canvas := Id.run do
+  let mut m := canvas (c.width * k) (c.height * k)
+  for y in [0:c.height] do
+    for x in [0:c.width] do
+      let col := c.pixels[y * c.width + x]!
+      for j in [0:k] do
+        for i in [0:k] do
+          m := writePixel m (x * k + i) (y * k + j) col
+  return m
+
+/-! ## § 2.4  The coverage buffer, and the first question
+
+A canvas of numbers instead of colors. Like `Canvas` it is a value: every
+write returns a new buffer. -/
+
+structure Coverage where
+  width : Nat
+  height : Nat
+  values : Array Float
+deriving Inhabited
+
+def coverageBuffer (w h : Nat) : Coverage :=
+  { width := w, height := h, values := Array.replicate (w * h) 0.0 }
+
+namespace Coverage
+
+def coverageAt (cov : Coverage) (x y : Int) : Float :=
+  if x < 0 || y < 0 || x >= (cov.width : Int) || y >= (cov.height : Int) then 0.0
+  else cov.values[y.toNat * cov.width + x.toNat]!
+
+/-- Writes outside the buffer are dropped, as with the canvas. -/
+def setCoverage (cov : Coverage) (x y : Int) (v : Float) : Coverage :=
+  if x < 0 || y < 0 || x >= (cov.width : Int) || y >= (cov.height : Int) then cov
+  else { cov with values := cov.values.set! (y.toNat * cov.width + x.toNat) v }
+
+/-- The sum of every value: the shape's area in pixels, as the buffer sees it. -/
+def ink (cov : Coverage) : Float := cov.values.foldl (· + ·) 0.0
+
+end Coverage
+
+export Coverage (coverageAt setCoverage ink)
+
+/-- Pixel (x, y) is the square from (x, y) to (x+1, y+1), so its center is
+    (x + 0.5, y + 0.5). 1 if that point is inside, 0 if not. -/
+def centerInside (s : Shape) (x y : Nat) : Float :=
+  if inside s (x.toFloat + 0.5) (y.toFloat + 0.5) then 1.0 else 0.0
+
+def rasterizeCenters (s : Shape) (w h : Nat) : Coverage := Id.run do
+  let mut cov := coverageBuffer w h
+  for y in [0:h] do
+    for x in [0:w] do
+      cov := setCoverage cov x y (centerInside s x y)
+  return cov
+
+/-! ## § 2.5  Paint through it -/
+
+/-- Moves every pixel of the canvas toward `col` by that pixel's coverage.
+    The one place the renderer touches the canvas. -/
+def paintThrough (c : Canvas) (cov : Coverage) (col : Color) : IO Canvas := do
+  let mut out := c
+  for y in [0:c.height] do
+    for x in [0:c.width] do
+      out := writePixel out x y (← mix (pixelAt out x y) col (coverageAt cov x y))
+  return out
+
+/-! ## § 2.6  The better question
+
+Sixty-four sample points, one at the center of each cell of an 8-by-8 grid. -/
+
+def coverage (s : Shape) (x y : Nat) : Float := Id.run do
+  let mut n := 0
+  for j in [0:8] do
+    for i in [0:8] do
+      if inside s (x.toFloat + (i.toFloat + 0.5) / 8.0)
+                  (y.toFloat + (j.toFloat + 0.5) / 8.0) then
+        n := n + 1
+  return n.toFloat / 64.0
+
+def rasterize (s : Shape) (w h : Nat) : Coverage := Id.run do
+  let mut cov := coverageBuffer w h
+  for y in [0:h] do
+    for x in [0:w] do
+      cov := setCoverage cov x y (coverage s x y)
+  return cov
+
+/-! ## § 2.5, 2.6, 2.7, 2.8  The renders -/
+
+private def paper : Color := color 0.02 0.02 0.025
+private def orange : Color := color 0.9 0.55 0.1
+
+def discCenters : IO Canvas := do
+  let mut c := canvas 40 40
+  c := fill c paper
+  let cov := rasterizeCenters (circle 20 20 16) 40 40
+  c ← paintThrough c cov orange
+  return magnify c 8
+
+/-- `discCenters` with `rasterize` in place of `rasterizeCenters`, and nothing
+    else changed. -/
+def discCoverage : IO Canvas := do
+  let mut c := canvas 40 40
+  c := fill c paper
+  let cov := rasterize (circle 20 20 16) 40 40
+  c ← paintThrough c cov orange
+  return magnify c 8
+
+def paintedTwice : IO Canvas := do
+  let mut c := canvas 80 40
+  c := fill c paper
+  let cov := rasterize (circle 20 20 16) 40 40
+  let mut once := coverageBuffer 80 40          -- the disc in both halves
+  for y in [0:40] do
+    for x in [0:40] do
+      once := setCoverage once x y (coverageAt cov x y)
+      once := setCoverage once (x + 40) y (coverageAt cov x y)
+  c ← paintThrough c once orange
+  let mut twice := coverageBuffer 80 40         -- the disc in the right half only
+  for y in [0:40] do
+    for x in [0:40] do
+      twice := setCoverage twice (x + 40) y (coverageAt cov x y)
+  c ← paintThrough c twice orange
+  return magnify c 6
+
+def plate02 : IO Canvas := do
+  let mut c := canvas 80 40
+  c := fill c paper
+  let shape := circle 20 20 16
+  let left := rasterizeCenters shape 40 40
+  let right := rasterize shape 40 40
+  let mut both := coverageBuffer 80 40
+  for y in [0:40] do
+    for x in [0:40] do
+      both := setCoverage both x y (coverageAt left x y)
+      both := setCoverage both (x + 40) y (coverageAt right x y)
+  c ← paintThrough c both orange
+  return magnify c 6
 
 end Renderer

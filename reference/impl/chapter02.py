@@ -62,7 +62,10 @@ def coverage_buffer(w, h):
 
 
 def coverage_at(cov, x, y):
-    return cov.values[y * cov.width + x]
+    """0 outside the buffer, so a small buffer can paint a big canvas"""
+    if 0 <= x < cov.width and 0 <= y < cov.height:
+        return cov.values[y * cov.width + x]
+    return 0.0
 
 
 def set_coverage(cov, x, y, v):

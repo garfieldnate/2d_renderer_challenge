@@ -134,7 +134,9 @@
     got it backwards. Bytes in the scenarios are numbered from 1, the same way lines are: byte 1 is
     the <code>P</code>, and in a 2-by-1 file byte 12 is the first pixel byte. <code>length</code> is a
     count of bytes, not characters. And the binary writer shares the P3 writer's clamp; there's a
-    scenario that feeds it a 1.5.</p>
+    scenario that feeds it a 1.5. One practical note: files are about to get big enough that a
+    <code>distinct_values</code> built on sorting will hurt, and a 300,000-byte image with five
+    distinct values is the worst input a naive quicksort can meet. Count with a set or a table.</p>
 
   <p>Keep the P3 writer. When something goes wrong, you'll still want to <code>cat</code> a file.</p>
 
@@ -214,7 +216,8 @@
     taller, with every pixel repeated into a <code>k</code>-by-<code>k</code> block. No smoothing,
     no averaging, no cleverness. Image viewers do this when you zoom in, but doing it yourself means
     the file on disk is what you see, and you're not at the mercy of a viewer that decides to
-    "improve" the zoom with a blur. The scenario magnifies a 2-by-1 canvas rather than a square one
+    "improve" the zoom with a blur. <code>k</code> is a whole number of at least 1. The scenario
+    magnifies a 2-by-1 canvas rather than a square one
     on purpose: a magnifier with x and y swapped produces a perfect picture of any shape that's
     symmetric about the diagonal, which the discs later in this chapter are, so this is the one
     place the swap gets caught.</p>
@@ -250,9 +253,12 @@
   <p>A coverage buffer is a canvas of numbers instead of colors. It has a width and a height, and
     one number per pixel, from 0 for "none of this pixel is inside" to 1 for "all of it". It starts
     at zero. You read it with <code>coverage_at</code> and write it with <code>set_coverage</code>,
-    and as with the canvas, writes outside the buffer are dropped and reads outside it are your
-    problem. Nothing in the book reads out of bounds, and <code>paint_through</code> is only ever
-    called with a canvas and a buffer of the same size. Its total, <code>ink</code>, is
+    and as with the canvas, writes outside the buffer are dropped. Reads outside it return 0, which
+    is more than the canvas promises, and it's deliberate: it means <code>paint_through</code>,
+    which walks the canvas, can be handed a buffer smaller than the canvas and paint only where the
+    buffer has something to say. The scenarios in this chapter build buffers the size of the canvas
+    anyway, so you can see every step. And the buffers aren't all square, on purpose: a rasterizer
+    that swaps width and height passes every square test there is. Its total, <code>ink</code>, is
     the sum of every value, and you'll use it constantly: it's the area of the shape, in pixels, as
     the buffer sees it.</p>
 
@@ -295,12 +301,15 @@
     <span class="kw">And</span>   coverage_at(cov, 1, 2) = 0
     <span class="kw">And</span>   ink(cov) = 0.75
 
-  <span class="kw">Scenario</span>: Setting coverage outside the buffer is ignored
+  <span class="kw">Scenario</span>: Setting coverage outside the buffer is ignored, and reading it gives 0
     <span class="kw">Given</span> cov ← coverage_buffer(4, 3)
     <span class="kw">When</span>  set_coverage(cov, -1, 1, 1)
     <span class="kw">And</span>   set_coverage(cov, 4, 1, 1)
     <span class="kw">And</span>   set_coverage(cov, 1, 3, 1)
     <span class="kw">Then</span>  ink(cov) = 0
+    <span class="kw">And</span>   coverage_at(cov, -1, 1) = 0
+    <span class="kw">And</span>   coverage_at(cov, 4, 1) = 0
+    <span class="kw">And</span>   coverage_at(cov, 1, 3) = 0
 
   <span class="kw">Scenario</span>: The center of pixel (x, y) is (x + 0.5, y + 0.5)
     <span class="kw">Given</span> s ← half_plane(2.5, 0, 1, 0)
@@ -313,6 +322,15 @@
     <span class="kw">Given</span> s ← half_plane(2.55, 0, 1, 0)
     <span class="kw">Then</span>  center_inside(s, 2, 4) = 0
     <span class="kw">And</span>   coverage(s, 2, 4) = 0.5
+
+  <span class="kw">Scenario</span>: A buffer need not be square
+    <span class="kw">Given</span> s ← rectangle(0, 0, 2, 1)
+    <span class="kw">When</span>  cov ← rasterize_centers(s, 4, 2)
+    <span class="kw">Then</span>  cov.width = 4
+    <span class="kw">And</span>   cov.height = 2
+    <span class="kw">And</span>   coverage_at(cov, 1, 0) = 1
+    <span class="kw">And</span>   coverage_at(cov, 0, 1) = 0
+    <span class="kw">And</span>   ink(cov) = 2
 
   <span class="kw">Scenario</span>: A rectangle, by asking each center
     <span class="kw">Given</span> s ← rectangle(1.25, 2.0, 4.75, 5.0)
@@ -493,6 +511,16 @@
     <span class="kw">And</span>   coverage_at(cov, 2, 5) = 0
     <span class="kw">And</span>   ink(cov) = 10.5
 
+  <span class="kw">Scenario</span>: Neither need the buffer be square here
+    <span class="kw">Given</span> s ← rectangle(0, 0, 2, 1)
+    <span class="kw">When</span>  cov ← rasterize(s, 4, 2)
+    <span class="kw">Then</span>  cov.width = 4
+    <span class="kw">And</span>   cov.height = 2
+    <span class="kw">And</span>   coverage_at(cov, 1, 0) = 1
+    <span class="kw">And</span>   coverage_at(cov, 2, 0) = 0
+    <span class="kw">And</span>   coverage_at(cov, 0, 1) = 0
+    <span class="kw">And</span>   ink(cov) = 2
+
   <span class="kw">Scenario</span>: A half-plane through a pixel center covers half of it
     <span class="kw">Given</span> s ← half_plane(2.5, 4.5, 0.6, 0.8)
     <span class="kw">Then</span>  coverage(s, 2, 4) = 0.5
@@ -525,9 +553,18 @@
 
   <p>The disc's area, remember, is 78.54. The center test said 80. The sample test says 78.5, which
     is why the scenario asserts the ink twice: once as the exact number the buffer holds, and once
-    against the true area with a tenth of a pixel to spare. The difference isn't the point. The point is the edge. Render <code>disc_coverage</code>, which
-    is <code>disc_centers</code> with <code>rasterize</code> in place of
-    <code>rasterize_centers</code> and nothing else changed, and look at the two files side by side.</p>
+    against the true area with a tenth of a pixel to spare. The difference isn't the point. The
+    point is the edge. Render <code>disc_coverage</code>, which is <code>disc_centers</code> with
+    <code>rasterize</code> in place of <code>rasterize_centers</code> and nothing else changed:</p>
+
+<pre><code>disc_coverage():
+  c ← canvas(40, 40)
+  fill(c, color(0.02, 0.02, 0.025))
+  cov ← rasterize(circle(20, 20, 16), 40, 40)
+  paint_through(c, cov, color(0.9, 0.55, 0.1))
+  <span class="kw">return</span> magnify(c, 8)</code></pre>
+
+  <p>Look at the two files side by side.</p>
 
   <p>Notice what didn't happen. Nobody blurred anything. There's no smoothing pass, no filter, no
     post-processing. The edge pixels are the colors they are because that's how much of each pixel

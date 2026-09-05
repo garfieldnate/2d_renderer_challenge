@@ -22,6 +22,16 @@ Feature: The better question
     And   coverage_at(cov, 2, 5) = 0
     And   ink(cov) = 10.5
 
+  Scenario: Neither need the buffer be square here
+    Given s ← rectangle(0, 0, 2, 1)
+    When  cov ← rasterize(s, 4, 2)
+    Then  cov.width = 4
+    And   cov.height = 2
+    And   coverage_at(cov, 1, 0) = 1
+    And   coverage_at(cov, 2, 0) = 0
+    And   coverage_at(cov, 0, 1) = 0
+    And   ink(cov) = 2
+
   Scenario: A half-plane through a pixel center covers half of it
     Given s ← half_plane(2.5, 4.5, 0.6, 0.8)
     Then  coverage(s, 2, 4) = 0.5
