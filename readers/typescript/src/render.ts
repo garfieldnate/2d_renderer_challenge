@@ -5,7 +5,9 @@ import {
   clamp_pair,
   disc_centers,
   disc_coverage,
+  fan_bresenham,
   fan_coverage,
+  fan_wu,
   gray_match,
   painted_twice,
   plate_01,
@@ -28,6 +30,8 @@ const p6: [string, () => Canvas][] = [
   ["out/disc-coverage.ppm", disc_coverage],
   ["out/painted-twice.ppm", painted_twice],
   ["out/plate-02.ppm", plate_02],
+  ["out/fan-bresenham.ppm", fan_bresenham],
+  ["out/fan-wu.ppm", fan_wu],
   ["out/fan-coverage.ppm", fan_coverage],
   ["out/plate-03.ppm", plate_03],
 ];

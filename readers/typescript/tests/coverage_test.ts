@@ -26,6 +26,17 @@ Deno.test("A rectangle is covered exactly, when its edges land on sample boundar
   assert_eq(ink(cov), 10.5);
 });
 
+Deno.test("Neither need the buffer be square here", () => {
+  const s = rectangle(0, 0, 2, 1);
+  const cov = rasterize(s, 4, 2);
+  assert_eq(cov.width, 4, 0);
+  assert_eq(cov.height, 2, 0);
+  assert_eq(coverage_at(cov, 1, 0), 1, 0);
+  assert_eq(coverage_at(cov, 2, 0), 0, 0);
+  assert_eq(coverage_at(cov, 0, 1), 0, 0);
+  assert_eq(ink(cov), 2, 0);
+});
+
 Deno.test("A half-plane through a pixel center covers half of it", () => {
   const s = half_plane(2.5, 4.5, 0.6, 0.8);
   assert_eq(coverage(s, 2, 4), 0.5);

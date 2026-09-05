@@ -65,6 +65,23 @@ Deno.test("The weights don't depend on which end you start from", () => {
   assert_eq(max_channel_difference(canvas_to_p6(c1), canvas_to_p6(c2)), 0, 0);
 });
 
+// yi comes from floor, not trunc: y goes negative here (-1, -0.5, ...),
+// and trunc(-0.5) would give the wrong pixel and a negative weight.
+Deno.test("A line that starts above the canvas", () => {
+  const c = canvas(10, 10);
+  line_wu(c, 0, -1, 8, 3, WHITE);
+  assert_color(pixel_at(c, 1, 0), gray(0.5));
+  assert_color(pixel_at(c, 2, 0), color(1, 1, 1));
+  assert_eq(total_ink(c), 7.5);
+});
+
+Deno.test("A Wu line of one point", () => {
+  const c = canvas(10, 10);
+  line_wu(c, 3, 3, 3, 3, WHITE);
+  assert_pixels(lit_pixels(c), [[3, 3]]);
+  assert_color(pixel_at(c, 3, 3), color(1, 1, 1));
+});
+
 Deno.test("Sevenths", () => {
   const c = canvas(10, 10);
   line_wu(c, 0, 0, 7, 3, WHITE);

@@ -67,12 +67,14 @@ export function thick_line(
   const ax = x0 + 0.5, ay = y0 + 0.5;
   const bx = x1 + 0.5, by = y1 + 0.5;
   const len = Math.hypot(bx - ax, by - ay);
-  // A zero-length segment has no direction; point it along x so the ends
-  // still cut a square of the requested width out of the plane.
-  const dx = len === 0 ? 1 : (bx - ax) / len;
-  const dy = len === 0 ? 0 : (by - ay) / len;
-  const nx = -dy, ny = dx; // unit normal
   const h = width / 2;
+  // A zero-length segment has no direction to cap along, so it isn't a
+  // flush-capped rectangle of zero length: it's a width-by-width square
+  // centered on the point.
+  if (len === 0) return rectangle(ax - h, ay - h, ax + h, ay + h);
+  const dx = (bx - ax) / len;
+  const dy = (by - ay) / len;
+  const nx = -dy, ny = dx; // unit normal
   return intersection(
     half_plane(ax, ay, dx, dy), // past the start, looking along the line
     half_plane(bx, by, -dx, -dy), // before the end, looking back

@@ -23,8 +23,9 @@ deno run --allow-write --allow-read src/render.ts   # writes the pictures to out
 | `src/scenes.ts` | every picture the book asks for |
 | `src/assert.ts` | test-only helpers: comparisons, `lit_pixels`, `total_ink` |
 
-119 scenarios pass: 88 from chapters 1–2, 31 from chapter 3
-(9 Bresenham, 10 Wu, 7 thin-rectangle, 5 plate). `out/fan-coverage.ppm` and
-`out/plate-03.ppm` come out byte-identical to `reference/chapter-03/`.
+135 scenarios pass: 98 from chapters 1–2, 37 from chapter 3
+(10 Bresenham, 12 Wu, 10 thin-rectangle, 5 plate). `out/fan-bresenham.ppm`,
+`out/fan-wu.ppm`, `out/fan-coverage.ppm` and `out/plate-03.ppm` all come out
+byte-identical to `reference/chapter-03/`.
 
 See `FEEDBACK.md` for notes on the chapter.

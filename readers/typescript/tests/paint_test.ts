@@ -4,6 +4,7 @@ import { color } from "../src/color.ts";
 import { coverage_buffer, paint_through, set_coverage } from "../src/coverage.ts";
 import { canvas_to_p6, canvas_to_ppm, distinct_values, max_channel_difference, ppm_pixel } from "../src/ppm.ts";
 import { disc_centers } from "../src/scenes.ts";
+import { set_linear_blending } from "../src/mix.ts";
 import {
   assert_color,
   assert_eq,
@@ -39,13 +40,21 @@ Deno.test("Zero leaves it alone and one replaces it", () => {
   assert_color(pixel_at(c, 1, 0), color(1, 0, 0));
 });
 
-Deno.test("The arithmetic is on light", () => {
-  const c = canvas(1, 1);
-  const cov = coverage_buffer(1, 1);
-  set_coverage(cov, 0, 0, 0.5);
-  paint_through(c, cov, color(1, 1, 1));
-  const ppm = canvas_to_ppm(c);
-  assert_triple(ppm_pixel(ppm, 0, 0), [188, 188, 188]);
+// paint_through always mixes in light, even with the naive-blending switch
+// off: this is the probe that would catch it reading the switch instead.
+Deno.test("The arithmetic is on light, whatever the switch says", () => {
+  set_linear_blending(false);
+  try {
+    const c = canvas(1, 1);
+    const cov = coverage_buffer(1, 1);
+    set_coverage(cov, 0, 0, 0.5);
+    paint_through(c, cov, color(1, 1, 1));
+    const ppm = canvas_to_ppm(c);
+    assert_color(pixel_at(c, 0, 0), color(0.5, 0.5, 0.5));
+    assert_triple(ppm_pixel(ppm, 0, 0), [188, 188, 188]);
+  } finally {
+    set_linear_blending(true);
+  }
 });
 
 Deno.test("The disc by centers", () => {

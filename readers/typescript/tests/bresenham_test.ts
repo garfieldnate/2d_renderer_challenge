@@ -1,11 +1,19 @@
 // features/chapter03-bresenham.feature
-import { canvas } from "../src/canvas.ts";
+import { canvas, write_pixel } from "../src/canvas.ts";
 import { color } from "../src/color.ts";
 import { line_bresenham } from "../src/line.ts";
 import { canvas_to_p6, max_channel_difference } from "../src/ppm.ts";
 import { assert_eq, assert_pixels, lit_pixels } from "../src/assert.ts";
 
 const WHITE = color(1, 1, 1);
+
+Deno.test("lit_pixels reads like a page", () => {
+  const c = canvas(10, 10);
+  write_pixel(c, 5, 0, WHITE);
+  write_pixel(c, 0, 2, WHITE);
+  write_pixel(c, 2, 2, color(0.5, 0, 0));
+  assert_pixels(lit_pixels(c), [[5, 0], [0, 2], [2, 2]]);
+});
 
 Deno.test("A diagonal", () => {
   const c = canvas(10, 10);

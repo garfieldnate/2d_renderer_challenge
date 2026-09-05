@@ -12,6 +12,7 @@ Deno.test("The ray endpoints", () => {
 
 Deno.test("Bresenham's fan", () => {
   const c = fan_bresenham();
+  const ref = read_file("reference/chapter-03/fan-bresenham.ppm");
   const p6 = canvas_to_p6(c);
   assert_eq(c.width, 160, 0);
   assert_eq(c.height, 160, 0);
@@ -20,15 +21,26 @@ Deno.test("Bresenham's fan", () => {
   assert_triple(ppm_pixel(p6, 10, 10), [39, 39, 44], 1);
   assert_triple(ppm_pixel(p6, 100, 91), [39, 39, 44], 1);
   assert_triple(ppm_pixel(p6, 100, 92), [246, 246, 241], 1);
+  // the steep rays, where a transposed x/y would show up
+  assert_triple(ppm_pixel(p6, 103, 120), [246, 246, 241], 1);
+  assert_triple(ppm_pixel(p6, 102, 120), [39, 39, 44], 1);
+  assert_triple(ppm_pixel(p6, 104, 120), [39, 39, 44], 1);
+  const d = max_channel_difference(p6, ref);
+  assert_true(d <= 1, `max_channel_difference = ${d}`);
 });
 
 Deno.test("Wu's fan", () => {
   const c = fan_wu();
+  const ref = read_file("reference/chapter-03/fan-wu.ppm");
   const p6 = canvas_to_p6(c);
   assert_triple(ppm_pixel(p6, 80, 80), [246, 246, 241], 1);
   assert_triple(ppm_pixel(p6, 120, 80), [246, 246, 241], 1);
   assert_triple(ppm_pixel(p6, 100, 91), [163, 163, 161], 1);
   assert_triple(ppm_pixel(p6, 100, 92), [199, 199, 196], 1);
+  assert_triple(ppm_pixel(p6, 103, 120), [220, 220, 216], 1);
+  assert_triple(ppm_pixel(p6, 104, 120), [130, 130, 129], 1);
+  const d = max_channel_difference(p6, ref);
+  assert_true(d <= 1, `max_channel_difference = ${d}`);
 });
 
 Deno.test("The fan as twelve thin rectangles", () => {

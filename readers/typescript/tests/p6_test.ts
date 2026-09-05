@@ -33,6 +33,40 @@ Deno.test("The same pixel comes back out of either format", () => {
   assert_eq(distinct_values(p6), 2, 0);
 });
 
+Deno.test("Rows go top to bottom", () => {
+  const c = canvas(1, 2);
+  write_pixel(c, 0, 0, color(1, 0, 0));
+  write_pixel(c, 0, 1, color(0, 0, 1));
+  const p6 = canvas_to_p6(c);
+  assert_eq(byte_of(p6, 12), 255, 0, "byte 12");
+  assert_eq(byte_of(p6, 17), 255, 0, "byte 17");
+  assert_triple(ppm_pixel(p6, 0, 0), [255, 0, 0]);
+  assert_triple(ppm_pixel(p6, 0, 1), [0, 0, 255]);
+});
+
+Deno.test("The binary writer clamps too", () => {
+  const c = canvas(2, 1);
+  write_pixel(c, 0, 0, color(1.5, 0, -0.5));
+  const p6 = canvas_to_p6(c);
+  assert_eq(byte_of(p6, 12), 255, 0, "byte 12");
+  assert_eq(byte_of(p6, 13), 0, 0, "byte 13");
+  assert_eq(byte_of(p6, 14), 0, 0, "byte 14");
+  assert_triple(ppm_pixel(p6, 0, 0), [255, 0, 0]);
+});
+
+Deno.test("Pixel bytes that look like whitespace are still pixel bytes", () => {
+  const c = canvas(2, 1);
+  write_pixel(c, 0, 0, color(0.00304, 0.01444, 0.00304));
+  write_pixel(c, 1, 0, color(1, 1, 1));
+  const p6 = canvas_to_p6(c);
+  assert_eq(p6.length, 17, 0, "length(p6)");
+  assert_eq(byte_of(p6, 12), 10, 0, "byte 12");
+  assert_eq(byte_of(p6, 13), 32, 0, "byte 13");
+  assert_triple(ppm_pixel(p6, 0, 0), [10, 32, 10]);
+  assert_triple(ppm_pixel(p6, 1, 0), [255, 255, 255]);
+  assert_eq(max_channel_difference(canvas_to_ppm(c), p6), 0, 0);
+});
+
 Deno.test("Sizes still have to match", () => {
   const p6a = canvas_to_p6(canvas(2, 1));
   const p6b = canvas_to_p6(canvas(1, 2));

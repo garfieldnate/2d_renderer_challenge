@@ -106,3 +106,11 @@ Deno.test("Files of different sizes are as different as it gets", () => {
   const ppm2 = canvas_to_ppm(canvas(3, 5));
   assert_eq(max_channel_difference(ppm1, ppm2), 255, 0);
 });
+
+// Both widths and heights need their own probe: the sizes above already
+// differ in width, so a width-only comparison would pass this too.
+Deno.test("The same width with a different height is still a different size", () => {
+  const ppm1 = canvas_to_ppm(canvas(5, 3));
+  const ppm2 = canvas_to_ppm(canvas(5, 4));
+  assert_eq(max_channel_difference(ppm1, ppm2), 255, 0);
+});

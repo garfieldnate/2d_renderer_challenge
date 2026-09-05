@@ -27,6 +27,36 @@ Deno.test("A horizontal thick line covers its row, with half pixels at the ends"
   assert_eq(ink(cov), 7);
 });
 
+Deno.test("A line of no length is a square", () => {
+  const s = thick_line(3, 3, 3, 3, 1);
+  const cov = rasterize(s, 8, 8);
+  assert_eq(coverage_at(cov, 3, 3), 1, 0);
+  assert_eq(ink(cov), 1, 0);
+});
+
+Deno.test("A wider line", () => {
+  const s = thick_line(0, 3, 7, 3, 3);
+  const cov = rasterize(s, 10, 10);
+  assert_eq(coverage_at(cov, 3, 2), 1, 0);
+  assert_eq(coverage_at(cov, 3, 3), 1, 0);
+  assert_eq(coverage_at(cov, 3, 4), 1, 0);
+  assert_eq(coverage_at(cov, 3, 1), 0, 0);
+  assert_eq(coverage_at(cov, 3, 5), 0, 0);
+  assert_eq(coverage_at(cov, 0, 3), 0.5);
+  assert_eq(ink(cov), 21, 0);
+});
+
+Deno.test("An off-axis line runs through pixel centers, not corners", () => {
+  const s = thick_line(2, 2, 11, 5, 1);
+  const cov = rasterize(s, 16, 10);
+  assert_eq(coverage_at(cov, 2, 2), 0.484375);
+  assert_eq(coverage_at(cov, 11, 5), 0.484375);
+  assert_eq(coverage_at(cov, 6, 3), 0.6875);
+  assert_eq(coverage_at(cov, 7, 3), 0.359375);
+  assert_eq(coverage_at(cov, 2, 1), 0, 0);
+  assert_eq(ink(cov), 9.4063);
+});
+
 for (const [x1, y1] of [[12, 2], [10, 8], [8, 10], [2, 12]]) {
   Deno.test(`The ink is the length, whatever the angle: (2, 2) to (${x1}, ${y1})`, () => {
     const s = thick_line(2, 2, x1, y1, 1);

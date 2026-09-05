@@ -14,7 +14,9 @@ export function coverage_buffer(width: number, height: number): CoverageBuffer {
   return { width, height, values: new Array(width * height).fill(0) };
 }
 
+/** Reads outside the buffer are 0, the same way writes outside it are dropped. */
 export function coverage_at(cov: CoverageBuffer, x: number, y: number): number {
+  if (x < 0 || x >= cov.width || y < 0 || y >= cov.height) return 0;
   return cov.values[y * cov.width + x];
 }
 
