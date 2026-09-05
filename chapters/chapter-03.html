@@ -326,7 +326,10 @@ fan_bresenham():
     the rectangle when it's inside all four. Your <code>inside</code> from chapter 2 grows one case.</p>
 
   <p>Then the scenarios. A horizontal thick line covers its row fully, with half a pixel at each
-    end, because the segment runs from pixel center to pixel center: ink 7 for a line 7 long. And the
+    end, because the segment runs from pixel center to pixel center: ink 7 for a line 7 long. The
+    half-pixel matters, and a line at a slant is the only kind that can tell: build the rectangle
+    from pixel corners instead and every horizontal, vertical and 45° test still passes, so one
+    scenario pins a line from <code>(2, 2)</code> to <code>(11, 5)</code> pixel by pixel. And the
     outline: four lines of length 10, at four angles, and every one of them has ink 10. Not 11, not 9.
     The line has become an area, and an area doesn't care which way it's pointing.</p>
 
@@ -364,6 +367,16 @@ fan_bresenham():
     <span class="kw">And</span>   coverage_at(cov, 3, 2) = 0
     <span class="kw">And</span>   coverage_at(cov, 3, 4) = 0
     <span class="kw">And</span>   ink(cov) = 7
+
+  <span class="kw">Scenario</span>: An off-axis line runs through pixel centers, not corners
+    <span class="kw">Given</span> s ← thick_line(2, 2, 11, 5, 1)
+    <span class="kw">When</span>  cov ← rasterize(s, 16, 10)
+    <span class="kw">Then</span>  coverage_at(cov, 2, 2) = 0.484375
+    <span class="kw">And</span>   coverage_at(cov, 11, 5) = 0.484375
+    <span class="kw">And</span>   coverage_at(cov, 6, 3) = 0.6875
+    <span class="kw">And</span>   coverage_at(cov, 7, 3) = 0.359375
+    <span class="kw">And</span>   coverage_at(cov, 2, 1) = 0
+    <span class="kw">And</span>   ink(cov) = 9.4063
 
   <span class="kw">Scenario Outline</span>: The ink is the length, whatever the angle
     <span class="kw">Given</span> s ← thick_line(2, 2, &lt;x1&gt;, &lt;y1&gt;, 1)

@@ -799,3 +799,256 @@ def plate_02():
 
     paint_through(c, both, Color(0.9, 0.55, 0.1))
     return magnify(c, 6)
+
+
+# ============================================================
+# Chapter 3: Lines
+# ============================================================
+
+
+def lit_pixels(canvas):
+    """Return every pixel of a canvas that isn't black, as (x, y) pairs in reading order.
+    Reading order: top row first, left to right within a row."""
+    result = []
+    for y in range(canvas.height):
+        for x in range(canvas.width):
+            p = canvas.pixels[y][x]
+            # Check if not black (any channel > 0)
+            if p.red > 0 or p.green > 0 or p.blue > 0:
+                result.append((x, y))
+    return result
+
+
+def line_bresenham(canvas, x0, y0, x1, y1, col):
+    """Draw a line using Bresenham's algorithm.
+    Uses integer arithmetic to rasterize the line from (x0, y0) to (x1, y1)."""
+    # Determine if steep (more vertical than horizontal)
+    steep = abs(y1 - y0) > abs(x1 - x0)
+
+    if steep:
+        # Swap x and y coordinates
+        x0, y0 = y0, x0
+        x1, y1 = y1, x1
+
+    # Ensure we walk left to right
+    if x0 > x1:
+        x0, x1 = x1, x0
+        y0, y1 = y1, y0
+
+    dx = x1 - x0
+    dy = abs(y1 - y0)
+    ystep = 1 if y0 < y1 else -1
+    err = dx // 2
+    y = y0
+
+    for x in range(x0, x1 + 1):
+        if steep:
+            write_pixel(canvas, y, x, col)
+        else:
+            write_pixel(canvas, x, y, col)
+
+        err -= dy
+        if err < 0:
+            y += ystep
+            err += dx
+
+
+def plot(canvas, x, y, col, weight):
+    """Paint a pixel with a weight, using mix.
+    Drops writes off the canvas and skips weight of zero."""
+    if weight <= 0 or not (0 <= x < canvas.width and 0 <= y < canvas.height):
+        return
+
+    current = pixel_at(canvas, x, y)
+    painted = mix(current, col, weight)
+    write_pixel(canvas, x, y, painted)
+
+
+def line_wu(canvas, x0, y0, x1, y1, col):
+    """Draw a line using Xiaolin Wu's antialiased algorithm.
+    Integer endpoints only. Two pixels per column, weighted by fractional position."""
+    # Determine if steep (more vertical than horizontal)
+    steep = abs(y1 - y0) > abs(x1 - x0)
+
+    if steep:
+        # Swap x and y coordinates
+        x0, y0 = y0, x0
+        x1, y1 = y1, x1
+
+    # Ensure we walk left to right
+    if x0 > x1:
+        x0, x1 = x1, x0
+        y0, y1 = y1, y0
+
+    dx = x1 - x0
+    slope = 0 if dx == 0 else (y1 - y0) / dx
+
+    for x in range(x0, x1 + 1):
+        y = y0 + (x - x0) * slope
+        yi = int(math.floor(y))
+        f = y - yi
+
+        if steep:
+            plot(canvas, yi, x, col, 1 - f)
+            plot(canvas, yi + 1, x, col, f)
+        else:
+            plot(canvas, x, yi, col, 1 - f)
+            plot(canvas, x, yi + 1, col, f)
+
+
+class ThickLine(Shape):
+    """A thick line as a shape: four half-planes."""
+    def __init__(self, half_planes):
+        self.half_planes = half_planes
+
+
+def thick_line(x0, y0, x1, y1, width):
+    """Create a thick line as four half-planes.
+    The rectangle of given width centered on the segment from pixel center
+    (x0 + 0.5, y0 + 0.5) to (x1 + 0.5, y1 + 0.5)."""
+    # Get pixel centers
+    ax = x0 + 0.5
+    ay = y0 + 0.5
+    bx = x1 + 0.5
+    by = y1 + 0.5
+
+    # Direction vector
+    dx = bx - ax
+    dy = by - ay
+    length = math.sqrt(dx * dx + dy * dy)
+
+    if length == 0:
+        # Degenerate case: single point
+        dx, dy = 0, 0
+    else:
+        dx /= length
+        dy /= length
+
+    # Normal vector (perpendicular to direction)
+    nx = -dy
+    ny = dx
+
+    # Half-width offset
+    h = width / 2.0
+
+    # Four half-planes:
+    # 1. Through start point, facing along direction
+    hp1 = HalfPlane(ax, ay, dx, dy)
+    # 2. Through end point, facing back along -direction
+    hp2 = HalfPlane(bx, by, -dx, -dy)
+    # 3. Along top side (offset by +h along normal), facing inward (-normal)
+    hp3 = HalfPlane(ax + nx * h, ay + ny * h, -nx, -ny)
+    # 4. Along bottom side (offset by -h along normal), facing inward (+normal)
+    hp4 = HalfPlane(ax - nx * h, ay - ny * h, nx, ny)
+
+    # Return a shape that is the intersection of all four half-planes
+    return ThickLineShape([hp1, hp2, hp3, hp4])
+
+
+class ThickLineShape(Shape):
+    """A thick line shape made of four half-planes."""
+    def __init__(self, half_planes):
+        self.half_planes = half_planes
+
+
+def inside(shape, x, y):
+    """Test if a point (x, y) is inside a shape."""
+    if isinstance(shape, Circle):
+        # Distance from center
+        dx = x - shape.cx
+        dy = y - shape.cy
+        dist_sq = dx * dx + dy * dy
+        return dist_sq <= shape.r * shape.r
+    elif isinstance(shape, Rectangle):
+        return (shape.x0 <= x <= shape.x1 and
+                shape.y0 <= y <= shape.y1)
+    elif isinstance(shape, HalfPlane):
+        # Vector from point on line to test point
+        dx = x - shape.px
+        dy = y - shape.py
+        # Dot product with normal
+        dot = dx * shape.nx + dy * shape.ny
+        return dot >= 0
+    elif isinstance(shape, ThickLineShape):
+        # Inside all four half-planes
+        for hp in shape.half_planes:
+            if not inside(hp, x, y):
+                return False
+        return True
+    return False
+
+
+def total_ink(canvas):
+    """Sum the red channel of all pixels in the canvas.
+    For a white line on black, this is how much paint went down."""
+    total = 0.0
+    for y in range(canvas.height):
+        for x in range(canvas.width):
+            p = canvas.pixels[y][x]
+            total += p.red
+    return total
+
+
+def ray_ends():
+    """Return endpoints for 12 rays from (80, 80) at 30-degree intervals.
+    Each ray extends 72 pixels from the center."""
+    ends = []
+    for k in range(12):
+        angle = k * 30 * math.pi / 180
+        x = round(80 + 72 * math.cos(angle))
+        y = round(80 + 72 * math.sin(angle))
+        ends.append((x, y))
+    return ends
+
+
+def fan_bresenham():
+    """Draw 12 rays from the center using Bresenham's algorithm.
+    160×160 canvas, off-white on near-black."""
+    c = Canvas(160, 160)
+    fill(c, Color(0.02, 0.02, 0.025))
+
+    for (x, y) in ray_ends():
+        line_bresenham(c, 80, 80, x, y, Color(0.92, 0.92, 0.88))
+
+    return c
+
+
+def fan_wu():
+    """Draw 12 rays from the center using Wu's algorithm.
+    160×160 canvas, off-white on near-black."""
+    c = Canvas(160, 160)
+    fill(c, Color(0.02, 0.02, 0.025))
+
+    for (x, y) in ray_ends():
+        line_wu(c, 80, 80, x, y, Color(0.92, 0.92, 0.88))
+
+    return c
+
+
+def fan_coverage():
+    """Draw 12 rays from the center as thick lines with coverage.
+    Each ray is a 1-pixel-wide thick line, rasterized with coverage,
+    then magnified by 2 to see the edges."""
+    c = Canvas(160, 160)
+    fill(c, Color(0.02, 0.02, 0.025))
+
+    for (x, y) in ray_ends():
+        cov = rasterize(thick_line(80, 80, x, y, 1), 160, 160)
+        paint_through(c, cov, Color(0.92, 0.92, 0.88))
+
+    return magnify(c, 2)
+
+
+def plate_03():
+    """Side-by-side fan of Bresenham and Wu, magnified by 2.
+    Creates a 640×320 canvas: left half is Bresenham, right half is Wu."""
+    a = fan_bresenham()
+    b = fan_wu()
+
+    both = Canvas(320, 160)
+    for y in range(160):
+        for x in range(160):
+            write_pixel(both, x, y, pixel_at(a, x, y))
+            write_pixel(both, x + 160, y, pixel_at(b, x, y))
+
+    return magnify(both, 2)

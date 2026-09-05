@@ -26,6 +26,16 @@ Feature: A line is a thin rectangle
     And   coverage_at(cov, 3, 4) = 0
     And   ink(cov) = 7
 
+  Scenario: An off-axis line runs through pixel centers, not corners
+    Given s ← thick_line(2, 2, 11, 5, 1)
+    When  cov ← rasterize(s, 16, 10)
+    Then  coverage_at(cov, 2, 2) = 0.484375
+    And   coverage_at(cov, 11, 5) = 0.484375
+    And   coverage_at(cov, 6, 3) = 0.6875
+    And   coverage_at(cov, 7, 3) = 0.359375
+    And   coverage_at(cov, 2, 1) = 0
+    And   ink(cov) = 9.4063
+
   Scenario Outline: The ink is the length, whatever the angle
     Given s ← thick_line(2, 2, <x1>, <y1>, 1)
     When  cov ← rasterize(s, 20, 20)

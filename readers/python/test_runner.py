@@ -204,6 +204,18 @@ def evaluate_expression(expr_str, ctx):
             'painted_twice': renderer.painted_twice,
             'disc_coverage': renderer.disc_coverage,
             'plate_02': renderer.plate_02,
+            # Chapter 3
+            'lit_pixels': renderer.lit_pixels,
+            'line_bresenham': renderer.line_bresenham,
+            'line_wu': renderer.line_wu,
+            'plot': renderer.plot,
+            'thick_line': renderer.thick_line,
+            'total_ink': renderer.total_ink,
+            'ray_ends': renderer.ray_ends,
+            'fan_bresenham': renderer.fan_bresenham,
+            'fan_wu': renderer.fan_wu,
+            'fan_coverage': renderer.fan_coverage,
+            'plate_03': renderer.plate_03,
         }
         namespace.update(ctx.variables)
 
