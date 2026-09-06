@@ -34,8 +34,14 @@ def half_plane(px, py, nx, ny):
     return Shape("half_plane", px=px, py=py, nx=nx, ny=ny)
 
 
+# later chapters add kinds here: kind -> predicate(shape, x, y)
+KINDS = {}
+
+
 def inside(shape, x, y):
     k = shape.kind
+    if k in KINDS:
+        return KINDS[k](shape, x, y)
     if k == "circle":
         dx, dy = x - shape.cx, y - shape.cy
         return dx * dx + dy * dy <= shape.r * shape.r

@@ -43,6 +43,7 @@ def make_env():
     env["length"] = len
     env["true"], env["false"] = True, False
     env["sqrt"] = math.sqrt
+    env["π"] = math.pi
     return env
 
 
@@ -59,8 +60,10 @@ def evaluate(expr, env):
 
 
 def approx_equal(a, b, eps):
-    if isinstance(a, R.Color) or isinstance(b, R.Color):
+    if hasattr(a, "approx"):          # Color, and chapter 4's Tuple and Matrix3
         return a.approx(b, eps)
+    if hasattr(b, "approx"):
+        return b.approx(a, eps)
     if isinstance(a, (tuple, list)) and isinstance(b, (tuple, list)):
         return len(a) == len(b) and all(approx_equal(x, y, eps) for x, y in zip(a, b))
     if isinstance(a, (str, bytes, bool)) or isinstance(b, (str, bytes, bool)):
@@ -71,8 +74,27 @@ def approx_equal(a, b, eps):
 EPS_RE = r"(?:\s*±\s*(?P<eps>[0-9.]+))?"
 
 
+def matrix_from(table, env):
+    values = [evaluate(cell, env) for row in table for cell in row]
+    if len(values) != 9:
+        raise StepError("a matrix table needs 3 rows of 3")
+    return env["matrix3"](*values)
+
+
 def run_step(text, doc, env):
     text = text.strip()
+    if isinstance(doc, list):                    # a data table follows the step
+        m = re.match(r"the following matrix (\w+):$", text)
+        if m:
+            env[m.group(1)] = matrix_from(doc, env)
+            return
+        m = re.match(r"(.+?) is the following matrix:$", text)
+        if m:
+            got, want = evaluate(m.group(1), env), matrix_from(doc, env)
+            if not approx_equal(got, want, R.EPSILON):
+                raise StepError("%r is not %r" % (got, want))
+            return
+        raise StepError("unknown table step: " + text)
     if doc is not None:
         m = re.match(r"lines (\d+)-(\d+) of (\w+) are$", text)
         if not m:
@@ -165,23 +187,30 @@ def run_step(text, doc, env):
 
 
 def parse(path):
-    """yield (scenario name, [(step text, docstring or None), ...]) with outlines expanded"""
+    """yield (scenario name, [(step text, docstring, table or None), ...]) with outlines expanded"""
     lines = path.read_text(encoding="utf-8").split("\n")
-    scenarios, cur, outline, examples, doc, i = [], None, False, None, None, 0
+    scenarios, cur, examples, in_examples, i = [], None, None, False, 0
     while i < len(lines):
         raw = lines[i]
         s = raw.strip()
         i += 1
         if s.startswith("Scenario Outline:"):
-            cur = (s.split(":", 1)[1].strip(), []); outline = True; examples = []
+            cur = (s.split(":", 1)[1].strip(), []); examples = []; in_examples = False
             scenarios.append((cur, examples))
         elif s.startswith("Scenario:"):
-            cur = (s.split(":", 1)[1].strip(), []); outline = False
+            cur = (s.split(":", 1)[1].strip(), []); examples = None; in_examples = False
             scenarios.append((cur, None))
         elif s.startswith("Examples"):
-            continue
-        elif s.startswith("|") and outline:
-            examples.append([c.strip() for c in s.strip("|").split("|")])
+            in_examples = True
+        elif s.startswith("|") and cur:
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if in_examples:
+                examples.append(cells)
+            else:                                 # a data table under the step before it
+                step, table = cur[1][-1]
+                table = table if isinstance(table, list) else []
+                table.append(cells)
+                cur[1][-1] = (step, table)
         elif re.match(r"(Given|When|Then|And|But)\b", s) and cur:
             step = re.sub(r"^(Given|When|Then|And|But)\s+", "", s)
             docstring = None

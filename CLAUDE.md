@@ -104,6 +104,16 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   defaults on. Off means encode, lerp, decode, which is what browsers do.
 - Writes outside the canvas are silently ignored.
 - Readers are presumed able to read Gherkin. No plain-table duplicates of scenarios.
+- Chapter 4 follows *The Ray Tracer Challenge*'s names: `point(x, y)` has `w = 1`, `vector(x, y)`
+  has `w = 0`, `matrix3` takes nine numbers row by row, `M[r, c]` is row then column,
+  `translation/scaling/rotation/shearing`, `inverse`, `m * p`. Angles are radians. A positive
+  rotation turns x toward y, which the book says out loud is clockwise on the y-down canvas.
+- `approx_scale(m)` is `sqrt(|det|)` of the 2×2 part. The chapter explains the alternatives
+  (largest singular value, longest column) and why this one; don't swap it.
+- Shapes are transformed through the inverse (`transformed(shape, m)`), points through the matrix
+  (`transform_points`, `segment`, `outline`). The pen-space question is chapter 4's trap.
+- Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and
+  `Then X is the following matrix:`. The runner understands exactly those two table steps.
 
 ## Testing a chapter with reader agents
 

@@ -2,7 +2,8 @@
 """
 Regenerate reference/chapter-01/*.ppm from the reference implementation.
 
-    ./reference/impl/render.py
+    ./reference/impl/render.py        # every chapter
+    ./reference/impl/render.py 4      # one chapter
 """
 
 import sys
@@ -16,10 +17,12 @@ REF = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
 
 
-def main():
+def main(only=None):
     modules = [R] + [importlib.import_module(p.stem) for p in sorted(HERE.glob("chapter*.py"))]
     for m in modules:
         chapter = getattr(m, "CHAPTER", 1)
+        if only is not None and chapter != only:
+            continue
         fmt = getattr(m, "FORMAT", "P3")
         out = REF / ("chapter-%02d" % chapter)
         out.mkdir(exist_ok=True)
@@ -37,4 +40,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(int(sys.argv[1]) if len(sys.argv) > 1 else None)

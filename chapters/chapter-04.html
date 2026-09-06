@@ -1,0 +1,1332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 4 · Points, Vectors, Transforms — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 4 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-03.html">← 3</a> · <a href="#plate">Plate&nbsp;4</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Four</p>
+    <h1>Points, Vectors, Transforms</h1>
+    <p class="hook">Every shape you've drawn so far was described in pixels, at the place on the canvas
+      where it was going to end up. That's fine for a fan. It's useless for a font, where the same
+      letter appears at forty sizes on one page, and it's useless for the tiger, whose 240 paths were
+      drawn once, by someone else, in a coordinate system that has nothing to do with your canvas.
+      This chapter builds the machinery that moves shapes around: a point, a vector, and a 3-by-3
+      matrix. Then it asks the one question about a matrix that the rest of the book keeps needing
+      answered, and gets an honest answer.</p>
+  </header>
+
+  <p>If you've read <em>The Ray Tracer Challenge</em>, this chapter is going to feel like coming
+    home. It's the same tuples, the same matrices, the same inverse computed the same way, one
+    dimension smaller. The 2D versions are shorter and there's less to get wrong. If you haven't,
+    don't worry: everything is derived here, and there's less of it than you'd think. It comes to a
+    couple of hundred lines, most of them one-liners.</p>
+
+  <p>The part that's new, for everyone, is the last third. A renderer doesn't only move shapes. It
+    has to know how much a matrix <em>stretches</em> things, because a curve that's flat enough at
+    one size isn't at ten times the size, and a pen that's one pixel wide in the shape's own
+    coordinates isn't one pixel wide after a scale. That number has more than one reasonable
+    definition, and the book has to pick one and defend it.</p>
+
+  <h2><span class="sec">§ 4.1</span> Points and vectors</h2>
+
+  <p>Start with the two things that live in a coordinate system. A <em>point</em> is a place:
+    <code>point(3, 2)</code>. A <em>vector</em> is a displacement, a distance in a direction, with
+    no location of its own: <code>vector(3, 2)</code> means "three across and two down" from
+    wherever you happen to be. Both are pairs of real numbers, and they're different things, and
+    the arithmetic says so. The difference of two points is the vector between them. A point plus a
+    vector is another point. A vector plus a vector is a vector. Adding two points together doesn't
+    mean anything, and you should be suspicious of any code that tries.</p>
+
+  <p>The trick that keeps them straight, and the reason the matrices in §4.2 come out 3 by 3 rather
+    than 2 by 2, is a third coordinate, <code>w</code>. A point has <code>w = 1</code> and a vector
+    has <code>w = 0</code>. Nothing else about them differs. Do the arithmetic on all three
+    components and the bookkeeping does itself: point minus point has <code>w = 1 - 1 = 0</code>, a
+    vector; point plus vector has <code>w = 1 + 0 = 1</code>, a point; point plus point has
+    <code>w = 2</code>, which is a thing with no name and a hint that you've made a mistake. In
+    §4.3 you'll see the real payoff: <code>w</code> is what lets a translation be a matrix, and what
+    stops that translation from moving a vector, which it never should.</p>
+
+  <p>Vectors come with a few operations. <code>magnitude(v)</code> is its length,
+    <code>sqrt(x² + y²)</code>. <code>normalize(v)</code> divides by that to get a vector of length
+    1 pointing the same way, which is how you say "this direction" without also saying "this far".
+    Chapter 3's <code>thick_line</code> did this by hand when it divided by <code>length</code>;
+    now it has a name. <code>dot(a, b)</code> is <code>a.x·b.x + a.y·b.y</code>, the number you get
+    by asking how much of <code>a</code> points along <code>b</code>: zero when they're
+    perpendicular, and chapter 2's half-plane test was a dot product all along.</p>
+
+  <p>And <code>cross(a, b)</code>. In three dimensions the cross product is a vector perpendicular
+    to both; in two there's nowhere perpendicular to go, and what's left is a single number,
+    <code>a.x·b.y - a.y·b.x</code>. Its size is the area of the parallelogram the two vectors span.
+    Its <em>sign</em> is the useful part: it says which way you turned going from <code>a</code>
+    to <code>b</code>. Take <code>a = b - p0</code> along a line and <code>b = q - p0</code> toward
+    some point <code>q</code>, and the sign of the cross product tells you which side of the line
+    <code>q</code> is on. Chapter 5 asks that question thousands of times.</p>
+
+  <figure>
+    <canvas id="fig41" role="img" aria-label="A pixel grid with y increasing downward, a horizontal arrow from a to b, and two points, one below the arrow labeled with a positive cross product and one above labeled negative"></canvas>
+    <figcaption><span class="fig">Figure 4.1</span> The sign of <code>cross(b - a, q - a)</code> says which side of the line through <code>a</code> and <code>b</code> the point <code>q</code> is on. Positive is the side the y axis points to, and on a canvas the y axis points down, so positive is below.</figcaption>
+  </figure>
+
+  <p>Which side is positive? In a textbook, with y pointing up, a positive cross product means
+    <code>b</code> is counterclockwise from <code>a</code>. On your canvas y points down, the
+    picture is flipped, and the same positive number means clockwise on the screen. The arithmetic
+    doesn't know or care. You do have to, every time you translate a diagram from a paper into
+    code, and this chapter is going to say it again about rotation in §4.3, because it's the
+    single most common way to get a transform backwards.</p>
+
+  <div class="test" data-feature="chapter04-tuples.feature">
+    <p class="label">features/chapter04-tuples.feature</p>
+<pre><code><span class="kw">Feature</span>: Points and vectors
+  A point is a place; a vector is a displacement. Both are (x, y, w) with
+  w = 1 for a point and w = 0 for a vector, so that the matrices later in
+  the chapter can tell them apart. Coordinates are real numbers.
+
+  <span class="kw">Scenario</span>: A point has w = 1
+    <span class="kw">Given</span> p ← point(4, -4)
+    <span class="kw">Then</span>  p.x = 4
+    <span class="kw">And</span>   p.y = -4
+    <span class="kw">And</span>   p.w = 1
+
+  <span class="kw">Scenario</span>: A vector has w = 0
+    <span class="kw">Given</span> v ← vector(4, -4)
+    <span class="kw">Then</span>  v.x = 4
+    <span class="kw">And</span>   v.y = -4
+    <span class="kw">And</span>   v.w = 0
+
+  <span class="kw">Scenario</span>: The difference of two points is the vector between them
+    <span class="kw">Given</span> a ← point(3, 2)
+    <span class="kw">And</span>   b ← point(5, 6)
+    <span class="kw">Then</span>  b - a = vector(2, 4)
+    <span class="kw">And</span>   a - b = vector(-2, -4)
+
+  <span class="kw">Scenario</span>: A point plus a vector is a point
+    <span class="kw">Given</span> p ← point(3, -2)
+    <span class="kw">And</span>   v ← vector(-2, 3)
+    <span class="kw">Then</span>  p + v = point(1, 1)
+    <span class="kw">And</span>   p - v = point(5, -5)
+
+  <span class="kw">Scenario</span>: A vector plus a vector is a vector
+    <span class="kw">Given</span> a ← vector(3, -2)
+    <span class="kw">And</span>   b ← vector(-2, 3)
+    <span class="kw">Then</span>  a + b = vector(1, 1)
+    <span class="kw">And</span>   a - b = vector(5, -5)
+
+  <span class="kw">Scenario</span>: Negating, scaling and dividing a vector
+    <span class="kw">Given</span> v ← vector(1, -2)
+    <span class="kw">Then</span>  -v = vector(-1, 2)
+    <span class="kw">And</span>   v * 3.5 = vector(3.5, -7)
+    <span class="kw">And</span>   v * 0.5 = vector(0.5, -1)
+    <span class="kw">And</span>   v / 2 = vector(0.5, -1)
+
+  <span class="kw">Scenario</span>: The magnitude of a vector
+    <span class="kw">Then</span>  magnitude(vector(1, 0)) = 1
+    <span class="kw">And</span>   magnitude(vector(0, 1)) = 1
+    <span class="kw">And</span>   magnitude(vector(3, 4)) = 5
+    <span class="kw">And</span>   magnitude(vector(-3, -4)) = 5
+    <span class="kw">And</span>   magnitude(vector(-1, -2)) = 2.2361
+
+  <span class="kw">Scenario</span>: Normalizing a vector
+    <span class="kw">Then</span>  normalize(vector(4, 0)) = vector(1, 0)
+    <span class="kw">And</span>   normalize(vector(1, 2)) = vector(0.4472, 0.8944)
+    <span class="kw">And</span>   magnitude(normalize(vector(1, 2))) = 1
+
+  <span class="kw">Scenario</span>: The dot product of two vectors
+    <span class="kw">Given</span> a ← vector(1, 2)
+    <span class="kw">And</span>   b ← vector(2, 3)
+    <span class="kw">Then</span>  dot(a, b) = 8
+    <span class="kw">And</span>   dot(a, vector(-2, 1)) = 0
+
+  <span class="kw">Scenario</span>: The cross product of two vectors is a number
+    <span class="kw">Given</span> a ← vector(1, 0)
+    <span class="kw">And</span>   b ← vector(0, 1)
+    <span class="kw">Then</span>  cross(a, b) = 1
+    <span class="kw">And</span>   cross(b, a) = -1
+    <span class="kw">And</span>   cross(a, a) = 0
+    <span class="kw">And</span>   cross(vector(2, 3), vector(4, 5)) = -2
+
+  <span class="kw">Scenario</span>: The sign of the cross product says which side of a line a point is on
+    <span class="kw">Given</span> a ← point(0, 0)
+    <span class="kw">And</span>   b ← point(10, 0)
+    <span class="kw">Then</span>  cross(b - a, point(5, 3) - a) = 30
+    <span class="kw">And</span>   cross(b - a, point(5, -3) - a) = -30
+    <span class="kw">And</span>   cross(b - a, point(20, 0) - a) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 4.2</span> Matrices</h2>
+
+  <p>A matrix is a grid of numbers, and this book needs one size: 3 rows by 3 columns. Written out,
+    the tests use a table, and the code uses <code>matrix3</code> with nine numbers in reading
+    order, row by row. <code>M[r, c]</code> is the entry in row <code>r</code>, column
+    <code>c</code>, both counted from zero. Row first. If you've ever spent an afternoon on a bug
+    that turned out to be <code>M[c, r]</code>, you'll know why the scenario checks
+    <code>M[1, 0]</code> and <code>M[0, 2]</code> and not only the diagonal.</p>
+
+  <div class="note">
+    <h4>Tables in scenarios</h4>
+    <p>A step ending in a colon, <code>Given the following matrix M:</code>, is followed by a
+      Gherkin data table: three rows of three cells between pipes. It builds <code>M</code> row by
+      row. <code>Then A * B is the following matrix:</code> compares the result to the table with
+      the usual tolerance, every entry. Both are standard Cucumber; if you're translating by hand,
+      each table is a call to <code>matrix3</code>.</p>
+  </div>
+
+  <p>Two matrices multiply into a third. The entry in row <code>r</code>, column <code>c</code> of
+    the product is the dot product of row <code>r</code> of the first with column <code>c</code> of
+    the second: three multiplications and two additions, nine times over. Written out for one
+    entry, <code>(A * B)[r, c] = A[r, 0]·B[0, c] + A[r, 1]·B[1, c] + A[r, 2]·B[2, c]</code>. That's
+    the whole rule. It looks arbitrary, and it isn't: it's exactly the arrangement that makes
+    <code>(A * B) * p</code> equal <code>A * (B * p)</code>, so that multiplying two transforms
+    together gives you a single matrix that does both. You'll lean on that in §4.3, hard.</p>
+
+  <p>A matrix also multiplies a tuple, treating <code>(x, y, w)</code> as a column: the result's
+    <code>x</code> is the dot product of the matrix's first row with the tuple, its <code>y</code>
+    the second row, its <code>w</code> the third. Every matrix in this book has a bottom row of
+    <code>0 0 1</code>, so that third dot product comes out as <code>w</code> unchanged: points stay
+    points and vectors stay vectors. The scenario with <code>A * v</code> shows the payoff early.
+    The last column of the matrix multiplies <code>w</code>, and for a vector <code>w</code> is 0,
+    so the last column contributes nothing. Hold that thought.</p>
+
+  <p>The <em>identity</em> matrix has ones on the diagonal and zeros elsewhere, and multiplying by
+    it changes nothing. It's the matrix you start a chain from. <em>Transposing</em> a matrix flips
+    it across the diagonal, <code>transpose(M)[r, c] = M[c, r]</code>; you need it once, inside the
+    inverse.</p>
+
+  <p>The <em>determinant</em> is one number that summarizes a matrix, and for a transform it has a
+    meaning you can see: it's the factor by which areas grow. A scale of 2 by 3 has determinant 6,
+    because a unit square goes to a 2-by-3 rectangle. A rotation has determinant 1. A reflection has
+    determinant -1, because it turns the square inside out. And a matrix that squashes the whole
+    plane onto a line has determinant 0, which is how you know it can't be undone. For a 3-by-3
+    matrix the determinant is a cofactor expansion along the first row. Each entry in that row is
+    multiplied by the determinant of the 2-by-2 matrix you get by deleting its row and column (its
+    <em>minor</em>), with alternating signs:</p>
+
+<pre><code>minor(M, r, c):      <span class="cm">// the 2x2 determinant left when row r and column c are deleted</span>
+  rows ← the two row indices that aren't r, in order
+  cols ← the two column indices that aren't c, in order
+  <span class="kw">return</span> M[rows[0], cols[0]] * M[rows[1], cols[1]] - M[rows[0], cols[1]] * M[rows[1], cols[0]]
+
+cofactor(M, r, c):
+  <span class="kw">return</span> (r + c) is odd ? -minor(M, r, c) : minor(M, r, c)
+
+determinant(M):
+  <span class="kw">return</span> M[0,0] * cofactor(M, 0, 0) + M[0,1] * cofactor(M, 0, 1) + M[0,2] * cofactor(M, 0, 2)</code></pre>
+
+  <p>The <em>inverse</em> of a matrix undoes it: <code>inverse(M) * M</code> is the identity. Once
+    you have cofactors it's two lines. Build the matrix of every cofactor, transpose it, and divide
+    every entry by the determinant. The transpose is the part everyone forgets, so the pseudo-code
+    writes the entry straight into its transposed position:</p>
+
+<pre><code>inverse(M):
+  d ← determinant(M)                    <span class="cm">// zero means there is no inverse; is_invertible(M) says so first</span>
+  <span class="kw">for</span> r <span class="kw">in</span> 0..2:
+    <span class="kw">for</span> c <span class="kw">in</span> 0..2:
+      result[c, r] ← cofactor(M, r, c) / d      <span class="cm">// note [c, r]: the transpose happens here</span>
+  <span class="kw">return</span> result</code></pre>
+
+  <p>Why does that work? Because <code>M</code> times the transposed cofactor matrix comes out as
+    the determinant times the identity: along the diagonal each entry <em>is</em> the cofactor
+    expansion of the determinant, and off the diagonal each entry is the expansion of a matrix with
+    two equal rows, which is zero. Divide by the determinant and you have the identity. It's a fine
+    thing to check by hand once, on the 3-by-3 in the scenario, and never again.</p>
+
+  <p>One more property that the last scenario pins, because chapter 8 will depend on it: the
+    inverse of a transform is a transform. If <code>M</code> has bottom row <code>0 0 1</code>, so
+    does <code>inverse(M)</code>. Points go back to points.</p>
+
+  <div class="test" data-feature="chapter04-matrices.feature">
+    <p class="label">features/chapter04-matrices.feature</p>
+<pre><code><span class="kw">Feature</span>: Matrices
+  A 3 by 3 matrix of real numbers, written row by row. M[r, c] is the
+  entry in row r and column c, counting from 0. Matrices compare
+  component-wise with the usual tolerance. matrix3 takes nine numbers, row
+  by row, for the times a table is too much ceremony.
+
+  <span class="kw">Scenario</span>: Constructing and inspecting a matrix
+    <span class="kw">Given</span> the following matrix M:
+      | 1 | 2 | 3 |
+      | 4 | 5 | 6 |
+      | 7 | 8 | 9 |
+    <span class="kw">Then</span>  M[0, 0] = 1
+    <span class="kw">And</span>   M[0, 2] = 3
+    <span class="kw">And</span>   M[1, 0] = 4
+    <span class="kw">And</span>   M[1, 1] = 5
+    <span class="kw">And</span>   M[2, 0] = 7
+    <span class="kw">And</span>   M[2, 2] = 9
+    <span class="kw">And</span>   M = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+
+  <span class="kw">Scenario</span>: Matrix equality with identical matrices
+    <span class="kw">Given</span> A ← matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+    <span class="kw">And</span>   B ← matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+    <span class="kw">Then</span>  A = B
+
+  <span class="kw">Scenario</span>: Matrix equality with different matrices
+    <span class="kw">Given</span> A ← matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+    <span class="kw">And</span>   B ← matrix3(1, 2, 3, 4, 5, 6, 7, 8, 8)
+    <span class="kw">Then</span>  A ≠ B
+
+  <span class="kw">Scenario</span>: Multiplying two matrices
+    <span class="kw">Given</span> the following matrix A:
+      | 1 | 2 | 3 |
+      | 4 | 5 | 6 |
+      | 7 | 8 | 9 |
+    <span class="kw">And</span>   the following matrix B:
+      | 2 | -1 | 0 |
+      | 1 |  3 | 1 |
+      | 0 |  1 | 2 |
+    <span class="kw">Then</span>  A * B is the following matrix:
+      |  4 |  8 |  8 |
+      | 13 | 17 | 17 |
+      | 22 | 26 | 26 |
+
+  <span class="kw">Scenario</span>: Matrix multiplication is not commutative
+    <span class="kw">Given</span> A ← matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+    <span class="kw">And</span>   B ← matrix3(2, -1, 0, 1, 3, 1, 0, 1, 2)
+    <span class="kw">Then</span>  A * B ≠ B * A
+
+  <span class="kw">Scenario</span>: A matrix multiplied by a point
+    <span class="kw">Given</span> the following matrix A:
+      | 1 | 2 | 3 |
+      | 4 | 5 | 6 |
+      | 0 | 0 | 1 |
+    <span class="kw">And</span>   p ← point(1, 2)
+    <span class="kw">Then</span>  A * p = point(8, 20)
+
+  <span class="kw">Scenario</span>: A matrix multiplied by a vector ignores the last column
+    <span class="kw">Given</span> the following matrix A:
+      | 1 | 2 | 3 |
+      | 4 | 5 | 6 |
+      | 0 | 0 | 1 |
+    <span class="kw">And</span>   v ← vector(1, 2)
+    <span class="kw">Then</span>  A * v = vector(5, 14)
+
+  <span class="kw">Scenario</span>: Multiplying by the identity matrix changes nothing
+    <span class="kw">Given</span> A ← matrix3(0, 1, 2, 1, 2, 4, 2, 4, 8)
+    <span class="kw">And</span>   p ← point(1, 2)
+    <span class="kw">Then</span>  A * identity() = A
+    <span class="kw">And</span>   identity() * A = A
+    <span class="kw">And</span>   identity() * p = p
+
+  <span class="kw">Scenario</span>: Transposing a matrix
+    <span class="kw">Given</span> the following matrix A:
+      | 0 | 9 | 3 |
+      | 9 | 8 | 0 |
+      | 1 | 8 | 5 |
+    <span class="kw">Then</span>  transpose(A) is the following matrix:
+      | 0 | 9 | 1 |
+      | 9 | 8 | 8 |
+      | 3 | 0 | 5 |
+
+  <span class="kw">Scenario</span>: Transposing the identity matrix
+    <span class="kw">Then</span>  transpose(identity()) = identity()
+
+  <span class="kw">Scenario</span>: The determinant of a 3 by 3 matrix
+    <span class="kw">Given</span> the following matrix A:
+      |  1 | 2 |  6 |
+      | -5 | 8 | -4 |
+      |  2 | 6 |  4 |
+    <span class="kw">Then</span>  determinant(A) = -196
+
+  <span class="kw">Scenario</span>: The determinant of a transform is the area factor
+    <span class="kw">Then</span>  determinant(identity()) = 1
+    <span class="kw">And</span>   determinant(scaling(2, 3)) = 6
+    <span class="kw">And</span>   determinant(rotation(0.7)) = 1
+    <span class="kw">And</span>   determinant(translation(4, 9)) = 1
+    <span class="kw">And</span>   determinant(scaling(-1, 1)) = -1
+
+  <span class="kw">Scenario</span>: Testing an invertible matrix for invertibility
+    <span class="kw">Given</span> the following matrix A:
+      | 3 | 0 |  2 |
+      | 2 | 0 | -2 |
+      | 0 | 1 |  1 |
+    <span class="kw">Then</span>  determinant(A) = 10
+    <span class="kw">And</span>   is_invertible(A) = true
+
+  <span class="kw">Scenario</span>: Testing a non-invertible matrix for invertibility
+    <span class="kw">Given</span> the following matrix A:
+      | 1 | 2 | 3 |
+      | 2 | 4 | 6 |
+      | 0 | 0 | 1 |
+    <span class="kw">Then</span>  determinant(A) = 0
+    <span class="kw">And</span>   is_invertible(A) = false
+
+  <span class="kw">Scenario</span>: Calculating the inverse of a matrix
+    <span class="kw">Given</span> the following matrix A:
+      | 3 | 0 |  2 |
+      | 2 | 0 | -2 |
+      | 0 | 1 |  1 |
+    <span class="kw">And</span>   B ← inverse(A)
+    <span class="kw">Then</span>  B[0, 0] = 0.2
+    <span class="kw">And</span>   B[1, 2] = 1
+    <span class="kw">And</span>   B[2, 1] = -0.3
+    <span class="kw">And</span>   B is the following matrix:
+      |  0.2 |  0.2 | 0 |
+      | -0.2 |  0.3 | 1 |
+      |  0.2 | -0.3 | 0 |
+    <span class="kw">And</span>   A * B = identity()
+
+  <span class="kw">Scenario</span>: Multiplying a product by its inverse
+    <span class="kw">Given</span> A ← matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+    <span class="kw">And</span>   B ← matrix3(2, -1, 0, 1, 3, 1, 0, 1, 2)
+    <span class="kw">And</span>   C ← A * B
+    <span class="kw">Then</span>  C * inverse(B) = A
+
+  <span class="kw">Scenario</span>: The inverse of a transform is a transform
+    <span class="kw">Given</span> A ← translation(5, -3) * rotation(π / 6) * scaling(2, 3)
+    <span class="kw">And</span>   B ← inverse(A)
+    <span class="kw">Then</span>  B[2, 0] = 0
+    <span class="kw">And</span>   B[2, 1] = 0
+    <span class="kw">And</span>   B[2, 2] = 1
+    <span class="kw">And</span>   B[0, 0] = 0.4330
+    <span class="kw">And</span>   B[0, 2] = -1.4151
+    <span class="kw">And</span>   B[1, 2] = 1.6994
+    <span class="kw">And</span>   B * A = identity()</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 4.3</span> The transforms</h2>
+
+  <p>Now the four matrices you'll actually build. Each is a small function that returns a
+    <code>matrix3</code>, and the first is the reason for <code>w</code>.</p>
+
+  <p><strong>Translation</strong> moves everything by a fixed vector. That's not a linear
+    operation on <code>(x, y)</code>, since it moves the origin, and no 2-by-2 matrix can do it.
+    With <code>w</code> along for the ride it's easy. Put the offsets in the last column:</p>
+
+<pre><code>translation(tx, ty):        scaling(sx, sy):        rotation(r):              shearing(xy, yx):
+  | 1  0  tx |                | sx  0  0 |             | cos r  -sin r  0 |        | 1   xy  0 |
+  | 0  1  ty |                | 0  sy  0 |             | sin r   cos r  0 |        | yx  1   0 |
+  | 0  0  1  |                | 0   0  1 |             |   0       0    1 |        | 0   0   1 |</code></pre>
+
+  <p>Multiply that by a point and the first row gives <code>x + tx·w</code>. For a point,
+    <code>w</code> is 1, and the point moves by <code>tx</code>. For a vector, <code>w</code> is 0,
+    and it doesn't move at all, which is right: a displacement of three across and two down is the
+    same displacement wherever you stand. That's the whole reason for the third coordinate, and
+    the scenario "Translation does not affect vectors" is the one to go back to when something
+    that shouldn't be moving is.</p>
+
+  <p><strong>Scaling</strong> multiplies <code>x</code> and <code>y</code> by independent
+    factors. Both the same is a uniform scale, which is a zoom. Different is a stretch. A negative
+    factor is a reflection: <code>scaling(-1, 1)</code> mirrors across the y axis. Its inverse
+    divides instead, and a scale with a zero in it has no inverse, because you can't un-flatten a
+    line back into a plane.</p>
+
+  <p><strong>Rotation</strong> by an angle <code>r</code>, in radians, and here's where the
+    derivation earns its keep. A rotation is determined by what it does to the two unit vectors.
+    Turn <code>(1, 0)</code> by <code>r</code> and it lands at <code>(cos r, sin r)</code>: that's
+    the definition of cosine and sine. Turn <code>(0, 1)</code> by the same <code>r</code> and it
+    lands a quarter turn further on, at <code>(-sin r, cos r)</code>. The columns of a matrix are
+    exactly where it sends the unit vectors, so those two results are the two columns, and the
+    matrix above falls out. There's nothing to memorize.</p>
+
+  <figure>
+    <canvas id="fig42" role="img" aria-label="Two small diagrams of the same rotation: on the left with y pointing up, the x axis turns counterclockwise; on the right with y pointing down as on a canvas, the same matrix turns it clockwise"></canvas>
+    <figcaption><span class="fig">Figure 4.2</span> The same <code>rotation(π / 6)</code>, drawn twice. Left, on the textbook's axes, with y up, a positive angle is counterclockwise. Right, on the canvas, with y down, the same matrix turns the same way in the numbers and the other way on the screen.</figcaption>
+  </figure>
+
+  <p>What you have to decide, and say out loud, is which way that turns. The matrix sends
+    <code>(1, 0)</code> to <code>(cos r, sin r)</code>: it turns the x axis toward the y axis. On
+    paper, with y pointing up, that's counterclockwise, and every trigonometry textbook draws it
+    that way. On your canvas, y points down, and turning x toward y is <em>clockwise on the
+    screen</em>. The numbers are identical. Only the picture flips. The book's convention is the
+    matrix above, a positive angle turns x toward y, and the F in §4.6 leans the way it leans
+    because of it. If your F leans the other way, you've either negated the sine or drawn your
+    axes from a textbook, and either way the plate scenario will tell you.</p>
+
+  <p><strong>Shearing</strong> slides <code>x</code> in proportion to <code>y</code>, or
+    <code>y</code> in proportion to <code>x</code>, or both: <code>shearing(1, 0)</code> turns a
+    square into a parallelogram leaning to the right by its own height. It's the one you'll use
+    least, and it matters for the next section, because it stretches lengths without changing
+    area, which is precisely the case where one of the candidate definitions of "how big" gets
+    the wrong answer.</p>
+
+  <p>Now the payoff for choosing that multiplication rule in §4.2. To rotate a point, then scale
+    it, then move it, you can do three multiplications one after another. Or you can multiply the
+    three matrices into one, once, and apply it to every point of the shape. The catch is the
+    order. <code>A * p</code> happens first, then <code>B</code> is applied to that, then
+    <code>C</code>, so the combined matrix is <code>C * B * A</code>: you write the chain in
+    reverse, with the first transform on the right, nearest the point. The scenario spells it out
+    as three separate steps and then as one matrix, and then there's a scenario for
+    <code>A * B * C</code> as well, because it's a different matrix and it lands the same point
+    somewhere else entirely.</p>
+
+  <p>One consequence you'll use constantly: to rotate about a point that isn't the origin, move
+    the point to the origin, rotate, and move it back. <code>translation(cx, cy) * rotation(r)
+    * translation(-cx, -cy)</code>, read right to left. Every "rotate this shape in place" in
+    every drawing program is that product.</p>
+
+  <div class="test" data-feature="chapter04-transforms.feature">
+    <p class="label">features/chapter04-transforms.feature</p>
+<pre><code><span class="kw">Feature</span>: The transforms
+  translation, scaling, rotation and shearing each build a matrix. Angles
+  are in radians. A positive rotation turns the x axis toward the y axis,
+  which on a canvas whose y runs downward is clockwise on the screen.
+
+  <span class="kw">Scenario</span>: Multiplying by a translation matrix
+    <span class="kw">Given</span> t ← translation(5, -3)
+    <span class="kw">And</span>   p ← point(-3, 4)
+    <span class="kw">Then</span>  t * p = point(2, 1)
+
+  <span class="kw">Scenario</span>: The inverse of a translation moves the other way
+    <span class="kw">Given</span> t ← translation(5, -3)
+    <span class="kw">And</span>   p ← point(-3, 4)
+    <span class="kw">Then</span>  inverse(t) * p = point(-8, 7)
+
+  <span class="kw">Scenario</span>: Translation does not affect vectors
+    <span class="kw">Given</span> t ← translation(5, -3)
+    <span class="kw">And</span>   v ← vector(-3, 4)
+    <span class="kw">Then</span>  t * v = v
+
+  <span class="kw">Scenario</span>: A scaling matrix applied to a point
+    <span class="kw">Given</span> s ← scaling(2, 3)
+    <span class="kw">And</span>   p ← point(-4, 6)
+    <span class="kw">Then</span>  s * p = point(-8, 18)
+
+  <span class="kw">Scenario</span>: A scaling matrix applied to a vector
+    <span class="kw">Given</span> s ← scaling(2, 3)
+    <span class="kw">And</span>   v ← vector(-4, 6)
+    <span class="kw">Then</span>  s * v = vector(-8, 18)
+
+  <span class="kw">Scenario</span>: The inverse of a scaling shrinks
+    <span class="kw">Given</span> s ← scaling(2, 3)
+    <span class="kw">And</span>   v ← vector(-4, 6)
+    <span class="kw">Then</span>  inverse(s) * v = vector(-2, 2)
+
+  <span class="kw">Scenario</span>: Reflection is scaling by a negative value
+    <span class="kw">Given</span> s ← scaling(-1, 1)
+    <span class="kw">And</span>   p ← point(2, 3)
+    <span class="kw">Then</span>  s * p = point(-2, 3)
+
+  <span class="kw">Scenario</span>: A positive rotation turns x toward y
+    <span class="kw">Given</span> p ← point(1, 0)
+    <span class="kw">Then</span>  rotation(π / 4) * p = point(0.7071, 0.7071)
+    <span class="kw">And</span>   rotation(π / 2) * p = point(0, 1)
+    <span class="kw">And</span>   rotation(π) * p = point(-1, 0)
+
+  <span class="kw">Scenario</span>: The inverse of a rotation turns the other way
+    <span class="kw">Given</span> p ← point(1, 0)
+    <span class="kw">Then</span>  inverse(rotation(π / 4)) * p = point(0.7071, -0.7071)
+    <span class="kw">And</span>   rotation(-π / 4) * p = point(0.7071, -0.7071)
+
+  <span class="kw">Scenario</span>: A rotation preserves length
+    <span class="kw">Given</span> v ← vector(3, 4)
+    <span class="kw">Then</span>  magnitude(rotation(1.2) * v) = 5
+    <span class="kw">And</span>   magnitude(rotation(-2.8) * v) = 5
+
+  <span class="kw">Scenario</span>: Shearing moves x in proportion to y
+    <span class="kw">Given</span> s ← shearing(1, 0)
+    <span class="kw">And</span>   p ← point(2, 3)
+    <span class="kw">Then</span>  s * p = point(5, 3)
+
+  <span class="kw">Scenario</span>: Shearing moves y in proportion to x
+    <span class="kw">Given</span> s ← shearing(0, 1)
+    <span class="kw">And</span>   p ← point(2, 3)
+    <span class="kw">Then</span>  s * p = point(2, 5)
+
+  <span class="kw">Scenario</span>: Individual transformations are applied in sequence
+    <span class="kw">Given</span> p ← point(1, 0)
+    <span class="kw">And</span>   A ← rotation(π / 2)
+    <span class="kw">And</span>   B ← scaling(5, 5)
+    <span class="kw">And</span>   C ← translation(10, 5)
+    <span class="kw">When</span>  p2 ← A * p
+    <span class="kw">And</span>   p3 ← B * p2
+    <span class="kw">And</span>   p4 ← C * p3
+    <span class="kw">Then</span>  p2 = point(0, 1)
+    <span class="kw">And</span>   p3 = point(0, 5)
+    <span class="kw">And</span>   p4 = point(10, 10)
+
+  <span class="kw">Scenario</span>: Chained transformations must be applied in reverse order
+    <span class="kw">Given</span> p ← point(1, 0)
+    <span class="kw">And</span>   A ← rotation(π / 2)
+    <span class="kw">And</span>   B ← scaling(5, 5)
+    <span class="kw">And</span>   C ← translation(10, 5)
+    <span class="kw">When</span>  T ← C * B * A
+    <span class="kw">Then</span>  T * p = point(10, 10)
+
+  <span class="kw">Scenario</span>: The other order is a different transform
+    <span class="kw">Given</span> p ← point(1, 0)
+    <span class="kw">And</span>   A ← rotation(π / 2)
+    <span class="kw">And</span>   B ← scaling(5, 5)
+    <span class="kw">And</span>   C ← translation(10, 5)
+    <span class="kw">When</span>  T ← A * B * C
+    <span class="kw">Then</span>  T * p = point(-25, 55)
+
+  <span class="kw">Scenario</span>: Rotating about a point that isn't the origin
+    <span class="kw">Given</span> T ← translation(4, 4) * rotation(π / 2) * translation(-4, -4)
+    <span class="kw">Then</span>  T * point(6, 4) = point(4, 6)
+    <span class="kw">And</span>   T * point(4, 4) = point(4, 4)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 4.4</span> How big is a transform?</h2>
+
+  <p>Here's a question that sounds like it should have an answer. Given a matrix <code>m</code>,
+    how much does it stretch things? If it's <code>scaling(2, 2)</code>, the answer is 2. A
+    rotation doesn't stretch anything, so 1. A translation, 1. And <code>scaling(4, 1)</code>?
+    Four along one axis, one along the other, and something in between along the diagonals. There
+    isn't a single number, and later chapters need one anyway.</p>
+
+  <p>Two places, specifically. Chapter 8 flattens curves into line segments and has to decide how
+    short the segments need to be, and "short enough" is measured in device pixels, after the
+    transform: a curve that's flat enough at a scale of 1 is a visible polygon at a scale of 10.
+    Chapter 13 strokes a path with a pen of some width described in the path's own coordinates,
+    and needs to know how wide that comes out on screen. Both want <code>approx_scale(m)</code>,
+    a single number, and the name is honest about it.</p>
+
+  <p>There are three reasonable candidates, and it's worth knowing all three even though you're
+    only writing one.</p>
+
+  <p>The <strong>largest stretch</strong>. Every matrix has a direction it stretches the most,
+    and the factor along that direction is called the largest singular value. For
+    <code>scaling(4, 1)</code> it's 4. For <code>shearing(1, 0)</code> it's 1.618, because the
+    diagonal of a sheared square gets longer even though its area doesn't. This is the
+    conservative answer: use it for a flattening tolerance and you'll never produce a segment too
+    long, anywhere, at any angle. It's also the most work. The formula for the largest singular
+    value of a 2-by-2 is a closed form, but it's six lines of squares and square roots, and it
+    isn't illuminating. If you want it, it's the square root of the larger eigenvalue of
+    <code>m</code> times its own transpose.</p>
+
+  <p>The <strong>longest column</strong>. The columns of the 2-by-2 part are where the unit
+    vectors land, so the longer column is a cheap, plausible measure of stretch. It's exact for
+    scales and rotations. It's wrong for shears: <code>shearing(1, 0)</code> has columns of
+    length 1 and 1.414, and stretches the diagonal by 1.618. Cheap, and it underestimates in
+    exactly the case that's hard to notice.</p>
+
+  <p>The <strong>square root of the determinant</strong>. The determinant is the area factor,
+    from §4.2, so its square root is the length factor <em>on average</em>: the scale that would
+    change area by the same amount if it were uniform. For any uniform scale, with any rotation and
+    translation mixed in, it's exact. For <code>scaling(4, 1)</code> it's 2, the geometric mean of
+    4 and 1. For <code>shearing(1, 0)</code> it's 1, which is too small along the diagonal and
+    right about the area. It's one line: <code>sqrt(|m[0,0]·m[1,1] - m[0,1]·m[1,0]|)</code>. The
+    absolute value is there because a reflection has a negative determinant and is still a scale
+    of 1.</p>
+
+  <p>The book uses the third one, and here's the reasoning. Most transforms a renderer meets are
+    uniform scales with rotations and translations, where all three candidates agree and the
+    cheapest one wins. Where they disagree, on non-uniform scales and shears, the geometric mean
+    splits the difference: it's never off by more than the square root of the ratio of the two axis
+    scales in either direction, which for the 4-to-1 stretch is a factor of 2 either way, and in
+    chapter 8 that's the difference between a segment that's a little too long on one axis and a
+    little too short on the other, on a curve nobody is going to inspect at that stretch. The
+    largest stretch would be more correct and cost six lines of algebra whose result you'd never
+    look at again. If you're building something where a badly flattened curve under an extreme
+    stretch is unacceptable, swap the body of <code>approx_scale</code> for the singular value,
+    and nothing else in the book changes.</p>
+
+  <p>What the scenarios pin: 1 for anything rigid, exact for uniform scales, 2 for
+    <code>scaling(4, 1)</code> stated openly as the compromise, 1 for an area-preserving shear, and
+    0 for a matrix that has collapsed, which is the case chapter 8 will check for before dividing
+    by it.</p>
+
+  <div class="test" data-feature="chapter04-scale.feature">
+    <p class="label">features/chapter04-scale.feature</p>
+<pre><code><span class="kw">Feature</span>: How big is a transform
+  approx_scale(m) is one number for how much m stretches lengths: the
+  square root of the absolute value of the determinant of its upper-left
+  2 by 2. Exact for uniform scales and rotations, a compromise otherwise,
+  and the chapter says which.
+
+  <span class="kw">Scenario</span>: The identity, a translation and a rotation don't stretch
+    <span class="kw">Then</span>  approx_scale(identity()) = 1
+    <span class="kw">And</span>   approx_scale(translation(7, 9)) = 1
+    <span class="kw">And</span>   approx_scale(rotation(1.1)) = 1
+
+  <span class="kw">Scenario</span>: A uniform scale is reported exactly
+    <span class="kw">Then</span>  approx_scale(scaling(2, 2)) = 2
+    <span class="kw">And</span>   approx_scale(scaling(0.5, 0.5)) = 0.5
+    <span class="kw">And</span>   approx_scale(scaling(3, 3) * rotation(0.7)) = 3
+    <span class="kw">And</span>   approx_scale(translation(5, 5) * scaling(3, 3)) = 3
+
+  <span class="kw">Scenario</span>: A reflection is not a negative scale
+    <span class="kw">Then</span>  approx_scale(scaling(-2, 2)) = 2
+
+  <span class="kw">Scenario</span>: A non-uniform scale is reported as the geometric mean
+    <span class="kw">Then</span>  approx_scale(scaling(4, 1)) = 2
+    <span class="kw">And</span>   approx_scale(scaling(4, 1) * rotation(0.4)) = 2
+    <span class="kw">And</span>   approx_scale(scaling(9, 1)) = 3
+
+  <span class="kw">Scenario</span>: A shear that preserves area reports 1
+    <span class="kw">Then</span>  approx_scale(shearing(1, 0)) = 1
+    <span class="kw">And</span>   approx_scale(shearing(0.5, 0.5)) = 0.8660
+
+  <span class="kw">Scenario</span>: A collapsed transform reports 0
+    <span class="kw">Then</span>  approx_scale(scaling(0, 1)) = 0
+    <span class="kw">And</span>   approx_scale(matrix3(1, 2, 0, 2, 4, 0, 0, 0, 1)) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 4.5</span> Transforming what you draw</h2>
+
+  <p>You have matrices and you have shapes. There are two ways to put them together, and a
+    renderer ends up using both.</p>
+
+  <p>The first is to transform the <em>points</em>. A polygon is a list of points; run each one
+    through the matrix and you have the transformed polygon, ready to draw. That needs a line
+    primitive that takes real coordinates rather than pixel indices, so <code>segment(a, b,
+    width)</code> is chapter 3's <code>thick_line</code> with the <code>+ 0.5</code> taken out:
+    the rectangle of that width centered on the segment from point <code>a</code> to point
+    <code>b</code>, square ends, exactly the same four half-planes. <code>thick_line(x0, y0, x1,
+    y1, w)</code> becomes a one-liner, <code>segment(point(x0 + 0.5, y0 + 0.5), point(x1 + 0.5,
+    y1 + 0.5), w)</code>, and every chapter 3 scenario still passes; the first scenario below
+    checks that with chapter 3's own numbers. The zero-length case is the same square as
+    before.</p>
+
+  <p>While you're there, two small shapes make the polygon drawing clean. <code>union(shapes)</code>
+    is a shape that's inside when any of its parts is: one more case in <code>inside</code>, a loop
+    with an early exit. And <code>outline(points, m, width)</code> takes the points through
+    <code>m</code> and returns the union of the segments between consecutive points, last back to
+    first. Building the outline as one shape and rasterizing it once matters more than it looks.
+    Paint each edge through its own coverage, as chapter 3's fan did, and the corner pixels get
+    painted twice, once by each edge that ends there, and come out brighter than the edges: the
+    "painted twice" lesson from chapter 2 again. As one shape, the corner pixel's coverage is the
+    coverage of the union, and it's painted once. The scenario checks the corner of a square:
+    0.75, because two square-ended segments meeting at a right angle leave a quarter-pixel notch
+    at the outside of the corner. That notch is what chapter 13's joins are for. For now it's a
+    quarter of a pixel and the tests know about it.</p>
+
+  <p>The second way is to transform the <em>shape</em>. A circle is a question, not a list of
+    points, so there's nothing to multiply. What you can do is answer the question in the circle's
+    own coordinates: to decide whether a device point is inside the transformed circle, run the
+    point <em>backwards</em> through the inverse matrix, and ask the original circle about the
+    result. <code>transformed(shape, m)</code> stores <code>inverse(m)</code>, and its
+    <code>inside</code> is one line. A circle seen through <code>scaling(2, 1)</code> is an ellipse
+    twice as wide as it is tall, and you didn't write an ellipse. A shape seen through a matrix
+    with no inverse is empty: nothing can be inside a shape that's been flattened to a line, and the
+    scenario says so rather than leaving you to find out from a division by zero.</p>
+
+  <figure>
+    <canvas id="fig43" role="img" aria-label="A circle on a grid on the left; on the right the same circle seen through a horizontal scale of two, an ellipse, with an arrow showing a device point being carried back through the inverse to the circle"></canvas>
+    <figcaption><span class="fig">Figure 4.3</span> To ask whether a point is inside the transformed shape, send the point back through the inverse and ask the original. The circle never learns it's an ellipse.</figcaption>
+  </figure>
+
+  <p>This is the plan's insight, made concrete. A transform isn't a property of a shape. It's a
+    change of the coordinate system the shape is described in, and you can apply it at either end:
+    push the geometry forward into device space, or pull the query back into shape space. Real
+    renderers do the first for paths, because paths are points, and the second for things like
+    gradients and patterns, which are questions. You've now done both, and everything in Part II is
+    a matter of doing the first one fast.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>Where does the pen live? Take a line one pixel wide and scale the drawing by 3 horizontally.
+      If the pen belongs to the shape, <code>transformed(thick_line(…, 1), scaling(3, 1))</code>,
+      the line comes out three pixels wide, because the pen stretched with everything else. If the
+      pen belongs to the device, transform the endpoints and draw a <code>segment</code> of width 1
+      between them, and the line is one pixel wide however far you zoom. Both are correct. They're
+      different pictures, and every vector format and every drawing program has had to choose:
+      SVG's default is the first, and its <code>vector-effect="non-scaling-stroke"</code> is the
+      second. Two scenarios pin the two answers on the same line so you can see them disagree.
+      Worse, under a non-uniform scale the shape-space pen is a different width in different
+      directions: a round pen becomes an ellipse, and a horizontal stroke and a vertical one come
+      out different thicknesses. That's what <code>approx_scale</code> is for. To get a
+      device-width pen out of shape space, divide the width by <code>approx_scale(m)</code>: exact
+      for a uniform scale, and for <code>scaling(4, 1)</code> a compromise that the last scenario
+      shows you in coverage values, a vertical stroke twice as wide as it should be and a horizontal
+      one half as wide. Neither is the bug. The bug is not having decided.</p>
+  </div>
+
+  <div class="test" data-feature="chapter04-shapes.feature">
+    <p class="label">features/chapter04-shapes.feature</p>
+<pre><code><span class="kw">Feature</span>: Transforming what you draw
+  segment(a, b, width) is chapter 3's thick_line with real endpoints: the
+  rectangle of that width centered on the segment from point a to point b,
+  square ends. union(shapes) is inside when any of its shapes is.
+  transformed(shape, m) is the shape seen through m: a point is inside it
+  when the inverse of m takes that point inside the original shape.
+  outline(points, m, width) is the closed polygon through the points after
+  m, every edge a segment of that width in device space, as one shape.
+
+  <span class="kw">Scenario</span>: A segment between pixel centers is a thick line
+    <span class="kw">Given</span> s ← segment(point(2.5, 2.5), point(11.5, 5.5), 1)
+    <span class="kw">When</span>  cov ← rasterize(s, 16, 10)
+    <span class="kw">Then</span>  coverage_at(cov, 2, 2) = 0.484375
+    <span class="kw">And</span>   coverage_at(cov, 6, 3) = 0.6875
+    <span class="kw">And</span>   coverage_at(cov, 7, 3) = 0.359375
+    <span class="kw">And</span>   ink(cov) = 9.4063
+
+  <span class="kw">Scenario</span>: A segment need not start on a pixel center
+    <span class="kw">Given</span> s ← segment(point(1, 3.5), point(7, 3.5), 1)
+    <span class="kw">When</span>  cov ← rasterize(s, 10, 10)
+    <span class="kw">Then</span>  coverage_at(cov, 0, 3) = 0
+    <span class="kw">And</span>   coverage_at(cov, 1, 3) = 1
+    <span class="kw">And</span>   coverage_at(cov, 6, 3) = 1
+    <span class="kw">And</span>   coverage_at(cov, 7, 3) = 0
+    <span class="kw">And</span>   coverage_at(cov, 3, 2) = 0
+    <span class="kw">And</span>   ink(cov) = 6
+
+  <span class="kw">Scenario</span>: A segment of no length is a square
+    <span class="kw">Given</span> s ← segment(point(3.5, 3.5), point(3.5, 3.5), 1)
+    <span class="kw">When</span>  cov ← rasterize(s, 8, 8)
+    <span class="kw">Then</span>  coverage_at(cov, 3, 3) = 1
+    <span class="kw">And</span>   ink(cov) = 1
+
+  <span class="kw">Scenario</span>: A union is inside when any of its parts is
+    <span class="kw">Given</span> s ← union([circle(2, 2, 1), rectangle(5, 0, 7, 4)])
+    <span class="kw">Then</span>  inside(s, 2, 2) = true
+    <span class="kw">And</span>   inside(s, 6, 1) = true
+    <span class="kw">And</span>   inside(s, 4, 2) = false
+    <span class="kw">And</span>   ink(rasterize(s, 8, 8)) = 11.25
+
+  <span class="kw">Scenario</span>: A circle seen through a scale is an ellipse
+    <span class="kw">Given</span> s ← transformed(circle(0, 0, 4), scaling(2, 1))
+    <span class="kw">Then</span>  inside(s, 7.9, 0) = true
+    <span class="kw">And</span>   inside(s, 8.1, 0) = false
+    <span class="kw">And</span>   inside(s, 0, 3.9) = true
+    <span class="kw">And</span>   inside(s, 0, 4.1) = false
+    <span class="kw">And</span>   inside(s, 5.6, 1.4) = true
+    <span class="kw">And</span>   inside(s, 5.6, 2.9) = false
+
+  <span class="kw">Scenario</span>: The transform is applied in the order the matrix says
+    <span class="kw">Given</span> s ← transformed(circle(0, 0, 4), translation(10, 10) * scaling(2, 1))
+    <span class="kw">Then</span>  inside(s, 10, 10) = true
+    <span class="kw">And</span>   inside(s, 17.9, 10) = true
+    <span class="kw">And</span>   inside(s, 18.1, 10) = false
+    <span class="kw">And</span>   inside(s, 10, 13.9) = true
+    <span class="kw">And</span>   inside(s, 10, 14.1) = false
+
+  <span class="kw">Scenario</span>: A shape seen through a collapsed transform is empty
+    <span class="kw">Given</span> s ← transformed(circle(0, 0, 4), scaling(0, 1))
+    <span class="kw">Then</span>  inside(s, 0, 0) = false
+    <span class="kw">And</span>   ink(rasterize(s, 10, 10)) = 0
+
+  <span class="kw">Scenario</span>: A pen in shape space scales with the shape
+    <span class="kw">Given</span> s ← transformed(thick_line(5, 0, 5, 9, 1), scaling(3, 1))
+    <span class="kw">When</span>  cov ← rasterize(s, 24, 10)
+    <span class="kw">Then</span>  coverage_at(cov, 14, 4) = 0
+    <span class="kw">And</span>   coverage_at(cov, 15, 4) = 1
+    <span class="kw">And</span>   coverage_at(cov, 16, 4) = 1
+    <span class="kw">And</span>   coverage_at(cov, 17, 4) = 1
+    <span class="kw">And</span>   coverage_at(cov, 18, 4) = 0
+    <span class="kw">And</span>   ink(cov) = 27
+
+  <span class="kw">Scenario</span>: A pen in device space does not
+    <span class="kw">Given</span> m ← scaling(3, 1)
+    <span class="kw">And</span>   s ← segment(m * point(5.5, 0.5), m * point(5.5, 9.5), 1)
+    <span class="kw">When</span>  cov ← rasterize(s, 24, 10)
+    <span class="kw">Then</span>  coverage_at(cov, 15, 4) = 0
+    <span class="kw">And</span>   coverage_at(cov, 16, 4) = 1
+    <span class="kw">And</span>   coverage_at(cov, 17, 4) = 0
+    <span class="kw">And</span>   ink(cov) = 9
+
+  <span class="kw">Scenario</span>: Dividing the width by approx_scale makes the two pens agree
+    <span class="kw">Given</span> m ← scaling(2, 2)
+    <span class="kw">And</span>   s ← transformed(segment(point(5.5, 0.5), point(5.5, 9.5), 1 / approx_scale(m)), m)
+    <span class="kw">When</span>  cov ← rasterize(s, 24, 20)
+    <span class="kw">Then</span>  coverage_at(cov, 9, 5) = 0
+    <span class="kw">And</span>   coverage_at(cov, 10, 5) = 0.5
+    <span class="kw">And</span>   coverage_at(cov, 11, 5) = 0.5
+    <span class="kw">And</span>   coverage_at(cov, 12, 5) = 0
+    <span class="kw">And</span>   ink(cov) = 18
+
+  <span class="kw">Scenario</span>: Under a non-uniform scale the compromise shows
+    <span class="kw">Given</span> m ← scaling(4, 1)
+    <span class="kw">And</span>   w ← 1 / approx_scale(m)
+    <span class="kw">And</span>   v ← transformed(segment(point(2.5, 0.5), point(2.5, 9.5), w), m)
+    <span class="kw">And</span>   h ← transformed(segment(point(0.5, 5.5), point(4.5, 5.5), w), m)
+    <span class="kw">When</span>  cv ← rasterize(v, 24, 12)
+    <span class="kw">And</span>   ch ← rasterize(h, 24, 12)
+    <span class="kw">Then</span>  coverage_at(cv, 8, 5) = 0
+    <span class="kw">And</span>   coverage_at(cv, 9, 5) = 1
+    <span class="kw">And</span>   coverage_at(cv, 10, 5) = 1
+    <span class="kw">And</span>   coverage_at(cv, 11, 5) = 0
+    <span class="kw">And</span>   ink(cv) = 18
+    <span class="kw">And</span>   coverage_at(ch, 10, 4) = 0
+    <span class="kw">And</span>   coverage_at(ch, 10, 5) = 0.5
+    <span class="kw">And</span>   coverage_at(ch, 10, 6) = 0
+    <span class="kw">And</span>   ink(ch) = 8
+
+  <span class="kw">Scenario</span>: An outline is one shape, so its corners are painted once
+    <span class="kw">Given</span> pts ← [point(1.5, 1.5), point(6.5, 1.5), point(6.5, 6.5), point(1.5, 6.5)]
+    <span class="kw">And</span>   c ← canvas(8, 8)
+    <span class="kw">When</span>  paint_through(c, rasterize(outline(pts, identity(), 1), 8, 8), color(1, 1, 1))
+    <span class="kw">Then</span>  length(lit_pixels(c)) = 20
+    <span class="kw">And</span>   pixel_at(c, 3, 1) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(c, 1, 3) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(c, 1, 1) = color(0.75, 0.75, 0.75)
+    <span class="kw">And</span>   pixel_at(c, 3, 3) = color(0, 0, 0)
+    <span class="kw">And</span>   pixel_at(c, 0, 1) = color(0, 0, 0)
+    <span class="kw">And</span>   total_ink(c) = 19
+
+  <span class="kw">Scenario</span>: An outline takes its points through the matrix first
+    <span class="kw">Given</span> pts ← [point(1.5, 1.5), point(6.5, 1.5), point(6.5, 6.5), point(1.5, 6.5)]
+    <span class="kw">And</span>   c ← canvas(16, 16)
+    <span class="kw">When</span>  paint_through(c, rasterize(outline(pts, scaling(2, 2), 1), 16, 16), color(1, 1, 1))
+    <span class="kw">Then</span>  length(lit_pixels(c)) = 76
+    <span class="kw">And</span>   pixel_at(c, 3, 3) = color(0.75, 0.75, 0.75)
+    <span class="kw">And</span>   pixel_at(c, 8, 2) = color(0.5, 0.5, 0.5)
+    <span class="kw">And</span>   pixel_at(c, 8, 3) = color(0.5, 0.5, 0.5)
+    <span class="kw">And</span>   pixel_at(c, 8, 4) = color(0, 0, 0)</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>Illustrator's Preferences → General → <em>Scale Strokes &amp; Effects</em>. Checked, the pen
+      lives in shape space and a 1pt stroke on a doubled shape becomes 2pt. Unchecked, it lives on
+      the page. It's a global switch, and it's the reason the same scale gesture fattens one
+      person's outlines and not another's.</p>
+  </aside>
+
+  <h2><span class="sec">§ 4.6</span> Putting it together</h2>
+
+  <p>Take chapter 3's fan and describe it properly this time: as points around the origin, with
+    real coordinates and no rounding, the center first and then twelve ends at radius 36.
+    <code>fan_transformed(m)</code> runs the points through <code>m</code> and draws the rays as
+    one union of segments. Then draw it twice with the same two matrices, <code>rotation(π / 6)</code>
+    and <code>translation(104.5, 76.5)</code>, in both orders, and put the results side by side with a
+    four-line helper, <code>side_by_side(a, b)</code>, that copies <code>a</code> into the left half
+    of a wider canvas and <code>b</code> into the right:</p>
+
+<pre><code>fan_points():
+  pts ← [point(0, 0)]
+  <span class="kw">for</span> k <span class="kw">in</span> 0..11:
+    a ← k * 30 degrees
+    pts.append(point(36 * cos(a), 36 * sin(a)))
+  <span class="kw">return</span> pts
+
+fan_transformed(m):
+  c ← canvas(160, 160)
+  fill(c, color(0.02, 0.02, 0.025))
+  pts ← transform_points(fan_points(), m)          <span class="cm">// every point through m</span>
+  rays ← union(segment(pts[0], pts[k], 1) <span class="kw">for</span> k <span class="kw">in</span> 1..12)
+  paint_through(c, rasterize(rays, 160, 160), color(0.92, 0.92, 0.88))
+  <span class="kw">return</span> c
+
+fan_both_orders():
+  turn ← rotation(π / 6)
+  move ← translation(104.5, 76.5)
+  <span class="kw">return</span> side_by_side(fan_transformed(move * turn), fan_transformed(turn * move))</code></pre>
+
+  <figure class="wide">
+    <canvas id="fig44" role="img" aria-label="Two fans of twelve rays: on the left rotated then moved, centered at the upper right; on the right moved then rotated, swung down toward the lower left"></canvas>
+    <figcaption><span class="fig">Figure 4.4</span> <code>fan_both_orders()</code>. Left: rotate, then translate. Right: translate, then rotate. The fan moved. Did it turn? It's a fan with a ray every 30 degrees, rotated by 30 degrees. It can't tell you.</figcaption>
+  </figure>
+
+  <p>Look at the left half. <code>move * turn</code> rotates the fan about its own center, which is
+    the origin, and then carries it to (104.5, 76.5). The right half, <code>turn * move</code>, carries
+    the fan to (104.5, 76.5) first and <em>then</em> rotates, about the origin, which is now the
+    canvas's top-left corner, so the whole fan swings down and to the left, to (52.25, 118.50).
+    That's the argument the plate exists to make, and the fan makes half of it: the order
+    matters, because the fan ends up in two different places.</p>
+
+  <p>It can't make the other half. The fan has a ray every 30 degrees, and you rotated it by 30
+    degrees, so the rotated fan is pixel-for-pixel the unrotated fan. Worse than that: the fan is
+    symmetric under every mistake this chapter can produce. Negate the sine and rotate the wrong way,
+    and it looks the same. Transpose the rotation, and it looks the same. Swap x and y, and it
+    looks the same. The fan was a fine picture for chapter 3, where the question was about the
+    pixels along one ray. For a question about orientation, you want a shape that has one.</p>
+
+  <p>So draw a letter. An F has no symmetry at all: not left-right, not up-down, not diagonal, not
+    rotational. Ten corners, clockwise from the top left, in a box 40 wide and 60 tall centered on
+    the origin, so that a rotation about the origin is a rotation about the letter's middle:</p>
+
+<pre><code>letter_f():
+  <span class="kw">return</span> [point(-20, -30), point(20, -30), point(20, -20), point(-10, -20),
+          point(-10, -5),  point(12, -5),  point(12, 5),   point(-10, 5),
+          point(-10, 30),  point(-20, 30)]</code></pre>
+
+  <p>Here is what the F shows you that the fan couldn't. Each panel below is the F drawn through
+    <code>move * turn</code> by a program with one specific mistake in it, alongside a dim copy of
+    the untransformed letter for reference. These are figures, not renders you're asked to make;
+    the scenarios for the correct plate fail on every one of them, and that's the point of
+    showing them.</p>
+
+  <figure class="wide">
+    <canvas id="fig45" role="img" aria-label="Three panels, each with a dim reference F at the upper left. First: the F has vanished except a sliver at the corner, because it was built from vectors and the translation was ignored. Second: an F rotated the wrong way and not moved, because the matrix was transposed. Third: an F rotated by an absurd angle, because the angle was in degrees"></canvas>
+    <figcaption><span class="fig">Figure 4.5</span> Three wrong Fs. Left: the corners were built with <code>vector</code> instead of <code>point</code>, so <code>w = 0</code> and the translation never happened; the F was rotated about the canvas corner and mostly left. Middle: the matrix was stored transposed, so the rotation runs backwards and the translation lands in <code>w</code>, where nobody reads it. Right: <code>rotation(30)</code>, in radians, is 30 radians, which is 278.9 degrees past four full turns.</figcaption>
+  </figure>
+
+  <p>Now the correct one. Draw the ghost once, copy it into two canvases, and draw the F through
+    each order on top. The ghost sits at <code>translation(44.5, 44.5)</code> for no reason other than
+    to be on the canvas; it's where the F starts, and it's dim so the two results read as the
+    picture. Then magnify by 2, as in chapter 3:</p>
+
+<pre><code>f_both_orders():
+  turn ← rotation(π / 6)
+  move ← translation(104.5, 76.5)
+  home ← translation(44.5, 44.5)
+  ink  ← color(0.92, 0.92, 0.88)
+  dim  ← color(0.16, 0.16, 0.17)
+  ghost ← canvas(160, 160)
+  fill(ghost, color(0.02, 0.02, 0.025))
+  paint_through(ghost, rasterize(outline(letter_f(), home, 1), 160, 160), dim)
+  a ← a copy of ghost
+  b ← a copy of ghost
+  paint_through(a, rasterize(outline(letter_f(), move * turn, 1), 160, 160), ink)
+  paint_through(b, rasterize(outline(letter_f(), turn * move, 1), 160, 160), ink)
+  <span class="kw">return</span> side_by_side(a, b)
+
+plate_04():
+  <span class="kw">return</span> magnify(f_both_orders(), 2)</code></pre>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate4" role="img" aria-label="Two panels. Each has a dim upright F at the upper left. Left panel: a bright F leaning thirty degrees clockwise, centered at the upper right. Right panel: the same leaning F, but swung down to the lower left"></canvas>
+    <figcaption><span class="fig">Plate 4</span> The same two matrices, multiplied in the two possible orders. Left, <code>move * turn</code>: the F turns about its own center and goes where it was sent. Right, <code>turn * move</code>: it goes where it was sent and then swings about the canvas corner. Both lean the same way, clockwise on the screen, because a positive angle turns x toward y and y points down. If yours lean the other way, go back to §4.3.</figcaption>
+  </figure>
+
+  <p>Five rasterizations of a 160-by-160 canvas at 64 samples a pixel, each against a union of ten
+    or twelve segments: about the same work as chapter 3's fan, so a minute or so in Python or
+    Ruby and well under a second compiled. The scenarios pin the transformed corners of the F to
+    four decimals before they pin a pixel, so a wrong lean or a lost translation fails on a number
+    you can read, not on a byte in a PPM.</p>
+
+  <div class="test" data-feature="chapter04-plate.feature">
+    <p class="label">features/chapter04-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 4
+  The same two matrices, rotation(π / 6) and translation(104.5, 76.5),
+  multiplied in both orders and applied to two shapes: chapter 3's fan,
+  described as points around the origin this time, and a letter F.
+
+  <span class="kw">Scenario</span>: The fan as points
+    <span class="kw">Given</span> pts ← fan_points()
+    <span class="kw">Then</span>  length(pts) = 13
+    <span class="kw">And</span>   pts[0] = point(0, 0)
+    <span class="kw">And</span>   pts[1] = point(36, 0)
+    <span class="kw">And</span>   pts[4] = point(0, 36)
+    <span class="kw">And</span>   pts[7] = point(-36, 0)
+    <span class="kw">And</span>   pts[2] = point(31.1769, 18)
+
+  <span class="kw">Scenario</span>: Rotate, then translate: the fan turns about its own center
+    <span class="kw">Given</span> m ← translation(104.5, 76.5) * rotation(π / 6)
+    <span class="kw">When</span>  pts ← transform_points(fan_points(), m)
+    <span class="kw">Then</span>  pts[0] = point(104.5, 76.5)
+    <span class="kw">And</span>   pts[1] = point(135.6769, 94.5)
+    <span class="kw">And</span>   pts[4] = point(86.5, 107.6769)
+
+  <span class="kw">Scenario</span>: Translate, then rotate: the fan swings about the canvas corner
+    <span class="kw">Given</span> m ← rotation(π / 6) * translation(104.5, 76.5)
+    <span class="kw">When</span>  pts ← transform_points(fan_points(), m)
+    <span class="kw">Then</span>  pts[0] = point(52.2497, 118.5009)
+    <span class="kw">And</span>   pts[1] = point(83.4266, 136.5009)
+
+  <span class="kw">Scenario</span>: The letter F
+    <span class="kw">Given</span> f ← letter_f()
+    <span class="kw">Then</span>  length(f) = 10
+    <span class="kw">And</span>   f[0] = point(-20, -30)
+    <span class="kw">And</span>   f[1] = point(20, -30)
+    <span class="kw">And</span>   f[5] = point(12, -5)
+    <span class="kw">And</span>   f[9] = point(-20, 30)
+
+  <span class="kw">Scenario</span>: The F at home
+    <span class="kw">When</span>  f ← transform_points(letter_f(), translation(44.5, 44.5))
+    <span class="kw">Then</span>  f[0] = point(24.5, 14.5)
+    <span class="kw">And</span>   f[1] = point(64.5, 14.5)
+    <span class="kw">And</span>   f[9] = point(24.5, 74.5)
+
+  <span class="kw">Scenario</span>: The F, rotated then translated
+    <span class="kw">Given</span> m ← translation(104.5, 76.5) * rotation(π / 6)
+    <span class="kw">When</span>  f ← transform_points(letter_f(), m)
+    <span class="kw">Then</span>  f[0] = point(102.1795, 40.5192)
+    <span class="kw">And</span>   f[1] = point(136.8205, 60.5192)
+    <span class="kw">And</span>   f[5] = point(117.3923, 78.1699)
+    <span class="kw">And</span>   f[9] = point(72.1795, 92.4808)
+
+  <span class="kw">Scenario</span>: The F, translated then rotated
+    <span class="kw">Given</span> m ← rotation(π / 6) * translation(104.5, 76.5)
+    <span class="kw">When</span>  f ← transform_points(letter_f(), m)
+    <span class="kw">Then</span>  f[0] = point(49.9291, 82.5202)
+    <span class="kw">And</span>   f[1] = point(84.5702, 102.5202)
+    <span class="kw">And</span>   f[5] = point(65.142, 120.1708)
+    <span class="kw">And</span>   f[9] = point(19.9291, 134.4817)
+
+  <span class="kw">Scenario</span>: The fan, both orders
+    <span class="kw">Given</span> c ← fan_both_orders()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-04/fan-both-orders.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 160
+    <span class="kw">And</span>   ppm_pixel(p6, 104, 76) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 124, 76) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 104, 56) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 125, 88) = (236, 236, 231) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 116, 97) = (236, 236, 231) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 141, 76) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 212, 118) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 232, 118) = (246, 246, 241) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 233, 130) = (223, 223, 219) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 224, 139) = (236, 236, 231) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 200, 139) = (211, 211, 207) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 310, 10) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 4
+    <span class="kw">Given</span> c ← plate_04()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-04/plate-04.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 640
+    <span class="kw">And</span>   c.height = 320
+    <span class="kw">And</span>   ppm_pixel(p6, 48, 28) = (99, 99, 102) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 28) = (111, 111, 115) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 48, 100) = (111, 111, 115) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 200, 150) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 268, 129) = (237, 237, 233) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 215, 145) = (237, 237, 233) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 239, 101) = (237, 237, 233) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 174, 173) = (217, 217, 213) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 368, 28) = (99, 99, 102) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 500, 60) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 453, 207) = (236, 236, 231) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 431, 229) = (234, 234, 229) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 445, 249) = (234, 234, 229) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 368, 273) = (177, 177, 174) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <nav class="endnav">
+    <a href="chapter-03.html">← 3 · Lines</a>
+    <span>Chapter 4 · Points, Vectors, Transforms</span>
+    <span>Next: 5 · Paths and Insideness (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+function toByte(light) {
+  var v = light < 0 ? 0 : light > 1 ? 1 : light;
+  return Math.floor(Plate.l2s(v) * 255 + 0.5);
+}
+function lerp3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+function blit(ctx, pixels, pw, ph, scale, ox, oy) {
+  var img = ctx.createImageData(pw, ph);
+  for (var i = 0; i < pw * ph; i++) {
+    img.data[i * 4] = pixels[i][0]; img.data[i * 4 + 1] = pixels[i][1];
+    img.data[i * 4 + 2] = pixels[i][2]; img.data[i * 4 + 3] = 255;
+  }
+  var off = Plate.offcan(pw, ph);
+  off.getContext('2d').putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, ox, oy, pw * scale, ph * scale);
+}
+var INK = [0.92, 0.92, 0.88], GHOST = [0.16, 0.16, 0.17], PAPER = [0.02, 0.02, 0.025];
+
+/* a tiny float canvas: light values, painted by weight, exactly as the chapter's programs do */
+function Buf(w, h) { this.w = w; this.h = h; this.p = []; for (var i = 0; i < w * h; i++) this.p.push(PAPER.slice()); }
+Buf.prototype.plot = function (x, y, col, k) {
+  if (x < 0 || y < 0 || x >= this.w || y >= this.h || k <= 0) return;
+  this.p[y * this.w + x] = lerp3(this.p[y * this.w + x], col, k);
+};
+Buf.prototype.bytes = function () { return this.p.map(function (c) { return c.map(toByte); }); };
+Buf.prototype.copy = function () { var b = new Buf(this.w, this.h); b.p = this.p.map(function (c) { return c.slice(); }); return b; };
+
+/* tuples and matrices, exactly as the chapter defines them: [x, y, w] and nine numbers row by row */
+function point(x, y) { return [x, y, 1]; }
+function vector(x, y) { return [x, y, 0]; }
+function mul(a, b) {          /* matrix * matrix, or matrix * tuple */
+  if (b.length === 3) return [a[0] * b[0] + a[1] * b[1] + a[2] * b[2], a[3] * b[0] + a[4] * b[1] + a[5] * b[2], a[6] * b[0] + a[7] * b[1] + a[8] * b[2]];
+  var out = [];
+  for (var r = 0; r < 3; r++) for (var c = 0; c < 3; c++) out.push(a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]);
+  return out;
+}
+function translation(x, y) { return [1, 0, x, 0, 1, y, 0, 0, 1]; }
+function scaling(x, y) { return [x, 0, 0, 0, y, 0, 0, 0, 1]; }
+function rotation(r) { var c = Math.cos(r), s = Math.sin(r); return [c, -s, 0, s, c, 0, 0, 0, 1]; }
+function transpose(m) { return [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]; }
+function inverse(m) {
+  var d = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
+  return [(m[4] * m[8] - m[5] * m[7]) / d, (m[2] * m[7] - m[1] * m[8]) / d, (m[1] * m[5] - m[2] * m[4]) / d,
+          (m[5] * m[6] - m[3] * m[8]) / d, (m[0] * m[8] - m[2] * m[6]) / d, (m[2] * m[3] - m[0] * m[5]) / d,
+          (m[3] * m[7] - m[4] * m[6]) / d, (m[1] * m[6] - m[0] * m[7]) / d, (m[0] * m[4] - m[1] * m[3]) / d];
+}
+
+/* segment(a, b, width) as four half-planes, with a bounding box so the figures draw quickly.
+   The box changes nothing about which samples are inside; it skips pixels the rectangle can't reach. */
+function segment(a, b, w) {
+  var ax = a[0], ay = a[1], bx = b[0], by = b[1], dx = bx - ax, dy = by - ay, L = Math.hypot(dx, dy), h = w / 2;
+  if (L === 0) { dx = 1; dy = 0; L = 1; ax -= h; bx += h; }
+  dx /= L; dy /= L;
+  var nx = -dy, ny = dx;
+  var sides = [[ax, ay, dx, dy], [bx, by, -dx, -dy], [ax + nx * h, ay + ny * h, -nx, -ny], [ax - nx * h, ay - ny * h, nx, ny]];
+  var box = [Math.min(ax, bx) - h, Math.min(ay, by) - h, Math.max(ax, bx) + h, Math.max(ay, by) + h];
+  return { box: box, inside: function (x, y) {
+    if (x < box[0] || x > box[2] || y < box[1] || y > box[3]) return false;
+    for (var i = 0; i < 4; i++) { var s = sides[i]; if ((x - s[0]) * s[2] + (y - s[1]) * s[3] < 0) return false; }
+    return true;
+  } };
+}
+function union(shapes) {
+  return { inside: function (x, y) { for (var i = 0; i < shapes.length; i++) if (shapes[i].inside(x, y)) return true; return false; } };
+}
+function outline(points, m, w) {
+  var pts = points.map(function (p) { return mul(m, p); }), segs = [];
+  for (var i = 0; i < pts.length; i++) segs.push(segment(pts[i], pts[(i + 1) % pts.length], w));
+  return union(segs);
+}
+function coverage(shape, px, py) {
+  var n = 0;
+  for (var j = 0; j < 8; j++) for (var i = 0; i < 8; i++) if (shape.inside(px + (i + 0.5) / 8, py + (j + 0.5) / 8)) n++;
+  return n / 64;
+}
+function paintThrough(b, shape, col) {
+  for (var y = 0; y < b.h; y++) for (var x = 0; x < b.w; x++) b.plot(x, y, col, coverage(shape, x, y));
+}
+function sideBySide(a, b) {
+  var out = new Buf(a.w + b.w, a.h);
+  for (var y = 0; y < a.h; y++) {
+    for (var x = 0; x < a.w; x++) out.p[y * out.w + x] = a.p[y * a.w + x];
+    for (x = 0; x < b.w; x++) out.p[y * out.w + a.w + x] = b.p[y * b.w + x];
+  }
+  return out;
+}
+
+var TURN = rotation(Math.PI / 6), MOVE = translation(104.5, 76.5), HOME = translation(44.5, 44.5);
+function fanPoints() {
+  var pts = [point(0, 0)];
+  for (var k = 0; k < 12; k++) { var a = k * Math.PI / 6; pts.push(point(36 * Math.cos(a), 36 * Math.sin(a))); }
+  return pts;
+}
+function fanTransformed(m) {
+  var b = new Buf(160, 160), pts = fanPoints().map(function (p) { return mul(m, p); }), segs = [];
+  for (var k = 1; k <= 12; k++) segs.push(segment(pts[0], pts[k], 1));
+  paintThrough(b, union(segs), INK);
+  return b;
+}
+function letterF() {
+  return [point(-20, -30), point(20, -30), point(20, -20), point(-10, -20), point(-10, -5),
+          point(12, -5), point(12, 5), point(-10, 5), point(-10, 30), point(-20, 30)];
+}
+function fGhost() { var b = new Buf(160, 160); paintThrough(b, outline(letterF(), HOME, 1), GHOST); return b; }
+function fBothOrders() {
+  var ghost = fGhost(), a = ghost.copy(), b = ghost.copy();
+  paintThrough(a, outline(letterF(), mul(MOVE, TURN), 1), INK);
+  paintThrough(b, outline(letterF(), mul(TURN, MOVE), 1), INK);
+  return sideBySide(a, b);
+}
+
+function grid(ctx, p, ox, oy, cols, rows, cs) {
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.5); ctx.lineWidth = 1;
+  for (var i = 0; i <= cols; i++) { ctx.beginPath(); ctx.moveTo(ox + i * cs, oy); ctx.lineTo(ox + i * cs, oy + rows * cs); ctx.stroke(); }
+  for (var j = 0; j <= rows; j++) { ctx.beginPath(); ctx.moveTo(ox, oy + j * cs); ctx.lineTo(ox + cols * cs, oy + j * cs); ctx.stroke(); }
+}
+function arrow(ctx, x0, y0, x1, y1, col, width) {
+  var a = Math.atan2(y1 - y0, x1 - x0), L = 7;
+  ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = width || 2;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - L * Math.cos(a - 0.4), y1 - L * Math.sin(a - 0.4));
+  ctx.lineTo(x1 - L * Math.cos(a + 0.4), y1 - L * Math.sin(a + 0.4)); ctx.closePath(); ctx.fill();
+}
+
+/* ---------- Figure 4.1 — which side of a line ---------- */
+Plate.add('fig41', 0.5, function (ctx, w, h, p) {
+  var cols = 14, cs = Math.floor((w - 20) / cols), rows = Math.floor((h - 20) / cs), ox = 10, oy = 10;
+  grid(ctx, p, ox, oy, cols, rows, cs);
+  var ax = ox + 2 * cs, ay = oy + rows / 2 * cs, bx = ox + 10 * cs, by = ay;
+  arrow(ctx, ox + 0.5 * cs, oy + 0.5 * cs, ox + 3 * cs, oy + 0.5 * cs, Plate.rgba(p.ink3, 0.9), 1.2);
+  Plate.label(ctx, 'x', ox + 3.3 * cs, oy + 0.5 * cs + 4, p.ink3, 10);
+  arrow(ctx, ox + 0.5 * cs, oy + 0.5 * cs, ox + 0.5 * cs, oy + 3 * cs, Plate.rgba(p.ink3, 0.9), 1.2);
+  Plate.label(ctx, 'y', ox + 0.5 * cs - 3, oy + 3.7 * cs, p.ink3, 10, 'center');
+  arrow(ctx, ax, ay, bx, by, p.ink, 2);
+  ctx.fillStyle = p.ink; ctx.beginPath(); ctx.arc(ax, ay, 3, 0, Math.PI * 2); ctx.fill();
+  Plate.label(ctx, 'a', ax - 4, ay - 8, p.ink, 11, 'center');
+  Plate.label(ctx, 'b', bx + 2, by - 8, p.ink, 11, 'center');
+  var q1 = [ox + 6 * cs, ay + 2.5 * cs], q2 = [ox + 7 * cs, ay - 2.5 * cs];
+  ctx.setLineDash([3, 3]); ctx.lineWidth = 1.2;
+  ctx.strokeStyle = Plate.rgba(p.cyan, 0.9); ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(q1[0], q1[1]); ctx.stroke();
+  ctx.strokeStyle = Plate.rgba(p.magenta, 0.9); ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(q2[0], q2[1]); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = p.cyan; ctx.beginPath(); ctx.arc(q1[0], q1[1], 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = p.magenta; ctx.beginPath(); ctx.arc(q2[0], q2[1], 3.5, 0, Math.PI * 2); ctx.fill();
+  Plate.label(ctx, 'cross(b - a, q - a) > 0', q1[0] + 8, q1[1] + 4, p.cyan, 10);
+  Plate.label(ctx, 'cross(b - a, q - a) < 0', q2[0] + 8, q2[1] + 4, p.magenta, 10);
+});
+
+/* ---------- Figure 4.2 — the same rotation, two ways up ---------- */
+Plate.add('fig42', 0.42, function (ctx, w, h, p) {
+  var r = Math.min(w / 4, h / 2) * 0.62, ang = Math.PI / 6;
+  function panel(cx, cy, yDown, title) {
+    var sy = yDown ? 1 : -1;
+    ctx.strokeStyle = Plate.rgba(p.ink3, 0.5); ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    arrow(ctx, cx - r * 1.15, cy, cx + r * 1.3, cy, Plate.rgba(p.ink3, 0.9), 1.2);
+    arrow(ctx, cx, cy + sy * r * -1.15, cx, cy + sy * r * 1.3, Plate.rgba(p.ink3, 0.9), 1.2);
+    Plate.label(ctx, 'x', cx + r * 1.3 + 4, cy + 4, p.ink3, 10);
+    Plate.label(ctx, 'y', cx + 6, cy + sy * r * 1.3 + (yDown ? 4 : 2), p.ink3, 10);
+    /* the matrix sends (1, 0) to (cos, sin): draw it in the panel's own convention */
+    var ex = cx + r * Math.cos(ang), ey = cy + sy * r * Math.sin(ang);
+    arrow(ctx, cx, cy, cx + r, cy, p.ink, 2);
+    arrow(ctx, cx, cy, ex, ey, p.magenta, 2);
+    ctx.strokeStyle = p.magenta; ctx.lineWidth = 1.2; ctx.beginPath();
+    ctx.arc(cx, cy, r * 0.55, 0, sy * ang, !yDown); ctx.stroke();
+    Plate.label(ctx, '(1, 0)', cx + r + 6, cy + (yDown ? -6 : 14), p.ink, 10);
+    Plate.label(ctx, '(cos r, sin r)', ex + 6, ey + (yDown ? 12 : -4), p.magenta, 10);
+    Plate.label(ctx, title, cx, cy + sy * (-r * 1.6) + (yDown ? -4 : 14), p.ink2, 10.5, 'center');
+  }
+  panel(w * 0.27, h * 0.52, false, 'y up: counterclockwise');
+  panel(w * 0.75, h * 0.48, true, 'y down: clockwise on the screen');
+});
+
+/* ---------- Figure 4.3 — the circle seen through a scale ---------- */
+Plate.add('fig43', 0.5, function (ctx, w, h, p) {
+  var cs = Math.floor((w - 60) / 30), rows = 12, oxA = 10, oxB = oxA + 12 * cs + 40, oy = Math.floor((h - rows * cs) / 2);
+  function circ(cx, cy, r) { return { inside: function (x, y) { var dx = x - cx, dy = y - cy; return dx * dx + dy * dy <= r * r; } }; }
+  function transformed(shape, m) { var inv = inverse(m); return { inside: function (x, y) { var q = mul(inv, point(x, y)); return shape.inside(q[0], q[1]); } }; }
+  var c = circ(6, 6, 4), m = mul(translation(9, 6), mul(scaling(2, 1), translation(-6, -6))), e = transformed(c, m);
+  function shade(shape, ox, cols) {
+    for (var y = 0; y < rows; y++) for (var x = 0; x < cols; x++) {
+      var k = coverage(shape, x, y);
+      if (k > 0) { ctx.fillStyle = Plate.rgba(p.magenta, 0.12 + 0.7 * k); ctx.fillRect(ox + x * cs, oy + y * cs, cs, cs); }
+    }
+    grid(ctx, p, ox, oy, cols, rows, cs);
+  }
+  shade(c, oxA, 12); shade(e, oxB, 18);
+  /* one device sample, carried back through the inverse */
+  var q = [15.5, 8.5], inv = inverse(m), s = mul(inv, point(q[0], q[1]));
+  ctx.fillStyle = p.cyan; ctx.beginPath(); ctx.arc(oxB + q[0] * cs, oy + q[1] * cs, 4, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(oxA + s[0] * cs, oy + s[1] * cs, 4, 0, Math.PI * 2); ctx.fill();
+  ctx.setLineDash([4, 3]); arrow(ctx, oxB + q[0] * cs - 8, oy + q[1] * cs, oxA + s[0] * cs + 8, oy + s[1] * cs, Plate.rgba(p.cyan, 0.9), 1.4); ctx.setLineDash([]);
+  Plate.label(ctx, 'circle(6, 6, 4)', oxA, oy - 6, p.ink2, 10);
+  Plate.label(ctx, 'transformed(circle, scale by 2 in x)', oxB, oy - 6, p.ink2, 10);
+  Plate.label(ctx, 'inverse(m) * q', (oxA + 12 * cs + oxB) / 2, oy + (q[1] + 1.4) * cs, p.cyan, 10, 'center');
+});
+
+/* ---------- Figure 4.4 — fan_both_orders(), pixel for pixel ---------- */
+Plate.add('fig44', 0.5, function (ctx, w, h, p) {
+  var b = sideBySide(fanTransformed(mul(MOVE, TURN)), fanTransformed(mul(TURN, MOVE)));
+  var scale = Math.max(1, Math.floor(Math.min(w / 320, h / 160))), ox = (w - 320 * scale) / 2;
+  blit(ctx, b.bytes(), 320, 160, scale, ox, 0);
+  Plate.label(ctx, 'MOVE * TURN', ox + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+  Plate.label(ctx, 'TURN * MOVE', ox + 160 * scale + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+});
+
+/* ---------- Figure 4.5 — three wrong Fs ---------- */
+Plate.add('fig45', 0.34, function (ctx, w, h, p) {
+  var m = mul(MOVE, TURN), ghost = fGhost();
+  /* 1: corners built as vectors, so w = 0 and the translation column is ignored */
+  var a = ghost.copy(); paintThrough(a, outline(letterF().map(function (q) { return vector(q[0], q[1]); }), m, 1), INK);
+  /* 2: the matrix stored transposed; the result's w is ignored, as it always is when you write pixels */
+  var b = ghost.copy(); paintThrough(b, outline(letterF(), transpose(m), 1), INK);
+  /* 3: the angle passed in degrees */
+  var c = ghost.copy(); paintThrough(c, outline(letterF(), mul(MOVE, rotation(30)), 1), INK);
+  var out = sideBySide(sideBySide(a, b), c);
+  var scale = Math.max(1, Math.floor(Math.min(w / 480, h / 160))), ox = (w - 480 * scale) / 2;
+  blit(ctx, out.bytes(), 480, 160, scale, ox, 0);
+  Plate.label(ctx, 'w = 0', ox + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+  Plate.label(ctx, 'TRANSPOSED', ox + 160 * scale + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+  Plate.label(ctx, 'DEGREES', ox + 320 * scale + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+});
+
+/* ---------- Plate 4 — plate_04(), pixel for pixel ---------- */
+Plate.add('plate4', 0.5, function (ctx, w, h, p) {
+  var b = fBothOrders();
+  var scale = Math.max(1, Math.floor(Math.min(w / 320, h / 160))), ox = (w - 320 * scale) / 2;
+  blit(ctx, b.bytes(), 320, 160, scale, ox, 0);
+  Plate.label(ctx, 'MOVE * TURN', ox + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+  Plate.label(ctx, 'TURN * MOVE', ox + 160 * scale + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, Buf, point, vector, mul, translation, scaling, rotation, transpose, inverse, segment, union, outline, coverage, paintThrough, sideBySide, fanPoints, fanTransformed, letterF, fGhost, fBothOrders].concat(Plate.helpers).map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>
