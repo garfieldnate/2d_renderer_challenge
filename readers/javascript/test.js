@@ -340,6 +340,48 @@ function assert_number_equal(actual, expected, tolerance = 0.0001, msg = '') {
   }
 }
 
+// Helper for comparing a (min x, min y, max x, max y) bounds tuple with tolerance
+function assert_bounds_equal(actual, expected, tolerance = 0.0001) {
+  for (let i = 0; i < 4; i++) {
+    assert_number_equal(actual[i], expected[i], tolerance, `bounds[${i}]:`);
+  }
+}
+
+// Helper for comparing an (a, b) edge (a pair of points) with tolerance
+function assert_edge_equal(actual, expected, tolerance = 0.0001) {
+  assert(Tuple.equals(actual[0], expected[0], tolerance));
+  assert(Tuple.equals(actual[1], expected[1], tolerance));
+}
+
+// Helper for comparing a (x, direction) crossing with tolerance on x
+function assert_crossing_equal(actual, expected, tolerance = 0.0001) {
+  assert_number_equal(actual[0], expected[0], tolerance);
+  assert.strictEqual(actual[1], expected[1]);
+}
+
+// Helper for comparing an (x0, x1) span with tolerance
+function assert_span_equal(actual, expected, tolerance = 0.0001) {
+  assert_number_equal(actual[0], expected[0], tolerance);
+  assert_number_equal(actual[1], expected[1], tolerance);
+}
+
+// Helper for comparing a list of (x0, x1) spans with tolerance
+function assert_spans_equal(actual, expected, tolerance = 0.0001) {
+  assert.strictEqual(actual.length, expected.length);
+  for (let i = 0; i < actual.length; i++) {
+    assert_span_equal(actual[i], expected[i], tolerance);
+  }
+}
+
+// Helper for a ppm_pixel probe with the render scenarios' usual ± 1
+function assert_pixel_approx(data, x, y, expected, tolerance = 1) {
+  const px = ppm_pixel(data, x, y);
+  for (let i = 0; i < 3; i++) {
+    assert(Math.abs(px[i] - expected[i]) <= tolerance,
+      `pixel(${x},${y})[${i}]: expected ${expected[i]} ± ${tolerance}, got ${px[i]}`);
+  }
+}
+
 // Chapter 1 - Equality
 test('Equality: Two numbers that differ by less than tolerance are equal', () => {
   assert_number_equal(1.0, 1.0000001, 0.00001);
@@ -1012,6 +1054,10 @@ function inside(shape, x, y) {
     if (!shape.m_inv) return false;
     const p = shape.m_inv.multiply(point(x, y));
     return inside(shape.shape, p.x, p.y);
+  } else if (shape instanceof FilledPath) {
+    return shape.rule === 'nonzero'
+      ? inside_nonzero(shape.path, x, y)
+      : inside_evenodd(shape.path, x, y);
   }
   return false;
 }
@@ -1760,7 +1806,9 @@ function plot(canvas, x, y, color, weight) {
   if (x < 0 || x >= canvas.width || y < 0 || y >= canvas.height) return;
 
   const current = canvas.pixel_at(x, y);
-  const blended = mix(current, color, weight);
+  // Wu's weights are applied in light, regardless of the global
+  // linear-blending switch (same rule as paint_through).
+  const blended = mix(current, color, weight, true);
   canvas.write_pixel(x, y, blended);
 }
 
@@ -2012,6 +2060,15 @@ test('Wu: A half step lights two pixels equally', () => {
   assert_color_equal(c.pixel_at(2, 2), new Color(0, 0, 0));
   assert_color_equal(c.pixel_at(4, 2), new Color(1, 1, 1));
   assert_number_equal(total_ink(c), 5, 0.001);
+});
+
+test('Wu: The weights are applied in light, whatever the switch says', () => {
+  set_linear_blending(false);
+  const c = new Canvas(10, 10);
+  line_wu(c, 0, 0, 4, 2, new Color(1, 1, 1));
+  assert_color_equal(c.pixel_at(1, 0), new Color(0.5, 0.5, 0.5));
+  assert_color_equal(c.pixel_at(1, 1), new Color(0.5, 0.5, 0.5));
+  set_linear_blending(true);
 });
 
 test('Wu: A diagonal has uniform weights', () => {
@@ -2311,7 +2368,7 @@ class Tuple {
   }
 
   magnitude() {
-    return Math.sqrt(this.x * this.x + this.y * this.y + this.w * this.w);
+    return Math.sqrt(this.x * this.x + this.y * this.y);
   }
 
   normalize() {
@@ -2338,7 +2395,7 @@ function normalize(v) {
 }
 
 function dot(a, b) {
-  return a.x * b.x + a.y * b.y + a.w * b.w;
+  return a.x * b.x + a.y * b.y;
 }
 
 function cross(a, b) {
@@ -2764,6 +2821,11 @@ test('Chapter 4: The dot product of two vectors', () => {
   assert.strictEqual(dot(a, vector(-2, 1)), 0);
 });
 
+test('Chapter 4: magnitude and dot look at x and y only', () => {
+  assert.strictEqual(magnitude(point(3, 4)), 5);
+  assert.strictEqual(dot(point(1, 2), point(2, 3)), 8);
+});
+
 test('Chapter 4: The cross product of two vectors', () => {
   const a = vector(1, 0);
   const b = vector(0, 1);
@@ -2857,6 +2919,13 @@ test('Chapter 4: The determinant of transforms', () => {
   assert(Math.abs(determinant(rotation(0.7)) - 1) <= 0.0001);
   assert.strictEqual(determinant(translation(4, 9)), 1);
   assert.strictEqual(determinant(scaling(-1, 1)), -1);
+});
+
+test('Chapter 4: Invertibility is an exact test against zero', () => {
+  assert.strictEqual(is_invertible(scaling(0.0001, 1)), true);
+  assert.strictEqual(determinant(scaling(0.0001, 1)), 0.0001);
+  const p = inverse(scaling(0.0001, 1)).multiply(point(0.0001, 3));
+  assert(Tuple.equals(p, point(1, 3)));
 });
 
 test('Chapter 4: Testing an invertible matrix', () => {
@@ -3068,6 +3137,12 @@ test('Chapter 4: A segment of no length is a square', () => {
   assert.strictEqual(coverage_at(cov, 3, 3), 1);
 });
 
+test('Chapter 4: A union of nothing is inside nowhere', () => {
+  const s = union([]);
+  assert.strictEqual(inside(s, 0, 0), false);
+  assert.strictEqual(ink(rasterize(s, 4, 4)), 0);
+});
+
 test('Chapter 4: A union is inside when any part is', () => {
   const s = union([circle(2, 2, 1), rectangle(5, 0, 7, 4)]);
   assert.strictEqual(inside(s, 2, 2), true);
@@ -3158,6 +3233,20 @@ test('Chapter 4: The F, translated then rotated', () => {
   assert(Tuple.equals(f[9], point(19.9291, 134.4817), 0.0001));
 });
 
+test('Chapter 4: side_by_side puts the first canvas on the left', () => {
+  const a = new Canvas(2, 3);
+  const b = new Canvas(4, 3);
+  a.fill(new Color(1, 0, 0));
+  b.fill(new Color(0, 0, 1));
+  const c = side_by_side(a, b);
+  assert.strictEqual(c.width, 6);
+  assert.strictEqual(c.height, 3);
+  assert_color_equal(c.pixel_at(0, 0), new Color(1, 0, 0));
+  assert_color_equal(c.pixel_at(1, 2), new Color(1, 0, 0));
+  assert_color_equal(c.pixel_at(2, 0), new Color(0, 0, 1));
+  assert_color_equal(c.pixel_at(5, 2), new Color(0, 0, 1));
+});
+
 test('Chapter 4: The fan, both orders', () => {
   const c = fan_both_orders();
   const ref = read_file('reference/chapter-04/fan-both-orders.ppm');
@@ -3222,4 +3311,1114 @@ test('Write chapter 4 output files', async () => {
   const c2 = plate_04();
   const p6b = canvas_to_p6(c2);
   await fs.writeFile('out/plate-04.ppm', p6b);
+});
+
+// ===========================
+// Chapter 5: Paths and Insideness
+// ===========================
+
+// A path is a list of subpaths. A subpath is { points: [Tuple, ...], closed: bool }.
+class Path {
+  constructor() {
+    this.subpaths = [];
+  }
+}
+
+function path() {
+  return new Path();
+}
+
+function move_to(p, pt) {
+  p.subpaths.push({ points: [pt], closed: false });
+}
+
+function line_to(p, pt) {
+  if (p.subpaths.length === 0) {
+    move_to(p, pt);
+    return;
+  }
+  const last = p.subpaths[p.subpaths.length - 1];
+  if (last.closed) {
+    // A line_to right after a close starts a new subpath at the point the
+    // closed subpath began, because that's where close left the pen.
+    const start = last.points[0];
+    p.subpaths.push({ points: [start, pt], closed: false });
+    return;
+  }
+  last.points.push(pt);
+}
+
+function close(p) {
+  if (p.subpaths.length === 0) return;
+  p.subpaths[p.subpaths.length - 1].closed = true;
+}
+
+function subpaths(p) {
+  return p.subpaths;
+}
+
+function edges(p) {
+  // Every subpath is treated as closed for filling, whether or not close()
+  // was called: the edge from the last point back to the first is always
+  // included. A subpath of one point contributes no edges.
+  const result = [];
+  for (const sp of p.subpaths) {
+    const pts = sp.points;
+    if (pts.length < 2) continue;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      result.push([a, b]);
+    }
+  }
+  return result;
+}
+
+function bounds(p) {
+  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+  let any = false;
+  for (const sp of p.subpaths) {
+    for (const pt of sp.points) {
+      any = true;
+      if (pt.x < minx) minx = pt.x;
+      if (pt.y < miny) miny = pt.y;
+      if (pt.x > maxx) maxx = pt.x;
+      if (pt.y > maxy) maxy = pt.y;
+    }
+  }
+  if (!any) return [0, 0, 0, 0];
+  return [minx, miny, maxx, maxy];
+}
+
+function polygon(...points) {
+  const p = path();
+  points.forEach((pt, i) => {
+    if (i === 0) move_to(p, pt); else line_to(p, pt);
+  });
+  close(p);
+  return p;
+}
+
+function circle_path(cx, cy, r, n) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = i * 2 * Math.PI / n;
+    pts.push(point(cx + r * Math.cos(a), cy + r * Math.sin(a)));
+  }
+  return polygon(...pts);
+}
+
+function crossings(p, x, y) {
+  let count = 0;
+  for (const [a, b] of edges(p)) {
+    const spans = (a.y <= y && y < b.y) || (b.y <= y && y < a.y);
+    if (!spans) continue;
+    const t = (y - a.y) / (b.y - a.y);
+    const cx = a.x + t * (b.x - a.x);
+    if (cx > x) count++;
+  }
+  return count;
+}
+
+function winding_at(p, x, y) {
+  const q = point(x, y);
+  let w = 0;
+  for (const [a, b] of edges(p)) {
+    if (a.y <= y) {
+      if (b.y > y && cross(b.subtract(a), q.subtract(a)) > 0) w += 1;
+    } else {
+      if (b.y <= y && cross(b.subtract(a), q.subtract(a)) < 0) w -= 1;
+    }
+  }
+  return w;
+}
+
+function inside_nonzero(p, x, y) {
+  return winding_at(p, x, y) !== 0;
+}
+
+function inside_evenodd(p, x, y) {
+  return Math.abs(winding_at(p, x, y)) % 2 === 1;
+}
+
+// A path filled under a rule ("nonzero" or "evenodd") is a shape.
+class FilledPath extends Shape {
+  constructor(path, rule) {
+    super();
+    this.path = path;
+    this.rule = rule;
+  }
+}
+
+function filled(p, rule) {
+  return new FilledPath(p, rule);
+}
+
+function rasterize_within(shape, box, width, height) {
+  const buf = coverage_buffer(width, height);
+  const [minx, miny, maxx, maxy] = box;
+  const x0 = Math.max(0, Math.floor(minx));
+  const x1 = Math.min(width, Math.ceil(maxx));
+  const y0 = Math.max(0, Math.floor(miny));
+  const y1 = Math.min(height, Math.ceil(maxy));
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      set_coverage(buf, x, y, coverage(shape, x, y));
+    }
+  }
+  return buf;
+}
+
+// Chapter 5 renders
+function star() {
+  const p = path();
+  for (let k = 0; k < 5; k++) {
+    const a = (-90 + 144 * k) * Math.PI / 180;
+    const q = point(80.5 + 70 * Math.cos(a), 80.5 + 70 * Math.sin(a));
+    if (k === 0) move_to(p, q); else line_to(p, q);
+  }
+  close(p);
+  return p;
+}
+
+function star_panel(rule, method) {
+  const c = new Canvas(160, 160);
+  c.fill(new Color(0.02, 0.02, 0.025));
+  const s = filled(star(), rule);
+  const cov = method === 'centers'
+    ? rasterize_centers(s, 160, 160)
+    : rasterize_within(s, bounds(star()), 160, 160);
+  paint_through(c, cov, new Color(0.9, 0.55, 0.1));
+  return c;
+}
+
+function star_centers() {
+  return side_by_side(star_panel('nonzero', 'centers'), star_panel('evenodd', 'centers'));
+}
+
+function star_coverage() {
+  return side_by_side(star_panel('nonzero', 'coverage'), star_panel('evenodd', 'coverage'));
+}
+
+function plate_05() {
+  const top = star_centers();
+  const bottom = star_coverage();
+  const both = new Canvas(320, 320);
+  for (let y = 0; y < 160; y++) {
+    for (let x = 0; x < 320; x++) {
+      both.write_pixel(x, y, top.pixel_at(x, y));
+      both.write_pixel(x, y + 160, bottom.pixel_at(x, y));
+    }
+  }
+  return magnify(both, 2);
+}
+
+// --- features/chapter05-paths.feature ---
+
+test('Chapter 5: An empty path', () => {
+  const p = path();
+  assert.strictEqual(subpaths(p).length, 0);
+  assert.strictEqual(edges(p).length, 0);
+  assert_bounds_equal(bounds(p), [0, 0, 0, 0]);
+});
+
+test('Chapter 5: A triangle, closed', () => {
+  const p = path();
+  move_to(p, point(1, 1));
+  line_to(p, point(9, 1));
+  line_to(p, point(5, 8));
+  close(p);
+  assert.strictEqual(subpaths(p).length, 1);
+  assert.strictEqual(subpaths(p)[0].closed, true);
+  assert.strictEqual(subpaths(p)[0].points.length, 3);
+  assert(Tuple.equals(subpaths(p)[0].points[2], point(5, 8)));
+  assert.strictEqual(edges(p).length, 3);
+  assert_edge_equal(edges(p)[2], [point(5, 8), point(1, 1)]);
+  assert_bounds_equal(bounds(p), [1, 1, 9, 8]);
+});
+
+test('Chapter 5: A triangle left open still has three edges', () => {
+  const p = path();
+  move_to(p, point(1, 1));
+  line_to(p, point(9, 1));
+  line_to(p, point(5, 8));
+  assert.strictEqual(subpaths(p)[0].closed, false);
+  assert.strictEqual(edges(p).length, 3);
+  assert_edge_equal(edges(p)[2], [point(5, 8), point(1, 1)]);
+});
+
+test('Chapter 5: move_to starts a second subpath', () => {
+  const p = path();
+  move_to(p, point(0, 0));
+  line_to(p, point(10, 0));
+  line_to(p, point(10, 10));
+  line_to(p, point(0, 10));
+  close(p);
+  move_to(p, point(3, 3));
+  line_to(p, point(3, 7));
+  line_to(p, point(7, 7));
+  line_to(p, point(7, 3));
+  close(p);
+  assert.strictEqual(subpaths(p).length, 2);
+  assert(Tuple.equals(subpaths(p)[1].points[0], point(3, 3)));
+  assert.strictEqual(edges(p).length, 8);
+  assert_bounds_equal(bounds(p), [0, 0, 10, 10]);
+});
+
+test('Chapter 5: line_to after a close starts a new subpath where the closed one began', () => {
+  const p = path();
+  move_to(p, point(1, 1));
+  line_to(p, point(4, 1));
+  line_to(p, point(4, 4));
+  close(p);
+  line_to(p, point(9, 9));
+  assert.strictEqual(subpaths(p).length, 2);
+  assert.strictEqual(subpaths(p)[1].closed, false);
+  assert.strictEqual(subpaths(p)[1].points.length, 2);
+  assert(Tuple.equals(subpaths(p)[1].points[0], point(1, 1)));
+  assert(Tuple.equals(subpaths(p)[1].points[1], point(9, 9)));
+});
+
+test('Chapter 5: line_to with nothing to extend behaves as move_to', () => {
+  const p = path();
+  line_to(p, point(2, 3));
+  assert.strictEqual(subpaths(p).length, 1);
+  assert.strictEqual(subpaths(p)[0].points.length, 1);
+  assert(Tuple.equals(subpaths(p)[0].points[0], point(2, 3)));
+});
+
+test('Chapter 5: A subpath of one point has no edges, and closing nothing does nothing', () => {
+  const p = path();
+  close(p);
+  move_to(p, point(1, 1));
+  move_to(p, point(2, 2));
+  assert.strictEqual(subpaths(p).length, 2);
+  assert.strictEqual(edges(p).length, 0);
+  assert_bounds_equal(bounds(p), [1, 1, 2, 2]);
+});
+
+test('Chapter 5: A subpath of two points has two edges and encloses nothing', () => {
+  const p = path();
+  move_to(p, point(1, 1));
+  line_to(p, point(9, 9));
+  assert.strictEqual(edges(p).length, 2);
+  assert.strictEqual(winding_at(p, 3, 5), 0);
+});
+
+test('Chapter 5: polygon is a closed subpath through its points', () => {
+  const p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10));
+  assert.strictEqual(subpaths(p).length, 1);
+  assert.strictEqual(subpaths(p)[0].closed, true);
+  assert.strictEqual(edges(p).length, 4);
+});
+
+test('Chapter 5: circle_path is a polygon standing in for a circle', () => {
+  const p = circle_path(10, 10, 5, 8);
+  assert.strictEqual(subpaths(p)[0].points.length, 8);
+  assert(Tuple.equals(subpaths(p)[0].points[0], point(15, 10)));
+  assert(Tuple.equals(subpaths(p)[0].points[1], point(13.5355, 13.5355), 0.0001));
+  assert(Tuple.equals(subpaths(p)[0].points[2], point(10, 15)));
+  assert_bounds_equal(bounds(p), [5, 5, 15, 15]);
+});
+
+// --- features/chapter05-winding.feature ---
+
+test('Chapter 5: Crossings from inside and outside a square', () => {
+  const p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10));
+  assert.strictEqual(crossings(p, 5, 5), 1);
+  assert.strictEqual(crossings(p, 15, 5), 0);
+  assert.strictEqual(crossings(p, -1, 5), 2);
+});
+
+test('Chapter 5: A clockwise square winds once', () => {
+  const p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10));
+  assert.strictEqual(winding_at(p, 5, 5), 1);
+  assert.strictEqual(winding_at(p, 15, 5), 0);
+  assert.strictEqual(winding_at(p, -1, 5), 0);
+  assert.strictEqual(winding_at(p, 5, -1), 0);
+  assert.strictEqual(winding_at(p, 5, 11), 0);
+});
+
+test('Chapter 5: The same square the other way round winds minus once', () => {
+  const p = polygon(point(0, 0), point(0, 10), point(10, 10), point(10, 0));
+  assert.strictEqual(winding_at(p, 5, 5), -1);
+  assert.strictEqual(crossings(p, 5, 5), 1);
+});
+
+test('Chapter 5: A ray through a vertex counts it once', () => {
+  const p = polygon(point(5, 0), point(10, 5), point(5, 10), point(0, 5));
+  assert.strictEqual(crossings(p, 2, 5), 1);
+  assert.strictEqual(winding_at(p, 2, 5), 1);
+  assert.strictEqual(crossings(p, -1, 5), 2);
+  assert.strictEqual(winding_at(p, -1, 5), 0);
+  assert.strictEqual(winding_at(p, 12, 5), 0);
+  assert.strictEqual(winding_at(p, 5, 5), 1);
+});
+
+test('Chapter 5: The boundary belongs to the top and the left', () => {
+  const p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10));
+  assert.strictEqual(winding_at(p, 5, 0), 1);
+  assert.strictEqual(winding_at(p, 0, 5), 1);
+  assert.strictEqual(winding_at(p, 0, 0), 1);
+  assert.strictEqual(winding_at(p, 5, 10), 0);
+  assert.strictEqual(winding_at(p, 10, 5), 0);
+  assert.strictEqual(winding_at(p, 10, 10), 0);
+});
+
+test('Chapter 5: Two rectangles that share an edge cover it once', () => {
+  const p = path();
+  move_to(p, point(0, 0));
+  line_to(p, point(5, 0));
+  line_to(p, point(5, 10));
+  line_to(p, point(0, 10));
+  close(p);
+  move_to(p, point(5, 0));
+  line_to(p, point(10, 0));
+  line_to(p, point(10, 10));
+  line_to(p, point(5, 10));
+  close(p);
+  assert.strictEqual(winding_at(p, 2, 5), 1);
+  assert.strictEqual(winding_at(p, 5, 5), 1);
+  assert.strictEqual(winding_at(p, 8, 5), 1);
+});
+
+test('Chapter 5: A diamond wound twice has winding number 2', () => {
+  const p = path();
+  move_to(p, point(5, 0));
+  line_to(p, point(10, 5));
+  line_to(p, point(5, 10));
+  line_to(p, point(0, 5));
+  line_to(p, point(5, 0));
+  line_to(p, point(10, 5));
+  line_to(p, point(5, 10));
+  line_to(p, point(0, 5));
+  close(p);
+  assert.strictEqual(edges(p).length, 8);
+  assert.strictEqual(winding_at(p, 5, 5), 2);
+  assert.strictEqual(crossings(p, 5, 5), 2);
+  assert.strictEqual(winding_at(p, 12, 5), 0);
+});
+
+test('Chapter 5: The polygon circle', () => {
+  const p = circle_path(10, 10, 5, 8);
+  assert.strictEqual(winding_at(p, 10, 10), 1);
+  assert.strictEqual(winding_at(p, 14.9, 10), 1);
+  assert.strictEqual(winding_at(p, 15, 10), 0);
+  assert.strictEqual(winding_at(p, 10, 5.1), 1);
+  assert.strictEqual(winding_at(p, 10, 4.9), 0);
+});
+
+test("Chapter 5: The pentagram's center winds twice", () => {
+  const p = star();
+  assert.strictEqual(winding_at(p, 80.5, 80.5), 2);
+  assert.strictEqual(crossings(p, 80.5, 80.5), 2);
+  assert.strictEqual(winding_at(p, 80.5, 20), 1);
+  assert.strictEqual(winding_at(p, 30, 60), 1);
+  assert.strictEqual(crossings(p, 30, 60), 3);
+  assert.strictEqual(winding_at(p, 80.5, 120), 0);
+  assert.strictEqual(crossings(p, 80.5, 120), 2);
+  assert.strictEqual(winding_at(p, 10, 10), 0);
+});
+
+// --- features/chapter05-rules.feature ---
+
+test('Chapter 5: A single loop is inside under both rules', () => {
+  const p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10));
+  assert.strictEqual(inside_nonzero(p, 5, 5), true);
+  assert.strictEqual(inside_evenodd(p, 5, 5), true);
+  assert.strictEqual(inside_nonzero(p, 15, 5), false);
+  assert.strictEqual(inside_evenodd(p, 15, 5), false);
+});
+
+test('Chapter 5: An inner loop the other way round is a hole under both rules', () => {
+  const p = path();
+  move_to(p, point(0, 0));
+  line_to(p, point(10, 0));
+  line_to(p, point(10, 10));
+  line_to(p, point(0, 10));
+  close(p);
+  move_to(p, point(3, 3));
+  line_to(p, point(3, 7));
+  line_to(p, point(7, 7));
+  line_to(p, point(7, 3));
+  close(p);
+  assert.strictEqual(winding_at(p, 5, 5), 0);
+  assert.strictEqual(winding_at(p, 1, 1), 1);
+  assert.strictEqual(inside_nonzero(p, 5, 5), false);
+  assert.strictEqual(inside_evenodd(p, 5, 5), false);
+  assert.strictEqual(inside_nonzero(p, 1, 1), true);
+});
+
+test('Chapter 5: An inner loop the same way round is a hole only under even-odd', () => {
+  const p = path();
+  move_to(p, point(0, 0));
+  line_to(p, point(10, 0));
+  line_to(p, point(10, 10));
+  line_to(p, point(0, 10));
+  close(p);
+  move_to(p, point(3, 3));
+  line_to(p, point(7, 3));
+  line_to(p, point(7, 7));
+  line_to(p, point(3, 7));
+  close(p);
+  assert.strictEqual(winding_at(p, 5, 5), 2);
+  assert.strictEqual(inside_nonzero(p, 5, 5), true);
+  assert.strictEqual(inside_evenodd(p, 5, 5), false);
+});
+
+test('Chapter 5: A loop wound twice vanishes under even-odd', () => {
+  const p = path();
+  move_to(p, point(5, 0));
+  line_to(p, point(10, 5));
+  line_to(p, point(5, 10));
+  line_to(p, point(0, 5));
+  line_to(p, point(5, 0));
+  line_to(p, point(10, 5));
+  line_to(p, point(5, 10));
+  line_to(p, point(0, 5));
+  close(p);
+  assert.strictEqual(inside_nonzero(p, 5, 5), true);
+  assert.strictEqual(inside_evenodd(p, 5, 5), false);
+});
+
+test("Chapter 5: The pentagram's center is inside under nonzero and outside under even-odd", () => {
+  const p = star();
+  assert.strictEqual(inside_nonzero(p, 80.5, 80.5), true);
+  assert.strictEqual(inside_evenodd(p, 80.5, 80.5), false);
+  assert.strictEqual(inside_nonzero(p, 80.5, 20), true);
+  assert.strictEqual(inside_evenodd(p, 80.5, 20), true);
+  assert.strictEqual(inside_nonzero(p, 80.5, 120), false);
+  assert.strictEqual(inside_evenodd(p, 80.5, 120), false);
+});
+
+test('Chapter 5: A filled path is a shape', () => {
+  const s = filled(polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6)), 'nonzero');
+  const cov = rasterize(s, 8, 8);
+  assert.strictEqual(inside(s, 3, 3), true);
+  assert.strictEqual(inside(s, 7, 3), false);
+  assert.strictEqual(coverage_at(cov, 3, 3), 1);
+  assert.strictEqual(coverage_at(cov, 1, 3), 0);
+  assert.strictEqual(coverage_at(cov, 6, 3), 0);
+  assert.strictEqual(ink(cov), 16);
+});
+
+test('Chapter 5: A filled path takes the rule seriously', () => {
+  const p = star();
+  const a = filled(p, 'nonzero');
+  const b = filled(p, 'evenodd');
+  const ca = rasterize(a, 160, 160);
+  const cb = rasterize(b, 160, 160);
+  assert.strictEqual(coverage_at(ca, 80, 80), 1);
+  assert.strictEqual(coverage_at(cb, 80, 80), 0);
+  assert.strictEqual(coverage_at(ca, 80, 20), 1);
+  assert.strictEqual(coverage_at(cb, 80, 20), 1);
+  assert_number_equal(coverage_at(ca, 80, 10), 0.0625);
+  assert_number_equal(coverage_at(cb, 80, 10), 0.0625);
+  assert_number_equal(ink(ca), 5499.9375);
+  assert_number_equal(ink(cb), 3800.375);
+});
+
+test('Chapter 5: Rasterizing within the bounds gives the same coverage', () => {
+  const p = star();
+  const s = filled(p, 'evenodd');
+  const full = rasterize(s, 160, 160);
+  const within = rasterize_within(s, bounds(p), 160, 160);
+  assert.strictEqual(ink(within), ink(full));
+  assert.strictEqual(coverage_at(within, 80, 20), coverage_at(full, 80, 20));
+  assert.strictEqual(coverage_at(within, 13, 58), coverage_at(full, 13, 58));
+  assert.strictEqual(coverage_at(within, 10, 10), 0);
+});
+
+test('Chapter 5: The box is inclusive of the pixels it touches, and clipped to the buffer', () => {
+  const s = filled(polygon(point(1.5, 1.5), point(6.5, 1.5), point(6.5, 6.5), point(1.5, 6.5)), 'nonzero');
+  const cov = rasterize_within(s, [1.5, 1.5, 6.5, 6.5], 8, 8);
+  const big = rasterize_within(s, [-5, -5, 20, 20], 8, 8);
+  assert_number_equal(coverage_at(cov, 1, 1), 0.25);
+  assert_number_equal(coverage_at(cov, 6, 6), 0.25);
+  assert.strictEqual(coverage_at(cov, 3, 3), 1);
+  assert_number_equal(ink(cov), 25);
+  assert_number_equal(ink(big), 25);
+});
+
+// --- features/chapter05-plate.feature ---
+
+test('Chapter 5: The pentagram', () => {
+  const p = star();
+  assert.strictEqual(subpaths(p).length, 1);
+  assert.strictEqual(edges(p).length, 5);
+  assert(Tuple.equals(subpaths(p)[0].points[0], point(80.5, 10.5), 0.0001));
+  assert(Tuple.equals(subpaths(p)[0].points[1], point(121.645, 137.1312), 0.0001));
+  assert(Tuple.equals(subpaths(p)[0].points[2], point(13.926, 58.8688), 0.0001));
+  assert(Tuple.equals(subpaths(p)[0].points[3], point(147.074, 58.8688), 0.0001));
+  assert(Tuple.equals(subpaths(p)[0].points[4], point(39.355, 137.1312), 0.0001));
+  assert_bounds_equal(bounds(p), [13.926, 10.5, 147.074, 137.1312]);
+});
+
+test('Chapter 5: The star by the center question', () => {
+  const c = star_centers();
+  const ref = read_file('reference/chapter-05/star-centers.ppm');
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(c.width, 320);
+  assert.strictEqual(c.height, 160);
+  assert_pixel_approx(p6, 80, 80, [243, 196, 89]);
+  assert_pixel_approx(p6, 240, 80, [39, 39, 44]);
+  assert_pixel_approx(p6, 80, 20, [243, 196, 89]);
+  assert_pixel_approx(p6, 240, 20, [243, 196, 89]);
+  assert_pixel_approx(p6, 30, 60, [243, 196, 89]);
+  assert_pixel_approx(p6, 190, 60, [243, 196, 89]);
+  assert_pixel_approx(p6, 80, 120, [39, 39, 44]);
+  assert_pixel_approx(p6, 80, 10, [39, 39, 44]);
+  assert_pixel_approx(p6, 10, 10, [39, 39, 44]);
+  assert(max_channel_difference(p6, ref) <= 1);
+});
+
+test('Chapter 5: The star by coverage', () => {
+  const c = star_coverage();
+  const ref = read_file('reference/chapter-05/star-coverage.ppm');
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(c.width, 320);
+  assert.strictEqual(c.height, 160);
+  assert_pixel_approx(p6, 80, 80, [243, 196, 89]);
+  assert_pixel_approx(p6, 240, 80, [39, 39, 44]);
+  assert_pixel_approx(p6, 80, 20, [243, 196, 89]);
+  assert_pixel_approx(p6, 240, 20, [243, 196, 89]);
+  assert_pixel_approx(p6, 80, 120, [39, 39, 44]);
+  assert_pixel_approx(p6, 80, 10, [77, 65, 48]);
+  assert_pixel_approx(p6, 240, 10, [77, 65, 48]);
+  assert_pixel_approx(p6, 80, 11, [199, 160, 76]);
+  assert_pixel_approx(p6, 14, 58, [101, 83, 52]);
+  assert_pixel_approx(p6, 174, 58, [101, 83, 52]);
+  assert_pixel_approx(p6, 10, 10, [39, 39, 44]);
+  assert(max_channel_difference(p6, ref) <= 1);
+});
+
+test('Chapter 5: Plate 5', () => {
+  const c = plate_05();
+  const ref = read_file('reference/chapter-05/plate-05.ppm');
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(c.width, 640);
+  assert.strictEqual(c.height, 640);
+  assert_pixel_approx(p6, 160, 160, [243, 196, 89]);
+  assert_pixel_approx(p6, 480, 160, [39, 39, 44]);
+  assert_pixel_approx(p6, 160, 480, [243, 196, 89]);
+  assert_pixel_approx(p6, 480, 480, [39, 39, 44]);
+  assert_pixel_approx(p6, 160, 40, [243, 196, 89]);
+  assert_pixel_approx(p6, 480, 360, [243, 196, 89]);
+  assert_pixel_approx(p6, 160, 20, [39, 39, 44]);
+  assert_pixel_approx(p6, 160, 341, [77, 65, 48]);
+  assert_pixel_approx(p6, 480, 341, [77, 65, 48]);
+  assert_pixel_approx(p6, 348, 437, [101, 83, 52]);
+  assert_pixel_approx(p6, 20, 20, [39, 39, 44]);
+  assert(max_channel_difference(p6, ref) <= 1);
+});
+
+// Write Chapter 5 output files
+test('Write chapter 5 output files', async () => {
+  const c1 = star_centers();
+  await fs.writeFile('out/star-centers.ppm', canvas_to_p6(c1));
+
+  const c2 = star_coverage();
+  await fs.writeFile('out/star-coverage.ppm', canvas_to_p6(c2));
+
+  const c3 = plate_05();
+  await fs.writeFile('out/plate-05.ppm', canvas_to_p6(c3));
+});
+
+// ===========================
+// Chapter 6: Filling a Polygon
+// ===========================
+
+function edge_table(p) {
+  const table = [];
+  for (const [a, b] of edges(p)) {
+    if (a.y === b.y) continue; // horizontal edges are dropped, not clamped
+    let y_top, y_bottom, x_top, slope, direction;
+    if (a.y < b.y) {
+      y_top = a.y; y_bottom = b.y; x_top = a.x;
+      slope = (b.x - a.x) / (b.y - a.y);
+      direction = 1;
+    } else {
+      y_top = b.y; y_bottom = a.y; x_top = b.x;
+      slope = (a.x - b.x) / (a.y - b.y);
+      direction = -1;
+    }
+    table.push({ y_top, y_bottom, x_top, slope, direction });
+  }
+  table.sort((e1, e2) => (e1.y_top - e2.y_top) || (e1.x_top - e2.x_top));
+  return table;
+}
+
+function x_at(edge, y) {
+  return edge.x_top + (y - edge.y_top) * edge.slope;
+}
+
+function crossings_on_row(table, y) {
+  const xs = [];
+  for (const e of table) {
+    if (e.y_top <= y && y < e.y_bottom) {
+      xs.push([x_at(e, y), e.direction]);
+    }
+  }
+  xs.sort((a, b) => a[0] - b[0]);
+  return xs;
+}
+
+function spans_from_crossings(xs, rule) {
+  const out = [];
+  let w = 0;
+  let start = null;
+  for (const [x, d] of xs) {
+    w += d;
+    const isInside = rule === 'nonzero' ? w !== 0 : (Math.abs(w) % 2 === 1);
+    if (isInside && start === null) start = x;
+    if (!isInside && start !== null) { out.push([start, x]); start = null; }
+  }
+  return out;
+}
+
+function spans(p, rule, row) {
+  const y = row + 0.5;
+  return spans_from_crossings(crossings_on_row(edge_table(p), y), rule);
+}
+
+function fill_span(cov, row, x0, x1) {
+  const first = Math.ceil(x0 - 0.5);
+  const last = Math.ceil(x1 - 0.5) - 1;
+  const lo = Math.max(first, 0);
+  const hi = Math.min(last, cov.width - 1);
+  for (let x = lo; x <= hi; x++) {
+    set_coverage(cov, x, row, 1);
+  }
+}
+
+function fill_path_aliased(p, rule, w, h) {
+  const cov = coverage_buffer(w, h);
+  const table = edge_table(p);
+  let active = [];
+  let next = 0;
+  for (let row = 0; row < h; row++) {
+    const y = row + 0.5;
+    while (next < table.length && table[next].y_top <= y) {
+      active.push(table[next]);
+      next++;
+    }
+    active = active.filter(e => e.y_bottom > y);
+    const xs = active.map(e => [x_at(e, y), e.direction]).sort((a, b) => a[0] - b[0]);
+    for (const [x0, x1] of spans_from_crossings(xs, rule)) {
+      fill_span(cov, row, x0, x1);
+    }
+  }
+  return cov;
+}
+
+function max_coverage_difference(a, b) {
+  if (a.width !== b.width || a.height !== b.height) return 1;
+  let max = 0;
+  for (let y = 0; y < a.height; y++) {
+    for (let x = 0; x < a.width; x++) {
+      const d = Math.abs(coverage_at(a, x, y) - coverage_at(b, x, y));
+      if (d > max) max = d;
+    }
+  }
+  return max;
+}
+
+function transform_path(p, m) {
+  const q = path();
+  for (const sp of p.subpaths) {
+    q.subpaths.push({ points: sp.points.map(pt => m.multiply(pt)), closed: sp.closed });
+  }
+  return q;
+}
+
+// Chapter 6 renders
+function unit_star() {
+  return transform_path(star(), scaling(1 / 70, 1 / 70).multiply(translation(-80.5, -80.5)));
+}
+
+function spiral() {
+  const c = new Canvas(320, 320);
+  c.fill(new Color(0.02, 0.02, 0.025));
+  const inks = [new Color(0.9, 0.55, 0.1), new Color(0.2, 0.55, 0.85), new Color(0.85, 0.25, 0.3)];
+  const us = unit_star();
+  for (let k = 0; k < 24; k++) {
+    const a = k * 25 * Math.PI / 180;
+    const r = 20 + 5 * k;
+    const s = 6 + 1.25 * k;
+    const m = translation(160.5 + r * Math.cos(a), 160.5 + r * Math.sin(a))
+      .multiply(rotation(a))
+      .multiply(scaling(s, s));
+    const cov = fill_path_aliased(transform_path(us, m), 'nonzero', 320, 320);
+    paint_through(c, cov, inks[k % 3]);
+  }
+  return c;
+}
+
+function plate_06() {
+  return magnify(spiral(), 2);
+}
+
+// --- features/chapter06-edges.feature ---
+
+test('Chapter 6: A rectangle has two edges in its table', () => {
+  const p = polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6));
+  const t = edge_table(p);
+  assert.strictEqual(t.length, 2);
+  assert.strictEqual(t[0].y_top, 2);
+  assert.strictEqual(t[0].y_bottom, 6);
+  assert.strictEqual(t[0].x_top, 2);
+  assert.strictEqual(t[0].slope, 0);
+  assert.strictEqual(t[0].direction, -1);
+  assert.strictEqual(t[1].x_top, 6);
+  assert.strictEqual(t[1].direction, 1);
+});
+
+test("Chapter 6: A triangle's edges carry their slopes", () => {
+  const p = polygon(point(0, 0), point(10, 0), point(5, 10));
+  const t = edge_table(p);
+  assert.strictEqual(t.length, 2);
+  assert.strictEqual(t[0].x_top, 0);
+  assert_number_equal(t[0].slope, 0.5);
+  assert.strictEqual(t[0].direction, -1);
+  assert.strictEqual(t[1].x_top, 10);
+  assert_number_equal(t[1].slope, -0.5);
+  assert.strictEqual(t[1].direction, 1);
+});
+
+test('Chapter 6: The table is sorted by top, then by x at the top', () => {
+  const p = path();
+  move_to(p, point(2, 2));
+  line_to(p, point(4, 1));
+  line_to(p, point(6, 3));
+  line_to(p, point(8, 1));
+  line_to(p, point(9, 6));
+  line_to(p, point(1, 6));
+  close(p);
+  const t = edge_table(p);
+  assert.strictEqual(t.length, 5);
+  assert.strictEqual(t[0].y_top, 1);
+  assert.strictEqual(t[0].x_top, 4);
+  assert.strictEqual(t[1].y_top, 1);
+  assert.strictEqual(t[1].x_top, 4);
+  assert.strictEqual(t[2].y_top, 1);
+  assert.strictEqual(t[2].x_top, 8);
+  assert.strictEqual(t[3].y_top, 1);
+  assert.strictEqual(t[3].x_top, 8);
+  assert.strictEqual(t[4].y_top, 2);
+  assert.strictEqual(t[4].x_top, 2);
+});
+
+test('Chapter 6: A horizontal edge is dropped, not clamped', () => {
+  const p = polygon(point(0, 0), point(10, 0), point(10, 5), point(0, 5));
+  const t = edge_table(p);
+  assert.strictEqual(t.length, 2);
+  assert.strictEqual(t[0].x_top, 0);
+  assert.strictEqual(t[1].x_top, 10);
+});
+
+test('Chapter 6: An edge knows where it crosses a height', () => {
+  const p = polygon(point(0, 0), point(10, 0), point(5, 10));
+  const t = edge_table(p);
+  assert_number_equal(x_at(t[0], 4), 2);
+  assert_number_equal(x_at(t[1], 4), 8);
+  assert_number_equal(x_at(t[0], 0.5), 0.25);
+});
+
+test('Chapter 6: The edge table is the same whichever way the path was drawn', () => {
+  const a = polygon(point(0, 0), point(10, 0), point(5, 10));
+  const b = polygon(point(0, 0), point(5, 10), point(10, 0));
+  const ta = edge_table(a);
+  const tb = edge_table(b);
+  assert_number_equal(ta[0].x_top, tb[0].x_top);
+  assert_number_equal(ta[0].slope, tb[0].slope);
+  assert.strictEqual(ta[0].direction, -1);
+  assert.strictEqual(tb[0].direction, 1);
+});
+
+// --- features/chapter06-spans.feature ---
+
+test('Chapter 6: Crossings on a row, sorted by x', () => {
+  const p = polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6));
+  const t = edge_table(p);
+  const xs = crossings_on_row(t, 3.5);
+  assert.strictEqual(xs.length, 2);
+  assert_crossing_equal(xs[0], [2, -1]);
+  assert_crossing_equal(xs[1], [6, 1]);
+  assert.strictEqual(crossings_on_row(t, 1.5).length, 0);
+  assert.strictEqual(crossings_on_row(t, 6).length, 0);
+  assert.strictEqual(crossings_on_row(t, 2).length, 2);
+});
+
+test("Chapter 6: The star's crossings through its middle", () => {
+  const t = edge_table(star());
+  const xs = crossings_on_row(t, 80.5);
+  assert.strictEqual(xs.length, 4);
+  assert_crossing_equal(xs[0], [43.6988, -1]);
+  assert_crossing_equal(xs[1], [57.7556, -1]);
+  assert_crossing_equal(xs[2], [103.2444, 1]);
+  assert_crossing_equal(xs[3], [117.3012, 1]);
+});
+
+test('Chapter 6: Spans from crossings under each rule', () => {
+  const xs = [[1, 1], [3, 1], [5, -1], [7, -1]];
+  assert_spans_equal(spans_from_crossings(xs, 'nonzero'), [[1, 7]]);
+  assert_spans_equal(spans_from_crossings(xs, 'evenodd'), [[1, 3], [5, 7]]);
+  assert_spans_equal(spans_from_crossings([], 'nonzero'), []);
+});
+
+test('Chapter 6: The spans of an axis-aligned rectangle are exact', () => {
+  const p = polygon(point(1.25, 2), point(4.75, 2), point(4.75, 5), point(1.25, 5));
+  assert_spans_equal(spans(p, 'nonzero', 1), []);
+  assert_spans_equal(spans(p, 'nonzero', 2), [[1.25, 4.75]]);
+  assert_spans_equal(spans(p, 'nonzero', 4), [[1.25, 4.75]]);
+  assert_spans_equal(spans(p, 'nonzero', 5), []);
+});
+
+test('Chapter 6: A rectangle whose edges sit on sample heights', () => {
+  const p = polygon(point(1.5, 2.5), point(4.5, 2.5), point(4.5, 5.5), point(1.5, 5.5));
+  assert_spans_equal(spans(p, 'nonzero', 1), []);
+  assert_spans_equal(spans(p, 'nonzero', 2), [[1.5, 4.5]]);
+  assert_spans_equal(spans(p, 'nonzero', 4), [[1.5, 4.5]]);
+  assert_spans_equal(spans(p, 'nonzero', 5), []);
+});
+
+for (const [row, x0, x1] of [[0, 0.25, 9.75], [1, 0.75, 9.25], [4, 2.25, 7.75], [9, 4.75, 5.25]]) {
+  test(`Chapter 6: A triangle's spans narrow by one per row (row ${row})`, () => {
+    const p = polygon(point(0, 0), point(10, 0), point(5, 10));
+    assert_spans_equal(spans(p, 'nonzero', row), [[x0, x1]]);
+  });
+}
+
+test("Chapter 6: The row past the triangle's apex has no span", () => {
+  const p = polygon(point(0, 0), point(10, 0), point(5, 10));
+  assert_spans_equal(spans(p, 'nonzero', 10), []);
+});
+
+test('Chapter 6: A flat top is not a span of its own', () => {
+  const p = polygon(point(0, 0), point(10, 0), point(10, 5), point(0, 5));
+  assert.strictEqual(edge_table(p).length, 2);
+  assert_spans_equal(spans(p, 'nonzero', 0), [[0, 10]]);
+  assert_spans_equal(spans(p, 'nonzero', 4), [[0, 10]]);
+  assert_spans_equal(spans(p, 'nonzero', 5), []);
+});
+
+test('Chapter 6: A ring is two spans under even-odd and one under nonzero', () => {
+  const p = path();
+  move_to(p, point(0, 0));
+  line_to(p, point(10, 0));
+  line_to(p, point(10, 10));
+  line_to(p, point(0, 10));
+  close(p);
+  move_to(p, point(3, 3));
+  line_to(p, point(7, 3));
+  line_to(p, point(7, 7));
+  line_to(p, point(3, 7));
+  close(p);
+  assert_spans_equal(spans(p, 'nonzero', 5), [[0, 10]]);
+  assert_spans_equal(spans(p, 'evenodd', 5), [[0, 3], [7, 10]]);
+});
+
+test("Chapter 6: The star's spans through its middle", () => {
+  const p = star();
+  assert_spans_equal(spans(p, 'nonzero', 80), [[43.6988, 117.3012]]);
+  assert_spans_equal(spans(p, 'evenodd', 80), [[43.6988, 57.7556], [103.2444, 117.3012]]);
+});
+
+test('Chapter 6: fill_span fills the pixels whose centers are in the span', () => {
+  const cov = coverage_buffer(8, 3);
+  fill_span(cov, 1, 1.25, 4.75);
+  assert.strictEqual(coverage_at(cov, 0, 1), 0);
+  assert.strictEqual(coverage_at(cov, 1, 1), 1);
+  assert.strictEqual(coverage_at(cov, 4, 1), 1);
+  assert.strictEqual(coverage_at(cov, 5, 1), 0);
+  assert.strictEqual(coverage_at(cov, 2, 0), 0);
+  assert.strictEqual(ink(cov), 4);
+});
+
+test('Chapter 6: The span is half-open at its right end', () => {
+  const cov = coverage_buffer(8, 3);
+  fill_span(cov, 1, 1.5, 4.5);
+  assert.strictEqual(coverage_at(cov, 1, 1), 1);
+  assert.strictEqual(coverage_at(cov, 3, 1), 1);
+  assert.strictEqual(coverage_at(cov, 4, 1), 0);
+  assert.strictEqual(ink(cov), 3);
+});
+
+test('Chapter 6: A span may run off either side of the buffer', () => {
+  const a = coverage_buffer(8, 3);
+  const b = coverage_buffer(8, 3);
+  const c = coverage_buffer(8, 3);
+  fill_span(a, 1, -3, 2.5);
+  fill_span(b, 1, 6.5, 20);
+  fill_span(c, 1, 2.5, 2.5);
+  assert.strictEqual(ink(a), 2);
+  assert.strictEqual(coverage_at(a, 1, 1), 1);
+  assert.strictEqual(ink(b), 2);
+  assert.strictEqual(coverage_at(b, 6, 1), 1);
+  assert.strictEqual(ink(c), 0);
+});
+
+// --- features/chapter06-sweep.feature ---
+
+test('Chapter 6: Two buffers that differ', () => {
+  const a = coverage_buffer(3, 3);
+  const b = coverage_buffer(3, 3);
+  set_coverage(a, 1, 1, 1);
+  set_coverage(b, 1, 1, 0.25);
+  assert_number_equal(max_coverage_difference(a, b), 0.75);
+  assert.strictEqual(max_coverage_difference(a, a), 0);
+});
+
+test('Chapter 6: Buffers of different sizes are as different as it gets', () => {
+  const a = coverage_buffer(3, 3);
+  const b = coverage_buffer(3, 4);
+  assert.strictEqual(max_coverage_difference(a, b), 1);
+});
+
+test('Chapter 6: A rectangle', () => {
+  const p = polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6));
+  const cov = fill_path_aliased(p, 'nonzero', 8, 8);
+  assert.strictEqual(coverage_at(cov, 2, 2), 1);
+  assert.strictEqual(coverage_at(cov, 5, 5), 1);
+  assert.strictEqual(coverage_at(cov, 6, 5), 0);
+  assert.strictEqual(coverage_at(cov, 5, 6), 0);
+  assert.strictEqual(coverage_at(cov, 1, 2), 0);
+  assert.strictEqual(ink(cov), 16);
+  assert.strictEqual(max_coverage_difference(cov, rasterize_centers(filled(p, 'nonzero'), 8, 8)), 0);
+});
+
+test('Chapter 6: A triangle', () => {
+  const p = polygon(point(0, 0), point(10, 0), point(5, 10));
+  const cov = fill_path_aliased(p, 'nonzero', 20, 20);
+  assert.strictEqual(coverage_at(cov, 0, 0), 1);
+  assert.strictEqual(coverage_at(cov, 9, 0), 1);
+  assert.strictEqual(coverage_at(cov, 10, 0), 0);
+  assert.strictEqual(coverage_at(cov, 4, 8), 1);
+  assert.strictEqual(coverage_at(cov, 3, 8), 0);
+  assert.strictEqual(coverage_at(cov, 5, 9), 0);
+  assert.strictEqual(ink(cov), 50);
+  assert.strictEqual(max_coverage_difference(cov, rasterize_centers(filled(p, 'nonzero'), 20, 20)), 0);
+});
+
+test('Chapter 6: The same triangle drawn the other way round', () => {
+  const a = polygon(point(0, 0), point(10, 0), point(5, 10));
+  const b = polygon(point(0, 0), point(5, 10), point(10, 0));
+  const ca = fill_path_aliased(a, 'nonzero', 20, 20);
+  const cb = fill_path_aliased(b, 'nonzero', 20, 20);
+  assert.strictEqual(max_coverage_difference(ca, cb), 0);
+});
+
+test('Chapter 6: A polygon circle', () => {
+  const p = circle_path(10.3, 9.7, 7, 12);
+  const cov = fill_path_aliased(p, 'nonzero', 20, 20);
+  assert.strictEqual(ink(cov), 145);
+  assert.strictEqual(max_coverage_difference(cov, rasterize_centers(filled(p, 'nonzero'), 20, 20)), 0);
+});
+
+test('Chapter 6: The star, both rules, matches chapter 5 pixel for pixel', () => {
+  const p = star();
+  const nz = fill_path_aliased(p, 'nonzero', 160, 160);
+  const eo = fill_path_aliased(p, 'evenodd', 160, 160);
+  assert.strictEqual(ink(nz), 5480);
+  assert.strictEqual(ink(eo), 3780);
+  assert.strictEqual(coverage_at(nz, 80, 80), 1);
+  assert.strictEqual(coverage_at(eo, 80, 80), 0);
+  assert.strictEqual(max_coverage_difference(nz, rasterize_centers(filled(p, 'nonzero'), 160, 160)), 0);
+  assert.strictEqual(max_coverage_difference(eo, rasterize_centers(filled(p, 'evenodd'), 160, 160)), 0);
+});
+
+test('Chapter 6: An edge that starts on a sample height is active there, and one that ends there is not', () => {
+  const p = polygon(point(1.5, 2.5), point(4.5, 2.5), point(4.5, 5.5), point(1.5, 5.5));
+  const cov = fill_path_aliased(p, 'nonzero', 8, 8);
+  assert.strictEqual(coverage_at(cov, 2, 1), 0);
+  assert.strictEqual(coverage_at(cov, 2, 2), 1);
+  assert.strictEqual(coverage_at(cov, 2, 4), 1);
+  assert.strictEqual(coverage_at(cov, 2, 5), 0);
+  assert.strictEqual(coverage_at(cov, 1, 3), 1);
+  assert.strictEqual(coverage_at(cov, 4, 3), 0);
+  assert.strictEqual(ink(cov), 9);
+  assert.strictEqual(max_coverage_difference(cov, rasterize_centers(filled(p, 'nonzero'), 8, 8)), 0);
+});
+
+test('Chapter 6: A polygon larger than the buffer fills it', () => {
+  const p = polygon(point(-5, -5), point(30, -5), point(30, 30), point(-5, 30));
+  const cov = fill_path_aliased(p, 'nonzero', 8, 8);
+  assert.strictEqual(ink(cov), 64);
+});
+
+test('Chapter 6: An empty path fills nothing', () => {
+  const p = path();
+  const cov = fill_path_aliased(p, 'nonzero', 8, 8);
+  assert.strictEqual(ink(cov), 0);
+});
+
+test('Chapter 6: transform_path takes every point through the matrix and keeps the flags', () => {
+  const p = polygon(point(1.25, 2), point(4.75, 2), point(4.75, 5), point(1.25, 5));
+  const q = transform_path(p, translation(10, 20));
+  assert.strictEqual(subpaths(q).length, 1);
+  assert.strictEqual(subpaths(q)[0].closed, true);
+  assert(Tuple.equals(subpaths(q)[0].points[0], point(11.25, 22)));
+  assert(Tuple.equals(subpaths(q)[0].points[2], point(14.75, 25)));
+  assert(Tuple.equals(subpaths(p)[0].points[0], point(1.25, 2)));
+});
+
+test('Chapter 6: A transformed star fills where the transform put it', () => {
+  const p = transform_path(star(), translation(10, 10).multiply(scaling(0.11, 0.11)).multiply(translation(-80.5, -80.5)));
+  const nz = fill_path_aliased(p, 'nonzero', 20, 20);
+  const eo = fill_path_aliased(p, 'evenodd', 20, 20);
+  assert_bounds_equal(bounds(p), [2.6769, 2.3, 17.3231, 16.2294]);
+  assert.strictEqual(ink(nz), 60);
+  assert.strictEqual(ink(eo), 40);
+  assert.strictEqual(max_coverage_difference(nz, rasterize_centers(filled(p, 'nonzero'), 20, 20)), 0);
+});
+
+// --- features/chapter06-plate.feature ---
+
+test('Chapter 6: The unit star', () => {
+  const p = unit_star();
+  assert.strictEqual(edges(p).length, 5);
+  assert(Tuple.equals(subpaths(p)[0].points[0], point(0, -1), 0.0001));
+  assert(Tuple.equals(subpaths(p)[0].points[1], point(0.5878, 0.809), 0.0001));
+  assert(Tuple.equals(subpaths(p)[0].points[2], point(-0.9511, -0.309), 0.0001));
+  assert_bounds_equal(bounds(p), [-0.9511, -1, 0.9511, 0.809]);
+});
+
+test('Chapter 6: The spiral', () => {
+  const c = spiral();
+  const ref = read_file('reference/chapter-06/spiral.ppm');
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(c.width, 320);
+  assert.strictEqual(c.height, 320);
+  assert_pixel_approx(p6, 180, 160, [243, 196, 89]);
+  assert_pixel_approx(p6, 183, 171, [124, 196, 237]);
+  assert_pixel_approx(p6, 179, 183, [237, 137, 149]);
+  assert_pixel_approx(p6, 104, 139, [237, 137, 149]);
+  assert_pixel_approx(p6, 230, 111, [124, 196, 237]);
+  assert_pixel_approx(p6, 32, 137, [124, 196, 237]);
+  assert_pixel_approx(p6, 34, 104, [237, 137, 149]);
+  assert_pixel_approx(p6, 160, 160, [39, 39, 44]);
+  assert_pixel_approx(p6, 5, 5, [39, 39, 44]);
+  assert_pixel_approx(p6, 300, 20, [39, 39, 44]);
+  assert(max_channel_difference(p6, ref) <= 1);
+});
+
+test('Chapter 6: Plate 6', () => {
+  const c = plate_06();
+  const ref = read_file('reference/chapter-06/plate-06.ppm');
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(c.width, 640);
+  assert.strictEqual(c.height, 640);
+  assert_pixel_approx(p6, 360, 320, [243, 196, 89]);
+  assert_pixel_approx(p6, 68, 208, [237, 137, 149]);
+  assert_pixel_approx(p6, 320, 320, [39, 39, 44]);
+  assert(max_channel_difference(p6, ref) <= 1);
+});
+
+// Write Chapter 6 output files
+test('Write chapter 6 output files', async () => {
+  const c1 = spiral();
+  await fs.writeFile('out/spiral.ppm', canvas_to_p6(c1));
+
+  const c2 = plate_06();
+  await fs.writeFile('out/plate-06.ppm', canvas_to_p6(c2));
 });
