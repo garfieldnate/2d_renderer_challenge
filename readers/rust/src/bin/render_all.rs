@@ -9,7 +9,8 @@ use std::path::Path;
 use renderer::{
     canvas_to_p6, canvas_to_ppm, clamp_pair, disc_centers, disc_coverage, fan_bresenham,
     fan_both_orders, fan_coverage, fan_wu, gray_match, painted_twice, plate_01, plate_02,
-    plate_03, plate_04, quarter_match, ramp,
+    plate_03, plate_04, plate_05, plate_06, quarter_match, ramp, spiral, star_centers,
+    star_coverage,
 };
 
 fn write_p3(dir: &Path, name: &str, ppm: String) {
@@ -47,5 +48,14 @@ fn main() {
     write_p6(out, "fan-both-orders.ppm", canvas_to_p6(&fan_both_orders()));
     write_p6(out, "plate-04.ppm", canvas_to_p6(&plate_04()));
 
-    println!("wrote 15 renders to out/");
+    // Chapter 5: paths and insideness.
+    write_p6(out, "star-centers.ppm", canvas_to_p6(&star_centers()));
+    write_p6(out, "star-coverage.ppm", canvas_to_p6(&star_coverage()));
+    write_p6(out, "plate-05.ppm", canvas_to_p6(&plate_05()));
+
+    // Chapter 6: the scanline sweep.
+    write_p6(out, "spiral.ppm", canvas_to_p6(&spiral()));
+    write_p6(out, "plate-06.ppm", canvas_to_p6(&plate_06()));
+
+    println!("wrote 20 renders to out/");
 }

@@ -536,6 +536,8 @@ pub enum Shape {
     /// matrix that collapses the plane, since there's no inverse to send a
     /// point back through.
     Empty,
+    /// The inside of a path under a fill rule. `filled` builds one.
+    Filled(Box<Path>, Rule),
 }
 
 /// A circle given its center and radius. Inside means within the radius,
@@ -585,6 +587,10 @@ pub fn inside(s: &Shape, x: f64, y: f64) -> bool {
             inside(shape, p.x, p.y)
         }
         Shape::Empty => false,
+        Shape::Filled(path, rule) => match rule {
+            Rule::NonZero => inside_nonzero(path, x, y),
+            Rule::EvenOdd => inside_evenodd(path, x, y),
+        },
     }
 }
 
@@ -1477,4 +1483,556 @@ pub fn f_both_orders() -> Canvas {
 /// Plate 4: `f_both_orders`, magnified by 2.
 pub fn plate_04() -> Canvas {
     magnify(&f_both_orders(), 2)
+}
+
+// =======================================================================
+// Chapter 5: Paths and Insideness
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 5.1 A path is a list of instructions
+// ---------------------------------------------------------------------
+
+/// One pen-down-to-pen-up run: the points visited, in order, and whether
+/// `close` was called on it. The flag doesn't affect `edges` -- filling
+/// treats every subpath as closed regardless -- it only matters for where
+/// the *next* `line_to` starts, and (in a later chapter) for stroking.
+#[derive(Debug, Clone)]
+pub struct Subpath {
+    pub points: Vec<Tuple>,
+    pub closed: bool,
+}
+
+/// A list of subpaths: everything `move_to`, `line_to` and `close` build
+/// up. Curves arrive in chapter 8; until then a subpath is just points.
+#[derive(Debug, Clone)]
+pub struct Path {
+    subpaths: Vec<Subpath>,
+}
+
+/// An empty path: no subpaths at all.
+pub fn path() -> Path {
+    Path { subpaths: Vec::new() }
+}
+
+/// Lifts the pen and puts it down at `pt`, starting a new subpath there.
+pub fn move_to(p: &mut Path, pt: Tuple) {
+    p.subpaths.push(Subpath { points: vec![pt], closed: false });
+}
+
+/// Draws a line from wherever the pen is to `pt`.
+///
+/// Three cases, in the order the chapter lists them: with nothing to
+/// extend (no subpath yet), this behaves as `move_to`. Right after a
+/// `close`, it starts a new subpath -- but at the point the *closed*
+/// subpath began, because that's where `close` left the pen, not at
+/// wherever its own points happened to end. Otherwise it just appends to
+/// the subpath in progress.
+pub fn line_to(p: &mut Path, pt: Tuple) {
+    match p.subpaths.last() {
+        None => move_to(p, pt),
+        Some(last) if last.closed => {
+            let start = last.points[0];
+            p.subpaths.push(Subpath { points: vec![start, pt], closed: false });
+        }
+        Some(_) => {
+            p.subpaths.last_mut().unwrap().points.push(pt);
+        }
+    }
+}
+
+/// Draws a line back to where the pen was last put down and marks the
+/// subpath closed. Nothing to close does nothing; closing twice is the
+/// same as closing once.
+pub fn close(p: &mut Path) {
+    if let Some(last) = p.subpaths.last_mut() {
+        last.closed = true;
+    }
+}
+
+/// The subpaths, in order, for the tests to inspect.
+pub fn subpaths(p: &Path) -> &[Subpath] {
+    &p.subpaths
+}
+
+/// Every edge of every subpath, as `(a, b)` pairs, treating every subpath
+/// as closed whether or not `close` was called: a subpath of one point
+/// contributes no edges, and every other subpath contributes one edge per
+/// point, the last back to the first.
+pub fn edges(p: &Path) -> Vec<(Tuple, Tuple)> {
+    let mut out = Vec::new();
+    for sp in &p.subpaths {
+        let n = sp.points.len();
+        if n < 2 {
+            continue;
+        }
+        for i in 0..n {
+            out.push((sp.points[i], sp.points[(i + 1) % n]));
+        }
+    }
+    out
+}
+
+/// The smallest axis-aligned box around every point of every subpath, as
+/// `(min x, min y, max x, max y)`. An empty path has no points, and its
+/// bounds are `(0, 0, 0, 0)` rather than whatever a language's min of
+/// nothing does.
+pub fn bounds(p: &Path) -> (f64, f64, f64, f64) {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut any = false;
+    for sp in &p.subpaths {
+        for pt in &sp.points {
+            any = true;
+            min_x = min_x.min(pt.x);
+            min_y = min_y.min(pt.y);
+            max_x = max_x.max(pt.x);
+            max_y = max_y.max(pt.y);
+        }
+    }
+    if !any {
+        (0.0, 0.0, 0.0, 0.0)
+    } else {
+        (min_x, min_y, max_x, max_y)
+    }
+}
+
+/// A closed subpath through `points`.
+pub fn polygon(points: &[Tuple]) -> Path {
+    let mut p = path();
+    for (i, &pt) in points.iter().enumerate() {
+        if i == 0 {
+            move_to(&mut p, pt);
+        } else {
+            line_to(&mut p, pt);
+        }
+    }
+    close(&mut p);
+    p
+}
+
+/// A regular n-gon standing in for a circle of radius `r` about `(cx,
+/// cy)`: its first point at angle 0 (on the right), going clockwise on the
+/// screen as the angle increases, because the canvas's y points down.
+/// Chapter 8 makes it an honest circle.
+pub fn circle_path(cx: f64, cy: f64, r: f64, n: usize) -> Path {
+    let mut pts = Vec::with_capacity(n);
+    for k in 0..n {
+        let a = k as f64 * 2.0 * std::f64::consts::PI / n as f64;
+        pts.push(point(cx + r * a.cos(), cy + r * a.sin()));
+    }
+    polygon(&pts)
+}
+
+// ---------------------------------------------------------------------
+// § 5.2 Is this point inside?
+// ---------------------------------------------------------------------
+
+/// Does the edge `a -> b` span height `y`, under the half-open rule (the
+/// lower endpoint is in, the higher one out), and if so, where does it
+/// cross? A horizontal edge (`a.y == b.y`) never spans anything.
+fn edge_crossing(a: Tuple, b: Tuple, y: f64) -> Option<f64> {
+    if (a.y <= y && y < b.y) || (b.y <= y && y < a.y) {
+        let t = (y - a.y) / (b.y - a.y);
+        Some(a.x + t * (b.x - a.x))
+    } else {
+        None
+    }
+}
+
+/// How many edges a ray from `(x, y)` toward `+x`, forever, crosses.
+/// Half-open at each edge's lower endpoint, so a vertex on the ray counts
+/// once, not for each of its two edges.
+pub fn crossings(p: &Path, x: f64, y: f64) -> i64 {
+    let mut n = 0;
+    for (a, b) in edges(p) {
+        if let Some(x_cross) = edge_crossing(a, b, y) {
+            if x_cross > x {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// The winding number of the path around `(x, y)`: how many times the
+/// path goes around the point, net, and in which direction. An edge
+/// heading down the canvas (toward larger y) that crosses the ray to the
+/// right counts `+1`; one heading up counts `-1`. Positive is clockwise on
+/// the screen. Uses the cross product instead of the crossing's x so it
+/// never divides: `cross(b - a, q - a) > 0` means q is to the left of an
+/// edge heading down, which is the same thing as the crossing being to
+/// the right of q.
+pub fn winding_at(p: &Path, x: f64, y: f64) -> i64 {
+    let q = point(x, y);
+    let mut w = 0;
+    for (a, b) in edges(p) {
+        if a.y <= y {
+            if b.y > y && cross(b - a, q - a) > 0.0 {
+                w += 1;
+            }
+        } else if b.y <= y && cross(b - a, q - a) < 0.0 {
+            w -= 1;
+        }
+    }
+    w
+}
+
+// ---------------------------------------------------------------------
+// § 5.3 Two rules
+// ---------------------------------------------------------------------
+
+/// Nonzero: inside when the winding number isn't zero.
+pub fn inside_nonzero(p: &Path, x: f64, y: f64) -> bool {
+    winding_at(p, x, y) != 0
+}
+
+/// Even-odd: inside when the winding number is odd (same parity as the
+/// crossing count).
+pub fn inside_evenodd(p: &Path, x: f64, y: f64) -> bool {
+    winding_at(p, x, y).rem_euclid(2) != 0
+}
+
+/// Which of the two fill conventions a `Shape::Filled` uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rule {
+    NonZero,
+    EvenOdd,
+}
+
+fn parse_rule(rule: &str) -> Rule {
+    match rule {
+        "nonzero" => Rule::NonZero,
+        "evenodd" => Rule::EvenOdd,
+        other => panic!("unknown fill rule: {other}"),
+    }
+}
+
+/// The shape a path encloses under `rule` (`"nonzero"` or `"evenodd"`), so
+/// that chapter 2's rasterizer -- coverage, `rasterize`, all of it -- can
+/// draw any path, either rule, unchanged.
+pub fn filled(p: &Path, rule: &str) -> Shape {
+    Shape::Filled(Box::new(p.clone()), parse_rule(rule))
+}
+
+/// Columns from `floor(min x)` up to but not including `ceil(max x)`,
+/// rows likewise, clipped to the buffer: `rasterize` restricted to the
+/// pixels `b` touches. Leaves every other pixel at zero. Same coverage as
+/// `rasterize(s, width, height)`, less work.
+pub fn rasterize_within(
+    s: &Shape,
+    b: (f64, f64, f64, f64),
+    width: usize,
+    height: usize,
+) -> CoverageBuffer {
+    let mut cov = coverage_buffer(width, height);
+    let (min_x, min_y, max_x, max_y) = b;
+    let x0 = min_x.floor().max(0.0) as i64;
+    let y0 = min_y.floor().max(0.0) as i64;
+    let x1 = (max_x.ceil() as i64).clamp(0, width as i64);
+    let y1 = (max_y.ceil() as i64).clamp(0, height as i64);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            set_coverage(&mut cov, x, y, coverage(s, x, y));
+        }
+    }
+    cov
+}
+
+// ---------------------------------------------------------------------
+// § 5.4 Putting it together
+// ---------------------------------------------------------------------
+
+/// Five points on a circle of radius 70 about (80.5, 80.5), the first
+/// straight up, visited every second one so the pen crosses itself, and
+/// closed: the pentagram.
+pub fn star() -> Path {
+    let mut p = path();
+    for k in 0..5 {
+        let a = (-90.0 + 144.0 * k as f64) * std::f64::consts::PI / 180.0;
+        let q = point(80.5 + 70.0 * a.cos(), 80.5 + 70.0 * a.sin());
+        if k == 0 {
+            move_to(&mut p, q);
+        } else {
+            line_to(&mut p, q);
+        }
+    }
+    close(&mut p);
+    p
+}
+
+const STAR_BG: Color = Color { red: 0.02, green: 0.02, blue: 0.025 };
+const STAR_INK: Color = Color { red: 0.9, green: 0.55, blue: 0.1 };
+
+/// The star, filled under `rule`, by `method` (`"centers"` or
+/// `"coverage"`), on a 160x160 panel.
+pub fn star_panel(rule: &str, method: &str) -> Canvas {
+    let mut c = canvas(160, 160);
+    fill(&mut c, STAR_BG);
+    let s = filled(&star(), rule);
+    let cov = if method == "centers" {
+        rasterize_centers(&s, 160, 160)
+    } else {
+        rasterize_within(&s, bounds(&star()), 160, 160)
+    };
+    paint_through(&mut c, &cov, STAR_INK);
+    c
+}
+
+/// Both rules, by the center question, side by side.
+pub fn star_centers() -> Canvas {
+    side_by_side(&star_panel("nonzero", "centers"), &star_panel("evenodd", "centers"))
+}
+
+/// Both rules, by coverage, side by side.
+pub fn star_coverage() -> Canvas {
+    side_by_side(&star_panel("nonzero", "coverage"), &star_panel("evenodd", "coverage"))
+}
+
+/// Plate 5: the center-question pair over the coverage pair, magnified by
+/// 2.
+pub fn plate_05() -> Canvas {
+    let top = star_centers();
+    let bottom = star_coverage();
+    let mut both = canvas(320, 320);
+    for y in 0..160i64 {
+        for x in 0..320i64 {
+            write_pixel(&mut both, x, y, pixel_at(&top, x, y));
+            write_pixel(&mut both, x, y + 160, pixel_at(&bottom, x, y));
+        }
+    }
+    magnify(&both, 2)
+}
+
+// =======================================================================
+// Chapter 6: Filling a Polygon
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 6.1 The edge table
+// ---------------------------------------------------------------------
+
+/// One non-horizontal edge, reshaped for the sweep: which end is higher on
+/// the canvas (`y_top`, `x_top`), where the lower end is (`y_bottom`), how
+/// far x moves for each unit of descending y (`slope`), and which way the
+/// path went along it -- `+1` heading down the canvas (from `a` to `b`
+/// with `a.y < b.y`), `-1` heading up. The same sign chapter 5's winding
+/// number gave a crossing.
+#[derive(Debug, Clone, Copy)]
+pub struct Edge {
+    pub y_top: f64,
+    pub y_bottom: f64,
+    pub x_top: f64,
+    pub slope: f64,
+    pub direction: i64,
+}
+
+/// Where `edge` crosses height `y`.
+pub fn x_at(edge: &Edge, y: f64) -> f64 {
+    edge.x_top + (y - edge.y_top) * edge.slope
+}
+
+/// Every non-horizontal edge of `p`, reshaped into an `Edge` and sorted by
+/// `y_top`, then by `x_top`. A horizontal edge (`a.y == b.y` exactly) is
+/// dropped, not clamped: chapter 5's half-open rule already says it never
+/// crosses a sample height, and its slope would be a division by zero.
+pub fn edge_table(p: &Path) -> Vec<Edge> {
+    let mut table: Vec<Edge> = edges(p)
+        .into_iter()
+        .filter_map(|(a, b)| {
+            if a.y == b.y {
+                None
+            } else if a.y < b.y {
+                Some(Edge {
+                    y_top: a.y,
+                    y_bottom: b.y,
+                    x_top: a.x,
+                    slope: (b.x - a.x) / (b.y - a.y),
+                    direction: 1,
+                })
+            } else {
+                Some(Edge {
+                    y_top: b.y,
+                    y_bottom: a.y,
+                    x_top: b.x,
+                    slope: (a.x - b.x) / (a.y - b.y),
+                    direction: -1,
+                })
+            }
+        })
+        .collect();
+    table.sort_by(|a, b| {
+        a.y_top.partial_cmp(&b.y_top).unwrap().then(a.x_top.partial_cmp(&b.x_top).unwrap())
+    });
+    table
+}
+
+// ---------------------------------------------------------------------
+// § 6.2 Crossings on a row, and spans
+// ---------------------------------------------------------------------
+
+/// `(x, direction)` for every edge of `table` that spans height `y` --
+/// `y_top <= y < y_bottom`, half-open, chapter 5's rule again -- sorted by
+/// x. The slow version: it looks at every edge of the table.
+pub fn crossings_on_row(table: &[Edge], y: f64) -> Vec<(f64, i64)> {
+    let mut xs: Vec<(f64, i64)> = table
+        .iter()
+        .filter(|e| e.y_top <= y && y < e.y_bottom)
+        .map(|e| (x_at(e, y), e.direction))
+        .collect();
+    xs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    xs
+}
+
+/// Walks sorted crossings left to right, accumulating the winding number,
+/// and returns the maximal `(x_start, x_end)` intervals where `rule`
+/// ("nonzero" or "evenodd") says inside. Two inside stretches that touch
+/// merge into one span, because the rule never turned false between them.
+pub fn spans_from_crossings(xs: &[(f64, i64)], rule: &str) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    let mut w: i64 = 0;
+    let mut start: Option<f64> = None;
+    for &(x, d) in xs {
+        w += d;
+        let inside = if rule == "nonzero" { w != 0 } else { w.rem_euclid(2) != 0 };
+        if inside && start.is_none() {
+            start = Some(x);
+        }
+        if !inside {
+            if let Some(s) = start.take() {
+                out.push((s, x));
+            }
+        }
+    }
+    out
+}
+
+/// `crossings_on_row` and `spans_from_crossings` together, for one pixel
+/// row: the row's crossings under `p`'s edge table, turned into spans
+/// under `rule`, sampled at height `row + 0.5`.
+pub fn spans(p: &Path, rule: &str, row: i64) -> Vec<(f64, f64)> {
+    let table = edge_table(p);
+    let y = row as f64 + 0.5;
+    spans_from_crossings(&crossings_on_row(&table, y), rule)
+}
+
+/// Sets to 1 every pixel of `row` whose center lies in `[x0, x1)`: the
+/// first is `ceil(x0 - 0.5)`, the last is `ceil(x1 - 0.5) - 1`, clipped to
+/// the buffer. Half-open at the right end, so two spans that meet at a
+/// pixel center fill that pixel exactly once.
+pub fn fill_span(cov: &mut CoverageBuffer, row: i64, x0: f64, x1: f64) {
+    let first = (x0 - 0.5).ceil() as i64;
+    let last = (x1 - 0.5).ceil() as i64 - 1;
+    let lo = first.max(0);
+    let hi = last.min(cov.width as i64 - 1);
+    for x in lo..=hi {
+        set_coverage(cov, x, row, 1.0);
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 6.3 The sweep
+// ---------------------------------------------------------------------
+
+/// The scanline fill: sweeps the rows top to bottom, keeping the list of
+/// edges that span the current row's sample height (the table is read
+/// once, front to back, since it's sorted by `y_top`), sorts their
+/// crossings, and fills the spans. Its result is a coverage buffer of 0s
+/// and 1s, exactly the one chapter 5's `rasterize_centers(filled(p,
+/// rule), w, h)` produces -- but without asking every pixel about every
+/// edge.
+pub fn fill_path_aliased(p: &Path, rule: &str, width: usize, height: usize) -> CoverageBuffer {
+    let mut cov = coverage_buffer(width, height);
+    let table = edge_table(p);
+    let mut active: Vec<Edge> = Vec::new();
+    let mut next = 0;
+    for row in 0..height as i64 {
+        let y = row as f64 + 0.5;
+        while next < table.len() && table[next].y_top <= y {
+            active.push(table[next]);
+            next += 1;
+        }
+        active.retain(|e| e.y_bottom > y);
+        let mut xs: Vec<(f64, i64)> =
+            active.iter().map(|e| (x_at(e, y), e.direction)).collect();
+        xs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        for (x0, x1) in spans_from_crossings(&xs, rule) {
+            fill_span(&mut cov, row, x0, x1);
+        }
+    }
+    cov
+}
+
+/// The largest difference between corresponding entries of two coverage
+/// buffers -- chapter 1's `max_channel_difference`, for coverage buffers
+/// instead of pixels -- or `1` when their sizes differ, because two
+/// buffers of different sizes can't be the same picture.
+pub fn max_coverage_difference(a: &CoverageBuffer, b: &CoverageBuffer) -> f64 {
+    if a.width != b.width || a.height != b.height {
+        return 1.0;
+    }
+    a.values
+        .iter()
+        .zip(b.values.iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f64::max)
+}
+
+// ---------------------------------------------------------------------
+// § 6.4 Paths through matrices
+// ---------------------------------------------------------------------
+
+/// A new path with every point of every subpath taken through `m`, closed
+/// flags and all -- `transform_points` with the subpath structure kept.
+/// The original is untouched.
+pub fn transform_path(p: &Path, m: Matrix3) -> Path {
+    Path {
+        subpaths: p
+            .subpaths
+            .iter()
+            .map(|sp| Subpath { points: transform_points(&sp.points, m), closed: sp.closed })
+            .collect(),
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 6.5 Putting it together
+// ---------------------------------------------------------------------
+
+/// Chapter 5's star, moved to the origin and shrunk to radius 1, so one
+/// matrix can put it anywhere at any size.
+pub fn unit_star() -> Path {
+    transform_path(&star(), scaling(1.0 / 70.0, 1.0 / 70.0) * translation(-80.5, -80.5))
+}
+
+/// Twenty-four unit stars along a spiral, each bigger and turned a little
+/// further than the last, in three inks, filled nonzero by the sweep into
+/// a 320x320 canvas.
+pub fn spiral() -> Canvas {
+    let mut c = canvas(320, 320);
+    fill(&mut c, STAR_BG);
+    let inks = [
+        color(0.9, 0.55, 0.1),
+        color(0.2, 0.55, 0.85),
+        color(0.85, 0.25, 0.3),
+    ];
+    for k in 0..24 {
+        let a = k as f64 * 25.0 * std::f64::consts::PI / 180.0;
+        let r = 20.0 + 5.0 * k as f64;
+        let scale = 6.0 + 1.25 * k as f64;
+        let m = translation(160.5 + r * a.cos(), 160.5 + r * a.sin())
+            * rotation(a)
+            * scaling(scale, scale);
+        let p = transform_path(&unit_star(), m);
+        let cov = fill_path_aliased(&p, "nonzero", 320, 320);
+        paint_through(&mut c, &cov, inks[(k % 3) as usize]);
+    }
+    c
+}
+
+/// Plate 6: `spiral`, magnified by 2.
+pub fn plate_06() -> Canvas {
+    magnify(&spiral(), 2)
 }

@@ -395,7 +395,11 @@
   <p>So there are two conventions, and every graphics system offers both. <em>Nonzero</em>: a point
     is inside when its winding number isn't zero. <em>Even-odd</em>: a point is inside when its
     winding number is odd. (Or its crossing count, which has the same parity; the winding number
-    covers both, so you only need one function.) They agree on any simple loop. They disagree
+    covers both, so you only need one function.) Odd means odd in absolute value: a loop drawn the other way round has winding
+    <code>-1</code>, and that's inside under even-odd too. In languages where <code>-3 % 2</code>
+    is <code>-1</code>, and there are many, test <code>w % 2 ≠ 0</code> rather than
+    <code>w % 2 = 1</code>; a scenario winds a diamond three times backwards to make sure. They
+    agree on any simple loop. They disagree
     whenever a path crosses itself or one subpath sits inside another, and the scenarios go through
     the cases one at a time.</p>
 
@@ -506,6 +510,28 @@
     <span class="kw">And</span>   close(p)
     <span class="kw">Then</span>  inside_nonzero(p, 5, 5) = true
     <span class="kw">And</span>   inside_evenodd(p, 5, 5) = false
+
+  <span class="kw">Scenario</span>: Even-odd counts negative windings too
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(0, 10), point(10, 10), point(10, 0))
+    <span class="kw">And</span>   q ← path()
+    <span class="kw">When</span>  move_to(q, point(5, 0))
+    <span class="kw">And</span>   line_to(q, point(0, 5))
+    <span class="kw">And</span>   line_to(q, point(5, 10))
+    <span class="kw">And</span>   line_to(q, point(10, 5))
+    <span class="kw">And</span>   line_to(q, point(5, 0))
+    <span class="kw">And</span>   line_to(q, point(0, 5))
+    <span class="kw">And</span>   line_to(q, point(5, 10))
+    <span class="kw">And</span>   line_to(q, point(10, 5))
+    <span class="kw">And</span>   line_to(q, point(5, 0))
+    <span class="kw">And</span>   line_to(q, point(0, 5))
+    <span class="kw">And</span>   line_to(q, point(5, 10))
+    <span class="kw">And</span>   line_to(q, point(10, 5))
+    <span class="kw">And</span>   close(q)
+    <span class="kw">Then</span>  winding_at(p, 5, 5) = -1
+    <span class="kw">And</span>   inside_evenodd(p, 5, 5) = true
+    <span class="kw">And</span>   winding_at(q, 5, 5) = -3
+    <span class="kw">And</span>   inside_evenodd(q, 5, 5) = true
+    <span class="kw">And</span>   inside_nonzero(q, 5, 5) = true
 
   <span class="kw">Scenario</span>: The pentagram's center is inside under nonzero and outside under even-odd
     <span class="kw">Given</span> p ← star()

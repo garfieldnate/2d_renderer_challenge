@@ -80,6 +80,18 @@ Feature: The sweep
     And   ink(cov) = 9
     And   max_coverage_difference(cov, rasterize_centers(filled(p, "nonzero"), 8, 8)) = 0
 
+  Scenario: A bow tie has four crossings on a row, and they must be sorted
+    Given p ← polygon(point(1, 1), point(15, 6), point(15, 1), point(1, 6))
+    When  cov ← fill_path_aliased(p, "nonzero", 16, 8)
+    Then  spans(p, "nonzero", 2) = [(1, 5.2), (10.8, 15)]
+    And   spans(p, "evenodd", 2) = [(1, 5.2), (10.8, 15)]
+    And   coverage_at(cov, 4, 2) = 1
+    And   coverage_at(cov, 5, 2) = 0
+    And   coverage_at(cov, 10, 2) = 0
+    And   coverage_at(cov, 11, 2) = 1
+    And   ink(cov) = 34
+    And   max_coverage_difference(cov, rasterize_centers(filled(p, "nonzero"), 16, 8)) = 0
+
   Scenario: A polygon larger than the buffer fills it
     Given p ← polygon(point(-5, -5), point(30, -5), point(30, 30), point(-5, 30))
     When  cov ← fill_path_aliased(p, "nonzero", 8, 8)

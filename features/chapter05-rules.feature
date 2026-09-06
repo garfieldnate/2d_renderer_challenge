@@ -60,6 +60,28 @@ Feature: Two rules
     Then  inside_nonzero(p, 5, 5) = true
     And   inside_evenodd(p, 5, 5) = false
 
+  Scenario: Even-odd counts negative windings too
+    Given p ← polygon(point(0, 0), point(0, 10), point(10, 10), point(10, 0))
+    And   q ← path()
+    When  move_to(q, point(5, 0))
+    And   line_to(q, point(0, 5))
+    And   line_to(q, point(5, 10))
+    And   line_to(q, point(10, 5))
+    And   line_to(q, point(5, 0))
+    And   line_to(q, point(0, 5))
+    And   line_to(q, point(5, 10))
+    And   line_to(q, point(10, 5))
+    And   line_to(q, point(5, 0))
+    And   line_to(q, point(0, 5))
+    And   line_to(q, point(5, 10))
+    And   line_to(q, point(10, 5))
+    And   close(q)
+    Then  winding_at(p, 5, 5) = -1
+    And   inside_evenodd(p, 5, 5) = true
+    And   winding_at(q, 5, 5) = -3
+    And   inside_evenodd(q, 5, 5) = true
+    And   inside_nonzero(q, 5, 5) = true
+
   Scenario: The pentagram's center is inside under nonzero and outside under even-odd
     Given p ← star()
     Then  inside_nonzero(p, 80.5, 80.5) = true

@@ -1,12 +1,12 @@
 # The 2D Renderer Challenge — Rust
 
-Chapters 1 (`The Canvas and the Color`), 2 (`Coverage`) and 3 (`Lines`),
+Chapters 1 (`The Canvas and the Color`) through 6 (`Filling a Polygon`),
 stdlib only.
 
 ## Build, test, render
 
 ```
-cargo test --release   # every scenario in features/, chapters 1-3
+cargo test --release   # every scenario in features/, chapters 1-6
 cargo run --release --bin render_all   # writes all renders (P3 + P6) to out/
 ```
 
@@ -16,24 +16,48 @@ That's it — `cargo build` alone also works if you just want the library to com
 
 - `src/lib.rs` — the renderer: colors, canvas, sRGB, P3/P6 PPM, shapes,
   coverage buffers, `magnify`, `paint_through`, Bresenham's and Wu's line
-  algorithms, `thick_line`, and the chapter's named figures/plates.
+  algorithms, `thick_line`, tuples, matrices and transforms, paths and
+  winding numbers, the classical scanline sweep, and the chapter's named
+  figures/plates.
 - `src/bin/render_all.rs` — renders every figure/plate to `out/`.
 - `tests/*.rs` — one test file per `features/*.feature` file (Gherkin
   scenarios translated 1:1 into `#[test]` functions; outlines expanded per
   row).
-- `reference/chapter-0{1,2,3}/*.ppm` — the book's reference images,
+- `reference/chapter-0{1..6}/*.ppm` — the book's reference images,
   compared against with `max_channel_difference`.
 
 `--release` matters here: chapter 2's brute-force `coverage()` samples 64
-points per pixel per disc, and chapter 3's `thick_line` reuses that same
+points per pixel per disc, chapter 3's `thick_line` reuses that same
 rasterizer for every ray of the fan (twelve 160×160 rasterizations at 64
-samples a pixel) — comfortably fast in release, noticeably slower in
-debug.
+samples a pixel), and chapter 5's plate rasterizes the star by coverage
+twice — comfortably fast in release, noticeably slower in debug.
 
 ## Chapter 3 notes
 
 `Shape` gained one variant, `Intersection`, for `thick_line`: four
 half-plane parameters (not four `Shape`s) held in a fixed-size array
-rather than a `Vec`, so `Shape` stays `Copy` — existing code (`inside(s:
-Shape, ...)`, chapter 2's `plate_02`) already relies on being able to use
-a shape value more than once without cloning it.
+rather than a `Vec`. (Chapter 4's `Union(Vec<Shape>)` and chapter 5's
+`Filled(Box<Path>, Rule)` mean `Shape` is `Clone` but no longer `Copy` —
+existing code that used to rely on `Shape: Copy` now borrows a `&Shape`
+instead, which turned out to be less friction than cloning throughout.)
+
+## Chapter 5 notes
+
+`Path` is a `Vec<Subpath>`, each `Subpath` a `Vec<Tuple>` plus a `closed`
+flag. `edges(p)` always treats every subpath as closed — the flag only
+affects where the *next* `line_to` after a `close` starts. `winding_at`
+and `crossings` both use the half-open rule (`a.y <= y < b.y` or the
+reverse) so a vertex on the ray counts once. `filled(p, rule)` is a new
+`Shape` variant so chapter 2's `rasterize`/`rasterize_centers` machinery
+draws any path unchanged.
+
+## Chapter 6 notes
+
+`edge_table(p)` reshapes `edges(p)` into non-horizontal `Edge`s
+(`y_top`, `y_bottom`, `x_top`, `slope`, `direction`), sorted by `y_top`
+then `x_top`. `fill_path_aliased` sweeps the sorted table with an active
+edge list — no full rescan per row — and its output is byte-for-byte the
+same coverage buffer as chapter 5's `rasterize_centers(filled(p, rule),
+w, h)`, checked directly with `max_coverage_difference`. `transform_path`
+gives `Path` the same "transform the points, then ask" treatment chapter
+4 gave `Shape`.
