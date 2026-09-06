@@ -272,17 +272,129 @@ Canvas *magnify(const Canvas *c, int k) {
     return m;
 }
 
+/* ---- points and vectors ----------------------------------------------- */
+/* w is the whole trick: 1 for a point, 0 for a vector. Do the arithmetic
+   on all three and the bookkeeping does itself. */
+Tuple point(double x, double y)  { Tuple t = {x, y, 1}; return t; }
+Tuple vector(double x, double y) { Tuple t = {x, y, 0}; return t; }
+
+Tuple tuple_add(Tuple a, Tuple b) { Tuple t = {a.x+b.x, a.y+b.y, a.w+b.w}; return t; }
+Tuple tuple_sub(Tuple a, Tuple b) { Tuple t = {a.x-b.x, a.y-b.y, a.w-b.w}; return t; }
+Tuple tuple_neg(Tuple a)          { Tuple t = {-a.x, -a.y, -a.w}; return t; }
+Tuple tuple_scale(Tuple a, double s) { Tuple t = {a.x*s, a.y*s, a.w*s}; return t; }
+Tuple tuple_div(Tuple a, double s)   { Tuple t = {a.x/s, a.y/s, a.w/s}; return t; }
+
+double magnitude(Tuple v) { return sqrt(v.x * v.x + v.y * v.y); }
+Tuple  normalize(Tuple v) { return tuple_div(v, magnitude(v)); }
+double dot(Tuple a, Tuple b)   { return a.x * b.x + a.y * b.y; }
+/* In two dimensions there is nowhere perpendicular to go, so what is left
+   of the cross product is one number: the signed area of the
+   parallelogram, and with it which way you turned. */
+double cross(Tuple a, Tuple b) { return a.x * b.y - a.y * b.x; }
+
+/* ---- matrices ---------------------------------------------------------- */
+Matrix3 matrix3(double a, double b, double c,
+                double d, double e, double f,
+                double g, double h, double i) {
+    Matrix3 m = {{{a, b, c}, {d, e, f}, {g, h, i}}};
+    return m;
+}
+
+double m3_at(Matrix3 m, int r, int c) { return m.m[r][c]; }
+
+Matrix3 identity(void) { return matrix3(1, 0, 0, 0, 1, 0, 0, 0, 1); }
+
+Matrix3 transpose(Matrix3 m) {
+    Matrix3 t;
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) t.m[r][c] = m.m[c][r];
+    return t;
+}
+
+/* (A * B)[r, c] is row r of A dotted with column c of B. */
+Matrix3 m3_mul(Matrix3 a, Matrix3 b) {
+    Matrix3 p;
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            p.m[r][c] = a.m[r][0]*b.m[0][c] + a.m[r][1]*b.m[1][c] + a.m[r][2]*b.m[2][c];
+    return p;
+}
+
+/* The tuple is a column. The last column of the matrix multiplies w, so
+   for a vector it contributes nothing and a translation leaves it alone. */
+Tuple m3_mul_tuple(Matrix3 a, Tuple t) {
+    Tuple r;
+    r.x = a.m[0][0]*t.x + a.m[0][1]*t.y + a.m[0][2]*t.w;
+    r.y = a.m[1][0]*t.x + a.m[1][1]*t.y + a.m[1][2]*t.w;
+    r.w = a.m[2][0]*t.x + a.m[2][1]*t.y + a.m[2][2]*t.w;
+    return r;
+}
+
+/* the 2 by 2 determinant left when row r and column c are deleted */
+double minor(Matrix3 m, int r, int c) {
+    int rows[2], cols[2], nr = 0, nc = 0;
+    for (int i = 0; i < 3; i++) {
+        if (i != r) rows[nr++] = i;
+        if (i != c) cols[nc++] = i;
+    }
+    return m.m[rows[0]][cols[0]] * m.m[rows[1]][cols[1]]
+         - m.m[rows[0]][cols[1]] * m.m[rows[1]][cols[0]];
+}
+
+double cofactor(Matrix3 m, int r, int c) {
+    double d = minor(m, r, c);
+    return ((r + c) % 2) ? -d : d;
+}
+
+double determinant(Matrix3 m) {
+    return m.m[0][0] * cofactor(m, 0, 0)
+         + m.m[0][1] * cofactor(m, 0, 1)
+         + m.m[0][2] * cofactor(m, 0, 2);
+}
+
+bool is_invertible(Matrix3 m) { return determinant(m) != 0; }
+
+/* cofactors, transposed, divided by the determinant. The transpose is the
+   part everyone forgets, so it happens in the [c][r] on the left. */
+Matrix3 inverse(Matrix3 m) {
+    double d = determinant(m);
+    Matrix3 r;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) r.m[j][i] = cofactor(m, i, j) / d;
+    return r;
+}
+
+/* ---- the four transforms ----------------------------------------------- */
+Matrix3 translation(double tx, double ty) { return matrix3(1, 0, tx, 0, 1, ty, 0, 0, 1); }
+Matrix3 scaling(double sx, double sy)     { return matrix3(sx, 0, 0, 0, sy, 0, 0, 0, 1); }
+
+/* A positive angle turns x toward y. On a canvas, where y points down,
+   that is clockwise on the screen. The numbers do not care; you do. */
+Matrix3 rotation(double r) {
+    double c = cos(r), s = sin(r);
+    return matrix3(c, -s, 0, s, c, 0, 0, 0, 1);
+}
+
+Matrix3 shearing(double xy, double yx) { return matrix3(1, xy, 0, yx, 1, 0, 0, 0, 1); }
+
+/* The square root of the area factor: the uniform scale that would change
+   area by the same amount. Exact for uniform scales and rotations, a
+   compromise for stretches and shears, 0 for a collapsed matrix. */
+double approx_scale(Matrix3 m) {
+    return sqrt(fabs(m.m[0][0] * m.m[1][1] - m.m[0][1] * m.m[1][0]));
+}
+
 /* ---- shapes ----------------------------------------------------------- */
 Shape circle(double cx, double cy, double r) {
-    Shape s = {SHAPE_CIRCLE, cx, cy, r, 0, {{0}}};
+    Shape s = {SHAPE_CIRCLE, cx, cy, r, 0, {{0}}, NULL, 0, NULL, {{{0}}}};
     return s;
 }
 Shape rectangle(double x0, double y0, double x1, double y1) {
-    Shape s = {SHAPE_RECTANGLE, x0, y0, x1, y1, {{0}}};
+    Shape s = {SHAPE_RECTANGLE, x0, y0, x1, y1, {{0}}, NULL, 0, NULL, {{{0}}}};
     return s;
 }
 Shape half_plane(double px, double py, double nx, double ny) {
-    Shape s = {SHAPE_HALF_PLANE, px, py, nx, ny, {{0}}};
+    Shape s = {SHAPE_HALF_PLANE, px, py, nx, ny, {{0}}, NULL, 0, NULL, {{{0}}}};
     return s;
 }
 
@@ -292,8 +404,8 @@ static void set_half(double h[4], double px, double py, double nx, double ny) {
     h[0] = px; h[1] = py; h[2] = nx; h[3] = ny;
 }
 
-Shape thick_line(double x0, double y0, double x1, double y1, double width) {
-    double ax = x0 + 0.5, ay = y0 + 0.5, bx = x1 + 0.5, by = y1 + 0.5;
+Shape segment(Tuple a_, Tuple b_, double width) {
+    double ax = a_.x, ay = a_.y, bx = b_.x, by = b_.y;
     double dx = bx - ax, dy = by - ay;
     double len = sqrt(dx * dx + dy * dy);
     double half = width / 2;
@@ -306,7 +418,7 @@ Shape thick_line(double x0, double y0, double x1, double y1, double width) {
     if (len == 0) { dx = 1; dy = 0; cap = half; } else { dx /= len; dy /= len; }
     double nx = -dy, ny = dx;          /* the unit normal */
 
-    Shape s = {SHAPE_THICK_LINE, ax, ay, bx, by, {{0}}};
+    Shape s = {SHAPE_THICK_LINE, ax, ay, bx, by, {{0}}, NULL, 0, NULL, {{{0}}}};
     set_half(s.h[0], ax - dx * cap, ay - dy * cap,  dx,  dy);        /* across the start */
     set_half(s.h[1], bx + dx * cap, by + dy * cap, -dx, -dy);        /* across the end */
     set_half(s.h[2], ax + nx * half, ay + ny * half, -nx, -ny);      /* one side */
@@ -314,27 +426,96 @@ Shape thick_line(double x0, double y0, double x1, double y1, double width) {
     return s;
 }
 
-bool inside(Shape s, double x, double y) {
-    switch (s.kind) {
+/* Chapter 3's line is a segment between two pixel centers. That is the
+   whole of the refactor: the + 0.5 that used to live inside now lives
+   here, where you can see it. */
+Shape thick_line(double x0, double y0, double x1, double y1, double width) {
+    return segment(point(x0 + 0.5, y0 + 0.5), point(x1 + 0.5, y1 + 0.5), width);
+}
+
+/* ---- composite shapes -------------------------------------------------- */
+static Shape *shapes_copy(const Shape *src, int n) {
+    Shape *dst = malloc((size_t)(n ? n : 1) * sizeof *dst);
+    if (!dst) abort();
+    for (int i = 0; i < n; i++) dst[i] = src[i];
+    return dst;
+}
+
+Shape union_of(const Shape *parts, int n) {
+    Shape s = {SHAPE_UNION, 0, 0, 0, 0, {{0}}, shapes_copy(parts, n), n, NULL, {{{0}}}};
+    return s;
+}
+
+/* A circle is a question, not a list of points. To ask it about a device
+   point, send the point back through the inverse and ask the original.
+   No inverse means the shape has been flattened away: nothing is inside. */
+Shape transformed(Shape base, Matrix3 m) {
+    if (!is_invertible(m)) {
+        Shape e = {SHAPE_EMPTY, 0, 0, 0, 0, {{0}}, NULL, 0, NULL, {{{0}}}};
+        return e;
+    }
+    Shape s = {SHAPE_TRANSFORMED, 0, 0, 0, 0, {{0}}, NULL, 0, shapes_copy(&base, 1), inverse(m)};
+    return s;
+}
+
+/* The points go through m first; every edge is then a segment of that
+   width in device space. One shape, so a corner pixel is painted once. */
+Shape outline(const Tuple *pts, int n, Matrix3 m, double width) {
+    Tuple *t = malloc((size_t)(n ? n : 1) * sizeof *t);
+    Shape *edges = malloc((size_t)(n ? n : 1) * sizeof *edges);
+    if (!t || !edges) abort();
+    transform_points(pts, n, m, t);
+    for (int i = 0; i < n; i++) edges[i] = segment(t[i], t[(i + 1) % n], width);
+    Shape s = union_of(edges, n);
+    free(t); free(edges);
+    return s;
+}
+
+void shape_free(Shape s) {
+    if (s.kind == SHAPE_UNION) {
+        for (int i = 0; i < s.nparts; i++) shape_free(s.parts[i]);
+        free(s.parts);
+    } else if (s.kind == SHAPE_TRANSFORMED) {
+        shape_free(*s.base);
+        free(s.base);
+    }
+}
+
+/* The supersampler asks this eight thousand times a pixel, so it walks
+   pointers: a Shape is big and copying one per sample is not free. */
+static bool inside_p(const Shape *s, double x, double y) {
+    switch (s->kind) {
     case SHAPE_CIRCLE: {
-        double dx = x - s.a, dy = y - s.b;
-        return dx * dx + dy * dy <= s.c * s.c;          /* boundary included */
+        double dx = x - s->a, dy = y - s->b;
+        return dx * dx + dy * dy <= s->c * s->c;          /* boundary included */
     }
     case SHAPE_RECTANGLE:
-        return x >= s.a && x <= s.c && y >= s.b && y <= s.d;
+        return x >= s->a && x <= s->c && y >= s->b && y <= s->d;
     case SHAPE_HALF_PLANE:
-        return (x - s.a) * s.c + (y - s.b) * s.d >= 0;  /* normal points inward */
+        return (x - s->a) * s->c + (y - s->b) * s->d >= 0;  /* normal points inward */
     case SHAPE_THICK_LINE:
         /* inside all four half-planes, same test as above, written out so the
            supersampler isn't copying a Shape twenty million times */
         for (int i = 0; i < 4; i++) {
-            const double *h = s.h[i];
+            const double *h = s->h[i];
             if ((x - h[0]) * h[2] + (y - h[1]) * h[3] < 0) return false;
         }
         return true;
+    case SHAPE_UNION:
+        for (int i = 0; i < s->nparts; i++)
+            if (inside_p(&s->parts[i], x, y)) return true;   /* early exit */
+        return false;
+    case SHAPE_TRANSFORMED: {
+        Tuple q = m3_mul_tuple(s->inv, point(x, y));
+        return inside_p(s->base, q.x, q.y);
+    }
+    case SHAPE_EMPTY:
+        return false;
     }
     return false;
 }
+
+bool inside(Shape s, double x, double y) { return inside_p(&s, x, y); }
 
 /* ---- the coverage buffer ---------------------------------------------- */
 CoverageBuffer *coverage_buffer(int width, int height) {
@@ -370,7 +551,7 @@ double ink(const CoverageBuffer *cov) {
 /* Pixel (x, y) is the square from (x, y) to (x+1, y+1); its center is
    (x + 0.5, y + 0.5). Getting that half pixel wrong shifts every shape. */
 double center_inside(Shape s, int x, int y) {
-    return inside(s, x + 0.5, y + 0.5) ? 1.0 : 0.0;
+    return inside_p(&s, x + 0.5, y + 0.5) ? 1.0 : 0.0;
 }
 
 #define SAMPLES 8   /* an 8 by 8 grid of sample points inside each pixel */
@@ -379,7 +560,7 @@ double coverage(Shape s, int x, int y) {
     int n = 0;
     for (int j = 0; j < SAMPLES; j++)
         for (int i = 0; i < SAMPLES; i++)
-            if (inside(s, x + (i + 0.5) / SAMPLES, y + (j + 0.5) / SAMPLES)) n++;
+            if (inside_p(&s, x + (i + 0.5) / SAMPLES, y + (j + 0.5) / SAMPLES)) n++;
     return (double)n / (SAMPLES * SAMPLES);
 }
 
@@ -586,7 +767,6 @@ void line_wu(Canvas *c, int x0, int y0, int x1, int y1, Color col) {
 }
 
 /* ---- the fan ----------------------------------------------------------- */
-#define PI 3.14159265358979323846
 
 static const Color FAN_PAPER = {0.02, 0.02, 0.025};
 static const Color FAN_INK   = {0.92, 0.92, 0.88};
@@ -638,5 +818,122 @@ Canvas *plate_03(void) {
     canvas_free(a); canvas_free(b);
     Canvas *m = magnify(both, 2);
     canvas_free(both);
+    return m;
+}
+
+
+/* ---- chapter 4: transforms --------------------------------------------- */
+void transform_points(const Tuple *in, int n, Matrix3 m, Tuple *out) {
+    for (int i = 0; i < n; i++) out[i] = m3_mul_tuple(m, in[i]);
+}
+
+Canvas *canvas_copy(const Canvas *c) {
+    Canvas *d = canvas(c->width, c->height);
+    for (int y = 0; y < c->height; y++)
+        for (int x = 0; x < c->width; x++) write_pixel(d, x, y, pixel_at(c, x, y));
+    return d;
+}
+
+/* a into the left half of a wider canvas, b into the right */
+Canvas *side_by_side(const Canvas *a, const Canvas *b) {
+    Canvas *both = canvas(a->width + b->width, a->height);
+    for (int y = 0; y < a->height; y++) {
+        for (int x = 0; x < a->width; x++) write_pixel(both, x, y, pixel_at(a, x, y));
+        for (int x = 0; x < b->width; x++) write_pixel(both, a->width + x, y, pixel_at(b, x, y));
+    }
+    return both;
+}
+
+/* the center, then twelve ends at radius 36, one every 30 degrees */
+int fan_points(Tuple *out) {
+    out[0] = point(0, 0);
+    for (int k = 0; k <= 11; k++) {
+        double a = k * 30.0 * PI / 180.0;
+        out[k + 1] = point(36 * cos(a), 36 * sin(a));
+    }
+    return FAN_POINTS;
+}
+
+/* ten corners, clockwise from the top left, in a box 40 by 60 centered on
+   the origin, so a rotation about the origin turns the letter in place */
+int letter_f(Tuple *out) {
+    static const double xy[LETTER_F_POINTS][2] = {
+        {-20, -30}, {20, -30}, {20, -20}, {-10, -20},
+        {-10,  -5}, {12,  -5}, {12,   5}, {-10,   5},
+        {-10,  30}, {-20, 30}
+    };
+    for (int i = 0; i < LETTER_F_POINTS; i++) out[i] = point(xy[i][0], xy[i][1]);
+    return LETTER_F_POINTS;
+}
+
+Canvas *fan_transformed(Matrix3 m) {
+    Canvas *c = canvas(160, 160);
+    fill(c, FAN_PAPER);
+
+    Tuple pts[FAN_POINTS], t[FAN_POINTS];
+    int n = fan_points(pts);
+    transform_points(pts, n, m, t);
+
+    Shape rays[FAN_POINTS - 1];
+    for (int k = 1; k < n; k++) rays[k - 1] = segment(t[0], t[k], 1);
+    Shape s = union_of(rays, n - 1);
+
+    CoverageBuffer *cov = rasterize(s, 160, 160);
+    paint_through(c, cov, FAN_INK);
+    coverage_free(cov);
+    shape_free(s);
+    return c;
+}
+
+Canvas *fan_both_orders(void) {
+    Matrix3 turn = rotation(PI / 6);
+    Matrix3 move = translation(104.5, 76.5);
+    Canvas *a = fan_transformed(m3_mul(move, turn));
+    Canvas *b = fan_transformed(m3_mul(turn, move));
+    Canvas *both = side_by_side(a, b);
+    canvas_free(a); canvas_free(b);
+    return both;
+}
+
+/* The F through both orders, over a dim copy of where it started. */
+Canvas *f_both_orders(void) {
+    Matrix3 turn = rotation(PI / 6);
+    Matrix3 move = translation(104.5, 76.5);
+    Matrix3 home = translation(44.5, 44.5);
+    Color ink_col = color(0.92, 0.92, 0.88);
+    Color dim     = color(0.16, 0.16, 0.17);
+
+    Tuple f[LETTER_F_POINTS];
+    int n = letter_f(f);
+
+    Canvas *ghost = canvas(160, 160);
+    fill(ghost, color(0.02, 0.02, 0.025));
+    Shape g = outline(f, n, home, 1);
+    CoverageBuffer *gc = rasterize(g, 160, 160);
+    paint_through(ghost, gc, dim);
+    coverage_free(gc); shape_free(g);
+
+    Canvas *a = canvas_copy(ghost);
+    Canvas *b = canvas_copy(ghost);
+
+    Shape sa = outline(f, n, m3_mul(move, turn), 1);
+    CoverageBuffer *ca = rasterize(sa, 160, 160);
+    paint_through(a, ca, ink_col);
+    coverage_free(ca); shape_free(sa);
+
+    Shape sb = outline(f, n, m3_mul(turn, move), 1);
+    CoverageBuffer *cb = rasterize(sb, 160, 160);
+    paint_through(b, cb, ink_col);
+    coverage_free(cb); shape_free(sb);
+
+    Canvas *both = side_by_side(a, b);
+    canvas_free(ghost); canvas_free(a); canvas_free(b);
+    return both;
+}
+
+Canvas *plate_04(void) {
+    Canvas *f = f_both_orders();
+    Canvas *m = magnify(f, 2);
+    canvas_free(f);
     return m;
 }

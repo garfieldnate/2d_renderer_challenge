@@ -56,6 +56,49 @@ public static class Check
         }
     }
 
+    /// <summary>A point or vector: x, y and w all compared with the usual tolerance.</summary>
+    public static void TupleEqual(Tuple2 expected, Tuple2 actual, double tolerance = DefaultTolerance, string? label = null)
+    {
+        if (!NumbersEqual(expected.X, actual.X, tolerance) ||
+            !NumbersEqual(expected.Y, actual.Y, tolerance) ||
+            !NumbersEqual(expected.W, actual.W, tolerance))
+        {
+            throw new AssertionException($"{Prefix(label)}expected {expected} = {actual} within ± {tolerance}");
+        }
+    }
+
+    /// <summary>Matrices compare component-wise, with the usual tolerance.</summary>
+    public static void MatrixEqual(Matrix3 expected, Matrix3 actual, double tolerance = DefaultTolerance, string? label = null)
+    {
+        for (int r = 0; r < 3; r++)
+        {
+            for (int c = 0; c < 3; c++)
+            {
+                if (!NumbersEqual(expected[r, c], actual[r, c], tolerance))
+                {
+                    throw new AssertionException(
+                        $"{Prefix(label)}expected matrices to be equal within ± {tolerance}, differed at [{r}, {c}]: {expected[r, c]} vs {actual[r, c]}");
+                }
+            }
+        }
+    }
+
+    public static void MatrixNotEqual(Matrix3 a, Matrix3 b, double tolerance = DefaultTolerance, string? label = null)
+    {
+        bool equal = true;
+        for (int r = 0; r < 3 && equal; r++)
+        {
+            for (int c = 0; c < 3 && equal; c++)
+            {
+                if (!NumbersEqual(a[r, c], b[r, c], tolerance)) equal = false;
+            }
+        }
+        if (equal)
+        {
+            throw new AssertionException($"{Prefix(label)}expected matrices to differ, but they were equal");
+        }
+    }
+
     /// <summary>A triple of whole numbers, as it appears in a file. Exact unless tolerance says otherwise.</summary>
     public static void TripleEqual((int R, int G, int B) expected, (int R, int G, int B) actual, int tolerance = 0, string? label = null)
     {

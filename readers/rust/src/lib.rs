@@ -8,7 +8,7 @@
 use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::fs;
-use std::ops::{Add, Mul, Sub};
+use std::ops::{Add, Div, Index, Mul, Neg, Sub};
 
 // ---------------------------------------------------------------------
 // § 1.1 Comparing numbers
@@ -508,17 +508,34 @@ pub fn plate_01() -> Canvas {
 /// A shape answers one question: is this point inside you? Coordinates
 /// are real numbers, not pixel indices -- (3, 3) is a mathematical point,
 /// not the pixel whose top-left corner sits there.
-#[derive(Debug, Clone, Copy)]
+///
+/// Chapter 4 adds `Union` and `Transformed`, both of which hold other
+/// `Shape`s, so from here on `Shape` is `Clone` rather than `Copy` (a
+/// `Vec<Shape>` and a `Box<Shape>` can't be `Copy`). Every function that
+/// asks a shape a question -- `inside`, `coverage`, `rasterize` and their
+/// kin -- takes `&Shape` rather than `Shape` by value, which is actually
+/// less friction than the old by-value convention: a shape used more than
+/// once just gets borrowed again, no clone required.
+#[derive(Debug, Clone)]
 pub enum Shape {
     Circle { cx: f64, cy: f64, r: f64 },
     Rectangle { x0: f64, y0: f64, x1: f64, y1: f64 },
     HalfPlane { px: f64, py: f64, nx: f64, ny: f64 },
     /// Inside all of four half-planes at once (each a (px, py, nx, ny)
-    /// tuple, same layout as `HalfPlane`). `thick_line` is the only thing
-    /// that builds one. A fixed-size array rather than `Vec<Shape>` so
-    /// `Shape` stays `Copy`, which chapter 2's `inside(s: Shape, ...)`
-    /// (by value, called repeatedly on the same shape) already depends on.
+    /// tuple, same layout as `HalfPlane`). `segment` (and, through it,
+    /// `thick_line`) is the only thing that builds one.
     Intersection([(f64, f64, f64, f64); 4]),
+    /// Inside when any of its shapes is. `union` builds one.
+    Union(Vec<Shape>),
+    /// A shape seen through a matrix: stores the shape and the matrix's
+    /// *inverse*, so that `inside` can send a device point backwards into
+    /// the shape's own coordinates. `transformed` builds one -- or, if the
+    /// matrix has no inverse, an `Empty` instead.
+    Transformed(Box<Shape>, Matrix3),
+    /// Nothing is ever inside this. What `transformed` returns for a
+    /// matrix that collapses the plane, since there's no inverse to send a
+    /// point back through.
+    Empty,
 }
 
 /// A circle given its center and radius. Inside means within the radius,
@@ -550,18 +567,24 @@ fn half_plane_inside(px: f64, py: f64, nx: f64, ny: f64, x: f64, y: f64) -> bool
     dx * nx + dy * ny >= 0.0
 }
 
-pub fn inside(s: Shape, x: f64, y: f64) -> bool {
+pub fn inside(s: &Shape, x: f64, y: f64) -> bool {
     match s {
         Shape::Circle { cx, cy, r } => {
-            let dx = x - cx;
-            let dy = y - cy;
+            let dx = x - *cx;
+            let dy = y - *cy;
             dx * dx + dy * dy <= r * r
         }
-        Shape::Rectangle { x0, y0, x1, y1 } => x >= x0 && x <= x1 && y >= y0 && y <= y1,
-        Shape::HalfPlane { px, py, nx, ny } => half_plane_inside(px, py, nx, ny, x, y),
+        Shape::Rectangle { x0, y0, x1, y1 } => x >= *x0 && x <= *x1 && y >= *y0 && y <= *y1,
+        Shape::HalfPlane { px, py, nx, ny } => half_plane_inside(*px, *py, *nx, *ny, x, y),
         Shape::Intersection(planes) => planes
             .iter()
             .all(|&(px, py, nx, ny)| half_plane_inside(px, py, nx, ny, x, y)),
+        Shape::Union(shapes) => shapes.iter().any(|sh| inside(sh, x, y)),
+        Shape::Transformed(shape, inv) => {
+            let p = *inv * point(x, y);
+            inside(shape, p.x, p.y)
+        }
+        Shape::Empty => false,
     }
 }
 
@@ -639,14 +662,14 @@ pub fn ink(cov: &CoverageBuffer) -> f64 {
 /// is (x + 0.5, y + 0.5). This is the one thing in the chapter that's
 /// easy to get wrong: test (x, y) instead and every shape drawn sits half
 /// a pixel up and to the left of where it should.
-pub fn center_inside(s: Shape, x: i64, y: i64) -> bool {
+pub fn center_inside(s: &Shape, x: i64, y: i64) -> bool {
     inside(s, x as f64 + 0.5, y as f64 + 0.5)
 }
 
 /// The binary question, once per pixel: is the center inside? What every
 /// renderer did until the nineties, and what some still do with
 /// antialiasing off.
-pub fn rasterize_centers(s: Shape, width: usize, height: usize) -> CoverageBuffer {
+pub fn rasterize_centers(s: &Shape, width: usize, height: usize) -> CoverageBuffer {
     let mut cov = coverage_buffer(width, height);
     for y in 0..height as i64 {
         for x in 0..width as i64 {
@@ -685,7 +708,7 @@ pub fn paint_through(c: &mut Canvas, cov: &CoverageBuffer, col: Color) {
 /// How much of pixel (x, y) is inside the shape, brute forced: an 8-by-8
 /// grid of sample points, one at the center of each cell, counted and
 /// divided by 64.
-pub fn coverage(s: Shape, x: i64, y: i64) -> f64 {
+pub fn coverage(s: &Shape, x: i64, y: i64) -> f64 {
     let mut count = 0;
     for j in 0..8 {
         for i in 0..8 {
@@ -703,7 +726,7 @@ pub fn coverage(s: Shape, x: i64, y: i64) -> f64 {
 /// correct to within 1/64 for anything with a straight edge, and simple
 /// enough to trust. The reference every faster rasterizer gets checked
 /// against.
-pub fn rasterize(s: Shape, width: usize, height: usize) -> CoverageBuffer {
+pub fn rasterize(s: &Shape, width: usize, height: usize) -> CoverageBuffer {
     let mut cov = coverage_buffer(width, height);
     for y in 0..height as i64 {
         for x in 0..width as i64 {
@@ -727,7 +750,7 @@ const PAPER: Color = Color { red: 0.02, green: 0.02, blue: 0.025 };
 pub fn disc_centers() -> Canvas {
     let mut c = canvas(40, 40);
     fill(&mut c, PAPER);
-    let cov = rasterize_centers(circle(20.0, 20.0, 16.0), 40, 40);
+    let cov = rasterize_centers(&circle(20.0, 20.0, 16.0), 40, 40);
     paint_through(&mut c, &cov, DISC);
     magnify(&c, 8)
 }
@@ -737,7 +760,7 @@ pub fn disc_centers() -> Canvas {
 pub fn disc_coverage() -> Canvas {
     let mut c = canvas(40, 40);
     fill(&mut c, PAPER);
-    let cov = rasterize(circle(20.0, 20.0, 16.0), 40, 40);
+    let cov = rasterize(&circle(20.0, 20.0, 16.0), 40, 40);
     paint_through(&mut c, &cov, DISC);
     magnify(&c, 8)
 }
@@ -749,7 +772,7 @@ pub fn disc_coverage() -> Canvas {
 pub fn painted_twice() -> Canvas {
     let mut c = canvas(80, 40);
     fill(&mut c, PAPER);
-    let cov = rasterize(circle(20.0, 20.0, 16.0), 40, 40);
+    let cov = rasterize(&circle(20.0, 20.0, 16.0), 40, 40);
 
     let mut once = coverage_buffer(80, 40);
     for y in 0..40i64 {
@@ -778,8 +801,8 @@ pub fn plate_02() -> Canvas {
     let mut c = canvas(80, 40);
     fill(&mut c, PAPER);
     let shape = circle(20.0, 20.0, 16.0);
-    let left = rasterize_centers(shape, 40, 40);
-    let right = rasterize(shape, 40, 40);
+    let left = rasterize_centers(&shape, 40, 40);
+    let right = rasterize(&shape, 40, 40);
 
     let mut both = coverage_buffer(80, 40);
     for y in 0..40i64 {
@@ -966,11 +989,329 @@ pub fn fan_wu() -> Canvas {
 /// half-planes, through chapter 2's `inside`. Two face along the segment
 /// (the end caps), two face inward along the normal, offset by half the
 /// width (the sides).
+///
+/// Chapter 4 (§4.5) pulls the actual rectangle-building logic out into
+/// `segment`, which takes real points instead of pixel indices; this is
+/// now that one-liner, with the `+ 0.5` that used to live here moved into
+/// the call.
 pub fn thick_line(x0: i64, y0: i64, x1: i64, y1: i64, width: f64) -> Shape {
-    let mut ax = x0 as f64 + 0.5;
-    let ay = y0 as f64 + 0.5;
-    let mut bx = x1 as f64 + 0.5;
-    let by = y1 as f64 + 0.5;
+    segment(point(x0 as f64 + 0.5, y0 as f64 + 0.5), point(x1 as f64 + 0.5, y1 as f64 + 0.5), width)
+}
+
+/// The fan a third time: each ray a `thick_line` of width 1, rasterized
+/// and painted through, then magnified by 2 so the edges are visible.
+/// Slow -- twelve 160x160 rasterizations at 64 samples a pixel -- because
+/// chapter 2's rasterizer knows nothing about lines; it asks every pixel
+/// on the canvas whether the shape is anywhere near it.
+pub fn fan_coverage() -> Canvas {
+    let mut c = canvas(160, 160);
+    fill(&mut c, PAPER_3);
+    for (x, y) in ray_ends() {
+        let cov = rasterize(&thick_line(80, 80, x, y, 1.0), 160, 160);
+        paint_through(&mut c, &cov, RAY);
+    }
+    magnify(&c, 2)
+}
+
+// ---------------------------------------------------------------------
+// § 3.4 The figures
+// ---------------------------------------------------------------------
+
+/// Plate 3: Bresenham's fan and Wu's, side by side, magnified twice.
+pub fn plate_03() -> Canvas {
+    let mut both = canvas(320, 160);
+    let a = fan_bresenham();
+    let b = fan_wu();
+    for y in 0..160i64 {
+        for x in 0..160i64 {
+            write_pixel(&mut both, x, y, pixel_at(&a, x, y));
+            write_pixel(&mut both, x + 160, y, pixel_at(&b, x, y));
+        }
+    }
+    magnify(&both, 2)
+}
+
+// ---------------------------------------------------------------------
+// Chapter 4: Points, Vectors, Transforms
+//
+// § 4.1 Points and vectors
+// ---------------------------------------------------------------------
+
+/// A point or a vector: (x, y, w), w = 1 for a point and w = 0 for a
+/// vector. The arithmetic doesn't distinguish them beyond that: point
+/// minus point comes out w = 0 (a vector), point plus vector comes out
+/// w = 1 (a point), and point plus point comes out w = 2, which is
+/// nobody's fault but the caller's.
+#[derive(Debug, Clone, Copy)]
+pub struct Tuple {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+}
+
+/// A place.
+pub fn point(x: f64, y: f64) -> Tuple {
+    Tuple { x, y, w: 1.0 }
+}
+
+/// A displacement, with no location of its own.
+pub fn vector(x: f64, y: f64) -> Tuple {
+    Tuple { x, y, w: 0.0 }
+}
+
+impl Add for Tuple {
+    type Output = Tuple;
+    fn add(self, other: Tuple) -> Tuple {
+        Tuple { x: self.x + other.x, y: self.y + other.y, w: self.w + other.w }
+    }
+}
+
+impl Sub for Tuple {
+    type Output = Tuple;
+    fn sub(self, other: Tuple) -> Tuple {
+        Tuple { x: self.x - other.x, y: self.y - other.y, w: self.w - other.w }
+    }
+}
+
+impl Neg for Tuple {
+    type Output = Tuple;
+    fn neg(self) -> Tuple {
+        Tuple { x: -self.x, y: -self.y, w: -self.w }
+    }
+}
+
+/// Scale a point or vector by a number: `v * 3.5`.
+impl Mul<f64> for Tuple {
+    type Output = Tuple;
+    fn mul(self, s: f64) -> Tuple {
+        Tuple { x: self.x * s, y: self.y * s, w: self.w * s }
+    }
+}
+
+impl Div<f64> for Tuple {
+    type Output = Tuple;
+    fn div(self, s: f64) -> Tuple {
+        Tuple { x: self.x / s, y: self.y / s, w: self.w / s }
+    }
+}
+
+/// Points and vectors compare component by component, `w` included, with
+/// the usual tolerance -- so a point built with the wrong `w` (or a
+/// translation that leaves a vector's `w` nonzero) fails here too, not
+/// only on `x` and `y`.
+pub fn tuples_eq(a: Tuple, b: Tuple) -> bool {
+    approx_eq(a.x, b.x) && approx_eq(a.y, b.y) && approx_eq(a.w, b.w)
+}
+
+/// The length of a vector: `sqrt(x^2 + y^2)`, ignoring `w`.
+pub fn magnitude(v: Tuple) -> f64 {
+    (v.x * v.x + v.y * v.y).sqrt()
+}
+
+/// A vector of length 1, pointing the same way as `v`.
+pub fn normalize(v: Tuple) -> Tuple {
+    v / magnitude(v)
+}
+
+/// How much of `a` points along `b`: zero when they're perpendicular.
+pub fn dot(a: Tuple, b: Tuple) -> f64 {
+    a.x * b.x + a.y * b.y
+}
+
+/// In two dimensions there's nowhere perpendicular for a cross product to
+/// point, so what's left is a single number: the signed area of the
+/// parallelogram `a` and `b` span. Its sign says which way you turned
+/// going from `a` to `b`.
+pub fn cross(a: Tuple, b: Tuple) -> f64 {
+    a.x * b.y - a.y * b.x
+}
+
+// ---------------------------------------------------------------------
+// § 4.2 Matrices
+// ---------------------------------------------------------------------
+
+/// A 3 by 3 matrix of real numbers, row by row. `matrix_at(m, r, c)` is
+/// the entry in row `r`, column `c`, both counted from zero.
+#[derive(Debug, Clone, Copy)]
+pub struct Matrix3 {
+    m: [[f64; 3]; 3],
+}
+
+/// Nine numbers in reading order, row by row -- for the times a table is
+/// too much ceremony.
+pub fn matrix3(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64, i: f64) -> Matrix3 {
+    Matrix3 { m: [[a, b, c], [d, e, f], [g, h, i]] }
+}
+
+/// `M[r, c]`: the entry in row `r`, column `c`, both counted from zero.
+pub fn matrix_at(m: &Matrix3, r: usize, c: usize) -> f64 {
+    m.m[r][c]
+}
+
+/// Also available as `m[(r, c)]`.
+impl Index<(usize, usize)> for Matrix3 {
+    type Output = f64;
+    fn index(&self, (r, c): (usize, usize)) -> &f64 {
+        &self.m[r][c]
+    }
+}
+
+/// Matrices compare component-wise with the usual tolerance.
+pub fn matrices_eq(a: &Matrix3, b: &Matrix3) -> bool {
+    for r in 0..3 {
+        for c in 0..3 {
+            if !approx_eq(matrix_at(a, r, c), matrix_at(b, r, c)) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Two matrices multiply into a third: the entry in row `r`, column `c`
+/// of the product is the dot product of row `r` of the first with column
+/// `c` of the second. This is exactly the arrangement that makes
+/// `(A * B) * p` equal `A * (B * p)`.
+impl Mul<Matrix3> for Matrix3 {
+    type Output = Matrix3;
+    fn mul(self, other: Matrix3) -> Matrix3 {
+        let mut m = [[0.0; 3]; 3];
+        for r in 0..3 {
+            for c in 0..3 {
+                m[r][c] = (0..3).map(|k| self.m[r][k] * other.m[k][c]).sum();
+            }
+        }
+        Matrix3 { m }
+    }
+}
+
+/// A matrix multiplies a tuple, treating (x, y, w) as a column: the
+/// result's x is the dot product of the matrix's first row with the
+/// tuple, its y the second row, its w the third. Every matrix in this
+/// book has a bottom row of 0 0 1, so w comes out unchanged.
+impl Mul<Tuple> for Matrix3 {
+    type Output = Tuple;
+    fn mul(self, t: Tuple) -> Tuple {
+        Tuple {
+            x: self.m[0][0] * t.x + self.m[0][1] * t.y + self.m[0][2] * t.w,
+            y: self.m[1][0] * t.x + self.m[1][1] * t.y + self.m[1][2] * t.w,
+            w: self.m[2][0] * t.x + self.m[2][1] * t.y + self.m[2][2] * t.w,
+        }
+    }
+}
+
+/// Ones on the diagonal, zeros elsewhere. Multiplying by it changes
+/// nothing.
+pub fn identity() -> Matrix3 {
+    matrix3(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+}
+
+/// Flips a matrix across the diagonal: `transpose(M)[r, c] = M[c, r]`.
+pub fn transpose(m: Matrix3) -> Matrix3 {
+    let mut t = [[0.0; 3]; 3];
+    for r in 0..3 {
+        for c in 0..3 {
+            t[c][r] = m.m[r][c];
+        }
+    }
+    Matrix3 { m: t }
+}
+
+/// The 2x2 determinant left when row `r` and column `c` are deleted.
+fn minor(m: &Matrix3, r: usize, c: usize) -> f64 {
+    let rows: Vec<usize> = (0..3).filter(|&i| i != r).collect();
+    let cols: Vec<usize> = (0..3).filter(|&i| i != c).collect();
+    m.m[rows[0]][cols[0]] * m.m[rows[1]][cols[1]] - m.m[rows[0]][cols[1]] * m.m[rows[1]][cols[0]]
+}
+
+/// The minor at (r, c), sign-flipped when r + c is odd.
+fn cofactor(m: &Matrix3, r: usize, c: usize) -> f64 {
+    let sign = if (r + c) % 2 == 1 { -1.0 } else { 1.0 };
+    sign * minor(m, r, c)
+}
+
+/// A cofactor expansion along the first row. For a transform, this is the
+/// factor by which areas grow: positive for a rotation (1) or an
+/// ordinary scale, negative for a reflection, zero for a matrix that's
+/// squashed the whole plane onto a line.
+pub fn determinant(m: Matrix3) -> f64 {
+    m.m[0][0] * cofactor(&m, 0, 0) + m.m[0][1] * cofactor(&m, 0, 1) + m.m[0][2] * cofactor(&m, 0, 2)
+}
+
+/// Zero means there's no inverse: you can't un-flatten a line back into a
+/// plane.
+pub fn is_invertible(m: Matrix3) -> bool {
+    !approx_eq(determinant(m), 0.0)
+}
+
+/// The matrix that undoes `m`: `inverse(m) * m` is the identity. The
+/// matrix of cofactors, transposed, divided by the determinant -- the
+/// transpose happens by writing each entry straight into its transposed
+/// position, `result[c, r]`, rather than transposing afterward.
+pub fn inverse(m: Matrix3) -> Matrix3 {
+    let d = determinant(m);
+    let mut result = [[0.0; 3]; 3];
+    for r in 0..3 {
+        for c in 0..3 {
+            result[c][r] = cofactor(&m, r, c) / d;
+        }
+    }
+    Matrix3 { m: result }
+}
+
+// ---------------------------------------------------------------------
+// § 4.3 The transforms
+// ---------------------------------------------------------------------
+
+/// Moves everything by (tx, ty). Doesn't affect vectors: a vector's w is
+/// 0, and the offsets live in the column w multiplies.
+pub fn translation(tx: f64, ty: f64) -> Matrix3 {
+    matrix3(1.0, 0.0, tx, 0.0, 1.0, ty, 0.0, 0.0, 1.0)
+}
+
+/// Multiplies x and y by independent factors. A negative factor is a
+/// reflection.
+pub fn scaling(sx: f64, sy: f64) -> Matrix3 {
+    matrix3(sx, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 1.0)
+}
+
+/// Turns the x axis toward the y axis by `r` radians -- counterclockwise
+/// on paper, clockwise on a canvas whose y points down.
+pub fn rotation(r: f64) -> Matrix3 {
+    matrix3(r.cos(), -r.sin(), 0.0, r.sin(), r.cos(), 0.0, 0.0, 0.0, 1.0)
+}
+
+/// Slides x in proportion to y, and y in proportion to x.
+pub fn shearing(xy: f64, yx: f64) -> Matrix3 {
+    matrix3(1.0, xy, 0.0, yx, 1.0, 0.0, 0.0, 0.0, 1.0)
+}
+
+// ---------------------------------------------------------------------
+// § 4.4 How big is a transform?
+// ---------------------------------------------------------------------
+
+/// One number for how much `m` stretches lengths: the square root of the
+/// absolute value of the determinant of its upper-left 2 by 2. Exact for
+/// uniform scales and rotations (and any mix of the two with a
+/// translation); the geometric mean of the two axis scales otherwise,
+/// which the chapter picks as the cheapest reasonable compromise.
+pub fn approx_scale(m: Matrix3) -> f64 {
+    (m.m[0][0] * m.m[1][1] - m.m[0][1] * m.m[1][0]).abs().sqrt()
+}
+
+// ---------------------------------------------------------------------
+// § 4.5 Transforming what you draw
+// ---------------------------------------------------------------------
+
+/// The rectangle of `width` centered on the segment from point `a` to
+/// point `b`, square ends: `thick_line` with real endpoints instead of
+/// pixel indices. Four half-planes, same as before -- two end caps, two
+/// sides offset by half the width along the normal.
+pub fn segment(a: Tuple, b: Tuple, width: f64) -> Shape {
+    let mut ax = a.x;
+    let ay = a.y;
+    let mut bx = b.x;
+    let by = b.y;
     let h = width / 2.0;
 
     let mut dx = bx - ax;
@@ -997,35 +1338,143 @@ pub fn thick_line(x0: i64, y0: i64, x1: i64, y1: i64, width: f64) -> Shape {
     ])
 }
 
-/// The fan a third time: each ray a `thick_line` of width 1, rasterized
-/// and painted through, then magnified by 2 so the edges are visible.
-/// Slow -- twelve 160x160 rasterizations at 64 samples a pixel -- because
-/// chapter 2's rasterizer knows nothing about lines; it asks every pixel
-/// on the canvas whether the shape is anywhere near it.
-pub fn fan_coverage() -> Canvas {
-    let mut c = canvas(160, 160);
-    fill(&mut c, PAPER_3);
-    for (x, y) in ray_ends() {
-        let cov = rasterize(thick_line(80, 80, x, y, 1.0), 160, 160);
-        paint_through(&mut c, &cov, RAY);
+/// Inside when any of its shapes is: one more case in `inside`, a loop
+/// with an early exit. Painting the union once, instead of each part
+/// separately, is what keeps a corner where two parts meet from being
+/// painted twice.
+pub fn union(shapes: Vec<Shape>) -> Shape {
+    Shape::Union(shapes)
+}
+
+/// The shape seen through `m`: to decide whether a device point is
+/// inside, send the point backwards through the inverse of `m` and ask
+/// the original shape about the result. A shape seen through a matrix
+/// with no inverse is empty -- nothing can be inside a shape that's been
+/// flattened to a line.
+pub fn transformed(shape: Shape, m: Matrix3) -> Shape {
+    if !is_invertible(m) {
+        return Shape::Empty;
     }
-    magnify(&c, 2)
+    Shape::Transformed(Box::new(shape), inverse(m))
+}
+
+/// Every point of `points`, run through `m`.
+pub fn transform_points(points: &[Tuple], m: Matrix3) -> Vec<Tuple> {
+    points.iter().map(|&p| m * p).collect()
+}
+
+/// The closed polygon through `points` after `m`: the union of the
+/// segments between consecutive points, last back to first, every edge a
+/// `segment` of `width` in device space, as one shape.
+pub fn outline(points: &[Tuple], m: Matrix3, width: f64) -> Shape {
+    let pts = transform_points(points, m);
+    let n = pts.len();
+    let segments = (0..n).map(|i| segment(pts[i], pts[(i + 1) % n], width)).collect();
+    union(segments)
 }
 
 // ---------------------------------------------------------------------
-// § 3.4 The figures
+// § 4.6 Putting it together
 // ---------------------------------------------------------------------
 
-/// Plate 3: Bresenham's fan and Wu's, side by side, magnified twice.
-pub fn plate_03() -> Canvas {
-    let mut both = canvas(320, 160);
-    let a = fan_bresenham();
-    let b = fan_wu();
-    for y in 0..160i64 {
-        for x in 0..160i64 {
-            write_pixel(&mut both, x, y, pixel_at(&a, x, y));
-            write_pixel(&mut both, x + 160, y, pixel_at(&b, x, y));
+/// Chapter 3's fan, described as points around the origin instead of
+/// pixels: the center, then twelve ends at radius 36, one every 30
+/// degrees.
+pub fn fan_points() -> Vec<Tuple> {
+    let mut pts = vec![point(0.0, 0.0)];
+    for k in 0..12 {
+        let a = k as f64 * 30.0 * std::f64::consts::PI / 180.0;
+        pts.push(point(36.0 * a.cos(), 36.0 * a.sin()));
+    }
+    pts
+}
+
+/// Ten corners, clockwise from the top left, in a box 40 wide and 60 tall
+/// centered on the origin: an F, which has no symmetry at all, so a
+/// wrong lean or a lost translation shows up instead of hiding behind a
+/// shape that looks the same either way.
+pub fn letter_f() -> Vec<Tuple> {
+    vec![
+        point(-20.0, -30.0),
+        point(20.0, -30.0),
+        point(20.0, -20.0),
+        point(-10.0, -20.0),
+        point(-10.0, -5.0),
+        point(12.0, -5.0),
+        point(12.0, 5.0),
+        point(-10.0, 5.0),
+        point(-10.0, 30.0),
+        point(-20.0, 30.0),
+    ]
+}
+
+/// Copies `a` into the left half of a wider canvas and `b` into the
+/// right.
+pub fn side_by_side(a: &Canvas, b: &Canvas) -> Canvas {
+    let height = a.height.max(b.height);
+    let mut c = canvas(a.width + b.width, height);
+    for y in 0..a.height as i64 {
+        for x in 0..a.width as i64 {
+            write_pixel(&mut c, x, y, pixel_at(a, x, y));
         }
     }
-    magnify(&both, 2)
+    for y in 0..b.height as i64 {
+        for x in 0..b.width as i64 {
+            write_pixel(&mut c, x + a.width as i64, y, pixel_at(b, x, y));
+        }
+    }
+    c
+}
+
+/// The fan, run through `m` and drawn as one union of segments on a
+/// 160x160 canvas.
+pub fn fan_transformed(m: Matrix3) -> Canvas {
+    let mut c = canvas(160, 160);
+    fill(&mut c, PAPER_3);
+    let pts = transform_points(&fan_points(), m);
+    let rays: Vec<Shape> = (1..pts.len()).map(|k| segment(pts[0], pts[k], 1.0)).collect();
+    let cov = rasterize(&union(rays), 160, 160);
+    paint_through(&mut c, &cov, RAY);
+    c
+}
+
+/// Figure 4.4 / the left half of the argument the plate exists to make:
+/// the same fan, drawn through `move * turn` and `turn * move`, side by
+/// side. The order matters -- the fan ends up in two different places --
+/// but a fan with a ray every 30 degrees, rotated by 30 degrees, can't
+/// show whether it turned. `f_both_orders` is what shows that half.
+pub fn fan_both_orders() -> Canvas {
+    let turn = rotation(std::f64::consts::PI / 6.0);
+    let move_ = translation(104.5, 76.5);
+    side_by_side(&fan_transformed(move_ * turn), &fan_transformed(turn * move_))
+}
+
+const DIM: Color = Color { red: 0.16, green: 0.16, blue: 0.17 };
+
+/// The letter F, drawn through `move * turn` and `turn * move` against a
+/// dim copy of the untransformed letter (at `home`), side by side, so the
+/// two results read as one picture.
+pub fn f_both_orders() -> Canvas {
+    let turn = rotation(std::f64::consts::PI / 6.0);
+    let move_ = translation(104.5, 76.5);
+    let home = translation(44.5, 44.5);
+
+    let mut ghost = canvas(160, 160);
+    fill(&mut ghost, PAPER_3);
+    let ghost_cov = rasterize(&outline(&letter_f(), home, 1.0), 160, 160);
+    paint_through(&mut ghost, &ghost_cov, DIM);
+
+    let mut a = ghost.clone();
+    let mut b = ghost.clone();
+    let a_cov = rasterize(&outline(&letter_f(), move_ * turn, 1.0), 160, 160);
+    paint_through(&mut a, &a_cov, RAY);
+    let b_cov = rasterize(&outline(&letter_f(), turn * move_, 1.0), 160, 160);
+    paint_through(&mut b, &b_cov, RAY);
+
+    side_by_side(&a, &b)
+}
+
+/// Plate 4: `f_both_orders`, magnified by 2.
+pub fn plate_04() -> Canvas {
+    magnify(&f_both_orders(), 2)
 }

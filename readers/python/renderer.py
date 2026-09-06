@@ -863,7 +863,7 @@ def plot(canvas, x, y, col, weight):
         return
 
     current = pixel_at(canvas, x, y)
-    painted = mix(current, col, weight)
+    painted = mix(current, col, weight, True)   # in light, whatever the switch says
     write_pixel(canvas, x, y, painted)
 
 
@@ -986,6 +986,25 @@ def inside(shape, x, y):
             if not inside(hp, x, y):
                 return False
         return True
+    elif isinstance(shape, Segment):
+        # Use the segment's inside method
+        return shape.inside(x, y)
+    elif isinstance(shape, Union):
+        # Inside if inside any of the shapes
+        for s in shape.shapes:
+            if inside(s, x, y):
+                return True
+        return False
+    elif isinstance(shape, Transformed):
+        # Transform the point backwards and check the original shape
+        if shape.inv is None:
+            # Matrix is not invertible, so nothing is inside
+            return False
+        p = shape.inv * point(x, y)
+        return inside(shape.shape, p.x, p.y)
+    elif isinstance(shape, Outline):
+        # Check if inside the union of segments
+        return inside(shape.union, x, y)
     return False
 
 
@@ -1063,3 +1082,521 @@ def plate_03():
             write_pixel(both, x + 160, y, pixel_at(b, x, y))
 
     return magnify(both, 2)
+
+
+# ============================================================================
+# Chapter 4: Points, Vectors, Transforms
+# ============================================================================
+
+class Tuple:
+    """A 3-tuple (x, y, w) representing either a point or a vector."""
+    
+    def __init__(self, x, y, w):
+        self.x = x
+        self.y = y
+        self.w = w
+    
+    def __eq__(self, other):
+        if not isinstance(other, Tuple):
+            return False
+        tolerance = 0.0001
+        return (abs(self.x - other.x) <= tolerance and
+                abs(self.y - other.y) <= tolerance and
+                abs(self.w - other.w) <= tolerance)
+    
+    def __ne__(self, other):
+        return not self.__eq__(other)
+    
+    def __add__(self, other):
+        if not isinstance(other, Tuple):
+            raise TypeError("Can only add tuples to tuples")
+        return Tuple(self.x + other.x, self.y + other.y, self.w + other.w)
+    
+    def __sub__(self, other):
+        if not isinstance(other, Tuple):
+            raise TypeError("Can only subtract tuples from tuples")
+        return Tuple(self.x - other.x, self.y - other.y, self.w - other.w)
+    
+    def __mul__(self, scalar):
+        if not isinstance(scalar, (int, float)):
+            raise TypeError("Can only multiply tuple by scalar")
+        return Tuple(self.x * scalar, self.y * scalar, self.w * scalar)
+    
+    def __rmul__(self, scalar):
+        return self.__mul__(scalar)
+    
+    def __truediv__(self, scalar):
+        if not isinstance(scalar, (int, float)):
+            raise TypeError("Can only divide tuple by scalar")
+        return Tuple(self.x / scalar, self.y / scalar, self.w / scalar)
+    
+    def __neg__(self):
+        return Tuple(-self.x, -self.y, -self.w)
+    
+    def __repr__(self):
+        return f"Tuple({self.x}, {self.y}, {self.w})"
+
+
+def point(x, y):
+    """Create a point with w = 1."""
+    return Tuple(x, y, 1)
+
+
+def vector(x, y):
+    """Create a vector with w = 0."""
+    return Tuple(x, y, 0)
+
+
+def magnitude(v):
+    """Compute the magnitude (length) of a vector."""
+    if not isinstance(v, Tuple):
+        raise TypeError("magnitude requires a tuple")
+    return math.sqrt(v.x * v.x + v.y * v.y)
+
+
+def normalize(v):
+    """Normalize a vector to unit length."""
+    if not isinstance(v, Tuple):
+        raise TypeError("normalize requires a tuple")
+    mag = magnitude(v)
+    if mag == 0:
+        raise ValueError("Cannot normalize a zero-length vector")
+    return Tuple(v.x / mag, v.y / mag, v.w / mag)
+
+
+def dot(a, b):
+    """Compute the dot product of two vectors."""
+    if not isinstance(a, Tuple) or not isinstance(b, Tuple):
+        raise TypeError("dot requires two tuples")
+    return a.x * b.x + a.y * b.y
+
+
+def cross(a, b):
+    """Compute the 2D cross product (returns a scalar)."""
+    if not isinstance(a, Tuple) or not isinstance(b, Tuple):
+        raise TypeError("cross requires two tuples")
+    return a.x * b.y - a.y * b.x
+
+
+class Matrix3:
+    """A 3x3 matrix for 2D transforms."""
+    
+    def __init__(self, *values):
+        if len(values) != 9:
+            raise ValueError("Matrix3 requires exactly 9 values")
+        # Store row-major: values[0:3] is row 0, values[3:6] is row 1, values[6:9] is row 2
+        self.values = list(values)
+    
+    def __getitem__(self, key):
+        """Access matrix element by [row, col]."""
+        if isinstance(key, tuple):
+            r, c = key
+            return self.values[r * 3 + c]
+        raise TypeError("Matrix3 requires [row, col] indexing")
+    
+    def __setitem__(self, key, value):
+        """Set matrix element by [row, col]."""
+        if isinstance(key, tuple):
+            r, c = key
+            self.values[r * 3 + c] = value
+        else:
+            raise TypeError("Matrix3 requires [row, col] indexing")
+    
+    def __eq__(self, other):
+        if not isinstance(other, Matrix3):
+            return False
+        tolerance = 0.0001
+        return all(abs(a - b) <= tolerance for a, b in zip(self.values, other.values))
+    
+    def __ne__(self, other):
+        return not self.__eq__(other)
+    
+    def __mul__(self, other):
+        """Multiply: matrix * matrix or matrix * tuple."""
+        if isinstance(other, Tuple):
+            # Matrix * Tuple
+            x = self[0, 0] * other.x + self[0, 1] * other.y + self[0, 2] * other.w
+            y = self[1, 0] * other.x + self[1, 1] * other.y + self[1, 2] * other.w
+            w = self[2, 0] * other.x + self[2, 1] * other.y + self[2, 2] * other.w
+            return Tuple(x, y, w)
+        elif isinstance(other, Matrix3):
+            # Matrix * Matrix
+            result = []
+            for r in range(3):
+                for c in range(3):
+                    val = (self[r, 0] * other[0, c] +
+                           self[r, 1] * other[1, c] +
+                           self[r, 2] * other[2, c])
+                    result.append(val)
+            return Matrix3(*result)
+        else:
+            raise TypeError("Can only multiply matrix by matrix or tuple")
+    
+    def __repr__(self):
+        lines = []
+        for r in range(3):
+            lines.append(f"[{self[r, 0]:.4f} {self[r, 1]:.4f} {self[r, 2]:.4f}]")
+        return "\n".join(lines)
+
+
+def matrix3(*values):
+    """Create a 3x3 matrix from 9 values in row-major order."""
+    return Matrix3(*values)
+
+
+def identity():
+    """Return the 3x3 identity matrix."""
+    return Matrix3(1, 0, 0, 0, 1, 0, 0, 0, 1)
+
+
+def transpose(m):
+    """Transpose a matrix."""
+    if not isinstance(m, Matrix3):
+        raise TypeError("transpose requires a Matrix3")
+    return Matrix3(
+        m[0, 0], m[1, 0], m[2, 0],
+        m[0, 1], m[1, 1], m[2, 1],
+        m[0, 2], m[1, 2], m[2, 2]
+    )
+
+
+def minor(m, r, c):
+    """Compute the 2x2 minor determinant by deleting row r and column c."""
+    if not isinstance(m, Matrix3):
+        raise TypeError("minor requires a Matrix3")
+    # Find the two row indices that aren't r
+    rows = [i for i in range(3) if i != r]
+    # Find the two column indices that aren't c
+    cols = [j for j in range(3) if j != c]
+    return m[rows[0], cols[0]] * m[rows[1], cols[1]] - m[rows[0], cols[1]] * m[rows[1], cols[0]]
+
+
+def cofactor(m, r, c):
+    """Compute the cofactor of element at (r, c)."""
+    if not isinstance(m, Matrix3):
+        raise TypeError("cofactor requires a Matrix3")
+    min_val = minor(m, r, c)
+    if (r + c) % 2 == 1:
+        return -min_val
+    else:
+        return min_val
+
+
+def determinant(m):
+    """Compute the determinant of a 3x3 matrix."""
+    if not isinstance(m, Matrix3):
+        raise TypeError("determinant requires a Matrix3")
+    return (m[0, 0] * cofactor(m, 0, 0) +
+            m[0, 1] * cofactor(m, 0, 1) +
+            m[0, 2] * cofactor(m, 0, 2))
+
+
+def is_invertible(m):
+    """Check if a matrix is invertible (determinant != 0)."""
+    if not isinstance(m, Matrix3):
+        raise TypeError("is_invertible requires a Matrix3")
+    return determinant(m) != 0
+
+
+def inverse(m):
+    """Compute the inverse of a matrix."""
+    if not isinstance(m, Matrix3):
+        raise TypeError("inverse requires a Matrix3")
+    d = determinant(m)
+    if d == 0:
+        raise ValueError("Matrix is not invertible (determinant is 0)")
+    
+    result = []
+    for r in range(3):
+        for c in range(3):
+            # Transpose happens here: result[c, r] = cofactor(m, r, c) / d
+            result.append(cofactor(m, r, c) / d)
+    
+    # Rearrange to transpose
+    transposed = []
+    for c in range(3):
+        for r in range(3):
+            transposed.append(result[r * 3 + c])
+    
+    return Matrix3(*transposed)
+
+
+def translation(tx, ty):
+    """Create a translation transform matrix."""
+    return Matrix3(1, 0, tx, 0, 1, ty, 0, 0, 1)
+
+
+def scaling(sx, sy):
+    """Create a scaling transform matrix."""
+    return Matrix3(sx, 0, 0, 0, sy, 0, 0, 0, 1)
+
+
+def rotation(r):
+    """Create a rotation transform matrix (angle in radians)."""
+    c = math.cos(r)
+    s = math.sin(r)
+    return Matrix3(c, -s, 0, s, c, 0, 0, 0, 1)
+
+
+def shearing(xy, yx):
+    """Create a shearing transform matrix."""
+    return Matrix3(1, xy, 0, yx, 1, 0, 0, 0, 1)
+
+
+def approx_scale(m):
+    """Compute the approximate scale factor of a transform.
+    Uses the square root of the absolute value of the determinant of the 2x2 part."""
+    if not isinstance(m, Matrix3):
+        raise TypeError("approx_scale requires a Matrix3")
+    det_2x2 = m[0, 0] * m[1, 1] - m[0, 1] * m[1, 0]
+    return math.sqrt(abs(det_2x2))
+
+
+def transform_points(points, matrix):
+    """Transform a list of points through a matrix."""
+    if not isinstance(matrix, Matrix3):
+        raise TypeError("transform_points requires a Matrix3")
+    return [matrix * p for p in points]
+
+
+# Shape representation and functions
+
+class Shape:
+    """Base class for shapes that can answer the inside() query."""
+    
+    def inside(self, x, y):
+        """Return True if point (x, y) is inside the shape."""
+        raise NotImplementedError
+
+
+class Segment(Shape):
+    """A line segment of given width, with square ends."""
+
+    def __init__(self, a, b, width):
+        if not isinstance(a, Tuple) or not isinstance(b, Tuple):
+            raise TypeError("Segment endpoints must be tuples")
+        self.a = a
+        self.b = b
+        self.width = width
+
+        # Pre-compute half-planes
+        ax, ay = a.x, a.y
+        bx, by = b.x, b.y
+
+        dx = bx - ax
+        dy = by - ay
+        length = math.sqrt(dx * dx + dy * dy)
+
+        h = width / 2.0
+
+        self.half_planes = []
+
+        if length == 0:
+            # Degenerate case: a single point becomes a width-by-width square
+            dx, dy = 1.0, 0.0
+            nx, ny = -dy, dx
+            self.half_planes = [
+                HalfPlane(ax - dx * h, ay - dy * h, dx, dy),
+                HalfPlane(bx + dx * h, by + dy * h, -dx, -dy),
+                HalfPlane(ax + nx * h, ay + ny * h, -nx, -ny),
+                HalfPlane(ax - nx * h, ay - ny * h, nx, ny)
+            ]
+        else:
+            dx /= length
+            dy /= length
+
+            # Normal vector (perpendicular to direction)
+            nx = -dy
+            ny = dx
+
+            # Four half-planes
+            self.half_planes = [
+                HalfPlane(ax, ay, dx, dy),  # Start point, facing along direction
+                HalfPlane(bx, by, -dx, -dy),  # End point, facing back
+                HalfPlane(ax + nx * h, ay + ny * h, -nx, -ny),  # Top side
+                HalfPlane(ax - nx * h, ay - ny * h, nx, ny)  # Bottom side
+            ]
+
+    def inside(self, x, y):
+        """Check if point is inside the segment using half-plane tests."""
+        # Inside if it's inside all four half-planes
+        for hp in self.half_planes:
+            dx = x - hp.px
+            dy = y - hp.py
+            dot = dx * hp.nx + dy * hp.ny
+            if dot < 0:
+                return False
+        return True
+
+
+def segment(a, b, width):
+    """Create a segment shape."""
+    return Segment(a, b, width)
+
+
+class Union(Shape):
+    """A union of shapes - inside when any of its shapes is inside."""
+
+    def __init__(self, shapes):
+        self.shapes = list(shapes)
+
+
+def union(shapes):
+    """Create a union of shapes."""
+    return Union(shapes)
+
+
+class Transformed(Shape):
+    """A shape seen through a matrix transform."""
+
+    def __init__(self, shape, matrix):
+        if not isinstance(matrix, Matrix3):
+            raise TypeError("Transformed requires a Matrix3")
+        self.shape = shape
+        self.matrix = matrix
+        self.inv = None
+        if is_invertible(matrix):
+            self.inv = inverse(matrix)
+
+
+def transformed(shape, matrix):
+    """Create a transformed shape."""
+    return Transformed(shape, matrix)
+
+
+class Outline(Shape):
+    """A closed polygon as a union of segments."""
+
+    def __init__(self, points, matrix, width):
+        if not isinstance(matrix, Matrix3):
+            raise TypeError("Outline requires a Matrix3")
+        # Transform the points through the matrix
+        transformed_pts = [matrix * p for p in points]
+        # Create segments between consecutive points (wrapping around)
+        segs = []
+        for i in range(len(transformed_pts)):
+            next_i = (i + 1) % len(transformed_pts)
+            segs.append(segment(transformed_pts[i], transformed_pts[next_i], width))
+        self.union = union(segs)
+
+
+def outline(points, matrix, width):
+    """Create an outline from points, transformed by matrix, with given width."""
+    return Outline(points, matrix, width)
+
+
+def side_by_side(a, b):
+    """Create a canvas with a on the left and b on the right."""
+    if not isinstance(a, Canvas) or not isinstance(b, Canvas):
+        raise TypeError("side_by_side requires two Canvas objects")
+    if a.height != b.height:
+        raise ValueError("Canvases must have the same height")
+    
+    result = Canvas(a.width + b.width, a.height)
+    
+    # Copy a into the left half
+    for y in range(a.height):
+        for x in range(a.width):
+            write_pixel(result, x, y, pixel_at(a, x, y))
+    
+    # Copy b into the right half
+    for y in range(b.height):
+        for x in range(b.width):
+            write_pixel(result, a.width + x, y, pixel_at(b, x, y))
+    
+    return result
+
+
+# Chapter 4 renders
+
+def fan_points():
+    """Generate 13 points for a fan: center at origin, then 12 end points at radius 36."""
+    pts = [point(0, 0)]
+    for k in range(12):
+        angle = k * math.pi / 6  # 30 degrees in radians
+        pts.append(point(36 * math.cos(angle), 36 * math.sin(angle)))
+    return pts
+
+
+def fan_transformed(m):
+    """Draw a fan transformed by matrix m."""
+    if not isinstance(m, Matrix3):
+        raise TypeError("fan_transformed requires a Matrix3")
+    
+    c = Canvas(160, 160)
+    fill(c, Color(0.02, 0.02, 0.025))
+    
+    pts = transform_points(fan_points(), m)
+    
+    # Create segments from center to each endpoint
+    rays = []
+    for k in range(1, 13):
+        rays.append(segment(pts[0], pts[k], 1))
+    
+    rays_union = union(rays)
+    cov = rasterize(rays_union, 160, 160)
+    paint_through(c, cov, Color(0.92, 0.92, 0.88))
+    
+    return c
+
+
+def fan_both_orders():
+    """Draw the fan in two different transformation orders."""
+    turn = rotation(math.pi / 6)
+    move = translation(104.5, 76.5)
+    
+    left = fan_transformed(move * turn)
+    right = fan_transformed(turn * move)
+    
+    return side_by_side(left, right)
+
+
+def letter_f():
+    """Generate the 10 points of an F shape centered at origin."""
+    return [
+        point(-20, -30), point(20, -30), point(20, -20), point(-10, -20),
+        point(-10, -5), point(12, -5), point(12, 5), point(-10, 5),
+        point(-10, 30), point(-20, 30)
+    ]
+
+
+def f_both_orders():
+    """Draw the F in two different transformation orders with a ghost reference."""
+    turn = rotation(math.pi / 6)
+    move = translation(104.5, 76.5)
+    home = translation(44.5, 44.5)
+    ink = Color(0.92, 0.92, 0.88)
+    dim = Color(0.16, 0.16, 0.17)
+    
+    # Create the ghost with the untransformed F
+    ghost = Canvas(160, 160)
+    fill(ghost, Color(0.02, 0.02, 0.025))
+    ghost_outline = outline(letter_f(), home, 1)
+    cov = rasterize(ghost_outline, 160, 160)
+    paint_through(ghost, cov, dim)
+    
+    # Left: move * turn (rotate about center, then move)
+    left = Canvas(160, 160)
+    for y in range(160):
+        for x in range(160):
+            write_pixel(left, x, y, pixel_at(ghost, x, y))
+    left_outline = outline(letter_f(), move * turn, 1)
+    cov_left = rasterize(left_outline, 160, 160)
+    paint_through(left, cov_left, ink)
+    
+    # Right: turn * move (move, then rotate about origin)
+    right = Canvas(160, 160)
+    for y in range(160):
+        for x in range(160):
+            write_pixel(right, x, y, pixel_at(ghost, x, y))
+    right_outline = outline(letter_f(), turn * move, 1)
+    cov_right = rasterize(right_outline, 160, 160)
+    paint_through(right, cov_right, ink)
+    
+    return side_by_side(left, right)
+
+
+def plate_04():
+    """The final plate for chapter 4: F in two transformation orders, magnified by 2."""
+    return magnify(f_both_orders(), 2)
+

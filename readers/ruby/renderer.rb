@@ -1033,16 +1033,18 @@ def line_wu(canvas, x0, y0, x1, y1, col)
   end
 end
 
-# A thick line as a composite shape made of 4 half-planes
-class ThickLine < Shape
+# A segment is a thick line between two real points: the rectangle of that
+# width centered on the segment from a to b, square ends, as 4 half-planes.
+# (Chapter 4 pulls this out of thick_line so it can take real coordinates,
+# not pixel indices; see segment() below.)
+class Segment < Shape
   attr_accessor :planes
 
-  def initialize(x0, y0, x1, y1, width)
-    # Convert integer pixel coordinates to float pixel centers
-    x0_f = x0 + 0.5
-    y0_f = y0 + 0.5
-    x1_f = x1 + 0.5
-    y1_f = y1 + 0.5
+  def initialize(a, b, width)
+    x0_f = a.x
+    y0_f = a.y
+    x1_f = b.x
+    y1_f = b.y
 
     # Direction vector (from start to end)
     dx = x1_f - x0_f
@@ -1096,8 +1098,16 @@ class ThickLine < Shape
   end
 end
 
+# segment(a, b, width): chapter 3's thick_line with real endpoints instead
+# of pixel indices.
+def segment(a, b, width)
+  Segment.new(a, b, width)
+end
+
+# thick_line(x0, y0, x1, y1, w) is now a one-liner: it's segment() between
+# the centers of pixels (x0, y0) and (x1, y1).
 def thick_line(x0, y0, x1, y1, width)
-  ThickLine.new(x0, y0, x1, y1, width)
+  segment(point(x0 + 0.5, y0 + 0.5), point(x1 + 0.5, y1 + 0.5), width)
 end
 
 # Render functions for Chapter 3
@@ -1152,4 +1162,350 @@ def plate_03
     end
   end
   magnify(both, 2)
+end
+
+# ========================================
+# Chapter 4: Points, Vectors, Transforms
+# ========================================
+
+# A point or a vector: (x, y, w) with w = 1 for a point, w = 0 for a
+# vector. Arithmetic is component-wise, including on w, so the bookkeeping
+# (point - point = vector, point + vector = point, vector + vector =
+# vector) falls out for free.
+class Tup
+  attr_accessor :x, :y, :w
+
+  def initialize(x, y, w)
+    @x = x
+    @y = y
+    @w = w
+  end
+
+  def +(other)
+    Tup.new(@x + other.x, @y + other.y, @w + other.w)
+  end
+
+  def -(other)
+    Tup.new(@x - other.x, @y - other.y, @w - other.w)
+  end
+
+  def -@
+    Tup.new(-@x, -@y, -@w)
+  end
+
+  def *(scalar)
+    Tup.new(@x * scalar, @y * scalar, @w * scalar)
+  end
+
+  def /(scalar)
+    Tup.new(@x / scalar.to_f, @y / scalar.to_f, @w / scalar.to_f)
+  end
+
+  def ==(other)
+    equal_within?(other, 0.0001)
+  end
+
+  def !=(other)
+    !equal_within?(other, 0.0001)
+  end
+
+  def equal_within?(other, tolerance)
+    return false unless other.is_a?(Tup)
+    (@x - other.x).abs <= tolerance &&
+      (@y - other.y).abs <= tolerance &&
+      (@w - other.w).abs <= tolerance
+  end
+
+  def to_s
+    "Tup(#{@x}, #{@y}, #{@w})"
+  end
+end
+
+def point(x, y)
+  Tup.new(x, y, 1)
+end
+
+def vector(x, y)
+  Tup.new(x, y, 0)
+end
+
+def magnitude(v)
+  Math.sqrt(v.x * v.x + v.y * v.y)
+end
+
+def normalize(v)
+  v / magnitude(v)
+end
+
+def dot(a, b)
+  a.x * b.x + a.y * b.y
+end
+
+def cross(a, b)
+  a.x * b.y - a.y * b.x
+end
+
+# A 3 by 3 matrix of real numbers, row by row. M[r, c] is the entry in
+# row r, column c, both counted from zero.
+class Matrix3
+  def initialize(data)
+    @data = data # 3x3 array of arrays, row-major
+  end
+
+  def [](r, c)
+    @data[r][c]
+  end
+
+  def ==(other)
+    return false unless other.is_a?(Matrix3)
+    (0..2).all? do |r|
+      (0..2).all? { |c| (self[r, c] - other[r, c]).abs <= 0.0001 }
+    end
+  end
+
+  def !=(other)
+    !(self == other)
+  end
+
+  def *(other)
+    if other.is_a?(Matrix3)
+      result = Array.new(3) { Array.new(3, 0.0) }
+      (0..2).each do |r|
+        (0..2).each do |c|
+          result[r][c] = (0..2).sum { |k| self[r, k] * other[k, c] }
+        end
+      end
+      Matrix3.new(result)
+    elsif other.is_a?(Tup)
+      x = self[0, 0] * other.x + self[0, 1] * other.y + self[0, 2] * other.w
+      y = self[1, 0] * other.x + self[1, 1] * other.y + self[1, 2] * other.w
+      w = self[2, 0] * other.x + self[2, 1] * other.y + self[2, 2] * other.w
+      Tup.new(x, y, w)
+    else
+      raise TypeError, "cannot multiply Matrix3 by #{other.class}"
+    end
+  end
+
+  def to_s
+    rows = (0..2).map { |r| (0..2).map { |c| self[r, c] }.join(", ") }
+    "Matrix3[#{rows.join(' | ')}]"
+  end
+end
+
+# matrix3 takes nine numbers, row by row.
+def matrix3(a, b, c, d, e, f, g, h, i)
+  Matrix3.new([[a, b, c], [d, e, f], [g, h, i]])
+end
+
+def identity
+  matrix3(1, 0, 0, 0, 1, 0, 0, 0, 1)
+end
+
+def transpose(m)
+  data = Array.new(3) { |r| Array.new(3) { |c| m[c, r] } }
+  Matrix3.new(data)
+end
+
+# minor(M, r, c): the 2x2 determinant left when row r and column c are
+# deleted.
+def matrix3_minor(m, r, c)
+  rows = [0, 1, 2] - [r]
+  cols = [0, 1, 2] - [c]
+  m[rows[0], cols[0]] * m[rows[1], cols[1]] - m[rows[0], cols[1]] * m[rows[1], cols[0]]
+end
+
+def matrix3_cofactor(m, r, c)
+  mn = matrix3_minor(m, r, c)
+  (r + c).odd? ? -mn : mn
+end
+
+def determinant(m)
+  m[0, 0] * matrix3_cofactor(m, 0, 0) +
+    m[0, 1] * matrix3_cofactor(m, 0, 1) +
+    m[0, 2] * matrix3_cofactor(m, 0, 2)
+end
+
+def is_invertible(m)
+  determinant(m).abs > 1e-9
+end
+
+# inverse(M): the matrix of cofactors, transposed, divided by the
+# determinant. The transpose happens by writing each cofactor straight
+# into its transposed position, result[c, r].
+def inverse(m)
+  d = determinant(m).to_f
+  data = Array.new(3) { Array.new(3, 0.0) }
+  (0..2).each do |r|
+    (0..2).each do |c|
+      data[c][r] = matrix3_cofactor(m, r, c) / d
+    end
+  end
+  Matrix3.new(data)
+end
+
+# The four transforms. Angles are in radians. A positive rotation turns
+# the x axis toward the y axis, which on a canvas whose y runs downward is
+# clockwise on the screen.
+
+def translation(tx, ty)
+  matrix3(1, 0, tx, 0, 1, ty, 0, 0, 1)
+end
+
+def scaling(sx, sy)
+  matrix3(sx, 0, 0, 0, sy, 0, 0, 0, 1)
+end
+
+def rotation(r)
+  matrix3(Math.cos(r), -Math.sin(r), 0,
+          Math.sin(r), Math.cos(r), 0,
+          0, 0, 1)
+end
+
+def shearing(xy, yx)
+  matrix3(1, xy, 0, yx, 1, 0, 0, 0, 1)
+end
+
+# approx_scale(m): the square root of the absolute value of the
+# determinant of m's upper-left 2 by 2. Exact for uniform scales and
+# rotations; the geometric mean of the two axis scales otherwise.
+def approx_scale(m)
+  Math.sqrt((m[0, 0] * m[1, 1] - m[0, 1] * m[1, 0]).abs)
+end
+
+# union(shapes) is inside when any of its shapes is.
+class Union < Shape
+  def initialize(shapes)
+    @shapes = shapes
+  end
+
+  def inside?(x, y)
+    @shapes.any? { |s| s.inside?(x, y) }
+  end
+end
+
+def union(shapes)
+  Union.new(shapes)
+end
+
+# transformed(shape, m) is the shape seen through m: a point is inside it
+# when the inverse of m takes that point inside the original shape. A
+# shape seen through a matrix with no inverse is empty.
+class Transformed < Shape
+  def initialize(shape, m)
+    @shape = shape
+    @inv = is_invertible(m) ? inverse(m) : nil
+  end
+
+  def inside?(x, y)
+    return false if @inv.nil?
+    p = @inv * point(x, y)
+    @shape.inside?(p.x, p.y)
+  end
+end
+
+def transformed(shape, m)
+  Transformed.new(shape, m)
+end
+
+# Run every point of a list through a matrix.
+def transform_points(points, m)
+  points.map { |p| m * p }
+end
+
+# outline(points, m, width): the points through m, then the union of the
+# segments between consecutive points, last back to first, every edge
+# that width in device space, as one shape (so shared corners are painted
+# once, not twice).
+def outline(points, m, width)
+  pts = transform_points(points, m)
+  n = pts.length
+  segments = (0...n).map { |i| segment(pts[i], pts[(i + 1) % n], width) }
+  union(segments)
+end
+
+# side_by_side(a, b): a copied into the left half of a wider canvas, b
+# into the right.
+def side_by_side(a, b)
+  result = Canvas.new(a.width + b.width, [a.height, b.height].max)
+  a.height.times do |y|
+    a.width.times do |x|
+      write_pixel(result, x, y, pixel_at(a, x, y))
+    end
+  end
+  b.height.times do |y|
+    b.width.times do |x|
+      write_pixel(result, a.width + x, y, pixel_at(b, x, y))
+    end
+  end
+  result
+end
+
+# A pixel-for-pixel copy of a canvas, for drawing more than one variant on
+# top of the same starting image.
+def copy_canvas(c)
+  result = Canvas.new(c.width, c.height)
+  c.height.times do |y|
+    c.width.times do |x|
+      write_pixel(result, x, y, pixel_at(c, x, y))
+    end
+  end
+  result
+end
+
+# Chapter 3's fan, described as points around the origin: the center
+# first, then twelve ends at radius 36, one every 30 degrees.
+def fan_points
+  pts = [point(0, 0)]
+  12.times do |k|
+    a = k * 30 * Math::PI / 180.0
+    pts << point(36 * Math.cos(a), 36 * Math.sin(a))
+  end
+  pts
+end
+
+def fan_transformed(m)
+  c = canvas(160, 160)
+  fill(c, color(0.02, 0.02, 0.025))
+  pts = transform_points(fan_points, m)
+  rays = union((1..12).map { |k| segment(pts[0], pts[k], 1) })
+  paint_through(c, rasterize(rays, 160, 160), color(0.92, 0.92, 0.88))
+  c
+end
+
+def fan_both_orders
+  turn = rotation(Math::PI / 6)
+  move = translation(104.5, 76.5)
+  side_by_side(fan_transformed(move * turn), fan_transformed(turn * move))
+end
+
+# An F has no symmetry at all, so a rotation shows its own orientation.
+# Ten corners, clockwise from the top left, in a box 40 wide and 60 tall
+# centered on the origin.
+def letter_f
+  [point(-20, -30), point(20, -30), point(20, -20), point(-10, -20),
+   point(-10, -5), point(12, -5), point(12, 5), point(-10, 5),
+   point(-10, 30), point(-20, 30)]
+end
+
+def f_both_orders
+  turn = rotation(Math::PI / 6)
+  move = translation(104.5, 76.5)
+  home = translation(44.5, 44.5)
+  ink_color = color(0.92, 0.92, 0.88)
+  dim_color = color(0.16, 0.16, 0.17)
+
+  ghost = canvas(160, 160)
+  fill(ghost, color(0.02, 0.02, 0.025))
+  paint_through(ghost, rasterize(outline(letter_f, home, 1), 160, 160), dim_color)
+
+  a = copy_canvas(ghost)
+  b = copy_canvas(ghost)
+  paint_through(a, rasterize(outline(letter_f, move * turn, 1), 160, 160), ink_color)
+  paint_through(b, rasterize(outline(letter_f, turn * move, 1), 160, 160), ink_color)
+
+  side_by_side(a, b)
+end
+
+def plate_04
+  magnify(f_both_orders, 2)
 end

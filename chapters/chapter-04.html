@@ -149,6 +149,10 @@
     <span class="kw">Then</span>  dot(a, b) = 8
     <span class="kw">And</span>   dot(a, vector(-2, 1)) = 0
 
+  <span class="kw">Scenario</span>: magnitude and dot look at x and y only
+    <span class="kw">Then</span>  magnitude(point(3, 4)) = 5
+    <span class="kw">And</span>   dot(point(1, 2), point(2, 3)) = 8
+
   <span class="kw">Scenario</span>: The cross product of two vectors is a number
     <span class="kw">Given</span> a ← vector(1, 0)
     <span class="kw">And</span>   b ← vector(0, 1)
@@ -169,7 +173,8 @@
 
   <p>A matrix is a grid of numbers, and this book needs one size: 3 rows by 3 columns. Written out,
     the tests use a table, and the code uses <code>matrix3</code> with nine numbers in reading
-    order, row by row. <code>M[r, c]</code> is the entry in row <code>r</code>, column
+    order, row by row; if your language builds things with constructors, that's what
+    <code>matrix3</code> is. <code>M[r, c]</code> is the entry in row <code>r</code>, column
     <code>c</code>, both counted from zero. Row first. If you've ever spent an afternoon on a bug
     that turned out to be <code>M[c, r]</code>, you'll know why the scenario checks
     <code>M[1, 0]</code> and <code>M[0, 2]</code> and not only the diagonal.</p>
@@ -601,10 +606,12 @@ determinant(M):
     <code>scaling(4, 1)</code> it's 4. For <code>shearing(1, 0)</code> it's 1.618, because the
     diagonal of a sheared square gets longer even though its area doesn't. This is the
     conservative answer: use it for a flattening tolerance and you'll never produce a segment too
-    long, anywhere, at any angle. It's also the most work. The formula for the largest singular
-    value of a 2-by-2 is a closed form, but it's six lines of squares and square roots, and it
-    isn't illuminating. If you want it, it's the square root of the larger eigenvalue of
-    <code>m</code> times its own transpose.</p>
+    long, anywhere, at any angle. It's also the least obvious. There is a closed form for a 2-by-2: with
+    <code>S = a² + b² + c² + d²</code> and <code>D = ad - bc</code> for the upper-left block
+    <code>[[a, b], [c, d]]</code>, the largest singular value is
+    <code>sqrt((S + sqrt(S² - 4D²)) / 2)</code>. One line, but not one anybody reads back a month
+    later and understands, and if you want to know where it comes from, it's the square root of the
+    larger eigenvalue of <code>m</code> times its own transpose.</p>
 
   <p>The <strong>longest column</strong>. The columns of the 2-by-2 part are where the unit
     vectors land, so the longer column is a cheap, plausible measure of stretch. It's exact for
@@ -619,8 +626,10 @@ determinant(M):
     4 and 1. For <code>shearing(1, 0)</code> it's 1, which is too small along the diagonal and
     right about the area. It's one line: <code>sqrt(|m[0,0]·m[1,1] - m[0,1]·m[1,0]|)</code>, which is
     <code>ad - bc</code> for the upper-left block <code>[[a, b], [c, d]]</code>, the 2-by-2
-    determinant that §4.2's minors were made of. The absolute value is there because a reflection
-    has a negative determinant and is still a scale of 1.</p>
+    determinant that §4.2's minors were made of. For every matrix in this book the bottom row is
+    <code>0 0 1</code>, so the full 3-by-3 <code>determinant(m)</code> comes out the same and you can
+    use it instead. The absolute value is there because a reflection has a negative determinant and
+    is still a scale of 1.</p>
 
   <p>The book uses the third one, and here's the reasoning. Most transforms a renderer meets are
     uniform scales with rotations and translations, where all three candidates agree and the
@@ -629,8 +638,8 @@ determinant(M):
     scales in either direction, which for the 4-to-1 stretch is a factor of 2 either way, and in
     chapter 8 that's the difference between a segment that's a little too long on one axis and a
     little too short on the other, on a curve nobody is going to inspect at that stretch. The
-    largest stretch would be more correct and cost six lines of algebra whose result you'd never
-    look at again. If you're building something where a badly flattened curve under an extreme
+    largest stretch would be more correct and cost a line of algebra whose meaning you'd have to
+    look up every time. If you're building something where a badly flattened curve under an extreme
     stretch is unacceptable, swap the body of <code>approx_scale</code> for the singular value,
     and nothing else in the book changes.</p>
 
@@ -689,14 +698,16 @@ determinant(M):
     <code>b</code>, square ends, exactly the same four half-planes. <code>thick_line(x0, y0, x1,
     y1, w)</code> becomes a one-liner, <code>segment(point(x0 + 0.5, y0 + 0.5), point(x1 + 0.5,
     y1 + 0.5), w)</code>, and every chapter 3 scenario still passes; the first scenario below
-    checks that with chapter 3's own numbers. The zero-length case is the same square as
+    is chapter 3's off-axis scenario with real endpoints, probe for probe. The zero-length case is the same square as
     before.</p>
 
   <p>While you're there, two small shapes make the polygon drawing clean. <code>union(shapes)</code>
     is a shape that's inside when any of its parts is: one more case in <code>inside</code>, a loop
-    with an early exit. And <code>outline(points, m, width)</code> takes the points through
+    with an early exit. If <code>union</code> is a keyword where you live, as it is in C and Rust,
+    <code>union_of</code> will do; the scenarios call it <code>union</code> and you'll translate. And <code>outline(points, m, width)</code> takes the points through
     <code>m</code> and returns the union of the segments between consecutive points, last back to
-    first. Building the outline as one shape and rasterizing it once matters more than it looks.
+    first, each of the given width <em>in device space</em>: the points go through the matrix, the
+    width doesn't. Building the outline as one shape and rasterizing it once matters more than it looks.
     Paint each edge through its own coverage, as chapter 3's fan did, and the corner pixels get
     painted twice, once by each edge that ends there, and come out brighter than the edges: the
     "painted twice" lesson from chapter 2 again. As one shape, the corner pixel's coverage is the
@@ -712,8 +723,12 @@ determinant(M):
     result. <code>transformed(shape, m)</code> stores <code>inverse(m)</code>, and its
     <code>inside</code> is one line. A circle seen through <code>scaling(2, 1)</code> is an ellipse
     twice as wide as it is tall, and you didn't write an ellipse. A shape seen through a matrix
-    with no inverse is empty: nothing can be inside a shape that's been flattened to a line, and the
-    scenario says so rather than leaving you to find out from a division by zero.</p>
+    with no inverse is empty: nothing can be inside a shape that's been flattened to a line. Check
+    <code>is_invertible</code> when the shape is built and answer <code>false</code> for everything if
+    it fails. Skip the check and your language decides: some raise on the division by zero in
+    <code>inverse</code>, others hand back a matrix full of <code>NaN</code> that happens to answer
+    <code>false</code> to every comparison, which passes the scenario by accident and will not pass
+    the next thing you build on it.</p>
 
   <figure>
     <canvas id="fig43" role="img" aria-label="A circle on a grid on the left; on the right the same circle seen through a horizontal scale of two, an ellipse, with an arrow showing a device point being carried back through the inverse to the circle"></canvas>
@@ -761,8 +776,10 @@ determinant(M):
     <span class="kw">Given</span> s ← segment(point(2.5, 2.5), point(11.5, 5.5), 1)
     <span class="kw">When</span>  cov ← rasterize(s, 16, 10)
     <span class="kw">Then</span>  coverage_at(cov, 2, 2) = 0.484375
+    <span class="kw">And</span>   coverage_at(cov, 11, 5) = 0.484375
     <span class="kw">And</span>   coverage_at(cov, 6, 3) = 0.6875
     <span class="kw">And</span>   coverage_at(cov, 7, 3) = 0.359375
+    <span class="kw">And</span>   coverage_at(cov, 2, 1) = 0
     <span class="kw">And</span>   ink(cov) = 9.4063
 
   <span class="kw">Scenario</span>: A segment need not start on a pixel center
@@ -780,6 +797,11 @@ determinant(M):
     <span class="kw">When</span>  cov ← rasterize(s, 8, 8)
     <span class="kw">Then</span>  coverage_at(cov, 3, 3) = 1
     <span class="kw">And</span>   ink(cov) = 1
+
+  <span class="kw">Scenario</span>: A union of nothing is inside nowhere
+    <span class="kw">Given</span> s ← union([])
+    <span class="kw">Then</span>  inside(s, 0, 0) = false
+    <span class="kw">And</span>   ink(rasterize(s, 4, 4)) = 0
 
   <span class="kw">Scenario</span>: A union is inside when any of its parts is
     <span class="kw">Given</span> s ← union([circle(2, 2, 1), rectangle(5, 0, 7, 4)])
@@ -940,7 +962,8 @@ fan_both_orders():
 
   <p>So draw a letter. An F has no symmetry at all: not left-right, not up-down, not diagonal, not
     rotational. Ten corners, clockwise from the top left, in a box 40 wide and 60 tall centered on
-    the origin, so that a rotation about the origin is a rotation about the letter's middle:</p>
+    the origin, so that a rotation about the origin is a rotation about the letter's middle. Ten
+    corners make ten edges, because the outline closes from the last corner back to the first:</p>
 
 <pre><code>letter_f():
   <span class="kw">return</span> [point(-20, -30), point(20, -30), point(20, -20), point(-10, -20),
@@ -958,8 +981,9 @@ fan_both_orders():
     <figcaption><span class="fig">Figure 4.5</span> Three wrong Fs. Left: the corners were built with <code>vector</code> instead of <code>point</code>, so <code>w = 0</code> and the translation never happened; the F was rotated about the canvas corner and mostly left. Middle: the matrix was stored transposed, so the rotation runs backwards and the translation lands in <code>w</code>, where nobody reads it. Right: <code>rotation(30)</code>, in radians, is 30 radians, which is 278.9 degrees past four full turns.</figcaption>
   </figure>
 
-  <p>Now the correct one. Draw the ghost once, copy it into two canvases, and draw the F through
-    each order on top. The ghost sits at <code>translation(44.5, 44.5)</code> for no reason other than
+  <p>Now the correct one. Draw the ghost once, copy it into two canvases (a copy is a new canvas
+    of the same size with every pixel written across; if your canvas type can't be copied any other
+    way, four lines do it), and draw the F through each order on top. The ghost sits at <code>translation(44.5, 44.5)</code> for no reason other than
     to be on the canvas; it's where the F starts, and it's dim so the two results read as the
     picture. Then magnify by 2, as in chapter 3:</p>
 
@@ -986,9 +1010,10 @@ plate_04():
     <figcaption><span class="fig">Plate 4</span> The same two matrices, multiplied in the two possible orders. Left, <code>move * turn</code>: the F turns about its own center and goes where it was sent. Right, <code>turn * move</code>: it goes where it was sent and then swings about the canvas corner. Both lean the same way, clockwise on the screen, because a positive angle turns x toward y and y points down. If yours lean the other way, go back to §4.3.</figcaption>
   </figure>
 
-  <p>Five rasterizations of a 160-by-160 canvas at 64 samples a pixel, each against a union of ten
-    or twelve segments: about the same work as chapter 3's fan, so a minute or so in Python or
-    Ruby and well under a second compiled. The scenarios pin the transformed corners of the F to
+  <p>Across the two renders that's five rasterizations of a 160-by-160 canvas at 64 samples a
+    pixel, each against a union of ten or twelve segments: about the same work as chapter 3's fan,
+    so a minute or so in Python or Ruby and well under a second compiled with optimization on; a
+    debug build of a managed language can be ten times slower than its release build here. The scenarios pin the transformed corners of the F to
     four decimals before they pin a pixel, so a wrong lean or a lost translation fails on a number
     you can read, not on a byte in a PPM.</p>
 

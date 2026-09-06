@@ -64,18 +64,98 @@ int  distinct_values_bytes(Bytes ppm);
 #define max_channel_difference(a, b) max_channel_difference_bytes(AS_BYTES(a), AS_BYTES(b))
 #define distinct_values(p)           distinct_values_bytes(AS_BYTES(p))
 
+
+/* ---- chapter 4: points, vectors and matrices --------------------------
+   These sit above the shapes because a shape can now be seen through a
+   Matrix3. pi is here because the scenarios write it. */
+#define PI 3.14159265358979323846
+
+/* A tuple is (x, y, w): w = 1 for a point, w = 0 for a vector, so the
+   arithmetic keeps the two straight and a translation can be a matrix. */
+typedef struct { double x, y, w; } Tuple;
+
+Tuple point(double x, double y);        /* w = 1 */
+Tuple vector(double x, double y);       /* w = 0 */
+Tuple tuple_add(Tuple a, Tuple b);
+Tuple tuple_sub(Tuple a, Tuple b);
+Tuple tuple_neg(Tuple a);
+Tuple tuple_scale(Tuple a, double s);
+Tuple tuple_div(Tuple a, double s);
+double magnitude(Tuple v);
+Tuple  normalize(Tuple v);
+double dot(Tuple a, Tuple b);
+double cross(Tuple a, Tuple b);         /* a scalar in two dimensions */
+
+/* <sys/types.h> owns the name "minor" on this platform, as a macro.
+   The book's function wins. */
+#ifdef minor
+#undef minor
+#endif
+
+/* 3 by 3, stored row by row. m[r][c] is row r, column c, both from 0. */
+typedef struct { double m[3][3]; } Matrix3;
+
+Matrix3 matrix3(double a, double b, double c,
+                double d, double e, double f,
+                double g, double h, double i);
+double  m3_at(Matrix3 m, int r, int c);     /* M[r, c] */
+Matrix3 identity(void);
+Matrix3 transpose(Matrix3 m);
+double  minor(Matrix3 m, int r, int c);
+double  cofactor(Matrix3 m, int r, int c);
+double  determinant(Matrix3 m);
+bool    is_invertible(Matrix3 m);
+Matrix3 inverse(Matrix3 m);
+
+Matrix3 m3_mul(Matrix3 a, Matrix3 b);
+Tuple   m3_mul_tuple(Matrix3 a, Tuple t);
+/* mul(A, B) and mul(A, p): the book writes both with a star. */
+#define mul(a, b) _Generic((b), Matrix3: m3_mul, Tuple: m3_mul_tuple)((a), (b))
+
+Matrix3 translation(double tx, double ty);
+Matrix3 scaling(double sx, double sy);
+Matrix3 rotation(double r);             /* radians; turns x toward y */
+Matrix3 shearing(double xy, double yx);
+
+/* one number for how much m stretches lengths: the square root of the
+   absolute determinant of its upper-left 2 by 2 */
+double approx_scale(Matrix3 m);
+
 /* ---- shapes: a shape is a thing that answers "is this point inside?" -- */
-typedef enum { SHAPE_CIRCLE, SHAPE_RECTANGLE, SHAPE_HALF_PLANE, SHAPE_THICK_LINE } ShapeKind;
-/* h[] holds a thick line's four half-planes, each as px, py, nx, ny. */
-typedef struct { ShapeKind kind; double a, b, c, d; double h[4][4]; } Shape;
+typedef enum { SHAPE_CIRCLE, SHAPE_RECTANGLE, SHAPE_HALF_PLANE, SHAPE_THICK_LINE,
+               SHAPE_UNION, SHAPE_TRANSFORMED, SHAPE_EMPTY } ShapeKind;
+/* h[] holds a thick line's four half-planes, each as px, py, nx, ny.
+   parts/nparts belong to a union, base/inv to a transformed shape. */
+typedef struct Shape Shape;
+struct Shape {
+    ShapeKind kind;
+    double a, b, c, d;
+    double h[4][4];
+    Shape *parts; int nparts;
+    Shape *base;  Matrix3 inv;
+};
 
 Shape circle(double cx, double cy, double r);
 Shape rectangle(double x0, double y0, double x1, double y1);
 Shape half_plane(double px, double py, double nx, double ny);
-/* the rectangle of the given width centered on the segment from the center
-   of pixel (x0, y0) to the center of pixel (x1, y1), with square ends */
+/* the rectangle of the given width centered on the segment from point a to
+   point b, with square ends */
+Shape segment(Tuple a, Tuple b, double width);
+/* the same rectangle between the centers of pixel (x0, y0) and (x1, y1) */
 Shape thick_line(double x0, double y0, double x1, double y1, double width);
 bool inside(Shape s, double x, double y);
+
+/* Composite shapes. C has no `union` to spare, so it is union_of, and
+   because a Shape cannot contain itself the children live on the heap:
+   union_of and transformed copy what you give them, and shape_free gives
+   it back. Copying a composite Shape by value shares the children, so
+   free the copy or the original, not both. Leaf shapes need no free. */
+Shape union_of(const Shape *parts, int n);
+Shape transformed(Shape base, Matrix3 m);
+/* the closed polygon through the points after m, every edge a segment of
+   that width in device space, as one shape */
+Shape outline(const Tuple *pts, int n, Matrix3 m, double width);
+void  shape_free(Shape s);
 
 /* ---- coverage -------------------------------------------------------- */
 typedef struct { int width, height; double *values; } CoverageBuffer;
@@ -115,5 +195,19 @@ Canvas *fan_bresenham(void);
 Canvas *fan_wu(void);
 Canvas *fan_coverage(void);
 Canvas *plate_03(void);
+
+/* ---- chapter 4: transforms -------------------------------------------- */
+void transform_points(const Tuple *in, int n, Matrix3 m, Tuple *out);
+Canvas *side_by_side(const Canvas *a, const Canvas *b);
+Canvas *canvas_copy(const Canvas *c);
+
+#define FAN_POINTS 13
+#define LETTER_F_POINTS 10
+int fan_points(Tuple *out);      /* the center, then twelve ends at radius 36 */
+int letter_f(Tuple *out);        /* ten corners, clockwise from the top left */
+Canvas *fan_transformed(Matrix3 m);
+Canvas *fan_both_orders(void);
+Canvas *f_both_orders(void);
+Canvas *plate_04(void);
 
 #endif

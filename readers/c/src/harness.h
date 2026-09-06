@@ -66,6 +66,17 @@ void h_same_pixels(const char *what, const Canvas *a, const Canvas *b);
     h_eq_pixels("lit_pixels(" #c ")", (c), _want, (int)(sizeof _want / sizeof _want[0])); \
 } while (0)
 
+/* ---- chapter 4: tuples and matrices ------------------------------------ */
+/* Tuples compare on all three components, so a point never equals a
+   vector. Matrices compare entry by entry, both with the usual tolerance. */
+#define EQT(a, b)   h_eqt(#a " = " #b, (a), (b), EPS)
+#define EQM(a, b)   h_eqm(#a " = " #b, (a), (b), EPS)
+#define NEM(a, b)   h_nem(#a " ≠ " #b, (a), (b), EPS)
+
+void h_eqt(const char *what, Tuple a, Tuple b, double eps);
+void h_eqm(const char *what, Matrix3 a, Matrix3 b, double eps);
+void h_nem(const char *what, Matrix3 a, Matrix3 b, double eps);
+
 /* text helpers for the PPM scenarios */
 char *ppm_lines(const char *ppm, int from, int to);  /* 1-based, inclusive; caller frees */
 int  ppm_longest_line(const char *ppm);

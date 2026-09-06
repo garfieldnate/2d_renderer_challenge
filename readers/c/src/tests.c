@@ -1132,6 +1132,616 @@ static void feature_plate_03(void) {
     }
 }
 
+/* ============ features/chapter04-tuples.feature ======================= */
+static void feature_tuples(void) {
+    const char *F = "Points and vectors";
+
+    S(F, "A point has w = 1") {
+        Tuple p = point(4, -4);
+        EQ(p.x, 4);
+        EQ(p.y, -4);
+        EQ(p.w, 1);
+    }
+    S(F, "A vector has w = 0") {
+        Tuple v = vector(4, -4);
+        EQ(v.x, 4);
+        EQ(v.y, -4);
+        EQ(v.w, 0);
+    }
+    S(F, "The difference of two points is the vector between them") {
+        Tuple a = point(3, 2), b = point(5, 6);
+        EQT(tuple_sub(b, a), vector(2, 4));
+        EQT(tuple_sub(a, b), vector(-2, -4));
+    }
+    S(F, "A point plus a vector is a point") {
+        Tuple p = point(3, -2), v = vector(-2, 3);
+        EQT(tuple_add(p, v), point(1, 1));
+        EQT(tuple_sub(p, v), point(5, -5));
+    }
+    S(F, "A vector plus a vector is a vector") {
+        Tuple a = vector(3, -2), b = vector(-2, 3);
+        EQT(tuple_add(a, b), vector(1, 1));
+        EQT(tuple_sub(a, b), vector(5, -5));
+    }
+    S(F, "Negating, scaling and dividing a vector") {
+        Tuple v = vector(1, -2);
+        EQT(tuple_neg(v), vector(-1, 2));
+        EQT(tuple_scale(v, 3.5), vector(3.5, -7));
+        EQT(tuple_scale(v, 0.5), vector(0.5, -1));
+        EQT(tuple_div(v, 2), vector(0.5, -1));
+    }
+    S(F, "The magnitude of a vector") {
+        EQ(magnitude(vector(1, 0)), 1);
+        EQ(magnitude(vector(0, 1)), 1);
+        EQ(magnitude(vector(3, 4)), 5);
+        EQ(magnitude(vector(-3, -4)), 5);
+        EQ(magnitude(vector(-1, -2)), 2.2361);
+    }
+    S(F, "Normalizing a vector") {
+        EQT(normalize(vector(4, 0)), vector(1, 0));
+        EQT(normalize(vector(1, 2)), vector(0.4472, 0.8944));
+        EQ(magnitude(normalize(vector(1, 2))), 1);
+    }
+    S(F, "The dot product of two vectors") {
+        Tuple a = vector(1, 2), b = vector(2, 3);
+        EQ(dot(a, b), 8);
+        EQ(dot(a, vector(-2, 1)), 0);
+    }
+    S(F, "The cross product of two vectors is a number") {
+        Tuple a = vector(1, 0), b = vector(0, 1);
+        EQ(cross(a, b), 1);
+        EQ(cross(b, a), -1);
+        EQ(cross(a, a), 0);
+        EQ(cross(vector(2, 3), vector(4, 5)), -2);
+    }
+    S(F, "The sign of the cross product says which side of a line a point is on") {
+        Tuple a = point(0, 0), b = point(10, 0);
+        EQ(cross(tuple_sub(b, a), tuple_sub(point(5, 3), a)), 30);
+        EQ(cross(tuple_sub(b, a), tuple_sub(point(5, -3), a)), -30);
+        EQ(cross(tuple_sub(b, a), tuple_sub(point(20, 0), a)), 0);
+    }
+}
+
+/* ============ features/chapter04-matrices.feature ===================== */
+static void feature_matrices(void) {
+    const char *F = "Matrices";
+
+    S(F, "Constructing and inspecting a matrix") {
+        Matrix3 M = matrix3(1, 2, 3,
+                            4, 5, 6,
+                            7, 8, 9);
+        EQ(m3_at(M, 0, 0), 1);
+        EQ(m3_at(M, 0, 2), 3);
+        EQ(m3_at(M, 1, 0), 4);
+        EQ(m3_at(M, 1, 1), 5);
+        EQ(m3_at(M, 2, 0), 7);
+        EQ(m3_at(M, 2, 2), 9);
+        EQM(M, matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9));
+    }
+    S(F, "Matrix equality with identical matrices") {
+        Matrix3 A = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9);
+        Matrix3 B = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9);
+        EQM(A, B);
+    }
+    S(F, "Matrix equality with different matrices") {
+        Matrix3 A = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9);
+        Matrix3 B = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 8);
+        NEM(A, B);
+    }
+    S(F, "Multiplying two matrices") {
+        Matrix3 A = matrix3(1, 2, 3,
+                            4, 5, 6,
+                            7, 8, 9);
+        Matrix3 B = matrix3(2, -1, 0,
+                            1,  3, 1,
+                            0,  1, 2);
+        EQM(mul(A, B), matrix3( 4,  8,  8,
+                               13, 17, 17,
+                               22, 26, 26));
+    }
+    S(F, "Matrix multiplication is not commutative") {
+        Matrix3 A = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9);
+        Matrix3 B = matrix3(2, -1, 0, 1, 3, 1, 0, 1, 2);
+        NEM(mul(A, B), mul(B, A));
+    }
+    S(F, "A matrix multiplied by a point") {
+        Matrix3 A = matrix3(1, 2, 3,
+                            4, 5, 6,
+                            0, 0, 1);
+        Tuple p = point(1, 2);
+        EQT(mul(A, p), point(8, 20));
+    }
+    S(F, "A matrix multiplied by a vector ignores the last column") {
+        Matrix3 A = matrix3(1, 2, 3,
+                            4, 5, 6,
+                            0, 0, 1);
+        Tuple v = vector(1, 2);
+        EQT(mul(A, v), vector(5, 14));
+    }
+    S(F, "Multiplying by the identity matrix changes nothing") {
+        Matrix3 A = matrix3(0, 1, 2, 1, 2, 4, 2, 4, 8);
+        Tuple p = point(1, 2);
+        EQM(mul(A, identity()), A);
+        EQM(mul(identity(), A), A);
+        EQT(mul(identity(), p), p);
+    }
+    S(F, "Transposing a matrix") {
+        Matrix3 A = matrix3(0, 9, 3,
+                            9, 8, 0,
+                            1, 8, 5);
+        EQM(transpose(A), matrix3(0, 9, 1,
+                                  9, 8, 8,
+                                  3, 0, 5));
+    }
+    S(F, "Transposing the identity matrix") {
+        EQM(transpose(identity()), identity());
+    }
+    S(F, "The determinant of a 3 by 3 matrix") {
+        Matrix3 A = matrix3( 1, 2,  6,
+                            -5, 8, -4,
+                             2, 6,  4);
+        EQ(determinant(A), -196);
+    }
+    S(F, "The determinant of a transform is the area factor") {
+        EQ(determinant(identity()), 1);
+        EQ(determinant(scaling(2, 3)), 6);
+        EQ(determinant(rotation(0.7)), 1);
+        EQ(determinant(translation(4, 9)), 1);
+        EQ(determinant(scaling(-1, 1)), -1);
+    }
+    S(F, "Testing an invertible matrix for invertibility") {
+        Matrix3 A = matrix3(3, 0,  2,
+                            2, 0, -2,
+                            0, 1,  1);
+        EQ(determinant(A), 10);
+        TRUEP(is_invertible(A));
+    }
+    S(F, "Testing a non-invertible matrix for invertibility") {
+        Matrix3 A = matrix3(1, 2, 3,
+                            2, 4, 6,
+                            0, 0, 1);
+        EQ(determinant(A), 0);
+        FALSEP(is_invertible(A));
+    }
+    S(F, "Calculating the inverse of a matrix") {
+        Matrix3 A = matrix3(3, 0,  2,
+                            2, 0, -2,
+                            0, 1,  1);
+        Matrix3 B = inverse(A);
+        EQ(m3_at(B, 0, 0), 0.2);
+        EQ(m3_at(B, 1, 2), 1);
+        EQ(m3_at(B, 2, 1), -0.3);
+        EQM(B, matrix3( 0.2,  0.2, 0,
+                       -0.2,  0.3, 1,
+                        0.2, -0.3, 0));
+        EQM(mul(A, B), identity());
+    }
+    S(F, "Multiplying a product by its inverse") {
+        Matrix3 A = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9);
+        Matrix3 B = matrix3(2, -1, 0, 1, 3, 1, 0, 1, 2);
+        Matrix3 C = mul(A, B);
+        EQM(mul(C, inverse(B)), A);
+    }
+    S(F, "The inverse of a transform is a transform") {
+        Matrix3 A = mul(mul(translation(5, -3), rotation(PI / 6)), scaling(2, 3));
+        Matrix3 B = inverse(A);
+        EQ(m3_at(B, 2, 0), 0);
+        EQ(m3_at(B, 2, 1), 0);
+        EQ(m3_at(B, 2, 2), 1);
+        EQ(m3_at(B, 0, 0), 0.4330);
+        EQ(m3_at(B, 0, 2), -1.4151);
+        EQ(m3_at(B, 1, 2), 1.6994);
+        EQM(mul(B, A), identity());
+    }
+}
+
+/* ============ features/chapter04-transforms.feature =================== */
+static void feature_transforms(void) {
+    const char *F = "The transforms";
+
+    S(F, "Multiplying by a translation matrix") {
+        Matrix3 t = translation(5, -3);
+        Tuple p = point(-3, 4);
+        EQT(mul(t, p), point(2, 1));
+    }
+    S(F, "The inverse of a translation moves the other way") {
+        Matrix3 t = translation(5, -3);
+        Tuple p = point(-3, 4);
+        EQT(mul(inverse(t), p), point(-8, 7));
+    }
+    S(F, "Translation does not affect vectors") {
+        Matrix3 t = translation(5, -3);
+        Tuple v = vector(-3, 4);
+        EQT(mul(t, v), v);
+    }
+    S(F, "A scaling matrix applied to a point") {
+        Matrix3 s = scaling(2, 3);
+        Tuple p = point(-4, 6);
+        EQT(mul(s, p), point(-8, 18));
+    }
+    S(F, "A scaling matrix applied to a vector") {
+        Matrix3 s = scaling(2, 3);
+        Tuple v = vector(-4, 6);
+        EQT(mul(s, v), vector(-8, 18));
+    }
+    S(F, "The inverse of a scaling shrinks") {
+        Matrix3 s = scaling(2, 3);
+        Tuple v = vector(-4, 6);
+        EQT(mul(inverse(s), v), vector(-2, 2));
+    }
+    S(F, "Reflection is scaling by a negative value") {
+        Matrix3 s = scaling(-1, 1);
+        Tuple p = point(2, 3);
+        EQT(mul(s, p), point(-2, 3));
+    }
+    S(F, "A positive rotation turns x toward y") {
+        Tuple p = point(1, 0);
+        EQT(mul(rotation(PI / 4), p), point(0.7071, 0.7071));
+        EQT(mul(rotation(PI / 2), p), point(0, 1));
+        EQT(mul(rotation(PI), p), point(-1, 0));
+    }
+    S(F, "The inverse of a rotation turns the other way") {
+        Tuple p = point(1, 0);
+        EQT(mul(inverse(rotation(PI / 4)), p), point(0.7071, -0.7071));
+        EQT(mul(rotation(-PI / 4), p), point(0.7071, -0.7071));
+    }
+    S(F, "A rotation preserves length") {
+        Tuple v = vector(3, 4);
+        EQ(magnitude(mul(rotation(1.2), v)), 5);
+        EQ(magnitude(mul(rotation(-2.8), v)), 5);
+    }
+    S(F, "Shearing moves x in proportion to y") {
+        Matrix3 s = shearing(1, 0);
+        Tuple p = point(2, 3);
+        EQT(mul(s, p), point(5, 3));
+    }
+    S(F, "Shearing moves y in proportion to x") {
+        Matrix3 s = shearing(0, 1);
+        Tuple p = point(2, 3);
+        EQT(mul(s, p), point(2, 5));
+    }
+    S(F, "Individual transformations are applied in sequence") {
+        Tuple p = point(1, 0);
+        Matrix3 A = rotation(PI / 2);
+        Matrix3 B = scaling(5, 5);
+        Matrix3 C = translation(10, 5);
+        Tuple p2 = mul(A, p);
+        Tuple p3 = mul(B, p2);
+        Tuple p4 = mul(C, p3);
+        EQT(p2, point(0, 1));
+        EQT(p3, point(0, 5));
+        EQT(p4, point(10, 10));
+    }
+    S(F, "Chained transformations must be applied in reverse order") {
+        Tuple p = point(1, 0);
+        Matrix3 A = rotation(PI / 2);
+        Matrix3 B = scaling(5, 5);
+        Matrix3 C = translation(10, 5);
+        Matrix3 T = mul(mul(C, B), A);
+        EQT(mul(T, p), point(10, 10));
+    }
+    S(F, "The other order is a different transform") {
+        Tuple p = point(1, 0);
+        Matrix3 A = rotation(PI / 2);
+        Matrix3 B = scaling(5, 5);
+        Matrix3 C = translation(10, 5);
+        Matrix3 T = mul(mul(A, B), C);
+        EQT(mul(T, p), point(-25, 55));
+    }
+    S(F, "Rotating about a point that isn't the origin") {
+        Matrix3 T = mul(mul(translation(4, 4), rotation(PI / 2)), translation(-4, -4));
+        EQT(mul(T, point(6, 4)), point(4, 6));
+        EQT(mul(T, point(4, 4)), point(4, 4));
+    }
+}
+
+/* ============ features/chapter04-scale.feature ======================== */
+static void feature_scale(void) {
+    const char *F = "How big is a transform";
+
+    S(F, "The identity, a translation and a rotation don't stretch") {
+        EQ(approx_scale(identity()), 1);
+        EQ(approx_scale(translation(7, 9)), 1);
+        EQ(approx_scale(rotation(1.1)), 1);
+    }
+    S(F, "A uniform scale is reported exactly") {
+        EQ(approx_scale(scaling(2, 2)), 2);
+        EQ(approx_scale(scaling(0.5, 0.5)), 0.5);
+        EQ(approx_scale(mul(scaling(3, 3), rotation(0.7))), 3);
+        EQ(approx_scale(mul(translation(5, 5), scaling(3, 3))), 3);
+    }
+    S(F, "A reflection is not a negative scale") {
+        EQ(approx_scale(scaling(-2, 2)), 2);
+    }
+    S(F, "A non-uniform scale is reported as the geometric mean") {
+        EQ(approx_scale(scaling(4, 1)), 2);
+        EQ(approx_scale(mul(scaling(4, 1), rotation(0.4))), 2);
+        EQ(approx_scale(scaling(9, 1)), 3);
+    }
+    S(F, "A shear that preserves area reports 1") {
+        EQ(approx_scale(shearing(1, 0)), 1);
+        EQ(approx_scale(shearing(0.5, 0.5)), 0.8660);
+    }
+    S(F, "A collapsed transform reports 0") {
+        EQ(approx_scale(scaling(0, 1)), 0);
+        EQ(approx_scale(matrix3(1, 2, 0, 2, 4, 0, 0, 0, 1)), 0);
+    }
+}
+
+/* ============ features/chapter04-shapes.feature ======================= */
+static void feature_ch4_shapes(void) {
+    const char *F = "Transforming what you draw";
+
+    S(F, "A segment between pixel centers is a thick line") {
+        Shape s = segment(point(2.5, 2.5), point(11.5, 5.5), 1);
+        CoverageBuffer *cov = rasterize(s, 16, 10);
+        EQ(coverage_at(cov, 2, 2), 0.484375);
+        EQ(coverage_at(cov, 6, 3), 0.6875);
+        EQ(coverage_at(cov, 7, 3), 0.359375);
+        EQ(ink(cov), 9.4063);
+        coverage_free(cov);
+    }
+    S(F, "A segment need not start on a pixel center") {
+        Shape s = segment(point(1, 3.5), point(7, 3.5), 1);
+        CoverageBuffer *cov = rasterize(s, 10, 10);
+        EQ(coverage_at(cov, 0, 3), 0);
+        EQ(coverage_at(cov, 1, 3), 1);
+        EQ(coverage_at(cov, 6, 3), 1);
+        EQ(coverage_at(cov, 7, 3), 0);
+        EQ(coverage_at(cov, 3, 2), 0);
+        EQ(ink(cov), 6);
+        coverage_free(cov);
+    }
+    S(F, "A segment of no length is a square") {
+        Shape s = segment(point(3.5, 3.5), point(3.5, 3.5), 1);
+        CoverageBuffer *cov = rasterize(s, 8, 8);
+        EQ(coverage_at(cov, 3, 3), 1);
+        EQ(ink(cov), 1);
+        coverage_free(cov);
+    }
+    S(F, "A union is inside when any of its parts is") {
+        Shape parts[] = { circle(2, 2, 1), rectangle(5, 0, 7, 4) };
+        Shape s = union_of(parts, 2);
+        TRUEP(inside(s, 2, 2));
+        TRUEP(inside(s, 6, 1));
+        FALSEP(inside(s, 4, 2));
+        CoverageBuffer *cov = rasterize(s, 8, 8);
+        EQ(ink(cov), 11.25);
+        coverage_free(cov);
+        shape_free(s);
+    }
+    S(F, "A circle seen through a scale is an ellipse") {
+        Shape s = transformed(circle(0, 0, 4), scaling(2, 1));
+        TRUEP(inside(s, 7.9, 0));
+        FALSEP(inside(s, 8.1, 0));
+        TRUEP(inside(s, 0, 3.9));
+        FALSEP(inside(s, 0, 4.1));
+        TRUEP(inside(s, 5.6, 1.4));
+        FALSEP(inside(s, 5.6, 2.9));
+        shape_free(s);
+    }
+    S(F, "The transform is applied in the order the matrix says") {
+        Shape s = transformed(circle(0, 0, 4), mul(translation(10, 10), scaling(2, 1)));
+        TRUEP(inside(s, 10, 10));
+        TRUEP(inside(s, 17.9, 10));
+        FALSEP(inside(s, 18.1, 10));
+        TRUEP(inside(s, 10, 13.9));
+        FALSEP(inside(s, 10, 14.1));
+        shape_free(s);
+    }
+    S(F, "A shape seen through a collapsed transform is empty") {
+        Shape s = transformed(circle(0, 0, 4), scaling(0, 1));
+        FALSEP(inside(s, 0, 0));
+        CoverageBuffer *cov = rasterize(s, 10, 10);
+        EQ(ink(cov), 0);
+        coverage_free(cov);
+        shape_free(s);
+    }
+    S(F, "A pen in shape space scales with the shape") {
+        Shape s = transformed(thick_line(5, 0, 5, 9, 1), scaling(3, 1));
+        CoverageBuffer *cov = rasterize(s, 24, 10);
+        EQ(coverage_at(cov, 14, 4), 0);
+        EQ(coverage_at(cov, 15, 4), 1);
+        EQ(coverage_at(cov, 16, 4), 1);
+        EQ(coverage_at(cov, 17, 4), 1);
+        EQ(coverage_at(cov, 18, 4), 0);
+        EQ(ink(cov), 27);
+        coverage_free(cov);
+        shape_free(s);
+    }
+    S(F, "A pen in device space does not") {
+        Matrix3 m = scaling(3, 1);
+        Shape s = segment(mul(m, point(5.5, 0.5)), mul(m, point(5.5, 9.5)), 1);
+        CoverageBuffer *cov = rasterize(s, 24, 10);
+        EQ(coverage_at(cov, 15, 4), 0);
+        EQ(coverage_at(cov, 16, 4), 1);
+        EQ(coverage_at(cov, 17, 4), 0);
+        EQ(ink(cov), 9);
+        coverage_free(cov);
+    }
+    S(F, "Dividing the width by approx_scale makes the two pens agree") {
+        Matrix3 m = scaling(2, 2);
+        Shape s = transformed(segment(point(5.5, 0.5), point(5.5, 9.5), 1 / approx_scale(m)), m);
+        CoverageBuffer *cov = rasterize(s, 24, 20);
+        EQ(coverage_at(cov, 9, 5), 0);
+        EQ(coverage_at(cov, 10, 5), 0.5);
+        EQ(coverage_at(cov, 11, 5), 0.5);
+        EQ(coverage_at(cov, 12, 5), 0);
+        EQ(ink(cov), 18);
+        coverage_free(cov);
+        shape_free(s);
+    }
+    S(F, "Under a non-uniform scale the compromise shows") {
+        Matrix3 m = scaling(4, 1);
+        double w = 1 / approx_scale(m);
+        Shape v = transformed(segment(point(2.5, 0.5), point(2.5, 9.5), w), m);
+        Shape h = transformed(segment(point(0.5, 5.5), point(4.5, 5.5), w), m);
+        CoverageBuffer *cv = rasterize(v, 24, 12);
+        CoverageBuffer *ch = rasterize(h, 24, 12);
+        EQ(coverage_at(cv, 8, 5), 0);
+        EQ(coverage_at(cv, 9, 5), 1);
+        EQ(coverage_at(cv, 10, 5), 1);
+        EQ(coverage_at(cv, 11, 5), 0);
+        EQ(ink(cv), 18);
+        EQ(coverage_at(ch, 10, 4), 0);
+        EQ(coverage_at(ch, 10, 5), 0.5);
+        EQ(coverage_at(ch, 10, 6), 0);
+        EQ(ink(ch), 8);
+        coverage_free(cv); coverage_free(ch);
+        shape_free(v); shape_free(h);
+    }
+    S(F, "An outline is one shape, so its corners are painted once") {
+        Tuple pts[] = { point(1.5, 1.5), point(6.5, 1.5), point(6.5, 6.5), point(1.5, 6.5) };
+        Canvas *c = canvas(8, 8);
+        Shape s = outline(pts, 4, identity(), 1);
+        CoverageBuffer *cov = rasterize(s, 8, 8);
+        paint_through(c, cov, color(1, 1, 1));
+        static PixelList lit;
+        lit_pixels(c, &lit);
+        EQI(lit.n, 20);
+        EQC(pixel_at(c, 3, 1), 1, 1, 1);
+        EQC(pixel_at(c, 1, 3), 1, 1, 1);
+        EQC(pixel_at(c, 1, 1), 0.75, 0.75, 0.75);
+        EQC(pixel_at(c, 3, 3), 0, 0, 0);
+        EQC(pixel_at(c, 0, 1), 0, 0, 0);
+        EQ(total_ink(c), 19);
+        coverage_free(cov); shape_free(s); canvas_free(c);
+    }
+    S(F, "An outline takes its points through the matrix first") {
+        Tuple pts[] = { point(1.5, 1.5), point(6.5, 1.5), point(6.5, 6.5), point(1.5, 6.5) };
+        Canvas *c = canvas(16, 16);
+        Shape s = outline(pts, 4, scaling(2, 2), 1);
+        CoverageBuffer *cov = rasterize(s, 16, 16);
+        paint_through(c, cov, color(1, 1, 1));
+        static PixelList lit;
+        lit_pixels(c, &lit);
+        EQI(lit.n, 76);
+        EQC(pixel_at(c, 3, 3), 0.75, 0.75, 0.75);
+        EQC(pixel_at(c, 8, 2), 0.5, 0.5, 0.5);
+        EQC(pixel_at(c, 8, 3), 0.5, 0.5, 0.5);
+        EQC(pixel_at(c, 8, 4), 0, 0, 0);
+        coverage_free(cov); shape_free(s); canvas_free(c);
+    }
+}
+
+/* ============ features/chapter04-plate.feature ======================== */
+static void feature_plate_04(void) {
+    const char *F = "Plate 4";
+
+    S(F, "The fan as points") {
+        Tuple pts[FAN_POINTS];
+        int n = fan_points(pts);
+        EQI(n, 13);
+        EQT(pts[0], point(0, 0));
+        EQT(pts[1], point(36, 0));
+        EQT(pts[4], point(0, 36));
+        EQT(pts[7], point(-36, 0));
+        EQT(pts[2], point(31.1769, 18));
+    }
+    S(F, "Rotate, then translate: the fan turns about its own center") {
+        Matrix3 m = mul(translation(104.5, 76.5), rotation(PI / 6));
+        Tuple in[FAN_POINTS], pts[FAN_POINTS];
+        int n = fan_points(in);
+        transform_points(in, n, m, pts);
+        EQT(pts[0], point(104.5, 76.5));
+        EQT(pts[1], point(135.6769, 94.5));
+        EQT(pts[4], point(86.5, 107.6769));
+    }
+    S(F, "Translate, then rotate: the fan swings about the canvas corner") {
+        Matrix3 m = mul(rotation(PI / 6), translation(104.5, 76.5));
+        Tuple in[FAN_POINTS], pts[FAN_POINTS];
+        int n = fan_points(in);
+        transform_points(in, n, m, pts);
+        EQT(pts[0], point(52.2497, 118.5009));
+        EQT(pts[1], point(83.4266, 136.5009));
+    }
+    S(F, "The letter F") {
+        Tuple f[LETTER_F_POINTS];
+        int n = letter_f(f);
+        EQI(n, 10);
+        EQT(f[0], point(-20, -30));
+        EQT(f[1], point(20, -30));
+        EQT(f[5], point(12, -5));
+        EQT(f[9], point(-20, 30));
+    }
+    S(F, "The F at home") {
+        Tuple in[LETTER_F_POINTS], f[LETTER_F_POINTS];
+        int n = letter_f(in);
+        transform_points(in, n, translation(44.5, 44.5), f);
+        EQT(f[0], point(24.5, 14.5));
+        EQT(f[1], point(64.5, 14.5));
+        EQT(f[9], point(24.5, 74.5));
+    }
+    S(F, "The F, rotated then translated") {
+        Matrix3 m = mul(translation(104.5, 76.5), rotation(PI / 6));
+        Tuple in[LETTER_F_POINTS], f[LETTER_F_POINTS];
+        int n = letter_f(in);
+        transform_points(in, n, m, f);
+        EQT(f[0], point(102.1795, 40.5192));
+        EQT(f[1], point(136.8205, 60.5192));
+        EQT(f[5], point(117.3923, 78.1699));
+        EQT(f[9], point(72.1795, 92.4808));
+    }
+    S(F, "The F, translated then rotated") {
+        Matrix3 m = mul(rotation(PI / 6), translation(104.5, 76.5));
+        Tuple in[LETTER_F_POINTS], f[LETTER_F_POINTS];
+        int n = letter_f(in);
+        transform_points(in, n, m, f);
+        EQT(f[0], point(49.9291, 82.5202));
+        EQT(f[1], point(84.5702, 102.5202));
+        EQT(f[5], point(65.142, 120.1708));
+        EQT(f[9], point(19.9291, 134.4817));
+    }
+    S(F, "The fan, both orders") {
+        Canvas *c = fan_both_orders();
+        Bytes ref = read_file("reference/chapter-04/fan-both-orders.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 320);
+        EQI(c->height, 160);
+        EQP1(p6, 104,  76, 246, 246, 241);
+        EQP1(p6, 124,  76, 246, 246, 241);
+        EQP1(p6, 104,  56, 246, 246, 241);
+        EQP1(p6, 125,  88, 236, 236, 231);
+        EQP1(p6, 116,  97, 236, 236, 231);
+        EQP1(p6, 141,  76,  39,  39,  44);
+        EQP1(p6,  10,  10,  39,  39,  44);
+        EQP1(p6, 212, 118, 246, 246, 241);
+        EQP1(p6, 232, 118, 246, 246, 241);
+        EQP1(p6, 233, 130, 223, 223, 219);
+        EQP1(p6, 224, 139, 236, 236, 231);
+        EQP1(p6, 200, 139, 211, 211, 207);
+        EQP1(p6, 310,  10,  39,  39,  44);
+        if (!ref.data) h_fail("could not read reference/chapter-04/fan-both-orders.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
+    }
+    S(F, "Plate 4") {
+        Canvas *c = plate_04();
+        Bytes ref = read_file("reference/chapter-04/plate-04.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 640);
+        EQI(c->height, 320);
+        EQP1(p6,  48,  28,  99,  99, 102);
+        EQP1(p6,  80,  28, 111, 111, 115);
+        EQP1(p6,  48, 100, 111, 111, 115);
+        EQP1(p6,  10,  10,  39,  39,  44);
+        EQP1(p6, 200, 150,  39,  39,  44);
+        EQP1(p6, 268, 129, 237, 237, 233);
+        EQP1(p6, 215, 145, 237, 237, 233);
+        EQP1(p6, 239, 101, 237, 237, 233);
+        EQP1(p6, 174, 173, 217, 217, 213);
+        EQP1(p6, 368,  28,  99,  99, 102);
+        EQP1(p6, 500,  60,  39,  39,  44);
+        EQP1(p6, 453, 207, 236, 236, 231);
+        EQP1(p6, 431, 229, 234, 234, 229);
+        EQP1(p6, 445, 249, 234, 234, 229);
+        EQP1(p6, 368, 273, 177, 177, 174);
+        if (!ref.data) h_fail("could not read reference/chapter-04/plate-04.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
+    }
+}
+
 #include <time.h>
 #define T(f) do { clock_t _s = clock(); f(); if (getenv("TIMING")) fprintf(stderr, "  %-22s %6.1f ms\n", #f, (clock()-_s)*1000.0/CLOCKS_PER_SEC); } while (0)
 
@@ -1162,6 +1772,14 @@ int main(void) {
     T(feature_quad);
     T(feature_plate_03);
     h_subtotal("chapter 3");
+
+    T(feature_tuples);
+    T(feature_matrices);
+    T(feature_transforms);
+    T(feature_scale);
+    T(feature_ch4_shapes);
+    T(feature_plate_04);
+    h_subtotal("chapter 4");
     h_report();
     return h_failed ? 1 : 0;
 }

@@ -85,6 +85,15 @@ func beginsWith(_ bytes: [UInt8], _ prefix: String, _ label: String) throws {
     let head = Array(bytes.prefix(p.count))
     try step(head == p, "\(label): begins with \(String(decoding: head, as: UTF8.self).debugDescription)")
 }
+func eqT(_ a: Tuple, _ b: Tuple, _ label: String) throws {
+    try step(a.equals(b), "\(label): (\(a.x), \(a.y), \(a.w)) != (\(b.x), \(b.y), \(b.w))")
+}
+func eqM(_ a: Matrix3, _ b: Matrix3, _ label: String) throws {
+    try step(a.equals(b), "\(label): \(a.cells) != \(b.cells)")
+}
+func neM(_ a: Matrix3, _ b: Matrix3, _ label: String) throws {
+    try step(!a.equals(b), "\(label): matrices unexpectedly equal (\(a.cells))")
+}
 
 func runTests() {
     chapter(1)
@@ -1113,6 +1122,521 @@ func runTests() {
         try eqPx(ppmPixel(p6, 200, 185), (246, 246, 241), 1, "ppm_pixel(p6, 200, 185)")
         try eqPx(ppmPixel(p6, 520, 183), (163, 163, 161), 1, "ppm_pixel(p6, 520, 183)")
         try eqPx(ppmPixel(p6, 520, 185), (199, 199, 196), 1, "ppm_pixel(p6, 520, 185)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+
+    chapter(4)
+    // =============================================== chapter04-tuples.feature
+    feature("Points and vectors")
+
+    scenario("A point has w = 1") {
+        let p = point(4, -4)
+        try eq(p.x, 4, EPSILON, "p.x")
+        try eq(p.y, -4, EPSILON, "p.y")
+        try eq(p.w, 1, EPSILON, "p.w")
+    }
+    scenario("A vector has w = 0") {
+        let v = vector(4, -4)
+        try eq(v.x, 4, EPSILON, "v.x")
+        try eq(v.y, -4, EPSILON, "v.y")
+        try eq(v.w, 0, EPSILON, "v.w")
+    }
+    scenario("The difference of two points is the vector between them") {
+        let a = point(3, 2), b = point(5, 6)
+        try eqT(b - a, vector(2, 4), "b - a")
+        try eqT(a - b, vector(-2, -4), "a - b")
+    }
+    scenario("A point plus a vector is a point") {
+        let p = point(3, -2), v = vector(-2, 3)
+        try eqT(p + v, point(1, 1), "p + v")
+        try eqT(p - v, point(5, -5), "p - v")
+    }
+    scenario("A vector plus a vector is a vector") {
+        let a = vector(3, -2), b = vector(-2, 3)
+        try eqT(a + b, vector(1, 1), "a + b")
+        try eqT(a - b, vector(5, -5), "a - b")
+    }
+    scenario("Negating, scaling and dividing a vector") {
+        let v = vector(1, -2)
+        try eqT(-v, vector(-1, 2), "-v")
+        try eqT(v * 3.5, vector(3.5, -7), "v * 3.5")
+        try eqT(v * 0.5, vector(0.5, -1), "v * 0.5")
+        try eqT(v / 2, vector(0.5, -1), "v / 2")
+    }
+    scenario("The magnitude of a vector") {
+        try eq(magnitude(vector(1, 0)), 1, EPSILON, "magnitude(vector(1, 0))")
+        try eq(magnitude(vector(0, 1)), 1, EPSILON, "magnitude(vector(0, 1))")
+        try eq(magnitude(vector(3, 4)), 5, EPSILON, "magnitude(vector(3, 4))")
+        try eq(magnitude(vector(-3, -4)), 5, EPSILON, "magnitude(vector(-3, -4))")
+        try eq(magnitude(vector(-1, -2)), 2.2361, EPSILON, "magnitude(vector(-1, -2))")
+    }
+    scenario("Normalizing a vector") {
+        try eqT(normalize(vector(4, 0)), vector(1, 0), "normalize(vector(4, 0))")
+        try eqT(normalize(vector(1, 2)), vector(0.4472, 0.8944), "normalize(vector(1, 2))")
+        try eq(magnitude(normalize(vector(1, 2))), 1, EPSILON, "magnitude(normalize(vector(1, 2)))")
+    }
+    scenario("The dot product of two vectors") {
+        let a = vector(1, 2), b = vector(2, 3)
+        try eq(dot(a, b), 8, EPSILON, "dot(a, b)")
+        try eq(dot(a, vector(-2, 1)), 0, EPSILON, "dot(a, vector(-2, 1))")
+    }
+    scenario("The cross product of two vectors is a number") {
+        let a = vector(1, 0), b = vector(0, 1)
+        try eq(cross(a, b), 1, EPSILON, "cross(a, b)")
+        try eq(cross(b, a), -1, EPSILON, "cross(b, a)")
+        try eq(cross(a, a), 0, EPSILON, "cross(a, a)")
+        try eq(cross(vector(2, 3), vector(4, 5)), -2, EPSILON, "cross(vector(2, 3), vector(4, 5))")
+    }
+    scenario("The sign of the cross product says which side of a line a point is on") {
+        let a = point(0, 0), b = point(10, 0)
+        try eq(cross(b - a, point(5, 3) - a), 30, EPSILON, "cross(b - a, point(5, 3) - a)")
+        try eq(cross(b - a, point(5, -3) - a), -30, EPSILON, "cross(b - a, point(5, -3) - a)")
+        try eq(cross(b - a, point(20, 0) - a), 0, EPSILON, "cross(b - a, point(20, 0) - a)")
+    }
+
+    // ============================================= chapter04-matrices.feature
+    feature("Matrices")
+
+    scenario("Constructing and inspecting a matrix") {
+        let M = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+        try eq(M[0, 0], 1, EPSILON, "M[0, 0]")
+        try eq(M[0, 2], 3, EPSILON, "M[0, 2]")
+        try eq(M[1, 0], 4, EPSILON, "M[1, 0]")
+        try eq(M[1, 1], 5, EPSILON, "M[1, 1]")
+        try eq(M[2, 0], 7, EPSILON, "M[2, 0]")
+        try eq(M[2, 2], 9, EPSILON, "M[2, 2]")
+        try eqM(M, matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9), "M = matrix3(1..9)")
+    }
+    scenario("Matrix equality with identical matrices") {
+        let A = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+        let B = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+        try eqM(A, B, "A = B")
+    }
+    scenario("Matrix equality with different matrices") {
+        let A = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+        let B = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 8)
+        try neM(A, B, "A != B")
+    }
+    scenario("Multiplying two matrices") {
+        let A = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+        let B = matrix3(2, -1, 0, 1, 3, 1, 0, 1, 2)
+        try eqM(A * B, matrix3(4, 8, 8, 13, 17, 17, 22, 26, 26), "A * B")
+    }
+    scenario("Matrix multiplication is not commutative") {
+        let A = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+        let B = matrix3(2, -1, 0, 1, 3, 1, 0, 1, 2)
+        try neM(A * B, B * A, "A * B != B * A")
+    }
+    scenario("A matrix multiplied by a point") {
+        let A = matrix3(1, 2, 3, 4, 5, 6, 0, 0, 1)
+        let p = point(1, 2)
+        try eqT(A * p, point(8, 20), "A * p")
+    }
+    scenario("A matrix multiplied by a vector ignores the last column") {
+        let A = matrix3(1, 2, 3, 4, 5, 6, 0, 0, 1)
+        let v = vector(1, 2)
+        try eqT(A * v, vector(5, 14), "A * v")
+    }
+    scenario("Multiplying by the identity matrix changes nothing") {
+        let A = matrix3(0, 1, 2, 1, 2, 4, 2, 4, 8)
+        let p = point(1, 2)
+        try eqM(A * identity(), A, "A * identity()")
+        try eqM(identity() * A, A, "identity() * A")
+        try eqT(identity() * p, p, "identity() * p")
+    }
+    scenario("Transposing a matrix") {
+        let A = matrix3(0, 9, 3, 9, 8, 0, 1, 8, 5)
+        try eqM(transpose(A), matrix3(0, 9, 1, 9, 8, 8, 3, 0, 5), "transpose(A)")
+    }
+    scenario("Transposing the identity matrix") {
+        try eqM(transpose(identity()), identity(), "transpose(identity())")
+    }
+    scenario("The determinant of a 3 by 3 matrix") {
+        let A = matrix3(1, 2, 6, -5, 8, -4, 2, 6, 4)
+        try eq(determinant(A), -196, EPSILON, "determinant(A)")
+    }
+    scenario("The determinant of a transform is the area factor") {
+        try eq(determinant(identity()), 1, EPSILON, "determinant(identity())")
+        try eq(determinant(scaling(2, 3)), 6, EPSILON, "determinant(scaling(2, 3))")
+        try eq(determinant(rotation(0.7)), 1, EPSILON, "determinant(rotation(0.7))")
+        try eq(determinant(translation(4, 9)), 1, EPSILON, "determinant(translation(4, 9))")
+        try eq(determinant(scaling(-1, 1)), -1, EPSILON, "determinant(scaling(-1, 1))")
+    }
+    scenario("Testing an invertible matrix for invertibility") {
+        let A = matrix3(3, 0, 2, 2, 0, -2, 0, 1, 1)
+        try eq(determinant(A), 10, EPSILON, "determinant(A)")
+        try eqBool(isInvertible(A), true, "is_invertible(A)")
+    }
+    scenario("Testing a non-invertible matrix for invertibility") {
+        let A = matrix3(1, 2, 3, 2, 4, 6, 0, 0, 1)
+        try eq(determinant(A), 0, EPSILON, "determinant(A)")
+        try eqBool(isInvertible(A), false, "is_invertible(A)")
+    }
+    scenario("Calculating the inverse of a matrix") {
+        let A = matrix3(3, 0, 2, 2, 0, -2, 0, 1, 1)
+        let B = inverse(A)
+        try eq(B[0, 0], 0.2, EPSILON, "B[0, 0]")
+        try eq(B[1, 2], 1, EPSILON, "B[1, 2]")
+        try eq(B[2, 1], -0.3, EPSILON, "B[2, 1]")
+        try eqM(B, matrix3(0.2, 0.2, 0, -0.2, 0.3, 1, 0.2, -0.3, 0), "B is the following matrix")
+        try eqM(A * B, identity(), "A * B = identity()")
+    }
+    scenario("Multiplying a product by its inverse") {
+        let A = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9)
+        let B = matrix3(2, -1, 0, 1, 3, 1, 0, 1, 2)
+        let C = A * B
+        try eqM(C * inverse(B), A, "C * inverse(B)")
+    }
+    scenario("The inverse of a transform is a transform") {
+        let A = translation(5, -3) * rotation(Double.pi / 6) * scaling(2, 3)
+        let B = inverse(A)
+        try eq(B[2, 0], 0, EPSILON, "B[2, 0]")
+        try eq(B[2, 1], 0, EPSILON, "B[2, 1]")
+        try eq(B[2, 2], 1, EPSILON, "B[2, 2]")
+        try eq(B[0, 0], 0.4330, EPSILON, "B[0, 0]")
+        try eq(B[0, 2], -1.4151, EPSILON, "B[0, 2]")
+        try eq(B[1, 2], 1.6994, EPSILON, "B[1, 2]")
+        try eqM(B * A, identity(), "B * A")
+    }
+
+    // =========================================== chapter04-transforms.feature
+    feature("The transforms")
+
+    scenario("Multiplying by a translation matrix") {
+        let t = translation(5, -3), p = point(-3, 4)
+        try eqT(t * p, point(2, 1), "t * p")
+    }
+    scenario("The inverse of a translation moves the other way") {
+        let t = translation(5, -3), p = point(-3, 4)
+        try eqT(inverse(t) * p, point(-8, 7), "inverse(t) * p")
+    }
+    scenario("Translation does not affect vectors") {
+        let t = translation(5, -3), v = vector(-3, 4)
+        try eqT(t * v, v, "t * v")
+    }
+    scenario("A scaling matrix applied to a point") {
+        let s = scaling(2, 3), p = point(-4, 6)
+        try eqT(s * p, point(-8, 18), "s * p")
+    }
+    scenario("A scaling matrix applied to a vector") {
+        let s = scaling(2, 3), v = vector(-4, 6)
+        try eqT(s * v, vector(-8, 18), "s * v")
+    }
+    scenario("The inverse of a scaling shrinks") {
+        let s = scaling(2, 3), v = vector(-4, 6)
+        try eqT(inverse(s) * v, vector(-2, 2), "inverse(s) * v")
+    }
+    scenario("Reflection is scaling by a negative value") {
+        let s = scaling(-1, 1), p = point(2, 3)
+        try eqT(s * p, point(-2, 3), "s * p")
+    }
+    scenario("A positive rotation turns x toward y") {
+        let p = point(1, 0)
+        try eqT(rotation(Double.pi / 4) * p, point(0.7071, 0.7071), "rotation(pi/4) * p")
+        try eqT(rotation(Double.pi / 2) * p, point(0, 1), "rotation(pi/2) * p")
+        try eqT(rotation(Double.pi) * p, point(-1, 0), "rotation(pi) * p")
+    }
+    scenario("The inverse of a rotation turns the other way") {
+        let p = point(1, 0)
+        try eqT(inverse(rotation(Double.pi / 4)) * p, point(0.7071, -0.7071), "inverse(rotation(pi/4)) * p")
+        try eqT(rotation(-Double.pi / 4) * p, point(0.7071, -0.7071), "rotation(-pi/4) * p")
+    }
+    scenario("A rotation preserves length") {
+        let v = vector(3, 4)
+        try eq(magnitude(rotation(1.2) * v), 5, EPSILON, "magnitude(rotation(1.2) * v)")
+        try eq(magnitude(rotation(-2.8) * v), 5, EPSILON, "magnitude(rotation(-2.8) * v)")
+    }
+    scenario("Shearing moves x in proportion to y") {
+        let s = shearing(1, 0), p = point(2, 3)
+        try eqT(s * p, point(5, 3), "s * p")
+    }
+    scenario("Shearing moves y in proportion to x") {
+        let s = shearing(0, 1), p = point(2, 3)
+        try eqT(s * p, point(2, 5), "s * p")
+    }
+    scenario("Individual transformations are applied in sequence") {
+        let p = point(1, 0)
+        let A = rotation(Double.pi / 2), B = scaling(5, 5), C = translation(10, 5)
+        let p2 = A * p
+        let p3 = B * p2
+        let p4 = C * p3
+        try eqT(p2, point(0, 1), "p2")
+        try eqT(p3, point(0, 5), "p3")
+        try eqT(p4, point(10, 10), "p4")
+    }
+    scenario("Chained transformations must be applied in reverse order") {
+        let p = point(1, 0)
+        let A = rotation(Double.pi / 2), B = scaling(5, 5), C = translation(10, 5)
+        let T = C * B * A
+        try eqT(T * p, point(10, 10), "T * p")
+    }
+    scenario("The other order is a different transform") {
+        let p = point(1, 0)
+        let A = rotation(Double.pi / 2), B = scaling(5, 5), C = translation(10, 5)
+        let T = A * B * C
+        try eqT(T * p, point(-25, 55), "T * p")
+    }
+    scenario("Rotating about a point that isn't the origin") {
+        let T = translation(4, 4) * rotation(Double.pi / 2) * translation(-4, -4)
+        try eqT(T * point(6, 4), point(4, 6), "T * point(6, 4)")
+        try eqT(T * point(4, 4), point(4, 4), "T * point(4, 4)")
+    }
+
+    // =============================================== chapter04-scale.feature
+    feature("How big is a transform")
+
+    scenario("The identity, a translation and a rotation don't stretch") {
+        try eq(approxScale(identity()), 1, EPSILON, "approx_scale(identity())")
+        try eq(approxScale(translation(7, 9)), 1, EPSILON, "approx_scale(translation(7, 9))")
+        try eq(approxScale(rotation(1.1)), 1, EPSILON, "approx_scale(rotation(1.1))")
+    }
+    scenario("A uniform scale is reported exactly") {
+        try eq(approxScale(scaling(2, 2)), 2, EPSILON, "approx_scale(scaling(2, 2))")
+        try eq(approxScale(scaling(0.5, 0.5)), 0.5, EPSILON, "approx_scale(scaling(0.5, 0.5))")
+        try eq(approxScale(scaling(3, 3) * rotation(0.7)), 3, EPSILON, "approx_scale(scaling(3,3)*rotation(0.7))")
+        try eq(approxScale(translation(5, 5) * scaling(3, 3)), 3, EPSILON, "approx_scale(translation(5,5)*scaling(3,3))")
+    }
+    scenario("A reflection is not a negative scale") {
+        try eq(approxScale(scaling(-2, 2)), 2, EPSILON, "approx_scale(scaling(-2, 2))")
+    }
+    scenario("A non-uniform scale is reported as the geometric mean") {
+        try eq(approxScale(scaling(4, 1)), 2, EPSILON, "approx_scale(scaling(4, 1))")
+        try eq(approxScale(scaling(4, 1) * rotation(0.4)), 2, EPSILON, "approx_scale(scaling(4,1)*rotation(0.4))")
+        try eq(approxScale(scaling(9, 1)), 3, EPSILON, "approx_scale(scaling(9, 1))")
+    }
+    scenario("A shear that preserves area reports 1") {
+        try eq(approxScale(shearing(1, 0)), 1, EPSILON, "approx_scale(shearing(1, 0))")
+        try eq(approxScale(shearing(0.5, 0.5)), 0.8660, EPSILON, "approx_scale(shearing(0.5, 0.5))")
+    }
+    scenario("A collapsed transform reports 0") {
+        try eq(approxScale(scaling(0, 1)), 0, EPSILON, "approx_scale(scaling(0, 1))")
+        try eq(approxScale(matrix3(1, 2, 0, 2, 4, 0, 0, 0, 1)), 0, EPSILON, "approx_scale(matrix3(...))")
+    }
+
+    // ============================================== chapter04-shapes.feature
+    feature("Transforming what you draw")
+
+    scenario("A segment between pixel centers is a thick line") {
+        let s = segment(point(2.5, 2.5), point(11.5, 5.5), 1)
+        let cov = rasterize(s, 16, 10)
+        try eq(coverageAt(cov, 2, 2), 0.484375, EPSILON, "coverage_at(cov, 2, 2)")
+        try eq(coverageAt(cov, 6, 3), 0.6875, EPSILON, "coverage_at(cov, 6, 3)")
+        try eq(coverageAt(cov, 7, 3), 0.359375, EPSILON, "coverage_at(cov, 7, 3)")
+        try eq(ink(cov), 9.4063, EPSILON, "ink(cov)")
+    }
+    scenario("A segment need not start on a pixel center") {
+        let s = segment(point(1, 3.5), point(7, 3.5), 1)
+        let cov = rasterize(s, 10, 10)
+        try eq(coverageAt(cov, 0, 3), 0, EPSILON, "coverage_at(cov, 0, 3)")
+        try eq(coverageAt(cov, 1, 3), 1, EPSILON, "coverage_at(cov, 1, 3)")
+        try eq(coverageAt(cov, 6, 3), 1, EPSILON, "coverage_at(cov, 6, 3)")
+        try eq(coverageAt(cov, 7, 3), 0, EPSILON, "coverage_at(cov, 7, 3)")
+        try eq(coverageAt(cov, 3, 2), 0, EPSILON, "coverage_at(cov, 3, 2)")
+        try eq(ink(cov), 6, EPSILON, "ink(cov)")
+    }
+    scenario("A segment of no length is a square") {
+        let s = segment(point(3.5, 3.5), point(3.5, 3.5), 1)
+        let cov = rasterize(s, 8, 8)
+        try eq(coverageAt(cov, 3, 3), 1, EPSILON, "coverage_at(cov, 3, 3)")
+        try eq(ink(cov), 1, EPSILON, "ink(cov)")
+    }
+    scenario("A union is inside when any of its parts is") {
+        let s = union([circle(2, 2, 1), rectangle(5, 0, 7, 4)])
+        try eqBool(inside(s, 2, 2), true, "inside(s, 2, 2)")
+        try eqBool(inside(s, 6, 1), true, "inside(s, 6, 1)")
+        try eqBool(inside(s, 4, 2), false, "inside(s, 4, 2)")
+        try eq(ink(rasterize(s, 8, 8)), 11.25, EPSILON, "ink(rasterize(s, 8, 8))")
+    }
+    scenario("A circle seen through a scale is an ellipse") {
+        let s = transformed(circle(0, 0, 4), scaling(2, 1))
+        try eqBool(inside(s, 7.9, 0), true, "inside(s, 7.9, 0)")
+        try eqBool(inside(s, 8.1, 0), false, "inside(s, 8.1, 0)")
+        try eqBool(inside(s, 0, 3.9), true, "inside(s, 0, 3.9)")
+        try eqBool(inside(s, 0, 4.1), false, "inside(s, 0, 4.1)")
+        try eqBool(inside(s, 5.6, 1.4), true, "inside(s, 5.6, 1.4)")
+        try eqBool(inside(s, 5.6, 2.9), false, "inside(s, 5.6, 2.9)")
+    }
+    scenario("The transform is applied in the order the matrix says") {
+        let s = transformed(circle(0, 0, 4), translation(10, 10) * scaling(2, 1))
+        try eqBool(inside(s, 10, 10), true, "inside(s, 10, 10)")
+        try eqBool(inside(s, 17.9, 10), true, "inside(s, 17.9, 10)")
+        try eqBool(inside(s, 18.1, 10), false, "inside(s, 18.1, 10)")
+        try eqBool(inside(s, 10, 13.9), true, "inside(s, 10, 13.9)")
+        try eqBool(inside(s, 10, 14.1), false, "inside(s, 10, 14.1)")
+    }
+    scenario("A shape seen through a collapsed transform is empty") {
+        let s = transformed(circle(0, 0, 4), scaling(0, 1))
+        try eqBool(inside(s, 0, 0), false, "inside(s, 0, 0)")
+        try eq(ink(rasterize(s, 10, 10)), 0, EPSILON, "ink(rasterize(s, 10, 10))")
+    }
+    scenario("A pen in shape space scales with the shape") {
+        let s = transformed(thickLine(5, 0, 5, 9, 1), scaling(3, 1))
+        let cov = rasterize(s, 24, 10)
+        try eq(coverageAt(cov, 14, 4), 0, EPSILON, "coverage_at(cov, 14, 4)")
+        try eq(coverageAt(cov, 15, 4), 1, EPSILON, "coverage_at(cov, 15, 4)")
+        try eq(coverageAt(cov, 16, 4), 1, EPSILON, "coverage_at(cov, 16, 4)")
+        try eq(coverageAt(cov, 17, 4), 1, EPSILON, "coverage_at(cov, 17, 4)")
+        try eq(coverageAt(cov, 18, 4), 0, EPSILON, "coverage_at(cov, 18, 4)")
+        try eq(ink(cov), 27, EPSILON, "ink(cov)")
+    }
+    scenario("A pen in device space does not") {
+        let m = scaling(3, 1)
+        let s = segment(m * point(5.5, 0.5), m * point(5.5, 9.5), 1)
+        let cov = rasterize(s, 24, 10)
+        try eq(coverageAt(cov, 15, 4), 0, EPSILON, "coverage_at(cov, 15, 4)")
+        try eq(coverageAt(cov, 16, 4), 1, EPSILON, "coverage_at(cov, 16, 4)")
+        try eq(coverageAt(cov, 17, 4), 0, EPSILON, "coverage_at(cov, 17, 4)")
+        try eq(ink(cov), 9, EPSILON, "ink(cov)")
+    }
+    scenario("Dividing the width by approx_scale makes the two pens agree") {
+        let m = scaling(2, 2)
+        let s = transformed(segment(point(5.5, 0.5), point(5.5, 9.5), 1 / approxScale(m)), m)
+        let cov = rasterize(s, 24, 20)
+        try eq(coverageAt(cov, 9, 5), 0, EPSILON, "coverage_at(cov, 9, 5)")
+        try eq(coverageAt(cov, 10, 5), 0.5, EPSILON, "coverage_at(cov, 10, 5)")
+        try eq(coverageAt(cov, 11, 5), 0.5, EPSILON, "coverage_at(cov, 11, 5)")
+        try eq(coverageAt(cov, 12, 5), 0, EPSILON, "coverage_at(cov, 12, 5)")
+        try eq(ink(cov), 18, EPSILON, "ink(cov)")
+    }
+    scenario("Under a non-uniform scale the compromise shows") {
+        let m = scaling(4, 1)
+        let w = 1 / approxScale(m)
+        let v = transformed(segment(point(2.5, 0.5), point(2.5, 9.5), w), m)
+        let h = transformed(segment(point(0.5, 5.5), point(4.5, 5.5), w), m)
+        let cv = rasterize(v, 24, 12)
+        let ch = rasterize(h, 24, 12)
+        try eq(coverageAt(cv, 8, 5), 0, EPSILON, "coverage_at(cv, 8, 5)")
+        try eq(coverageAt(cv, 9, 5), 1, EPSILON, "coverage_at(cv, 9, 5)")
+        try eq(coverageAt(cv, 10, 5), 1, EPSILON, "coverage_at(cv, 10, 5)")
+        try eq(coverageAt(cv, 11, 5), 0, EPSILON, "coverage_at(cv, 11, 5)")
+        try eq(ink(cv), 18, EPSILON, "ink(cv)")
+        try eq(coverageAt(ch, 10, 4), 0, EPSILON, "coverage_at(ch, 10, 4)")
+        try eq(coverageAt(ch, 10, 5), 0.5, EPSILON, "coverage_at(ch, 10, 5)")
+        try eq(coverageAt(ch, 10, 6), 0, EPSILON, "coverage_at(ch, 10, 6)")
+        try eq(ink(ch), 8, EPSILON, "ink(ch)")
+    }
+    scenario("An outline is one shape, so its corners are painted once") {
+        let pts = [point(1.5, 1.5), point(6.5, 1.5), point(6.5, 6.5), point(1.5, 6.5)]
+        let c = canvas(8, 8)
+        paintThrough(c, rasterize(outline(pts, identity(), 1), 8, 8), color(1, 1, 1))
+        try eqI(litPixels(c).count, 20, "length(lit_pixels(c))")
+        try eqC(c.pixelAt(3, 1), color(1, 1, 1), "pixel_at(c, 3, 1)")
+        try eqC(c.pixelAt(1, 3), color(1, 1, 1), "pixel_at(c, 1, 3)")
+        try eqC(c.pixelAt(1, 1), color(0.75, 0.75, 0.75), "pixel_at(c, 1, 1)")
+        try eqC(c.pixelAt(3, 3), color(0, 0, 0), "pixel_at(c, 3, 3)")
+        try eqC(c.pixelAt(0, 1), color(0, 0, 0), "pixel_at(c, 0, 1)")
+        try eq(totalInk(c), 19, EPSILON, "total_ink(c)")
+    }
+    scenario("An outline takes its points through the matrix first") {
+        let pts = [point(1.5, 1.5), point(6.5, 1.5), point(6.5, 6.5), point(1.5, 6.5)]
+        let c = canvas(16, 16)
+        paintThrough(c, rasterize(outline(pts, scaling(2, 2), 1), 16, 16), color(1, 1, 1))
+        try eqI(litPixels(c).count, 76, "length(lit_pixels(c))")
+        try eqC(c.pixelAt(3, 3), color(0.75, 0.75, 0.75), "pixel_at(c, 3, 3)")
+        try eqC(c.pixelAt(8, 2), color(0.5, 0.5, 0.5), "pixel_at(c, 8, 2)")
+        try eqC(c.pixelAt(8, 3), color(0.5, 0.5, 0.5), "pixel_at(c, 8, 3)")
+        try eqC(c.pixelAt(8, 4), color(0, 0, 0), "pixel_at(c, 8, 4)")
+    }
+
+    // =============================================== chapter04-plate.feature
+    feature("Plate 4")
+
+    scenario("The fan as points") {
+        let pts = fanPoints()
+        try eqI(pts.count, 13, "length(pts)")
+        try eqT(pts[0], point(0, 0), "pts[0]")
+        try eqT(pts[1], point(36, 0), "pts[1]")
+        try eqT(pts[4], point(0, 36), "pts[4]")
+        try eqT(pts[7], point(-36, 0), "pts[7]")
+        try eqT(pts[2], point(31.1769, 18), "pts[2]")
+    }
+    scenario("Rotate, then translate: the fan turns about its own center") {
+        let m = translation(104.5, 76.5) * rotation(Double.pi / 6)
+        let pts = transformPoints(fanPoints(), m)
+        try eqT(pts[0], point(104.5, 76.5), "pts[0]")
+        try eqT(pts[1], point(135.6769, 94.5), "pts[1]")
+        try eqT(pts[4], point(86.5, 107.6769), "pts[4]")
+    }
+    scenario("Translate, then rotate: the fan swings about the canvas corner") {
+        let m = rotation(Double.pi / 6) * translation(104.5, 76.5)
+        let pts = transformPoints(fanPoints(), m)
+        try eqT(pts[0], point(52.2497, 118.5009), "pts[0]")
+        try eqT(pts[1], point(83.4266, 136.5009), "pts[1]")
+    }
+    scenario("The letter F") {
+        let f = letterF()
+        try eqI(f.count, 10, "length(f)")
+        try eqT(f[0], point(-20, -30), "f[0]")
+        try eqT(f[1], point(20, -30), "f[1]")
+        try eqT(f[5], point(12, -5), "f[5]")
+        try eqT(f[9], point(-20, 30), "f[9]")
+    }
+    scenario("The F at home") {
+        let f = transformPoints(letterF(), translation(44.5, 44.5))
+        try eqT(f[0], point(24.5, 14.5), "f[0]")
+        try eqT(f[1], point(64.5, 14.5), "f[1]")
+        try eqT(f[9], point(24.5, 74.5), "f[9]")
+    }
+    scenario("The F, rotated then translated") {
+        let m = translation(104.5, 76.5) * rotation(Double.pi / 6)
+        let f = transformPoints(letterF(), m)
+        try eqT(f[0], point(102.1795, 40.5192), "f[0]")
+        try eqT(f[1], point(136.8205, 60.5192), "f[1]")
+        try eqT(f[5], point(117.3923, 78.1699), "f[5]")
+        try eqT(f[9], point(72.1795, 92.4808), "f[9]")
+    }
+    scenario("The F, translated then rotated") {
+        let m = rotation(Double.pi / 6) * translation(104.5, 76.5)
+        let f = transformPoints(letterF(), m)
+        try eqT(f[0], point(49.9291, 82.5202), "f[0]")
+        try eqT(f[1], point(84.5702, 102.5202), "f[1]")
+        try eqT(f[5], point(65.142, 120.1708), "f[5]")
+        try eqT(f[9], point(19.9291, 134.4817), "f[9]")
+    }
+    scenario("The fan, both orders") {
+        let c = fanBothOrders()
+        let ref = readFile("reference/chapter-04/fan-both-orders.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 320, "c.width")
+        try eqI(c.height, 160, "c.height")
+        try eqPx(ppmPixel(p6, 104, 76), (246, 246, 241), 1, "ppm_pixel(p6, 104, 76)")
+        try eqPx(ppmPixel(p6, 124, 76), (246, 246, 241), 1, "ppm_pixel(p6, 124, 76)")
+        try eqPx(ppmPixel(p6, 104, 56), (246, 246, 241), 1, "ppm_pixel(p6, 104, 56)")
+        try eqPx(ppmPixel(p6, 125, 88), (236, 236, 231), 1, "ppm_pixel(p6, 125, 88)")
+        try eqPx(ppmPixel(p6, 116, 97), (236, 236, 231), 1, "ppm_pixel(p6, 116, 97)")
+        try eqPx(ppmPixel(p6, 141, 76), (39, 39, 44), 1, "ppm_pixel(p6, 141, 76)")
+        try eqPx(ppmPixel(p6, 10, 10), (39, 39, 44), 1, "ppm_pixel(p6, 10, 10)")
+        try eqPx(ppmPixel(p6, 212, 118), (246, 246, 241), 1, "ppm_pixel(p6, 212, 118)")
+        try eqPx(ppmPixel(p6, 232, 118), (246, 246, 241), 1, "ppm_pixel(p6, 232, 118)")
+        try eqPx(ppmPixel(p6, 233, 130), (223, 223, 219), 1, "ppm_pixel(p6, 233, 130)")
+        try eqPx(ppmPixel(p6, 224, 139), (236, 236, 231), 1, "ppm_pixel(p6, 224, 139)")
+        try eqPx(ppmPixel(p6, 200, 139), (211, 211, 207), 1, "ppm_pixel(p6, 200, 139)")
+        try eqPx(ppmPixel(p6, 310, 10), (39, 39, 44), 1, "ppm_pixel(p6, 310, 10)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+    scenario("Plate 4") {
+        let c = plate04()
+        let ref = readFile("reference/chapter-04/plate-04.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 640, "c.width")
+        try eqI(c.height, 320, "c.height")
+        try eqPx(ppmPixel(p6, 48, 28), (99, 99, 102), 1, "ppm_pixel(p6, 48, 28)")
+        try eqPx(ppmPixel(p6, 80, 28), (111, 111, 115), 1, "ppm_pixel(p6, 80, 28)")
+        try eqPx(ppmPixel(p6, 48, 100), (111, 111, 115), 1, "ppm_pixel(p6, 48, 100)")
+        try eqPx(ppmPixel(p6, 10, 10), (39, 39, 44), 1, "ppm_pixel(p6, 10, 10)")
+        try eqPx(ppmPixel(p6, 200, 150), (39, 39, 44), 1, "ppm_pixel(p6, 200, 150)")
+        try eqPx(ppmPixel(p6, 268, 129), (237, 237, 233), 1, "ppm_pixel(p6, 268, 129)")
+        try eqPx(ppmPixel(p6, 215, 145), (237, 237, 233), 1, "ppm_pixel(p6, 215, 145)")
+        try eqPx(ppmPixel(p6, 239, 101), (237, 237, 233), 1, "ppm_pixel(p6, 239, 101)")
+        try eqPx(ppmPixel(p6, 174, 173), (217, 217, 213), 1, "ppm_pixel(p6, 174, 173)")
+        try eqPx(ppmPixel(p6, 368, 28), (99, 99, 102), 1, "ppm_pixel(p6, 368, 28)")
+        try eqPx(ppmPixel(p6, 500, 60), (39, 39, 44), 1, "ppm_pixel(p6, 500, 60)")
+        try eqPx(ppmPixel(p6, 453, 207), (236, 236, 231), 1, "ppm_pixel(p6, 453, 207)")
+        try eqPx(ppmPixel(p6, 431, 229), (234, 234, 229), 1, "ppm_pixel(p6, 431, 229)")
+        try eqPx(ppmPixel(p6, 445, 249), (234, 234, 229), 1, "ppm_pixel(p6, 445, 249)")
+        try eqPx(ppmPixel(p6, 368, 273), (177, 177, 174), 1, "ppm_pixel(p6, 368, 273)")
         let d = maxChannelDifference(p6, ref)
         try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
     }

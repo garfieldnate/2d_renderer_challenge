@@ -18,15 +18,15 @@ fn assert_pixel_within(p6: &[u8], x: usize, y: usize, expected: (i64, i64, i64),
 #[test]
 fn the_sixty_four_sample_points() {
     let s = half_plane(2.5, 0.0, 1.0, 0.0);
-    assert!(approx_eq(coverage(s, 2, 4), 0.5));
-    assert!(approx_eq(coverage(s, 1, 4), 0.0));
-    assert!(approx_eq(coverage(s, 3, 4), 1.0));
+    assert!(approx_eq(coverage(&s, 2, 4), 0.5));
+    assert!(approx_eq(coverage(&s, 1, 4), 0.0));
+    assert!(approx_eq(coverage(&s, 3, 4), 1.0));
 }
 
 #[test]
 fn a_rectangle_is_covered_exactly_when_its_edges_land_on_sample_boundaries() {
     let s = rectangle(1.25, 2.0, 4.75, 5.0);
-    let cov = rasterize(s, 8, 8);
+    let cov = rasterize(&s, 8, 8);
     assert!(approx_eq(coverage_at(&cov, 0, 2), 0.0));
     assert!(approx_eq(coverage_at(&cov, 1, 2), 0.75));
     assert!(approx_eq(coverage_at(&cov, 2, 2), 1.0));
@@ -41,7 +41,7 @@ fn a_rectangle_is_covered_exactly_when_its_edges_land_on_sample_boundaries() {
 #[test]
 fn neither_need_the_buffer_be_square_here() {
     let s = rectangle(0.0, 0.0, 2.0, 1.0);
-    let cov = rasterize(s, 4, 2);
+    let cov = rasterize(&s, 4, 2);
     assert_eq!(cov.width, 4);
     assert_eq!(cov.height, 2);
     assert!(approx_eq(coverage_at(&cov, 1, 0), 1.0));
@@ -53,19 +53,19 @@ fn neither_need_the_buffer_be_square_here() {
 #[test]
 fn a_half_plane_through_a_pixel_center_covers_half_of_it() {
     let s = half_plane(2.5, 4.5, 0.6, 0.8);
-    assert!(approx_eq(coverage(s, 2, 4), 0.5));
+    assert!(approx_eq(coverage(&s, 2, 4), 0.5));
 }
 
 #[test]
 fn except_when_the_grid_conspires() {
     let s = half_plane(2.5, 4.5, 1.0, 1.0);
-    assert!(approx_eq(coverage(s, 2, 4), 0.5625));
+    assert!(approx_eq(coverage(&s, 2, 4), 0.5625));
 }
 
 #[test]
 fn a_disc_is_only_ever_approximately_covered() {
     let s = circle(8.0, 8.0, 5.0);
-    let cov = rasterize(s, 16, 16);
+    let cov = rasterize(&s, 16, 16);
     assert!(approx_eq(coverage_at(&cov, 8, 8), 1.0));
     assert!(approx_eq(coverage_at(&cov, 3, 8), 0.96875));
     assert!(approx_eq(coverage_at(&cov, 12, 8), 0.96875));

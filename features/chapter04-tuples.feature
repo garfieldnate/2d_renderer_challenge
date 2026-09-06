@@ -58,6 +58,10 @@ Feature: Points and vectors
     Then  dot(a, b) = 8
     And   dot(a, vector(-2, 1)) = 0
 
+  Scenario: magnitude and dot look at x and y only
+    Then  magnitude(point(3, 4)) = 5
+    And   dot(point(1, 2), point(2, 3)) = 8
+
   Scenario: The cross product of two vectors is a number
     Given a ← vector(1, 0)
     And   b ← vector(0, 1)

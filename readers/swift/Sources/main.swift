@@ -38,6 +38,19 @@ func render() {
     try! Data(canvasToP6(cov)).write(to: URL(fileURLWithPath: "out/fan-coverage.ppm"))
     print("wrote out/fan-coverage.ppm")
     print(String(format: "fan_coverage() took %.3fs", dt))
+
+    // fan_both_orders() and plate_04() are five 160x160 rasterizations
+    // between them (two for the fan, three -- a ghost plus each order --
+    // for the F), about the same work as fan_coverage. Timed together.
+    let t1 = Date()
+    let fbo = fanBothOrders()
+    try! Data(canvasToP6(fbo)).write(to: URL(fileURLWithPath: "out/fan-both-orders.ppm"))
+    print("wrote out/fan-both-orders.ppm")
+    let p4 = plate04()
+    try! Data(canvasToP6(p4)).write(to: URL(fileURLWithPath: "out/plate-04.ppm"))
+    print("wrote out/plate-04.ppm")
+    let dt1 = Date().timeIntervalSince(t1)
+    print(String(format: "fan_both_orders() + plate_04() took %.3fs", dt1))
 }
 
 if args.count > 1 && args[1] == "render" {

@@ -2,6 +2,7 @@
 import os
 import sys
 import re
+import math
 from pathlib import Path
 
 # Import the renderer module
@@ -52,40 +53,54 @@ def parse_features(feature_file):
                     keyword = step_line.split()[0]
                     step_text = ' '.join(step_line.split()[1:])
 
-                    # Handle multi-line steps with docstrings
+                    # Handle multi-line steps with docstrings or tables
                     docstring = None
-                    if i + 1 < len(lines) and '"""' in lines[i + 1]:
-                        i += 1
-                        docstring_lines = []
-                        # First line may have opening """
-                        first_line = lines[i]
-                        if first_line.strip().startswith('"""'):
-                            first_line = first_line.strip()[3:]
-                        else:
-                            first_line = first_line.rstrip()
-                        if first_line:
-                            docstring_lines.append(first_line)
-
-                        i += 1
-                        while i < len(lines):
-                            block_line = lines[i]
-                            if '"""' in block_line:
-                                # Closing quotes
-                                before_quotes = block_line.split('"""')[0].rstrip()
-                                if before_quotes:
-                                    docstring_lines.append(before_quotes)
-                                break
-                            docstring_lines.append(block_line.rstrip())
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        if '"""' in next_line:
                             i += 1
+                            docstring_lines = []
+                            # First line may have opening """
+                            first_line = lines[i]
+                            if first_line.strip().startswith('"""'):
+                                first_line = first_line.strip()[3:]
+                            else:
+                                first_line = first_line.rstrip()
+                            if first_line:
+                                docstring_lines.append(first_line)
 
-                        # Strip common leading whitespace from docstring
-                        if docstring_lines:
-                            # Find minimum indentation (ignoring empty lines)
-                            non_empty_lines = [l for l in docstring_lines if l.strip()]
-                            if non_empty_lines:
-                                min_indent = min(len(l) - len(l.lstrip()) for l in non_empty_lines)
-                                docstring_lines = [l[min_indent:] if len(l) > min_indent else l.lstrip() for l in docstring_lines]
-                        docstring = '\n'.join(docstring_lines)
+                            i += 1
+                            while i < len(lines):
+                                block_line = lines[i]
+                                if '"""' in block_line:
+                                    # Closing quotes
+                                    before_quotes = block_line.split('"""')[0].rstrip()
+                                    if before_quotes:
+                                        docstring_lines.append(before_quotes)
+                                    break
+                                docstring_lines.append(block_line.rstrip())
+                                i += 1
+
+                            # Strip common leading whitespace from docstring
+                            if docstring_lines:
+                                # Find minimum indentation (ignoring empty lines)
+                                non_empty_lines = [l for l in docstring_lines if l.strip()]
+                                if non_empty_lines:
+                                    min_indent = min(len(l) - len(l.lstrip()) for l in non_empty_lines)
+                                    docstring_lines = [l[min_indent:] if len(l) > min_indent else l.lstrip() for l in docstring_lines]
+                            docstring = '\n'.join(docstring_lines)
+                        elif next_line.startswith('|'):
+                            # Handle Gherkin table
+                            table_lines = []
+                            i += 1
+                            while i < len(lines):
+                                table_line = lines[i].strip()
+                                if not table_line.startswith('|'):
+                                    break
+                                table_lines.append(table_line)
+                                i += 1
+                            i -= 1  # Back up one since the outer loop will increment
+                            docstring = '\n'.join(table_lines)
 
                     steps.append((keyword, step_text, docstring))
                 i += 1
@@ -216,6 +231,39 @@ def evaluate_expression(expr_str, ctx):
             'fan_wu': renderer.fan_wu,
             'fan_coverage': renderer.fan_coverage,
             'plate_03': renderer.plate_03,
+            # Chapter 4
+            'Tuple': renderer.Tuple,
+            'point': renderer.point,
+            'vector': renderer.vector,
+            'magnitude': renderer.magnitude,
+            'normalize': renderer.normalize,
+            'dot': renderer.dot,
+            'cross': renderer.cross,
+            'Matrix3': renderer.Matrix3,
+            'matrix3': renderer.matrix3,
+            'identity': renderer.identity,
+            'transpose': renderer.transpose,
+            'determinant': renderer.determinant,
+            'is_invertible': renderer.is_invertible,
+            'inverse': renderer.inverse,
+            'translation': renderer.translation,
+            'scaling': renderer.scaling,
+            'rotation': renderer.rotation,
+            'shearing': renderer.shearing,
+            'approx_scale': renderer.approx_scale,
+            'transform_points': renderer.transform_points,
+            'segment': renderer.segment,
+            'union': renderer.union,
+            'transformed': renderer.transformed,
+            'outline': renderer.outline,
+            'side_by_side': renderer.side_by_side,
+            'fan_points': renderer.fan_points,
+            'fan_transformed': renderer.fan_transformed,
+            'fan_both_orders': renderer.fan_both_orders,
+            'letter_f': renderer.letter_f,
+            'f_both_orders': renderer.f_both_orders,
+            'plate_04': renderer.plate_04,
+            'π': math.pi,
         }
         namespace.update(ctx.variables)
 
@@ -231,6 +279,12 @@ def compare_values(left_val, right_val, op, tolerance=0.0001):
             return (abs(left_val.red - right_val.red) <= tolerance and
                     abs(left_val.green - right_val.green) <= tolerance and
                     abs(left_val.blue - right_val.blue) <= tolerance)
+        elif isinstance(left_val, renderer.Tuple) and isinstance(right_val, renderer.Tuple):
+            return (abs(left_val.x - right_val.x) <= tolerance and
+                    abs(left_val.y - right_val.y) <= tolerance and
+                    abs(left_val.w - right_val.w) <= tolerance)
+        elif isinstance(left_val, renderer.Matrix3) and isinstance(right_val, renderer.Matrix3):
+            return all(abs(a - b) <= tolerance for a, b in zip(left_val.values, right_val.values))
         elif isinstance(left_val, (int, float)) and isinstance(right_val, (int, float)):
             return abs(left_val - right_val) <= tolerance
         elif isinstance(left_val, tuple) and isinstance(right_val, tuple):
@@ -253,6 +307,29 @@ def compare_values(left_val, right_val, op, tolerance=0.0001):
 
 def execute_step(step_keyword, step_text, ctx, docstring=None):
     """Execute a single step and update context."""
+    # Handle "Given the following matrix M:" with docstring table
+    match = re.match(r'the following matrix (\w+):', step_text)
+    if match and docstring:
+        matrix_name = match.group(1)
+        # Parse the table from docstring
+        lines = docstring.strip().split('\n')
+        values = []
+        for line in lines:
+            # Each line should be like "| 1 | 2 | 3 |"
+            cells = [c.strip() for c in line.split('|')]
+            cells = [c for c in cells if c]  # Remove empty strings
+            try:
+                values.extend([float(c) for c in cells])
+            except ValueError:
+                return False, f"Could not parse matrix values in line: {line}"
+
+        if len(values) != 9:
+            return False, f"Matrix must have 9 values, got {len(values)}"
+
+        matrix = renderer.matrix3(*values)
+        ctx.set(matrix_name, matrix)
+        return True, None
+
     # Handle assignment: var ← expr
     if '←' in step_text:
         parts = step_text.split('←', 1)  # Split only on the first arrow
@@ -272,6 +349,32 @@ def execute_step(step_keyword, step_text, ctx, docstring=None):
                 return True, None
             except:
                 pass  # Fall through to other handlers
+
+    # Handle "X is the following matrix:" with docstring table
+    match = re.match(r'(\w+)\s+is the following matrix:', step_text)
+    if match and docstring:
+        matrix_var = match.group(1)
+        # Parse the table from docstring
+        lines = docstring.strip().split('\n')
+        values = []
+        for line in lines:
+            # Each line should be like "| 1 | 2 | 3 |"
+            cells = [c.strip() for c in line.split('|')]
+            cells = [c for c in cells if c]  # Remove empty strings
+            try:
+                values.extend([float(c) for c in cells])
+            except ValueError:
+                return False, f"Could not parse matrix values in line: {line}"
+
+        if len(values) != 9:
+            return False, f"Matrix must have 9 values, got {len(values)}"
+
+        expected_matrix = renderer.matrix3(*values)
+        actual_matrix = ctx.get(matrix_var)
+
+        if not compare_values(actual_matrix, expected_matrix, '=', 0.0001):
+            return False, f"Matrix {matrix_var} does not match expected values"
+        return True, None
 
     # Handle Given steps with "every pixel of c is color(...)"
     if step_text.startswith('every pixel of'):

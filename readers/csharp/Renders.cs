@@ -268,4 +268,99 @@ public static class Renders
         }
         return Magnifier.Magnify(both, 2);
     }
+
+    // -----------------------------------------------------------------
+    // Chapter 4 - the same fan, described as points around the origin and
+    // pushed through matrices instead of drawn in pixels; and a letter F,
+    // which unlike the fan has no symmetry to hide a wrong transform.
+    // -----------------------------------------------------------------
+
+    /// <summary>The center, then twelve points at radius 36, every 30 degrees.</summary>
+    public static List<Tuple2> FanPoints()
+    {
+        var pts = new List<Tuple2> { Tuple2.Point(0, 0) };
+        for (int k = 0; k < 12; k++)
+        {
+            double a = k * 30.0 * Math.PI / 180.0;
+            pts.Add(Tuple2.Point(36 * Math.Cos(a), 36 * Math.Sin(a)));
+        }
+        return pts;
+    }
+
+    /// <summary>The fan's points through m, drawn as one union of segments.</summary>
+    public static Canvas FanTransformed(Matrix3 m)
+    {
+        var c = new Canvas(160, 160);
+        c.Fill(FanPaper);
+        var pts = Matrix3.TransformPoints(FanPoints(), m);
+        var rays = new IShape[12];
+        for (int k = 1; k <= 12; k++) rays[k - 1] = new Segment(pts[0], pts[k], 1);
+        var cov = Rasterizer.Rasterize(new Union(rays), 160, 160);
+        Paint.PaintThrough(c, cov, FanInk);
+        return c;
+    }
+
+    /// <summary>The fan drawn through rotation(pi/6) then translation, and through the same two matrices the other order, side by side.</summary>
+    public static Canvas FanBothOrders()
+    {
+        var turn = Matrix3.Rotation(Math.PI / 6);
+        var move = Matrix3.Translation(104.5, 76.5);
+        return SideBySide(FanTransformed(move * turn), FanTransformed(turn * move));
+    }
+
+    /// <summary>Ten corners, clockwise from the top left, in a 40-by-60 box centered on the origin.</summary>
+    public static List<Tuple2> LetterF() => new()
+    {
+        Tuple2.Point(-20, -30), Tuple2.Point(20, -30), Tuple2.Point(20, -20), Tuple2.Point(-10, -20),
+        Tuple2.Point(-10, -5), Tuple2.Point(12, -5), Tuple2.Point(12, 5), Tuple2.Point(-10, 5),
+        Tuple2.Point(-10, 30), Tuple2.Point(-20, 30),
+    };
+
+    private static readonly Color GhostInk = new(0.16, 0.16, 0.17);
+
+    /// <summary>
+    /// A dim, untransformed F for reference, copied into two canvases, then
+    /// the F drawn through move * turn on one and turn * move on the other.
+    /// </summary>
+    public static Canvas FBothOrders()
+    {
+        var turn = Matrix3.Rotation(Math.PI / 6);
+        var move = Matrix3.Translation(104.5, 76.5);
+        var home = Matrix3.Translation(44.5, 44.5);
+
+        var ghost = new Canvas(160, 160);
+        ghost.Fill(FanPaper);
+        Paint.PaintThrough(ghost, Rasterizer.Rasterize(Outline.Build(LetterF(), home, 1), 160, 160), GhostInk);
+
+        var a = CopyCanvas(ghost);
+        var b = CopyCanvas(ghost);
+        Paint.PaintThrough(a, Rasterizer.Rasterize(Outline.Build(LetterF(), move * turn, 1), 160, 160), FanInk);
+        Paint.PaintThrough(b, Rasterizer.Rasterize(Outline.Build(LetterF(), turn * move, 1), 160, 160), FanInk);
+
+        return SideBySide(a, b);
+    }
+
+    public static Canvas Plate04() => Magnifier.Magnify(FBothOrders(), 2);
+
+    /// <summary>Copies a into the left half of a canvas twice as wide, b into the right half.</summary>
+    private static Canvas SideBySide(Canvas a, Canvas b)
+    {
+        var both = new Canvas(a.Width + b.Width, Math.Max(a.Height, b.Height));
+        for (int y = 0; y < a.Height; y++)
+            for (int x = 0; x < a.Width; x++)
+                both.WritePixel(x, y, a.PixelAt(x, y));
+        for (int y = 0; y < b.Height; y++)
+            for (int x = 0; x < b.Width; x++)
+                both.WritePixel(x + a.Width, y, b.PixelAt(x, y));
+        return both;
+    }
+
+    private static Canvas CopyCanvas(Canvas c)
+    {
+        var copy = new Canvas(c.Width, c.Height);
+        for (int y = 0; y < c.Height; y++)
+            for (int x = 0; x < c.Width; x++)
+                copy.WritePixel(x, y, c.PixelAt(x, y));
+        return copy;
+    }
 }

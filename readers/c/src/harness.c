@@ -167,3 +167,37 @@ void h_same_pixels(const char *what, const Canvas *a, const Canvas *b) {
         print_list("b", lb.xy, lb.n);
     }
 }
+
+
+/* ---- chapter 4 --------------------------------------------------------- */
+void h_eqt(const char *what, Tuple a, Tuple b, double eps) {
+    if (fabs(a.x - b.x) <= eps && fabs(a.y - b.y) <= eps && fabs(a.w - b.w) <= eps) return;
+    h_fail("%s: got (%.6g, %.6g, w=%.6g), wanted (%.6g, %.6g, w=%.6g)",
+           what, a.x, a.y, a.w, b.x, b.y, b.w);
+}
+
+static int meq(Matrix3 a, Matrix3 b, double eps) {
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            if (!(fabs(a.m[r][c] - b.m[r][c]) <= eps)) return 0;
+    return 1;
+}
+
+static void print_matrix(const char *tag, Matrix3 m) {
+    for (int r = 0; r < 3; r++)
+        printf("        %s | %9.4f | %9.4f | %9.4f |\n",
+               r == 0 ? tag : "    ", m.m[r][0], m.m[r][1], m.m[r][2]);
+}
+
+void h_eqm(const char *what, Matrix3 a, Matrix3 b, double eps) {
+    if (meq(a, b, eps)) return;
+    h_fail("%s: entries differ", what);
+    print_matrix("got ", a);
+    print_matrix("want", b);
+}
+
+void h_nem(const char *what, Matrix3 a, Matrix3 b, double eps) {
+    if (!meq(a, b, eps)) return;
+    h_fail("%s: they are equal", what);
+    print_matrix("both", a);
+}

@@ -1,4 +1,4 @@
-/* Writes the chapters' pictures into out/: chapter 1's as P3, chapters 2 and 3's as P6. */
+/* Writes the chapters' pictures into out/: chapter 1's as P3, chapters 2 to 4's as P6. */
 #include "renderer.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,5 +41,8 @@ int main(void) {
     save_p6("out/fan-wu.ppm",        fan_wu());
     save_p6("out/fan-coverage.ppm",  fan_coverage());
     save_p6("out/plate-03.ppm",      plate_03());
+
+    save_p6("out/fan-both-orders.ppm", fan_both_orders());
+    save_p6("out/plate-04.ppm",        plate_04());
     return 0;
 }

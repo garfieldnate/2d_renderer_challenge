@@ -82,19 +82,20 @@ public sealed class HalfPlane : IShape
 
 /// <summary>
 /// A line, honestly: the rectangle of the given width centered on the
-/// segment from the center of pixel (x0, y0) to the center of pixel
-/// (x1, y1), with square ends. Four half-planes - through each end facing
-/// outward along the segment, and along each side offset by half the width
-/// facing inward - and inside means inside all four.
+/// segment from point a to point b, with square ends. Four half-planes -
+/// through each end facing outward along the segment, and along each side
+/// offset by half the width facing inward - and inside means inside all
+/// four. §4.5 calls this segment; chapter 3's thick_line, below, is the
+/// same shape given pixel indices instead of points.
 /// </summary>
-public sealed class ThickLine : IShape
+public sealed class Segment : IShape
 {
     private readonly HalfPlane[] _planes;
 
-    public ThickLine(double x0, double y0, double x1, double y1, double width)
+    public Segment(Tuple2 a, Tuple2 b, double width)
     {
-        double ax = x0 + 0.5, ay = y0 + 0.5;
-        double bx = x1 + 0.5, by = y1 + 0.5;
+        double ax = a.X, ay = a.Y;
+        double bx = b.X, by = b.Y;
         double dx = bx - ax, dy = by - ay;
         double length = Math.Sqrt(dx * dx + dy * dy);
         if (length > 0)
@@ -110,9 +111,10 @@ public sealed class ThickLine : IShape
         double nx = -dy, ny = dx;
         double half = width / 2.0;
 
-        // A zero-length line has no direction to be flush against, so its
-        // caps get pushed out by half the width too, same as its sides:
-        // the result is a width-by-width square, not a degenerate sliver.
+        // A zero-length segment has no direction to be flush against, so
+        // its caps get pushed out by half the width too, same as its
+        // sides: the result is a width-by-width square, not a degenerate
+        // sliver.
         double capOffset = length > 0 ? 0 : half;
         double sx = ax - capOffset * dx, sy = ay - capOffset * dy;
         double ex = bx + capOffset * dx, ey = by + capOffset * dy;
@@ -133,5 +135,90 @@ public sealed class ThickLine : IShape
             if (!_planes[i].Inside(x, y)) return false;
         }
         return true;
+    }
+}
+
+/// <summary>
+/// segment(point(x0 + 0.5, y0 + 0.5), point(x1 + 0.5, y1 + 0.5), width) -
+/// the segment between the centers of pixels (x0, y0) and (x1, y1). Exactly
+/// the one-liner §4.5 promises; every chapter 3 scenario still passes.
+/// </summary>
+public sealed class ThickLine : IShape
+{
+    private readonly Segment _segment;
+
+    public ThickLine(double x0, double y0, double x1, double y1, double width) :
+        this(new Segment(Tuple2.Point(x0 + 0.5, y0 + 0.5), Tuple2.Point(x1 + 0.5, y1 + 0.5), width))
+    {
+    }
+
+    private ThickLine(Segment segment) => _segment = segment;
+
+    public bool Inside(double x, double y) => _segment.Inside(x, y);
+}
+
+/// <summary>A shape that's inside when any of its parts is - a loop with an early exit.</summary>
+public sealed class Union : IShape
+{
+    private readonly IShape[] _shapes;
+
+    public Union(IEnumerable<IShape> shapes) => _shapes = shapes.ToArray();
+
+    public bool Inside(double x, double y)
+    {
+        foreach (var shape in _shapes)
+        {
+            if (shape.Inside(x, y)) return true;
+        }
+        return false;
+    }
+}
+
+/// <summary>
+/// A shape seen through a matrix. To decide whether a device point is
+/// inside the transformed shape, run the point backwards through the
+/// inverse and ask the original shape about the result - the shape never
+/// learns it's been transformed. A matrix with no inverse flattens
+/// everything to nothing: nothing can be inside it.
+/// </summary>
+public sealed class Transformed : IShape
+{
+    private readonly IShape _shape;
+    private readonly Matrix3? _inverse;
+
+    public Transformed(IShape shape, Matrix3 m)
+    {
+        _shape = shape;
+        _inverse = m.IsInvertible() ? m.Inverse() : (Matrix3?)null;
+    }
+
+    public bool Inside(double x, double y)
+    {
+        if (_inverse is null) return false;
+        var p = _inverse.Value * Tuple2.Point(x, y);
+        return _shape.Inside(p.X, p.Y);
+    }
+}
+
+/// <summary>
+/// The closed polygon through points, after m: every edge a segment of
+/// that width in device space, last point back to first, built as one
+/// shape. That's what makes a shared corner's coverage the coverage of the
+/// union - painted once - rather than the sum of two edges painted
+/// separately.
+/// </summary>
+public static class Outline
+{
+    public static IShape Build(IReadOnlyList<Tuple2> points, Matrix3 m, double width)
+    {
+        var transformed = points.Select(p => m * p).ToArray();
+        var segments = new IShape[transformed.Length];
+        for (int i = 0; i < transformed.Length; i++)
+        {
+            var a = transformed[i];
+            var b = transformed[(i + 1) % transformed.Length];
+            segments[i] = new Segment(a, b, width);
+        }
+        return new Union(segments);
     }
 }

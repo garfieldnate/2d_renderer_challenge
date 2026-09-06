@@ -602,31 +602,13 @@ func fanWu() -> Canvas {
 }
 
 // ---------------------------------------------------------------- § 3.3 the reveal
-/// A line is a shape: the rectangle of the given width centered on the
-/// segment from the center of pixel (x0, y0) to the center of pixel
-/// (x1, y1), with square ends. Four half-planes; a line of no length has no
-/// direction, so it gets (1, 0) and becomes a width-by-width square.
+/// A line is a shape. Chapter 4 factors the rectangle-of-half-planes logic
+/// out into `segment`, which takes real endpoints instead of pixel indices;
+/// thick_line becomes that one-liner, the pixel centers taken up front.
 func thickLine(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int, _ width: Double) -> Shape {
-    var ax = Double(x0) + 0.5, ay = Double(y0) + 0.5   // pixel centers
-    var bx = Double(x1) + 0.5, by = Double(y1) + 0.5
-    let h = width / 2
-    let length = hypot(bx - ax, by - ay)
-    var dx: Double, dy: Double
-    if length == 0 {
-        dx = 1; dy = 0
-        ax -= h; bx += h
-    } else {
-        dx = (bx - ax) / length                        // unit direction
-        dy = (by - ay) / length
-    }
-    let nx = -dy, ny = dx                               // unit normal
-    let ahead  = halfPlane(ax, ay, dx, dy)               // ahead of the start
-    let behind = halfPlane(bx, by, -dx, -dy)             // behind the end
-    let left   = halfPlane(ax + nx * h, ay + ny * h, -nx, -ny)   // inside the left side
-    let right  = halfPlane(ax - nx * h, ay - ny * h, nx, ny)     // inside the right side
-    return Shape { x, y in
-        inside(ahead, x, y) && inside(behind, x, y) && inside(left, x, y) && inside(right, x, y)
-    }
+    segment(point(Double(x0) + 0.5, Double(y0) + 0.5),
+            point(Double(x1) + 0.5, Double(y1) + 0.5),
+            width)
 }
 
 // ---------------------------------------------------------------- pictures
@@ -653,3 +635,279 @@ func plate03() -> Canvas {
     }
     return magnify(both, 2)
 }
+
+// ==================================================================
+// Chapter 4 -- Points, Vectors, Transforms
+// ==================================================================
+
+// ---------------------------------------------------------------- § 4.1 points and vectors
+/// A point is a place, a vector is a displacement: both are (x, y, w) with
+/// w = 1 for a point and w = 0 for a vector, so the matrices in §4.2 can
+/// tell them apart from the arithmetic alone.
+struct Tuple {
+    var x: Double
+    var y: Double
+    var w: Double
+}
+
+func point(_ x: Double, _ y: Double) -> Tuple { Tuple(x: x, y: y, w: 1) }
+func vector(_ x: Double, _ y: Double) -> Tuple { Tuple(x: x, y: y, w: 0) }
+
+extension Tuple {
+    func equals(_ o: Tuple, _ eps: Double = EPSILON) -> Bool {
+        equal(x, o.x, eps) && equal(y, o.y, eps) && equal(w, o.w, eps)
+    }
+}
+
+func + (a: Tuple, b: Tuple) -> Tuple { Tuple(x: a.x + b.x, y: a.y + b.y, w: a.w + b.w) }
+func - (a: Tuple, b: Tuple) -> Tuple { Tuple(x: a.x - b.x, y: a.y - b.y, w: a.w - b.w) }
+prefix func - (a: Tuple) -> Tuple { Tuple(x: -a.x, y: -a.y, w: -a.w) }
+func * (a: Tuple, s: Double) -> Tuple { Tuple(x: a.x * s, y: a.y * s, w: a.w * s) }
+func / (a: Tuple, s: Double) -> Tuple { Tuple(x: a.x / s, y: a.y / s, w: a.w / s) }
+
+func magnitude(_ v: Tuple) -> Double { hypot(v.x, v.y) }
+func normalize(_ v: Tuple) -> Tuple {
+    let m = magnitude(v)
+    return Tuple(x: v.x / m, y: v.y / m, w: v.w / m)
+}
+func dot(_ a: Tuple, _ b: Tuple) -> Double { a.x * b.x + a.y * b.y }
+/// The 2-D cross product is a number, not a vector: the signed area of the
+/// parallelogram a and b span. Positive means b is counterclockwise from a
+/// in the numbers -- clockwise on a canvas, because y points down.
+func cross(_ a: Tuple, _ b: Tuple) -> Double { a.x * b.y - a.y * b.x }
+
+// ---------------------------------------------------------------- § 4.2 matrices
+/// Nine numbers, row by row. M[r, c] is the entry at row r, column c, both
+/// counted from zero.
+struct Matrix3 {
+    var cells: [Double]
+
+    subscript(_ r: Int, _ c: Int) -> Double { cells[r * 3 + c] }
+}
+
+func matrix3(_ a: Double, _ b: Double, _ c: Double,
+             _ d: Double, _ e: Double, _ f: Double,
+             _ g: Double, _ h: Double, _ i: Double) -> Matrix3 {
+    Matrix3(cells: [a, b, c, d, e, f, g, h, i])
+}
+
+func identity() -> Matrix3 { matrix3(1, 0, 0, 0, 1, 0, 0, 0, 1) }
+
+extension Matrix3 {
+    func equals(_ o: Matrix3, _ eps: Double = EPSILON) -> Bool {
+        zip(cells, o.cells).allSatisfy { equal($0, $1, eps) }
+    }
+}
+
+/// (A * B)[r, c] is the dot product of row r of A with column c of B.
+func * (a: Matrix3, b: Matrix3) -> Matrix3 {
+    var cells = [Double](repeating: 0, count: 9)
+    for r in 0..<3 {
+        for c in 0..<3 {
+            cells[r * 3 + c] = a[r, 0] * b[0, c] + a[r, 1] * b[1, c] + a[r, 2] * b[2, c]
+        }
+    }
+    return Matrix3(cells: cells)
+}
+
+/// A matrix times a tuple, treating (x, y, w) as a column. Every matrix in
+/// this book has a bottom row of 0 0 1, so the third dot product always
+/// comes out as w unchanged: points stay points, vectors stay vectors.
+func * (a: Matrix3, t: Tuple) -> Tuple {
+    Tuple(x: a[0, 0] * t.x + a[0, 1] * t.y + a[0, 2] * t.w,
+          y: a[1, 0] * t.x + a[1, 1] * t.y + a[1, 2] * t.w,
+          w: a[2, 0] * t.x + a[2, 1] * t.y + a[2, 2] * t.w)
+}
+
+func transpose(_ m: Matrix3) -> Matrix3 {
+    matrix3(m[0, 0], m[1, 0], m[2, 0],
+            m[0, 1], m[1, 1], m[2, 1],
+            m[0, 2], m[1, 2], m[2, 2])
+}
+
+/// The 2x2 determinant left when row r and column c are deleted.
+func minor(_ m: Matrix3, _ r: Int, _ c: Int) -> Double {
+    let rows = (0..<3).filter { $0 != r }
+    let cols = (0..<3).filter { $0 != c }
+    return m[rows[0], cols[0]] * m[rows[1], cols[1]] - m[rows[0], cols[1]] * m[rows[1], cols[0]]
+}
+
+func cofactor(_ m: Matrix3, _ r: Int, _ c: Int) -> Double {
+    (r + c) % 2 != 0 ? -minor(m, r, c) : minor(m, r, c)
+}
+
+/// A cofactor expansion along the first row.
+func determinant(_ m: Matrix3) -> Double {
+    m[0, 0] * cofactor(m, 0, 0) + m[0, 1] * cofactor(m, 0, 1) + m[0, 2] * cofactor(m, 0, 2)
+}
+
+func isInvertible(_ m: Matrix3) -> Bool { determinant(m) != 0 }
+
+/// The matrix of cofactors, transposed, divided by the determinant. The
+/// transpose happens in the assignment itself: result[c, r], not [r, c].
+func inverse(_ m: Matrix3) -> Matrix3 {
+    let d = determinant(m)
+    var cells = [Double](repeating: 0, count: 9)
+    for r in 0..<3 {
+        for c in 0..<3 {
+            cells[c * 3 + r] = cofactor(m, r, c) / d
+        }
+    }
+    return Matrix3(cells: cells)
+}
+
+// ---------------------------------------------------------------- § 4.3 the transforms
+func translation(_ tx: Double, _ ty: Double) -> Matrix3 { matrix3(1, 0, tx, 0, 1, ty, 0, 0, 1) }
+func scaling(_ sx: Double, _ sy: Double) -> Matrix3 { matrix3(sx, 0, 0, 0, sy, 0, 0, 0, 1) }
+/// A positive angle turns the x axis toward the y axis: counterclockwise on
+/// paper, clockwise on a canvas whose y points down.
+func rotation(_ r: Double) -> Matrix3 {
+    let c = cos(r), s = sin(r)
+    return matrix3(c, -s, 0, s, c, 0, 0, 0, 1)
+}
+func shearing(_ xy: Double, _ yx: Double) -> Matrix3 { matrix3(1, xy, 0, yx, 1, 0, 0, 0, 1) }
+
+// ---------------------------------------------------------------- § 4.4 how big is a transform
+/// The square root of the area factor: exact for uniform scales and
+/// rotations, a compromise (the geometric mean of the axis factors) for
+/// non-uniform scales and shears. The absolute value handles a reflection,
+/// whose determinant is negative but which is still a scale of 1.
+func approxScale(_ m: Matrix3) -> Double {
+    sqrt(abs(m[0, 0] * m[1, 1] - m[0, 1] * m[1, 0]))
+}
+
+// ---------------------------------------------------------------- § 4.5 transforming what you draw
+/// The rectangle of the given width centered on the segment from a to b,
+/// square ends: four half-planes. A segment of no length has no direction,
+/// so it gets (1, 0) and becomes a width-by-width square -- the same rule
+/// thick_line used, one dimension up (real coordinates, not pixel indices).
+func segment(_ a: Tuple, _ b: Tuple, _ width: Double) -> Shape {
+    var ax = a.x, ay = a.y, bx = b.x, by = b.y
+    let h = width / 2
+    let length = hypot(bx - ax, by - ay)
+    var dx: Double, dy: Double
+    if length == 0 {
+        dx = 1; dy = 0
+        ax -= h; bx += h
+    } else {
+        dx = (bx - ax) / length
+        dy = (by - ay) / length
+    }
+    let nx = -dy, ny = dx
+    let ahead  = halfPlane(ax, ay, dx, dy)
+    let behind = halfPlane(bx, by, -dx, -dy)
+    let left   = halfPlane(ax + nx * h, ay + ny * h, -nx, -ny)
+    let right  = halfPlane(ax - nx * h, ay - ny * h, nx, ny)
+    return Shape { x, y in
+        inside(ahead, x, y) && inside(behind, x, y) && inside(left, x, y) && inside(right, x, y)
+    }
+}
+
+/// A shape that's inside when any of its parts is: one more case in
+/// `inside`, a loop with an early exit.
+func union(_ shapes: [Shape]) -> Shape {
+    Shape { x, y in shapes.contains { inside($0, x, y) } }
+}
+
+/// The shape seen through m: to test a device point, run it backwards
+/// through the inverse and ask the original. A shape with no inverse can't
+/// have anything inside it -- nothing can be inside a shape flattened to a
+/// line.
+func transformed(_ s: Shape, _ m: Matrix3) -> Shape {
+    guard isInvertible(m) else { return Shape { _, _ in false } }
+    let inv = inverse(m)
+    return Shape { x, y in
+        let p = inv * point(x, y)
+        return inside(s, p.x, p.y)
+    }
+}
+
+func transformPoints(_ points: [Tuple], _ m: Matrix3) -> [Tuple] {
+    points.map { m * $0 }
+}
+
+/// The closed polygon through the points after m, every edge a segment of
+/// that width in device space, as one shape -- so a corner shared by two
+/// edges is painted once by the union's coverage, not twice by each edge.
+func outline(_ points: [Tuple], _ m: Matrix3, _ width: Double) -> Shape {
+    let pts = transformPoints(points, m)
+    var segs: [Shape] = []
+    for i in 0..<pts.count {
+        segs.append(segment(pts[i], pts[(i + 1) % pts.count], width))
+    }
+    return union(segs)
+}
+
+// ---------------------------------------------------------------- § 4.6 putting it together
+/// Copies a canvas pixel for pixel -- used to stamp the same ghost onto two
+/// canvases before drawing each order of the F on top of one of them.
+func copyCanvas(_ c: Canvas) -> Canvas {
+    let out = canvas(c.width, c.height)
+    for y in 0..<c.height { for x in 0..<c.width { out.writePixel(x, y, c.pixelAt(x, y)) } }
+    return out
+}
+
+/// a into the left half of a wider canvas, b into the right.
+func sideBySide(_ a: Canvas, _ b: Canvas) -> Canvas {
+    let out = canvas(a.width + b.width, max(a.height, b.height))
+    for y in 0..<a.height { for x in 0..<a.width { out.writePixel(x, y, a.pixelAt(x, y)) } }
+    for y in 0..<b.height { for x in 0..<b.width { out.writePixel(a.width + x, y, b.pixelAt(x, y)) } }
+    return out
+}
+
+/// Twelve points around the origin, real coordinates, no rounding: the
+/// center first, then twelve ends at radius 36.
+func fanPoints() -> [Tuple] {
+    var pts = [point(0, 0)]
+    for k in 0..<12 {
+        let a = Double(k) * 30.0 * Double.pi / 180.0
+        pts.append(point(36 * cos(a), 36 * sin(a)))
+    }
+    return pts
+}
+
+func fanTransformed(_ m: Matrix3) -> Canvas {
+    let c = canvas(160, 160)
+    fill(c, color(0.02, 0.02, 0.025))
+    let pts = transformPoints(fanPoints(), m)
+    var rays: [Shape] = []
+    for k in 1...12 { rays.append(segment(pts[0], pts[k], 1)) }
+    paintThrough(c, rasterize(union(rays), 160, 160), color(0.92, 0.92, 0.88))
+    return c
+}
+
+func fanBothOrders() -> Canvas {
+    let turn = rotation(Double.pi / 6)
+    let move = translation(104.5, 76.5)
+    return sideBySide(fanTransformed(move * turn), fanTransformed(turn * move))
+}
+
+/// Ten corners, clockwise from the top left, in a box 40 wide and 60 tall
+/// centered on the origin, so a rotation about the origin is a rotation
+/// about the letter's middle.
+func letterF() -> [Tuple] {
+    [point(-20, -30), point(20, -30), point(20, -20), point(-10, -20),
+     point(-10, -5),  point(12, -5),  point(12, 5),   point(-10, 5),
+     point(-10, 30),  point(-20, 30)]
+}
+
+func fGhost() -> Canvas {
+    let c = canvas(160, 160)
+    fill(c, color(0.02, 0.02, 0.025))
+    let home = translation(44.5, 44.5)
+    paintThrough(c, rasterize(outline(letterF(), home, 1), 160, 160), color(0.16, 0.16, 0.17))
+    return c
+}
+
+func fBothOrders() -> Canvas {
+    let turn = rotation(Double.pi / 6)
+    let move = translation(104.5, 76.5)
+    let ghost = fGhost()
+    let a = copyCanvas(ghost), b = copyCanvas(ghost)
+    let inkColor = color(0.92, 0.92, 0.88)
+    paintThrough(a, rasterize(outline(letterF(), move * turn, 1), 160, 160), inkColor)
+    paintThrough(b, rasterize(outline(letterF(), turn * move, 1), 160, 160), inkColor)
+    return sideBySide(a, b)
+}
+
+func plate04() -> Canvas { magnify(fBothOrders(), 2) }

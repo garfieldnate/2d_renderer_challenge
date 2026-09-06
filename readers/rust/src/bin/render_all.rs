@@ -8,8 +8,8 @@ use std::path::Path;
 
 use renderer::{
     canvas_to_p6, canvas_to_ppm, clamp_pair, disc_centers, disc_coverage, fan_bresenham,
-    fan_coverage, fan_wu, gray_match, painted_twice, plate_01, plate_02, plate_03, quarter_match,
-    ramp,
+    fan_both_orders, fan_coverage, fan_wu, gray_match, painted_twice, plate_01, plate_02,
+    plate_03, plate_04, quarter_match, ramp,
 };
 
 fn write_p3(dir: &Path, name: &str, ppm: String) {
@@ -43,5 +43,9 @@ fn main() {
     write_p6(out, "fan-coverage.ppm", canvas_to_p6(&fan_coverage()));
     write_p6(out, "plate-03.ppm", canvas_to_p6(&plate_03()));
 
-    println!("wrote 13 renders to out/");
+    // Chapter 4: same P6 writer again.
+    write_p6(out, "fan-both-orders.ppm", canvas_to_p6(&fan_both_orders()));
+    write_p6(out, "plate-04.ppm", canvas_to_p6(&plate_04()));
+
+    println!("wrote 15 renders to out/");
 }

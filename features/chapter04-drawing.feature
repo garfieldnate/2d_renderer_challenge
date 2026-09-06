@@ -11,8 +11,10 @@ Feature: Transforming what you draw
     Given s ← segment(point(2.5, 2.5), point(11.5, 5.5), 1)
     When  cov ← rasterize(s, 16, 10)
     Then  coverage_at(cov, 2, 2) = 0.484375
+    And   coverage_at(cov, 11, 5) = 0.484375
     And   coverage_at(cov, 6, 3) = 0.6875
     And   coverage_at(cov, 7, 3) = 0.359375
+    And   coverage_at(cov, 2, 1) = 0
     And   ink(cov) = 9.4063
 
   Scenario: A segment need not start on a pixel center
@@ -30,6 +32,11 @@ Feature: Transforming what you draw
     When  cov ← rasterize(s, 8, 8)
     Then  coverage_at(cov, 3, 3) = 1
     And   ink(cov) = 1
+
+  Scenario: A union of nothing is inside nowhere
+    Given s ← union([])
+    Then  inside(s, 0, 0) = false
+    And   ink(rasterize(s, 4, 4)) = 0
 
   Scenario: A union is inside when any of its parts is
     Given s ← union([circle(2, 2, 1), rectangle(5, 0, 7, 4)])
