@@ -63,7 +63,10 @@
     in any order; the sweep sorts crossings again on every row, so the table's order only has to
     be good enough to know which edges to bring in next. The tests reach into an entry with
     <code>t[0].y_top</code> and friends, and <code>x_at(edge, y)</code> is the one computation an
-    edge knows how to do: <code>x_top + (y - y_top) · slope</code>.</p>
+    edge knows how to do: <code>x_top + (y - y_top) · slope</code>. The slope is
+    <code>(x_bottom - x_top) / (y_bottom - y_top)</code>, and that's real division: the scenarios
+    build polygons from integer points, and in a language where integers divide to integers a
+    slope of <code>0.5</code> comes out as <code>0</code>, which the triangle scenario catches.</p>
 
   <p>Horizontal edges are dropped. Not clamped, not given a slope of zero and a height of one row,
     not special-cased into a span of their own: dropped. Chapter 5's half-open rule already said

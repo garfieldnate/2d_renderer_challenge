@@ -387,6 +387,12 @@ class TestTransformingWhatYouDraw < Minitest::Test
     assert_in_delta ink(cov), 1, 0.0001
   end
 
+  def test_a_union_of_nothing_is_inside_nowhere
+    s = union([])
+    assert_equal false, inside(s, 0, 0)
+    assert_in_delta ink(rasterize(s, 4, 4)), 0, 0.0001
+  end
+
   def test_a_union_is_inside_when_any_of_its_parts_is
     s = union([circle(2, 2, 1), rectangle(5, 0, 7, 4)])
     assert_equal true, inside(s, 2, 2)
@@ -557,6 +563,20 @@ class TestPlate4 < Minitest::Test
     assert f[1] == point(84.5702, 102.5202)
     assert f[5] == point(65.142, 120.1708)
     assert f[9] == point(19.9291, 134.4817)
+  end
+
+  def test_side_by_side_puts_the_first_canvas_on_the_left
+    a = canvas(2, 3)
+    b = canvas(4, 3)
+    fill(a, color(1, 0, 0))
+    fill(b, color(0, 0, 1))
+    c = side_by_side(a, b)
+    assert_equal 6, c.width
+    assert_equal 3, c.height
+    assert pixel_at(c, 0, 0) == color(1, 0, 0)
+    assert pixel_at(c, 1, 2) == color(1, 0, 0)
+    assert pixel_at(c, 2, 0) == color(0, 0, 1)
+    assert pixel_at(c, 5, 2) == color(0, 0, 1)
   end
 
   def test_the_fan_both_orders_dimensions

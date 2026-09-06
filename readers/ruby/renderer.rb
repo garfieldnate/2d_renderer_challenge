@@ -1509,3 +1509,435 @@ end
 def plate_04
   magnify(f_both_orders, 2)
 end
+
+# Chapter 5: Paths and Insideness
+
+# A subpath is a list of points, in order, and a flag for whether close()
+# was called on it.
+class Subpath
+  attr_accessor :points, :closed
+
+  def initialize
+    @points = []
+    @closed = false
+  end
+end
+
+# A path is a list of subpaths, one for each time the pen went down.
+class Path
+  attr_accessor :subpaths
+
+  def initialize
+    @subpaths = []
+  end
+
+  def move_to(pt)
+    sp = Subpath.new
+    sp.points << pt
+    @subpaths << sp
+  end
+
+  def line_to(pt)
+    if @subpaths.empty?
+      # Nothing to draw a line from, so this behaves as a move_to.
+      move_to(pt)
+    elsif @subpaths.last.closed
+      # close() left the pen back at the start of the subpath it closed,
+      # so a line_to right after one starts a new subpath there.
+      start = @subpaths.last.points[0]
+      sp = Subpath.new
+      sp.points << start
+      sp.points << pt
+      @subpaths << sp
+    else
+      @subpaths.last.points << pt
+    end
+  end
+
+  def close
+    return if @subpaths.empty?
+    @subpaths.last.closed = true
+  end
+
+  # Every edge of every subpath as [a, b] pairs, treating every subpath as
+  # closed whether or not close() was called. A subpath of one point
+  # contributes no edges.
+  def edges
+    result = []
+    @subpaths.each do |sp|
+      n = sp.points.length
+      next if n < 2
+      n.times do |i|
+        a = sp.points[i]
+        b = sp.points[(i + 1) % n]
+        result << [a, b]
+      end
+    end
+    result
+  end
+
+  # The smallest axis-aligned box around every point of every subpath, as
+  # [min x, min y, max x, max y]. An empty path is [0, 0, 0, 0].
+  def bounds
+    pts = @subpaths.flat_map(&:points)
+    return [0, 0, 0, 0] if pts.empty?
+    xs = pts.map(&:x)
+    ys = pts.map(&:y)
+    [xs.min, ys.min, xs.max, ys.max]
+  end
+end
+
+def path
+  Path.new
+end
+
+def move_to(p, pt)
+  p.move_to(pt)
+end
+
+def line_to(p, pt)
+  p.line_to(pt)
+end
+
+def close(p)
+  p.close
+end
+
+def subpaths(p)
+  p.subpaths
+end
+
+def edges(p)
+  p.edges
+end
+
+def bounds(p)
+  p.bounds
+end
+
+# polygon(p1, p2, ...) is a closed subpath through the points.
+def polygon(*points)
+  p = path
+  points.each_with_index do |pt, i|
+    i == 0 ? move_to(p, pt) : line_to(p, pt)
+  end
+  close(p)
+  p
+end
+
+# circle_path(cx, cy, r, n) is a regular n-gon standing in for a circle,
+# its first point at angle 0 (on the right), going clockwise on the
+# screen as k increases (the canvas's y points down).
+def circle_path(cx, cy, r, n)
+  p = path
+  n.times do |k|
+    a = 2 * Math::PI * k / n
+    q = point(cx + r * Math.cos(a), cy + r * Math.sin(a))
+    k == 0 ? move_to(p, q) : line_to(p, q)
+  end
+  close(p)
+  p
+end
+
+# crossings(p, x, y) counts the edges a ray from (x, y) toward +x crosses,
+# using the half-open rule: an edge from a to b is crossed when the ray's
+# height y satisfies a.y <= y < b.y or b.y <= y < a.y, so a vertex on the
+# ray counts once, not twice, and horizontal edges are never crossed.
+def crossings(p, x, y)
+  count = 0
+  edges(p).each do |a, b|
+    spans = (a.y <= y && b.y > y) || (b.y <= y && a.y > y)
+    next unless spans
+    t = (y - a.y) / (b.y - a.y).to_f
+    xi = a.x + t * (b.x - a.x)
+    count += 1 if xi > x
+  end
+  count
+end
+
+# winding_at(p, x, y): each edge that crosses the ray's height (by the same
+# half-open rule as crossings) counts +1 heading down the canvas or -1
+# heading up. Positive is clockwise on the screen.
+def winding_at(p, x, y)
+  q = point(x, y)
+  w = 0
+  edges(p).each do |a, b|
+    ab = b - a
+    aq = q - a
+    if a.y <= y
+      w += 1 if b.y > y && cross(ab, aq) > 0
+    else
+      w -= 1 if b.y <= y && cross(ab, aq) < 0
+    end
+  end
+  w
+end
+
+# inside_nonzero: a point is inside when its winding number isn't zero.
+def inside_nonzero(p, x, y)
+  winding_at(p, x, y) != 0
+end
+
+# inside_evenodd: a point is inside when its winding number is odd. Ruby's
+# % keeps the sign of the divisor, so this is correct for negative winding
+# numbers too.
+def inside_evenodd(p, x, y)
+  winding_at(p, x, y) % 2 != 0
+end
+
+# filled(p, rule) is the shape a path encloses under a rule, "nonzero" or
+# "evenodd", so chapter 2's rasterizer can draw it.
+class FilledPath < Shape
+  def initialize(path, rule)
+    @path = path
+    @rule = rule
+  end
+
+  def inside?(x, y)
+    if @rule == "nonzero"
+      inside_nonzero(@path, x, y)
+    else
+      inside_evenodd(@path, x, y)
+    end
+  end
+end
+
+def filled(path, rule)
+  FilledPath.new(path, rule)
+end
+
+# rasterize_within(shape, box, w, h) is chapter 2's rasterize restricted
+# to the pixels the box touches: columns from floor(min x) up to but not
+# including ceil(max x), rows likewise, clipped to the buffer.
+def rasterize_within(shape, box, width, height)
+  cov = CoverageBuffer.new(width, height)
+  min_x, min_y, max_x, max_y = box
+  x0 = [min_x.floor, 0].max
+  x1 = [max_x.ceil, width].min
+  y0 = [min_y.floor, 0].max
+  y1 = [max_y.ceil, height].min
+  (y0...y1).each do |y|
+    (x0...x1).each do |x|
+      cov.set(x, y, coverage(shape, x, y))
+    end
+  end
+  cov
+end
+
+# star(): five points on a circle of radius 70 about (80.5, 80.5), the
+# first straight up, visited every second one so the pen crosses itself.
+def star
+  p = path
+  5.times do |k|
+    a = (-90 + 144 * k) * Math::PI / 180.0
+    q = point(80.5 + 70 * Math.cos(a), 80.5 + 70 * Math.sin(a))
+    k == 0 ? move_to(p, q) : line_to(p, q)
+  end
+  close(p)
+  p
+end
+
+def star_panel(rule, method)
+  c = canvas(160, 160)
+  fill(c, color(0.02, 0.02, 0.025))
+  s = filled(star, rule)
+  cov = if method == "centers"
+          rasterize_centers(s, 160, 160)
+        else
+          rasterize_within(s, bounds(star), 160, 160)
+        end
+  paint_through(c, cov, color(0.9, 0.55, 0.1))
+  c
+end
+
+def star_centers
+  side_by_side(star_panel("nonzero", "centers"), star_panel("evenodd", "centers"))
+end
+
+def star_coverage
+  side_by_side(star_panel("nonzero", "coverage"), star_panel("evenodd", "coverage"))
+end
+
+def plate_05
+  top = star_centers
+  bottom = star_coverage
+  both = canvas(320, 320)
+  160.times do |y|
+    320.times do |x|
+      write_pixel(both, x, y, pixel_at(top, x, y))
+      write_pixel(both, x, y + 160, pixel_at(bottom, x, y))
+    end
+  end
+  magnify(both, 2)
+end
+
+# Chapter 6: Filling a Polygon
+
+# An edge prepared for the sweep: its top and bottom y, where it crosses
+# its top (x_top), how far it moves in x per unit of y (slope), and which
+# way the path went along it, +1 down the canvas, -1 up.
+class Edge
+  attr_accessor :y_top, :y_bottom, :x_top, :slope, :direction
+
+  def initialize(y_top, y_bottom, x_top, slope, direction)
+    @y_top = y_top
+    @y_bottom = y_bottom
+    @x_top = x_top
+    @slope = slope
+    @direction = direction
+  end
+end
+
+# edge_table(p): every non-horizontal edge of the path, sorted by y_top,
+# then by x_top. "Horizontal" means a.y = b.y exactly; those edges are
+# dropped, not clamped, because their slope is a division by zero and
+# chapter 5's half-open rule already says they never cross a sample
+# height.
+def edge_table(p)
+  table = []
+  edges(p).each do |a, b|
+    next if a.y == b.y
+    if a.y < b.y
+      y_top = a.y
+      y_bottom = b.y
+      x_top = a.x
+      slope = (b.x - a.x) / (b.y - a.y).to_f
+      direction = 1
+    else
+      y_top = b.y
+      y_bottom = a.y
+      x_top = b.x
+      slope = (a.x - b.x) / (a.y - b.y).to_f
+      direction = -1
+    end
+    table << Edge.new(y_top, y_bottom, x_top, slope, direction)
+  end
+  table.sort_by { |e| [e.y_top, e.x_top] }
+end
+
+# x_at(edge, y): the one computation an edge knows how to do.
+def x_at(edge, y)
+  edge.x_top + (y - edge.y_top) * edge.slope
+end
+
+# crossings_on_row(table, y): (x, direction) for every edge of the table
+# that spans height y under the half-open rule y_top <= y < y_bottom,
+# sorted by x.
+def crossings_on_row(table, y)
+  table.select { |e| e.y_top <= y && y < e.y_bottom }
+       .map { |e| [x_at(e, y), e.direction] }
+       .sort_by { |c| c[0] }
+end
+
+# spans_from_crossings(xs, rule): walk the sorted (x, direction) pairs
+# left to right, accumulating the winding number, and return the maximal
+# intervals where the rule says inside.
+def spans_from_crossings(xs, rule)
+  out = []
+  w = 0
+  start = nil
+  xs.each do |x, d|
+    w += d
+    inside = rule == "nonzero" ? w != 0 : w.odd?
+    if inside && start.nil?
+      start = x
+    elsif !inside && !start.nil?
+      out << [start, x]
+      start = nil
+    end
+  end
+  out
+end
+
+# spans(p, rule, row): the spans for one pixel row, sampled at its
+# center height row + 0.5.
+def spans(p, rule, row)
+  y = row + 0.5
+  spans_from_crossings(crossings_on_row(edge_table(p), y), rule)
+end
+
+# fill_span(cov, row, x0, x1): sets to 1 every pixel of the row whose
+# center lies in [x0, x1), clipped to the buffer.
+def fill_span(cov, row, x0, x1)
+  first = (x0 - 0.5).ceil
+  last = (x1 - 0.5).ceil - 1
+  first = [first, 0].max
+  last = [last, cov.width - 1].min
+  return if first > last
+  (first..last).each { |x| set_coverage(cov, x, row, 1) }
+end
+
+# fill_path_aliased(p, rule, w, h): the scanline fill. Sweeps the rows top
+# to bottom, keeping the active edge list (edges that span the current
+# row's sample height), sorts their crossings, and fills the spans.
+def fill_path_aliased(p, rule, width, height)
+  cov = coverage_buffer(width, height)
+  table = edge_table(p)
+  active = []
+  next_index = 0
+  height.times do |row|
+    y = row + 0.5
+    while next_index < table.length && table[next_index].y_top <= y
+      active << table[next_index]
+      next_index += 1
+    end
+    active = active.select { |e| e.y_bottom > y }
+    xs = active.map { |e| [x_at(e, y), e.direction] }.sort_by { |c| c[0] }
+    spans_from_crossings(xs, rule).each do |x0, x1|
+      fill_span(cov, row, x0, x1)
+    end
+  end
+  cov
+end
+
+# max_coverage_difference(a, b): chapter 1's max_channel_difference for
+# coverage buffers. The largest difference between corresponding entries,
+# or 1 when the sizes differ.
+def max_coverage_difference(a, b)
+  return 1 if a.width != b.width || a.height != b.height
+  max_diff = 0.0
+  a.height.times do |y|
+    a.width.times do |x|
+      d = (coverage_at(a, x, y) - coverage_at(b, x, y)).abs
+      max_diff = d if d > max_diff
+    end
+  end
+  max_diff
+end
+
+# transform_path(p, m): a new path with every point of every subpath
+# taken through m, closed flags and all. The original is untouched.
+def transform_path(p, m)
+  result = Path.new
+  p.subpaths.each do |sp|
+    new_sp = Subpath.new
+    new_sp.points = sp.points.map { |pt| m * pt }
+    new_sp.closed = sp.closed
+    result.subpaths << new_sp
+  end
+  result
+end
+
+# unit_star(): the chapter 5 star shrunk to radius 1 about the origin, so
+# one matrix can put it anywhere at any size.
+def unit_star
+  transform_path(star, scaling(1.0 / 70, 1.0 / 70) * translation(-80.5, -80.5))
+end
+
+def spiral
+  c = canvas(320, 320)
+  fill(c, color(0.02, 0.02, 0.025))
+  inks = [color(0.9, 0.55, 0.1), color(0.2, 0.55, 0.85), color(0.85, 0.25, 0.3)]
+  24.times do |k|
+    a = k * 25 * Math::PI / 180.0
+    r = 20 + 5 * k
+    m = translation(160.5 + r * Math.cos(a), 160.5 + r * Math.sin(a)) * rotation(a) * scaling(6 + 1.25 * k, 6 + 1.25 * k)
+    cov = fill_path_aliased(transform_path(unit_star, m), "nonzero", 320, 320)
+    paint_through(c, cov, inks[k % 3])
+  end
+  c
+end
+
+def plate_06
+  magnify(spiral, 2)
+end
