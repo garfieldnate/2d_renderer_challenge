@@ -82,4 +82,10 @@ char *ppm_lines(const char *ppm, int from, int to);  /* 1-based, inclusive; call
 int  ppm_longest_line(const char *ppm);
 int  count_pixels(const Canvas *c, Color want);
 
+/* ---- chapter 5: paths --------------------------------------------------- */
+#define EQ_BOUNDS(b, x0, y0, x1, y1) \
+    h_eqbounds(#b " = (" #x0 ", " #y0 ", " #x1 ", " #y1 ")", (b), \
+               (Bounds){(x0), (y0), (x1), (y1)}, EPS)
+void h_eqbounds(const char *what, Bounds a, Bounds b, double eps);
+
 #endif

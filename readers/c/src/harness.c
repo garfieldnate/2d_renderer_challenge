@@ -201,3 +201,11 @@ void h_nem(const char *what, Matrix3 a, Matrix3 b, double eps) {
     h_fail("%s: they are equal", what);
     print_matrix("both", a);
 }
+
+/* ---- chapter 5 ---------------------------------------------------------- */
+void h_eqbounds(const char *what, Bounds a, Bounds b, double eps) {
+    if (fabs(a.min_x - b.min_x) <= eps && fabs(a.min_y - b.min_y) <= eps &&
+        fabs(a.max_x - b.max_x) <= eps && fabs(a.max_y - b.max_y) <= eps) return;
+    h_fail("%s: got (%.6g, %.6g, %.6g, %.6g), wanted (%.6g, %.6g, %.6g, %.6g)",
+           what, a.min_x, a.min_y, a.max_x, a.max_y, b.min_x, b.min_y, b.max_x, b.max_y);
+}

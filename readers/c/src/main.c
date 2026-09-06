@@ -44,5 +44,12 @@ int main(void) {
 
     save_p6("out/fan-both-orders.ppm", fan_both_orders());
     save_p6("out/plate-04.ppm",        plate_04());
+
+    save_p6("out/star-centers.ppm",  star_centers());
+    save_p6("out/star-coverage.ppm", star_coverage());
+    save_p6("out/plate-05.ppm",      plate_05());
+
+    save_p6("out/spiral.ppm",   spiral());
+    save_p6("out/plate-06.ppm", plate_06());
     return 0;
 }

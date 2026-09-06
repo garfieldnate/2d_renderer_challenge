@@ -386,15 +386,15 @@ double approx_scale(Matrix3 m) {
 
 /* ---- shapes ----------------------------------------------------------- */
 Shape circle(double cx, double cy, double r) {
-    Shape s = {SHAPE_CIRCLE, cx, cy, r, 0, {{0}}, NULL, 0, NULL, {{{0}}}};
+    Shape s = {SHAPE_CIRCLE, cx, cy, r, 0, {{0}}, NULL, 0, NULL, {{{0}}}, NULL, 0};
     return s;
 }
 Shape rectangle(double x0, double y0, double x1, double y1) {
-    Shape s = {SHAPE_RECTANGLE, x0, y0, x1, y1, {{0}}, NULL, 0, NULL, {{{0}}}};
+    Shape s = {SHAPE_RECTANGLE, x0, y0, x1, y1, {{0}}, NULL, 0, NULL, {{{0}}}, NULL, 0};
     return s;
 }
 Shape half_plane(double px, double py, double nx, double ny) {
-    Shape s = {SHAPE_HALF_PLANE, px, py, nx, ny, {{0}}, NULL, 0, NULL, {{{0}}}};
+    Shape s = {SHAPE_HALF_PLANE, px, py, nx, ny, {{0}}, NULL, 0, NULL, {{{0}}}, NULL, 0};
     return s;
 }
 
@@ -418,7 +418,7 @@ Shape segment(Tuple a_, Tuple b_, double width) {
     if (len == 0) { dx = 1; dy = 0; cap = half; } else { dx /= len; dy /= len; }
     double nx = -dy, ny = dx;          /* the unit normal */
 
-    Shape s = {SHAPE_THICK_LINE, ax, ay, bx, by, {{0}}, NULL, 0, NULL, {{{0}}}};
+    Shape s = {SHAPE_THICK_LINE, ax, ay, bx, by, {{0}}, NULL, 0, NULL, {{{0}}}, NULL, 0};
     set_half(s.h[0], ax - dx * cap, ay - dy * cap,  dx,  dy);        /* across the start */
     set_half(s.h[1], bx + dx * cap, by + dy * cap, -dx, -dy);        /* across the end */
     set_half(s.h[2], ax + nx * half, ay + ny * half, -nx, -ny);      /* one side */
@@ -442,7 +442,7 @@ static Shape *shapes_copy(const Shape *src, int n) {
 }
 
 Shape union_of(const Shape *parts, int n) {
-    Shape s = {SHAPE_UNION, 0, 0, 0, 0, {{0}}, shapes_copy(parts, n), n, NULL, {{{0}}}};
+    Shape s = {SHAPE_UNION, 0, 0, 0, 0, {{0}}, shapes_copy(parts, n), n, NULL, {{{0}}}, NULL, 0};
     return s;
 }
 
@@ -451,10 +451,10 @@ Shape union_of(const Shape *parts, int n) {
    No inverse means the shape has been flattened away: nothing is inside. */
 Shape transformed(Shape base, Matrix3 m) {
     if (!is_invertible(m)) {
-        Shape e = {SHAPE_EMPTY, 0, 0, 0, 0, {{0}}, NULL, 0, NULL, {{{0}}}};
+        Shape e = {SHAPE_EMPTY, 0, 0, 0, 0, {{0}}, NULL, 0, NULL, {{{0}}}, NULL, 0};
         return e;
     }
-    Shape s = {SHAPE_TRANSFORMED, 0, 0, 0, 0, {{0}}, NULL, 0, shapes_copy(&base, 1), inverse(m)};
+    Shape s = {SHAPE_TRANSFORMED, 0, 0, 0, 0, {{0}}, NULL, 0, shapes_copy(&base, 1), inverse(m), NULL, 0};
     return s;
 }
 
@@ -478,6 +478,8 @@ void shape_free(Shape s) {
     } else if (s.kind == SHAPE_TRANSFORMED) {
         shape_free(*s.base);
         free(s.base);
+    } else if (s.kind == SHAPE_FILLED_PATH) {
+        path_free(s.path);
     }
 }
 
@@ -511,6 +513,10 @@ static bool inside_p(const Shape *s, double x, double y) {
     }
     case SHAPE_EMPTY:
         return false;
+    case SHAPE_FILLED_PATH: {
+        int w = winding_at(s->path, x, y);
+        return s->rule ? (w % 2) != 0 : w != 0;   /* rule: 0 nonzero, 1 evenodd */
+    }
     }
     return false;
 }
@@ -574,6 +580,23 @@ static CoverageBuffer *rasterize_with(Shape s, int w, int h, double (*ask)(Shape
 
 CoverageBuffer *rasterize_centers(Shape s, int w, int h) { return rasterize_with(s, w, h, center_inside); }
 CoverageBuffer *rasterize(Shape s, int w, int h)         { return rasterize_with(s, w, h, coverage); }
+
+/* the box is inclusive of every pixel it touches, and clipped to the
+   buffer; the rest of the buffer is left at zero (coverage_buffer already
+   calloc's it). */
+CoverageBuffer *rasterize_within(Shape s, Bounds box, int w, int h) {
+    CoverageBuffer *cov = coverage_buffer(w, h);
+    int x0 = (int)floor(box.min_x), x1 = (int)ceil(box.max_x);
+    int y0 = (int)floor(box.min_y), y1 = (int)ceil(box.max_y);
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > w) x1 = w;
+    if (y1 > h) y1 = h;
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++)
+            set_coverage(cov, x, y, coverage(s, x, y));
+    return cov;
+}
 
 /* ---- the one place the renderer touches the canvas -------------------- */
 /* The browser-style switch exists so you can compare gradients against
@@ -739,11 +762,14 @@ void line_bresenham(Canvas *c, int x0, int y0, int x1, int y1, Color col) {
     }
 }
 
-/* paint_through for a single pixel */
+/* paint_through for a single pixel. Like paint_through, this ignores the
+   browser-style switch and always blends in light: the switch is for
+   comparing gradients against other tools, and has no business inside
+   the rasterizer. */
 void plot(Canvas *c, int x, int y, Color col, double weight) {
     if (weight == 0) return;
     if (x < 0 || y < 0 || x >= c->width || y >= c->height) return;
-    write_pixel(c, x, y, mix(pixel_at(c, x, y), col, weight));
+    write_pixel(c, x, y, mix4(pixel_at(c, x, y), col, weight, true));
 }
 
 /* Wu 1991: the same walk, but each step splits its paint between the two
@@ -935,5 +961,445 @@ Canvas *plate_04(void) {
     Canvas *f = f_both_orders();
     Canvas *m = magnify(f, 2);
     canvas_free(f);
+    return m;
+}
+
+
+/* ---- chapter 5: paths and insideness ------------------------------------ */
+static void subpath_push_point(Subpath *sp, Tuple pt) {
+    if (sp->n == sp->cap) {
+        sp->cap = sp->cap ? sp->cap * 2 : 4;
+        sp->points = realloc(sp->points, (size_t)sp->cap * sizeof *sp->points);
+        if (!sp->points) abort();
+    }
+    sp->points[sp->n++] = pt;
+}
+
+static Subpath *path_push_subpath(Path *p) {
+    if (p->n_subpaths == p->cap_subpaths) {
+        p->cap_subpaths = p->cap_subpaths ? p->cap_subpaths * 2 : 4;
+        p->subpaths = realloc(p->subpaths, (size_t)p->cap_subpaths * sizeof *p->subpaths);
+        if (!p->subpaths) abort();
+    }
+    Subpath *sp = &p->subpaths[p->n_subpaths++];
+    sp->points = NULL; sp->n = 0; sp->cap = 0; sp->closed = false;
+    return sp;
+}
+
+Path *path(void) {
+    Path *p = malloc(sizeof *p);
+    if (!p) abort();
+    p->subpaths = NULL; p->n_subpaths = 0; p->cap_subpaths = 0;
+    return p;
+}
+
+void path_free(Path *p) {
+    if (!p) return;
+    for (int i = 0; i < p->n_subpaths; i++) free(p->subpaths[i].points);
+    free(p->subpaths);
+    free(p);
+}
+
+void move_to(Path *p, Tuple pt) {
+    Subpath *sp = path_push_subpath(p);
+    subpath_push_point(sp, pt);
+}
+
+/* With nothing to extend, behaves as move_to. After a close, starts a new
+   subpath at the point the closed one began -- that's where the pen was
+   last put down, and PostScript and SVG both do this. */
+void line_to(Path *p, Tuple pt) {
+    if (p->n_subpaths == 0) { move_to(p, pt); return; }
+    Subpath *last = &p->subpaths[p->n_subpaths - 1];
+    if (last->closed) {
+        Tuple start = last->points[0];
+        Subpath *sp = path_push_subpath(p);
+        subpath_push_point(sp, start);
+        subpath_push_point(sp, pt);
+        return;
+    }
+    subpath_push_point(last, pt);
+}
+
+/* Nothing to close does nothing; closing twice is the same as once. */
+void close(Path *p) {
+    if (p->n_subpaths == 0) return;
+    p->subpaths[p->n_subpaths - 1].closed = true;
+}
+
+/* Every subpath contributes the edge from its last point back to its
+   first, whether or not it was actually closed -- filling closes every
+   subpath itself. A subpath of one point contributes no edges. */
+Edge *edges(const Path *p, int *out_n) {
+    int total = 0;
+    for (int i = 0; i < p->n_subpaths; i++)
+        if (p->subpaths[i].n >= 2) total += p->subpaths[i].n;
+    Edge *e = malloc((size_t)(total ? total : 1) * sizeof *e);
+    if (!e) abort();
+    int k = 0;
+    for (int i = 0; i < p->n_subpaths; i++) {
+        Subpath *sp = &p->subpaths[i];
+        if (sp->n < 2) continue;
+        for (int j = 0; j < sp->n; j++) {
+            e[k].a = sp->points[j];
+            e[k].b = sp->points[(j + 1) % sp->n];
+            k++;
+        }
+    }
+    *out_n = total;
+    return e;
+}
+
+Bounds bounds(const Path *p) {
+    Bounds b = {0, 0, 0, 0};
+    bool any = false;
+    for (int i = 0; i < p->n_subpaths; i++) {
+        Subpath *sp = &p->subpaths[i];
+        for (int j = 0; j < sp->n; j++) {
+            Tuple t = sp->points[j];
+            if (!any) { b.min_x = b.max_x = t.x; b.min_y = b.max_y = t.y; any = true; continue; }
+            if (t.x < b.min_x) b.min_x = t.x;
+            if (t.x > b.max_x) b.max_x = t.x;
+            if (t.y < b.min_y) b.min_y = t.y;
+            if (t.y > b.max_y) b.max_y = t.y;
+        }
+    }
+    return b;
+}
+
+Path *polygon_pts(const Tuple *pts, int n) {
+    Path *p = path();
+    if (n > 0) {
+        move_to(p, pts[0]);
+        for (int i = 1; i < n; i++) line_to(p, pts[i]);
+        close(p);
+    }
+    return p;
+}
+
+Path *circle_path(double cx, double cy, double r, int n) {
+    Path *p = path();
+    for (int k = 0; k < n; k++) {
+        double a = k * 2.0 * PI / n;
+        Tuple q = point(cx + r * cos(a), cy + r * sin(a));
+        if (k == 0) move_to(p, q); else line_to(p, q);
+    }
+    close(p);
+    return p;
+}
+
+/* Neither of these materializes edges(): they walk each subpath's points
+   with wraparound directly, because coverage() calls winding_at() up to
+   sixty-four times a pixel and a path only has a handful of edges. */
+int crossings(const Path *p, double x, double y) {
+    int count = 0;
+    for (int i = 0; i < p->n_subpaths; i++) {
+        Subpath *sp = &p->subpaths[i];
+        if (sp->n < 2) continue;
+        for (int j = 0; j < sp->n; j++) {
+            Tuple a = sp->points[j], b = sp->points[(j + 1) % sp->n];
+            bool spans = (a.y <= y && y < b.y) || (b.y <= y && y < a.y);
+            if (!spans) continue;
+            double t = (y - a.y) / (b.y - a.y);
+            if (a.x + t * (b.x - a.x) > x) count++;
+        }
+    }
+    return count;
+}
+
+int winding_at(const Path *p, double x, double y) {
+    Tuple q = point(x, y);
+    int w = 0;
+    for (int i = 0; i < p->n_subpaths; i++) {
+        Subpath *sp = &p->subpaths[i];
+        if (sp->n < 2) continue;
+        for (int j = 0; j < sp->n; j++) {
+            Tuple a = sp->points[j], b = sp->points[(j + 1) % sp->n];
+            if (a.y <= y) {
+                if (b.y > y && cross(tuple_sub(b, a), tuple_sub(q, a)) > 0) w++;
+            } else {
+                if (b.y <= y && cross(tuple_sub(b, a), tuple_sub(q, a)) < 0) w--;
+            }
+        }
+    }
+    return w;
+}
+
+bool inside_nonzero(const Path *p, double x, double y) { return winding_at(p, x, y) != 0; }
+bool inside_evenodd(const Path *p, double x, double y) { return (winding_at(p, x, y) % 2) != 0; }
+
+static Path *path_copy(const Path *src) {
+    Path *p = path();
+    for (int i = 0; i < src->n_subpaths; i++) {
+        Subpath *s = &src->subpaths[i];
+        Subpath *d = path_push_subpath(p);
+        for (int j = 0; j < s->n; j++) subpath_push_point(d, s->points[j]);
+        d->closed = s->closed;
+    }
+    return p;
+}
+
+Shape filled(const Path *p, const char *rule) {
+    int r = (strcmp(rule, "evenodd") == 0) ? 1 : 0;
+    Shape s = {SHAPE_FILLED_PATH, 0, 0, 0, 0, {{0}}, NULL, 0, NULL, {{{0}}}, path_copy(p), r};
+    return s;
+}
+
+/* five points on a circle of radius 70 about (80.5, 80.5), the first
+   straight up, visited every second one so the pen crosses itself */
+Path *star(void) {
+    Path *p = path();
+    for (int k = 0; k < 5; k++) {
+        double a = (-90.0 + 144.0 * k) * PI / 180.0;
+        Tuple q = point(80.5 + 70 * cos(a), 80.5 + 70 * sin(a));
+        if (k == 0) move_to(p, q); else line_to(p, q);
+    }
+    close(p);
+    return p;
+}
+
+Canvas *star_panel(const char *rule, const char *method) {
+    Canvas *c = canvas(160, 160);
+    fill(c, color(0.02, 0.02, 0.025));
+    Path *s_path = star();
+    Shape s = filled(s_path, rule);
+    CoverageBuffer *cov;
+    if (strcmp(method, "centers") == 0) {
+        cov = rasterize_centers(s, 160, 160);
+    } else {
+        Path *b_path = star();
+        Bounds b = bounds(b_path);
+        path_free(b_path);
+        cov = rasterize_within(s, b, 160, 160);
+    }
+    paint_through(c, cov, color(0.9, 0.55, 0.1));
+    coverage_free(cov);
+    shape_free(s);
+    path_free(s_path);
+    return c;
+}
+
+Canvas *star_centers(void) {
+    Canvas *a = star_panel("nonzero", "centers");
+    Canvas *b = star_panel("evenodd", "centers");
+    Canvas *both = side_by_side(a, b);
+    canvas_free(a); canvas_free(b);
+    return both;
+}
+
+Canvas *star_coverage(void) {
+    Canvas *a = star_panel("nonzero", "coverage");
+    Canvas *b = star_panel("evenodd", "coverage");
+    Canvas *both = side_by_side(a, b);
+    canvas_free(a); canvas_free(b);
+    return both;
+}
+
+Canvas *plate_05(void) {
+    Canvas *top = star_centers();
+    Canvas *bottom = star_coverage();
+    Canvas *both = canvas(320, 320);
+    for (int y = 0; y <= 159; y++)
+        for (int x = 0; x <= 319; x++) {
+            write_pixel(both, x, y,       pixel_at(top, x, y));
+            write_pixel(both, x, y + 160, pixel_at(bottom, x, y));
+        }
+    canvas_free(top); canvas_free(bottom);
+    Canvas *m = magnify(both, 2);
+    canvas_free(both);
+    return m;
+}
+
+
+/* ---- chapter 6: filling a polygon --------------------------------------- */
+static int cmp_edge_entry(const void *pa, const void *pb) {
+    const EdgeEntry *a = pa, *b = pb;
+    if (a->y_top < b->y_top) return -1;
+    if (a->y_top > b->y_top) return 1;
+    if (a->x_top < b->x_top) return -1;
+    if (a->x_top > b->x_top) return 1;
+    return 0;
+}
+
+static int cmp_crossing(const void *pa, const void *pb) {
+    const Crossing *a = pa, *b = pb;
+    if (a->x < b->x) return -1;
+    if (a->x > b->x) return 1;
+    return 0;
+}
+
+double x_at(EdgeEntry e, double y) { return e.x_top + (y - e.y_top) * e.slope; }
+
+/* "Horizontal" means a.y == b.y exactly: no clamping, no slope of zero
+   kept around, dropped, the same rule chapter 5's half-open crossing
+   test already applies, here for a second reason -- the slope would be a
+   division by zero. */
+EdgeEntry *edge_table(const Path *p, int *out_n) {
+    int en; Edge *e = edges(p, &en);
+    EdgeEntry *t = malloc((size_t)(en ? en : 1) * sizeof *t);
+    if (!t) abort();
+    int k = 0;
+    for (int i = 0; i < en; i++) {
+        Tuple a = e[i].a, b = e[i].b;
+        if (a.y == b.y) continue;
+        EdgeEntry te;
+        if (a.y < b.y) {
+            te.y_top = a.y; te.y_bottom = b.y; te.x_top = a.x;
+            te.slope = (b.x - a.x) / (b.y - a.y);
+            te.direction = 1;
+        } else {
+            te.y_top = b.y; te.y_bottom = a.y; te.x_top = b.x;
+            te.slope = (a.x - b.x) / (a.y - b.y);
+            te.direction = -1;
+        }
+        t[k++] = te;
+    }
+    free(e);
+    qsort(t, (size_t)k, sizeof *t, cmp_edge_entry);
+    *out_n = k;
+    return t;
+}
+
+Crossing *crossings_on_row(const EdgeEntry *t, int n, double y, int *out_n) {
+    Crossing *c = malloc((size_t)(n ? n : 1) * sizeof *c);
+    if (!c) abort();
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        if (t[i].y_top <= y && y < t[i].y_bottom) {
+            c[k].x = x_at(t[i], y);
+            c[k].direction = t[i].direction;
+            k++;
+        }
+    }
+    qsort(c, (size_t)k, sizeof *c, cmp_crossing);
+    *out_n = k;
+    return c;
+}
+
+Span *spans_from_crossings(const Crossing *xs, int n, const char *rule, int *out_n) {
+    bool evenodd = strcmp(rule, "evenodd") == 0;
+    Span *out = malloc((size_t)(n ? n : 1) * sizeof *out);
+    if (!out) abort();
+    int k = 0, w = 0;
+    bool inside = false;
+    double start = 0;
+    for (int i = 0; i < n; i++) {
+        w += xs[i].direction;
+        bool now = evenodd ? (w % 2) != 0 : w != 0;
+        if (now && !inside) { start = xs[i].x; inside = true; }
+        else if (!now && inside) { out[k].x0 = start; out[k].x1 = xs[i].x; k++; inside = false; }
+    }
+    *out_n = k;
+    return out;
+}
+
+Span *spans(const Path *p, const char *rule, int row, int *out_n) {
+    int tn; EdgeEntry *t = edge_table(p, &tn);
+    int xn; Crossing *xs = crossings_on_row(t, tn, row + 0.5, &xn);
+    Span *s = spans_from_crossings(xs, xn, rule, out_n);
+    free(xs); free(t);
+    return s;
+}
+
+/* half-open at the right end, so two spans that meet at a pixel center
+   fill that pixel exactly once. */
+void fill_span(CoverageBuffer *cov, int row, double x0, double x1) {
+    int first = (int)ceil(x0 - 0.5);
+    int last  = (int)ceil(x1 - 0.5) - 1;
+    if (first < 0) first = 0;
+    if (last > cov->width - 1) last = cov->width - 1;
+    for (int x = first; x <= last; x++) set_coverage(cov, x, row, 1);
+}
+
+/* The active edge list: the table is read once, front to back, and every
+   row touches only the edges that cross it. An edge that starts exactly
+   on a sample height is active there; one that ends there is not -- the
+   half-open rule again, this time between rows. */
+CoverageBuffer *fill_path_aliased(const Path *p, const char *rule, int w, int h) {
+    CoverageBuffer *cov = coverage_buffer(w, h);
+    int tn; EdgeEntry *table = edge_table(p, &tn);
+    EdgeEntry *active = malloc((size_t)(tn ? tn : 1) * sizeof *active);
+    if (!active) abort();
+    int nactive = 0, next = 0;
+
+    for (int row = 0; row < h; row++) {
+        double y = row + 0.5;
+        while (next < tn && table[next].y_top <= y) active[nactive++] = table[next++];
+        int k = 0;
+        for (int i = 0; i < nactive; i++)
+            if (active[i].y_bottom > y) active[k++] = active[i];
+        nactive = k;
+
+        Crossing *xs = malloc((size_t)(nactive ? nactive : 1) * sizeof *xs);
+        if (!xs) abort();
+        for (int i = 0; i < nactive; i++) {
+            xs[i].x = x_at(active[i], y);
+            xs[i].direction = active[i].direction;
+        }
+        qsort(xs, (size_t)nactive, sizeof *xs, cmp_crossing);
+
+        int sn; Span *sp = spans_from_crossings(xs, nactive, rule, &sn);
+        for (int i = 0; i < sn; i++) fill_span(cov, row, sp[i].x0, sp[i].x1);
+        free(xs); free(sp);
+    }
+    free(active); free(table);
+    return cov;
+}
+
+double max_coverage_difference(const CoverageBuffer *a, const CoverageBuffer *b) {
+    if (a->width != b->width || a->height != b->height) return 1;
+    double worst = 0;
+    size_t n = (size_t)a->width * a->height;
+    for (size_t i = 0; i < n; i++) {
+        double d = fabs(a->values[i] - b->values[i]);
+        if (d > worst) worst = d;
+    }
+    return worst;
+}
+
+Path *transform_path(const Path *p, Matrix3 m) {
+    Path *q = path();
+    for (int i = 0; i < p->n_subpaths; i++) {
+        Subpath *sp = &p->subpaths[i];
+        Subpath *d = path_push_subpath(q);
+        for (int j = 0; j < sp->n; j++) subpath_push_point(d, m3_mul_tuple(m, sp->points[j]));
+        d->closed = sp->closed;
+    }
+    return q;
+}
+
+/* ---- chapter 6: putting it together -------------------------------------- */
+Path *unit_star(void) {
+    Path *s = star();
+    Path *u = transform_path(s, mul(scaling(1.0 / 70, 1.0 / 70), translation(-80.5, -80.5)));
+    path_free(s);
+    return u;
+}
+
+Canvas *spiral(void) {
+    Canvas *c = canvas(320, 320);
+    fill(c, color(0.02, 0.02, 0.025));
+    Color inks[3] = { color(0.9, 0.55, 0.1), color(0.2, 0.55, 0.85), color(0.85, 0.25, 0.3) };
+    Path *u = unit_star();
+    for (int k = 0; k < 24; k++) {
+        double a = k * 25.0 * PI / 180.0;
+        double r = 20 + 5 * k;
+        double s = 6 + 1.25 * k;
+        Matrix3 m = mul(translation(160.5 + r * cos(a), 160.5 + r * sin(a)),
+                        mul(rotation(a), scaling(s, s)));
+        Path *t = transform_path(u, m);
+        CoverageBuffer *cov = fill_path_aliased(t, "nonzero", 320, 320);
+        paint_through(c, cov, inks[k % 3]);
+        coverage_free(cov);
+        path_free(t);
+    }
+    path_free(u);
+    return c;
+}
+
+Canvas *plate_06(void) {
+    Canvas *s = spiral();
+    Canvas *m = magnify(s, 2);
+    canvas_free(s);
     return m;
 }

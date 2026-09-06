@@ -891,6 +891,14 @@ static void feature_wu(void) {
         EQ(total_ink(c), 5);
         canvas_free(c);
     }
+    S(F, "The weights are applied in light, whatever the switch says") {
+        linear_blending = false;
+        Canvas *c = canvas(10, 10);
+        line_wu(c, 0, 0, 4, 2, W);
+        EQC(pixel_at(c, 1, 0), 0.5, 0.5, 0.5);
+        EQC(pixel_at(c, 1, 1), 0.5, 0.5, 0.5);
+        canvas_free(c);
+    }
     S(F, "A diagonal has uniform weights") {
         Canvas *c = canvas(10, 10);
         line_wu(c, 0, 0, 5, 5, W);
@@ -1187,6 +1195,10 @@ static void feature_tuples(void) {
         EQ(dot(a, b), 8);
         EQ(dot(a, vector(-2, 1)), 0);
     }
+    S(F, "magnitude and dot look at x and y only") {
+        EQ(magnitude(point(3, 4)), 5);
+        EQ(dot(point(1, 2), point(2, 3)), 8);
+    }
     S(F, "The cross product of two vectors is a number") {
         Tuple a = vector(1, 0), b = vector(0, 1);
         EQ(cross(a, b), 1);
@@ -1302,6 +1314,11 @@ static void feature_matrices(void) {
                             0, 0, 1);
         EQ(determinant(A), 0);
         FALSEP(is_invertible(A));
+    }
+    S(F, "Invertibility is an exact test against zero") {
+        TRUEP(is_invertible(scaling(0.0001, 1)));
+        EQ(determinant(scaling(0.0001, 1)), 0.0001);
+        EQT(mul(inverse(scaling(0.0001, 1)), point(0.0001, 3)), point(1, 3));
     }
     S(F, "Calculating the inverse of a matrix") {
         Matrix3 A = matrix3(3, 0,  2,
@@ -1499,6 +1516,14 @@ static void feature_ch4_shapes(void) {
         EQ(ink(cov), 1);
         coverage_free(cov);
     }
+    S(F, "A union of nothing is inside nowhere") {
+        Shape s = union_of(NULL, 0);
+        FALSEP(inside(s, 0, 0));
+        CoverageBuffer *cov = rasterize(s, 4, 4);
+        EQ(ink(cov), 0);
+        coverage_free(cov);
+        shape_free(s);
+    }
     S(F, "A union is inside when any of its parts is") {
         Shape parts[] = { circle(2, 2, 1), rectangle(5, 0, 7, 4) };
         Shape s = union_of(parts, 2);
@@ -1692,6 +1717,19 @@ static void feature_plate_04(void) {
         EQT(f[5], point(65.142, 120.1708));
         EQT(f[9], point(19.9291, 134.4817));
     }
+    S(F, "side_by_side puts the first canvas on the left") {
+        Canvas *a = canvas(2, 3), *b = canvas(4, 3);
+        fill(a, color(1, 0, 0));
+        fill(b, color(0, 0, 1));
+        Canvas *c = side_by_side(a, b);
+        EQI(c->width, 6);
+        EQI(c->height, 3);
+        EQC(pixel_at(c, 0, 0), 1, 0, 0);
+        EQC(pixel_at(c, 1, 2), 1, 0, 0);
+        EQC(pixel_at(c, 2, 0), 0, 0, 1);
+        EQC(pixel_at(c, 5, 2), 0, 0, 1);
+        canvas_free(a); canvas_free(b); canvas_free(c);
+    }
     S(F, "The fan, both orders") {
         Canvas *c = fan_both_orders();
         Bytes ref = read_file("reference/chapter-04/fan-both-orders.ppm");
@@ -1742,6 +1780,872 @@ static void feature_plate_04(void) {
     }
 }
 
+/* ============ features/chapter05-paths.feature ======================== */
+static void feature_paths(void) {
+    const char *F = "A path is a list of instructions";
+
+    S(F, "An empty path") {
+        Path *p = path();
+        EQI(p->n_subpaths, 0);
+        int n; Edge *e = edges(p, &n);
+        EQI(n, 0);
+        free(e);
+        EQ_BOUNDS(bounds(p), 0, 0, 0, 0);
+        path_free(p);
+    }
+    S(F, "A triangle, closed") {
+        Path *p = path();
+        move_to(p, point(1, 1));
+        line_to(p, point(9, 1));
+        line_to(p, point(5, 8));
+        close(p);
+        EQI(p->n_subpaths, 1);
+        TRUEP(p->subpaths[0].closed);
+        EQI(p->subpaths[0].n, 3);
+        EQT(p->subpaths[0].points[2], point(5, 8));
+        int n; Edge *e = edges(p, &n);
+        EQI(n, 3);
+        EQT(e[2].a, point(5, 8));
+        EQT(e[2].b, point(1, 1));
+        free(e);
+        EQ_BOUNDS(bounds(p), 1, 1, 9, 8);
+        path_free(p);
+    }
+    S(F, "A triangle left open still has three edges") {
+        Path *p = path();
+        move_to(p, point(1, 1));
+        line_to(p, point(9, 1));
+        line_to(p, point(5, 8));
+        FALSEP(p->subpaths[0].closed);
+        int n; Edge *e = edges(p, &n);
+        EQI(n, 3);
+        EQT(e[2].a, point(5, 8));
+        EQT(e[2].b, point(1, 1));
+        free(e);
+        path_free(p);
+    }
+    S(F, "move_to starts a second subpath") {
+        Path *p = path();
+        move_to(p, point(0, 0));
+        line_to(p, point(10, 0));
+        line_to(p, point(10, 10));
+        line_to(p, point(0, 10));
+        close(p);
+        move_to(p, point(3, 3));
+        line_to(p, point(3, 7));
+        line_to(p, point(7, 7));
+        line_to(p, point(7, 3));
+        close(p);
+        EQI(p->n_subpaths, 2);
+        EQT(p->subpaths[1].points[0], point(3, 3));
+        int n; Edge *e = edges(p, &n);
+        EQI(n, 8);
+        free(e);
+        EQ_BOUNDS(bounds(p), 0, 0, 10, 10);
+        path_free(p);
+    }
+    S(F, "line_to after a close starts a new subpath where the closed one began") {
+        Path *p = path();
+        move_to(p, point(1, 1));
+        line_to(p, point(4, 1));
+        line_to(p, point(4, 4));
+        close(p);
+        line_to(p, point(9, 9));
+        EQI(p->n_subpaths, 2);
+        FALSEP(p->subpaths[1].closed);
+        EQI(p->subpaths[1].n, 2);
+        EQT(p->subpaths[1].points[0], point(1, 1));
+        EQT(p->subpaths[1].points[1], point(9, 9));
+        path_free(p);
+    }
+    S(F, "line_to with nothing to extend behaves as move_to") {
+        Path *p = path();
+        line_to(p, point(2, 3));
+        EQI(p->n_subpaths, 1);
+        EQI(p->subpaths[0].n, 1);
+        EQT(p->subpaths[0].points[0], point(2, 3));
+        path_free(p);
+    }
+    S(F, "A subpath of one point has no edges, and closing nothing does nothing") {
+        Path *p = path();
+        close(p);
+        move_to(p, point(1, 1));
+        move_to(p, point(2, 2));
+        EQI(p->n_subpaths, 2);
+        int n; Edge *e = edges(p, &n);
+        EQI(n, 0);
+        free(e);
+        EQ_BOUNDS(bounds(p), 1, 1, 2, 2);
+        path_free(p);
+    }
+    S(F, "A subpath of two points has two edges and encloses nothing") {
+        Path *p = path();
+        move_to(p, point(1, 1));
+        line_to(p, point(9, 9));
+        int n; Edge *e = edges(p, &n);
+        EQI(n, 2);
+        free(e);
+        EQI(winding_at(p, 3, 5), 0);
+        path_free(p);
+    }
+    S(F, "polygon is a closed subpath through its points") {
+        Path *p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10));
+        EQI(p->n_subpaths, 1);
+        TRUEP(p->subpaths[0].closed);
+        int n; Edge *e = edges(p, &n);
+        EQI(n, 4);
+        free(e);
+        path_free(p);
+    }
+    S(F, "circle_path is a polygon standing in for a circle") {
+        Path *p = circle_path(10, 10, 5, 8);
+        EQI(p->subpaths[0].n, 8);
+        EQT(p->subpaths[0].points[0], point(15, 10));
+        EQT(p->subpaths[0].points[1], point(13.5355, 13.5355));
+        EQT(p->subpaths[0].points[2], point(10, 15));
+        EQ_BOUNDS(bounds(p), 5, 5, 15, 15);
+        path_free(p);
+    }
+}
+
+/* ============ features/chapter05-winding.feature ======================= */
+static void feature_winding(void) {
+    const char *F = "Is this point inside?";
+
+    S(F, "Crossings from inside and outside a square") {
+        Path *p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10));
+        EQI(crossings(p, 5, 5), 1);
+        EQI(crossings(p, 15, 5), 0);
+        EQI(crossings(p, -1, 5), 2);
+        path_free(p);
+    }
+    S(F, "A clockwise square winds once") {
+        Path *p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10));
+        EQI(winding_at(p, 5, 5), 1);
+        EQI(winding_at(p, 15, 5), 0);
+        EQI(winding_at(p, -1, 5), 0);
+        EQI(winding_at(p, 5, -1), 0);
+        EQI(winding_at(p, 5, 11), 0);
+        path_free(p);
+    }
+    S(F, "The same square the other way round winds minus once") {
+        Path *p = polygon(point(0, 0), point(0, 10), point(10, 10), point(10, 0));
+        EQI(winding_at(p, 5, 5), -1);
+        EQI(crossings(p, 5, 5), 1);
+        path_free(p);
+    }
+    S(F, "A ray through a vertex counts it once") {
+        Path *p = polygon(point(5, 0), point(10, 5), point(5, 10), point(0, 5));
+        EQI(crossings(p, 2, 5), 1);
+        EQI(winding_at(p, 2, 5), 1);
+        EQI(crossings(p, -1, 5), 2);
+        EQI(winding_at(p, -1, 5), 0);
+        EQI(winding_at(p, 12, 5), 0);
+        EQI(winding_at(p, 5, 5), 1);
+        path_free(p);
+    }
+    S(F, "The boundary belongs to the top and the left") {
+        Path *p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10));
+        EQI(winding_at(p, 5, 0), 1);
+        EQI(winding_at(p, 0, 5), 1);
+        EQI(winding_at(p, 0, 0), 1);
+        EQI(winding_at(p, 5, 10), 0);
+        EQI(winding_at(p, 10, 5), 0);
+        EQI(winding_at(p, 10, 10), 0);
+        path_free(p);
+    }
+    S(F, "Two rectangles that share an edge cover it once") {
+        Path *p = path();
+        move_to(p, point(0, 0));
+        line_to(p, point(5, 0));
+        line_to(p, point(5, 10));
+        line_to(p, point(0, 10));
+        close(p);
+        move_to(p, point(5, 0));
+        line_to(p, point(10, 0));
+        line_to(p, point(10, 10));
+        line_to(p, point(5, 10));
+        close(p);
+        EQI(winding_at(p, 2, 5), 1);
+        EQI(winding_at(p, 5, 5), 1);
+        EQI(winding_at(p, 8, 5), 1);
+        path_free(p);
+    }
+    S(F, "A diamond wound twice has winding number 2") {
+        Path *p = path();
+        move_to(p, point(5, 0));
+        line_to(p, point(10, 5));
+        line_to(p, point(5, 10));
+        line_to(p, point(0, 5));
+        line_to(p, point(5, 0));
+        line_to(p, point(10, 5));
+        line_to(p, point(5, 10));
+        line_to(p, point(0, 5));
+        close(p);
+        int n; Edge *e = edges(p, &n);
+        EQI(n, 8);
+        free(e);
+        EQI(winding_at(p, 5, 5), 2);
+        EQI(crossings(p, 5, 5), 2);
+        EQI(winding_at(p, 12, 5), 0);
+        path_free(p);
+    }
+    S(F, "The polygon circle") {
+        Path *p = circle_path(10, 10, 5, 8);
+        EQI(winding_at(p, 10, 10), 1);
+        EQI(winding_at(p, 14.9, 10), 1);
+        EQI(winding_at(p, 15, 10), 0);
+        EQI(winding_at(p, 10, 5.1), 1);
+        EQI(winding_at(p, 10, 4.9), 0);
+        path_free(p);
+    }
+    S(F, "The pentagram's center winds twice") {
+        Path *p = star();
+        EQI(winding_at(p, 80.5, 80.5), 2);
+        EQI(crossings(p, 80.5, 80.5), 2);
+        EQI(winding_at(p, 80.5, 20), 1);
+        EQI(winding_at(p, 30, 60), 1);
+        EQI(crossings(p, 30, 60), 3);
+        EQI(winding_at(p, 80.5, 120), 0);
+        EQI(crossings(p, 80.5, 120), 2);
+        EQI(winding_at(p, 10, 10), 0);
+        path_free(p);
+    }
+}
+
+/* ============ features/chapter05-rules.feature ========================= */
+static void feature_rules(void) {
+    const char *F = "Two rules";
+
+    S(F, "A single loop is inside under both rules") {
+        Path *p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10));
+        TRUEP(inside_nonzero(p, 5, 5));
+        TRUEP(inside_evenodd(p, 5, 5));
+        FALSEP(inside_nonzero(p, 15, 5));
+        FALSEP(inside_evenodd(p, 15, 5));
+        path_free(p);
+    }
+    S(F, "An inner loop the other way round is a hole under both rules") {
+        Path *p = path();
+        move_to(p, point(0, 0));
+        line_to(p, point(10, 0));
+        line_to(p, point(10, 10));
+        line_to(p, point(0, 10));
+        close(p);
+        move_to(p, point(3, 3));
+        line_to(p, point(3, 7));
+        line_to(p, point(7, 7));
+        line_to(p, point(7, 3));
+        close(p);
+        EQI(winding_at(p, 5, 5), 0);
+        EQI(winding_at(p, 1, 1), 1);
+        FALSEP(inside_nonzero(p, 5, 5));
+        FALSEP(inside_evenodd(p, 5, 5));
+        TRUEP(inside_nonzero(p, 1, 1));
+        path_free(p);
+    }
+    S(F, "An inner loop the same way round is a hole only under even-odd") {
+        Path *p = path();
+        move_to(p, point(0, 0));
+        line_to(p, point(10, 0));
+        line_to(p, point(10, 10));
+        line_to(p, point(0, 10));
+        close(p);
+        move_to(p, point(3, 3));
+        line_to(p, point(7, 3));
+        line_to(p, point(7, 7));
+        line_to(p, point(3, 7));
+        close(p);
+        EQI(winding_at(p, 5, 5), 2);
+        TRUEP(inside_nonzero(p, 5, 5));
+        FALSEP(inside_evenodd(p, 5, 5));
+        path_free(p);
+    }
+    S(F, "A loop wound twice vanishes under even-odd") {
+        Path *p = path();
+        move_to(p, point(5, 0));
+        line_to(p, point(10, 5));
+        line_to(p, point(5, 10));
+        line_to(p, point(0, 5));
+        line_to(p, point(5, 0));
+        line_to(p, point(10, 5));
+        line_to(p, point(5, 10));
+        line_to(p, point(0, 5));
+        close(p);
+        TRUEP(inside_nonzero(p, 5, 5));
+        FALSEP(inside_evenodd(p, 5, 5));
+        path_free(p);
+    }
+    S(F, "The pentagram's center is inside under nonzero and outside under even-odd") {
+        Path *p = star();
+        TRUEP(inside_nonzero(p, 80.5, 80.5));
+        FALSEP(inside_evenodd(p, 80.5, 80.5));
+        TRUEP(inside_nonzero(p, 80.5, 20));
+        TRUEP(inside_evenodd(p, 80.5, 20));
+        FALSEP(inside_nonzero(p, 80.5, 120));
+        FALSEP(inside_evenodd(p, 80.5, 120));
+        path_free(p);
+    }
+    S(F, "A filled path is a shape") {
+        Path *pp = polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6));
+        Shape s = filled(pp, "nonzero");
+        CoverageBuffer *cov = rasterize(s, 8, 8);
+        TRUEP(inside(s, 3, 3));
+        FALSEP(inside(s, 7, 3));
+        EQ(coverage_at(cov, 3, 3), 1);
+        EQ(coverage_at(cov, 1, 3), 0);
+        EQ(coverage_at(cov, 6, 3), 0);
+        EQ(ink(cov), 16);
+        coverage_free(cov); shape_free(s); path_free(pp);
+    }
+    S(F, "A filled path takes the rule seriously") {
+        Path *p = star();
+        Shape a = filled(p, "nonzero");
+        Shape b = filled(p, "evenodd");
+        CoverageBuffer *ca = rasterize(a, 160, 160);
+        CoverageBuffer *cb = rasterize(b, 160, 160);
+        EQ(coverage_at(ca, 80, 80), 1);
+        EQ(coverage_at(cb, 80, 80), 0);
+        EQ(coverage_at(ca, 80, 20), 1);
+        EQ(coverage_at(cb, 80, 20), 1);
+        EQ(coverage_at(ca, 80, 10), 0.0625);
+        EQ(coverage_at(cb, 80, 10), 0.0625);
+        EQ(ink(ca), 5499.9375);
+        EQ(ink(cb), 3800.375);
+        coverage_free(ca); coverage_free(cb); shape_free(a); shape_free(b); path_free(p);
+    }
+    S(F, "Rasterizing within the bounds gives the same coverage") {
+        Path *p = star();
+        Shape s = filled(p, "evenodd");
+        CoverageBuffer *full = rasterize(s, 160, 160);
+        CoverageBuffer *within = rasterize_within(s, bounds(p), 160, 160);
+        EQ(ink(within), ink(full));
+        EQ(coverage_at(within, 80, 20), coverage_at(full, 80, 20));
+        EQ(coverage_at(within, 13, 58), coverage_at(full, 13, 58));
+        EQ(coverage_at(within, 10, 10), 0);
+        coverage_free(full); coverage_free(within); shape_free(s); path_free(p);
+    }
+    S(F, "The box is inclusive of the pixels it touches, and clipped to the buffer") {
+        Path *p = polygon(point(1.5, 1.5), point(6.5, 1.5), point(6.5, 6.5), point(1.5, 6.5));
+        Shape s = filled(p, "nonzero");
+        CoverageBuffer *cov = rasterize_within(s, (Bounds){1.5, 1.5, 6.5, 6.5}, 8, 8);
+        CoverageBuffer *big = rasterize_within(s, (Bounds){-5, -5, 20, 20}, 8, 8);
+        EQ(coverage_at(cov, 1, 1), 0.25);
+        EQ(coverage_at(cov, 6, 6), 0.25);
+        EQ(coverage_at(cov, 3, 3), 1);
+        EQ(ink(cov), 25);
+        EQ(ink(big), 25);
+        coverage_free(cov); coverage_free(big); shape_free(s); path_free(p);
+    }
+}
+
+/* ============ features/chapter05-plate.feature ========================= */
+static void feature_plate_05(void) {
+    const char *F = "Plate 5";
+
+    S(F, "The pentagram") {
+        Path *p = star();
+        EQI(p->n_subpaths, 1);
+        int n; Edge *e = edges(p, &n);
+        EQI(n, 5);
+        free(e);
+        EQT(p->subpaths[0].points[0], point(80.5, 10.5));
+        EQT(p->subpaths[0].points[1], point(121.645, 137.1312));
+        EQT(p->subpaths[0].points[2], point(13.926, 58.8688));
+        EQT(p->subpaths[0].points[3], point(147.074, 58.8688));
+        EQT(p->subpaths[0].points[4], point(39.355, 137.1312));
+        EQ_BOUNDS(bounds(p), 13.926, 10.5, 147.074, 137.1312);
+        path_free(p);
+    }
+    S(F, "The star by the center question") {
+        Canvas *c = star_centers();
+        Bytes ref = read_file("reference/chapter-05/star-centers.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 320);
+        EQI(c->height, 160);
+        EQP1(p6, 80, 80, 243, 196, 89);
+        EQP1(p6, 240, 80, 39, 39, 44);
+        EQP1(p6, 80, 20, 243, 196, 89);
+        EQP1(p6, 240, 20, 243, 196, 89);
+        EQP1(p6, 30, 60, 243, 196, 89);
+        EQP1(p6, 190, 60, 243, 196, 89);
+        EQP1(p6, 80, 120, 39, 39, 44);
+        EQP1(p6, 80, 10, 39, 39, 44);
+        EQP1(p6, 10, 10, 39, 39, 44);
+        if (!ref.data) h_fail("could not read reference/chapter-05/star-centers.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
+    }
+    S(F, "The star by coverage") {
+        Canvas *c = star_coverage();
+        Bytes ref = read_file("reference/chapter-05/star-coverage.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 320);
+        EQI(c->height, 160);
+        EQP1(p6, 80, 80, 243, 196, 89);
+        EQP1(p6, 240, 80, 39, 39, 44);
+        EQP1(p6, 80, 20, 243, 196, 89);
+        EQP1(p6, 240, 20, 243, 196, 89);
+        EQP1(p6, 80, 120, 39, 39, 44);
+        EQP1(p6, 80, 10, 77, 65, 48);
+        EQP1(p6, 240, 10, 77, 65, 48);
+        EQP1(p6, 80, 11, 199, 160, 76);
+        EQP1(p6, 14, 58, 101, 83, 52);
+        EQP1(p6, 174, 58, 101, 83, 52);
+        EQP1(p6, 10, 10, 39, 39, 44);
+        if (!ref.data) h_fail("could not read reference/chapter-05/star-coverage.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
+    }
+    S(F, "Plate 5") {
+        Canvas *c = plate_05();
+        Bytes ref = read_file("reference/chapter-05/plate-05.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 640);
+        EQI(c->height, 640);
+        EQP1(p6, 160, 160, 243, 196, 89);
+        EQP1(p6, 480, 160, 39, 39, 44);
+        EQP1(p6, 160, 480, 243, 196, 89);
+        EQP1(p6, 480, 480, 39, 39, 44);
+        EQP1(p6, 160, 40, 243, 196, 89);
+        EQP1(p6, 480, 360, 243, 196, 89);
+        EQP1(p6, 160, 20, 39, 39, 44);
+        EQP1(p6, 160, 341, 77, 65, 48);
+        EQP1(p6, 480, 341, 77, 65, 48);
+        EQP1(p6, 348, 437, 101, 83, 52);
+        EQP1(p6, 20, 20, 39, 39, 44);
+        if (!ref.data) h_fail("could not read reference/chapter-05/plate-05.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
+    }
+}
+
+/* ============ features/chapter06-edges.feature ========================= */
+static void feature_edges(void) {
+    const char *F = "The edge table";
+
+    S(F, "A rectangle has two edges in its table") {
+        Path *p = polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6));
+        int n; EdgeEntry *t = edge_table(p, &n);
+        EQI(n, 2);
+        EQ(t[0].y_top, 2);
+        EQ(t[0].y_bottom, 6);
+        EQ(t[0].x_top, 2);
+        EQ(t[0].slope, 0);
+        EQI(t[0].direction, -1);
+        EQ(t[1].x_top, 6);
+        EQI(t[1].direction, 1);
+        free(t); path_free(p);
+    }
+    S(F, "A triangle's edges carry their slopes") {
+        Path *p = polygon(point(0, 0), point(10, 0), point(5, 10));
+        int n; EdgeEntry *t = edge_table(p, &n);
+        EQI(n, 2);
+        EQ(t[0].x_top, 0);
+        EQ(t[0].slope, 0.5);
+        EQI(t[0].direction, -1);
+        EQ(t[1].x_top, 10);
+        EQ(t[1].slope, -0.5);
+        EQI(t[1].direction, 1);
+        free(t); path_free(p);
+    }
+    S(F, "The table is sorted by top, then by x at the top") {
+        Path *p = path();
+        move_to(p, point(2, 2));
+        line_to(p, point(4, 1));
+        line_to(p, point(6, 3));
+        line_to(p, point(8, 1));
+        line_to(p, point(9, 6));
+        line_to(p, point(1, 6));
+        close(p);
+        int n; EdgeEntry *t = edge_table(p, &n);
+        EQI(n, 5);
+        EQ(t[0].y_top, 1); EQ(t[0].x_top, 4);
+        EQ(t[1].y_top, 1); EQ(t[1].x_top, 4);
+        EQ(t[2].y_top, 1); EQ(t[2].x_top, 8);
+        EQ(t[3].y_top, 1); EQ(t[3].x_top, 8);
+        EQ(t[4].y_top, 2); EQ(t[4].x_top, 2);
+        free(t); path_free(p);
+    }
+    S(F, "A horizontal edge is dropped, not clamped") {
+        Path *p = polygon(point(0, 0), point(10, 0), point(10, 5), point(0, 5));
+        int n; EdgeEntry *t = edge_table(p, &n);
+        EQI(n, 2);
+        EQ(t[0].x_top, 0);
+        EQ(t[1].x_top, 10);
+        free(t); path_free(p);
+    }
+    S(F, "An edge knows where it crosses a height") {
+        Path *p = polygon(point(0, 0), point(10, 0), point(5, 10));
+        int n; EdgeEntry *t = edge_table(p, &n);
+        EQ(x_at(t[0], 4), 2);
+        EQ(x_at(t[1], 4), 8);
+        EQ(x_at(t[0], 0.5), 0.25);
+        free(t); path_free(p);
+    }
+    S(F, "The edge table is the same whichever way the path was drawn") {
+        Path *a = polygon(point(0, 0), point(10, 0), point(5, 10));
+        Path *b = polygon(point(0, 0), point(5, 10), point(10, 0));
+        int an, bn;
+        EdgeEntry *ta = edge_table(a, &an);
+        EdgeEntry *tb = edge_table(b, &bn);
+        EQ(ta[0].x_top, tb[0].x_top);
+        EQ(ta[0].slope, tb[0].slope);
+        EQI(ta[0].direction, -1);
+        EQI(tb[0].direction, 1);
+        free(ta); free(tb); path_free(a); path_free(b);
+    }
+}
+
+/* ============ features/chapter06-spans.feature ========================= */
+static void feature_spans(void) {
+    const char *F = "Crossings on a row, and spans";
+    char name[96];
+
+    S(F, "Crossings on a row, sorted by x") {
+        Path *p = polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6));
+        int tn; EdgeEntry *t = edge_table(p, &tn);
+        int xn; Crossing *xs = crossings_on_row(t, tn, 3.5, &xn);
+        EQI(xn, 2);
+        EQ(xs[0].x, 2); EQI(xs[0].direction, -1);
+        EQ(xs[1].x, 6); EQI(xs[1].direction, 1);
+        free(xs);
+        int n1; Crossing *c1 = crossings_on_row(t, tn, 1.5, &n1); EQI(n1, 0); free(c1);
+        int n2; Crossing *c2 = crossings_on_row(t, tn, 6, &n2); EQI(n2, 0); free(c2);
+        int n3; Crossing *c3 = crossings_on_row(t, tn, 2, &n3); EQI(n3, 2); free(c3);
+        free(t); path_free(p);
+    }
+    S(F, "The star's crossings through its middle") {
+        Path *p = star();
+        int tn; EdgeEntry *t = edge_table(p, &tn);
+        int xn; Crossing *xs = crossings_on_row(t, tn, 80.5, &xn);
+        EQI(xn, 4);
+        EQ(xs[0].x, 43.6988); EQI(xs[0].direction, -1);
+        EQ(xs[1].x, 57.7556); EQI(xs[1].direction, -1);
+        EQ(xs[2].x, 103.2444); EQI(xs[2].direction, 1);
+        EQ(xs[3].x, 117.3012); EQI(xs[3].direction, 1);
+        free(xs); free(t); path_free(p);
+    }
+    S(F, "Spans from crossings under each rule") {
+        Crossing xs[] = {{1, 1}, {3, 1}, {5, -1}, {7, -1}};
+        int n;
+        Span *nz = spans_from_crossings(xs, 4, "nonzero", &n);
+        EQI(n, 1);
+        EQ(nz[0].x0, 1); EQ(nz[0].x1, 7);
+        free(nz);
+        Span *eo = spans_from_crossings(xs, 4, "evenodd", &n);
+        EQI(n, 2);
+        EQ(eo[0].x0, 1); EQ(eo[0].x1, 3);
+        EQ(eo[1].x0, 5); EQ(eo[1].x1, 7);
+        free(eo);
+        Span *empty = spans_from_crossings(NULL, 0, "nonzero", &n);
+        EQI(n, 0);
+        free(empty);
+    }
+    S(F, "The spans of an axis-aligned rectangle are exact") {
+        Path *p = polygon(point(1.25, 2), point(4.75, 2), point(4.75, 5), point(1.25, 5));
+        int n;
+        Span *s0 = spans(p, "nonzero", 1, &n); EQI(n, 0); free(s0);
+        Span *s1 = spans(p, "nonzero", 2, &n); EQI(n, 1); EQ(s1[0].x0, 1.25); EQ(s1[0].x1, 4.75); free(s1);
+        Span *s2 = spans(p, "nonzero", 4, &n); EQI(n, 1); EQ(s2[0].x0, 1.25); EQ(s2[0].x1, 4.75); free(s2);
+        Span *s3 = spans(p, "nonzero", 5, &n); EQI(n, 0); free(s3);
+        path_free(p);
+    }
+    S(F, "A rectangle whose edges sit on sample heights") {
+        Path *p = polygon(point(1.5, 2.5), point(4.5, 2.5), point(4.5, 5.5), point(1.5, 5.5));
+        int n;
+        Span *s0 = spans(p, "nonzero", 1, &n); EQI(n, 0); free(s0);
+        Span *s1 = spans(p, "nonzero", 2, &n); EQI(n, 1); EQ(s1[0].x0, 1.5); EQ(s1[0].x1, 4.5); free(s1);
+        Span *s2 = spans(p, "nonzero", 4, &n); EQI(n, 1); EQ(s2[0].x0, 1.5); EQ(s2[0].x1, 4.5); free(s2);
+        Span *s3 = spans(p, "nonzero", 5, &n); EQI(n, 0); free(s3);
+        path_free(p);
+    }
+
+    struct { int row; double x0, x1; } rows[] = {
+        {0, 0.25, 9.75}, {1, 0.75, 9.25}, {4, 2.25, 7.75}, {9, 4.75, 5.25}
+    };
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        snprintf(name, sizeof name, "A triangle's spans narrow by one per row [row %d]", rows[i].row);
+        S(F, name) {
+            Path *p = polygon(point(0, 0), point(10, 0), point(5, 10));
+            int n; Span *s = spans(p, "nonzero", rows[i].row, &n);
+            EQI(n, 1);
+            EQ(s[0].x0, rows[i].x0);
+            EQ(s[0].x1, rows[i].x1);
+            free(s); path_free(p);
+        }
+    }
+
+    S(F, "The row past the triangle's apex has no span") {
+        Path *p = polygon(point(0, 0), point(10, 0), point(5, 10));
+        int n; Span *s = spans(p, "nonzero", 10, &n);
+        EQI(n, 0);
+        free(s); path_free(p);
+    }
+    S(F, "A flat top is not a span of its own") {
+        Path *p = polygon(point(0, 0), point(10, 0), point(10, 5), point(0, 5));
+        int tn; EdgeEntry *t = edge_table(p, &tn);
+        EQI(tn, 2);
+        free(t);
+        int n;
+        Span *s0 = spans(p, "nonzero", 0, &n); EQI(n, 1); EQ(s0[0].x0, 0); EQ(s0[0].x1, 10); free(s0);
+        Span *s1 = spans(p, "nonzero", 4, &n); EQI(n, 1); EQ(s1[0].x0, 0); EQ(s1[0].x1, 10); free(s1);
+        Span *s2 = spans(p, "nonzero", 5, &n); EQI(n, 0); free(s2);
+        path_free(p);
+    }
+    S(F, "A ring is two spans under even-odd and one under nonzero") {
+        Path *p = path();
+        move_to(p, point(0, 0));
+        line_to(p, point(10, 0));
+        line_to(p, point(10, 10));
+        line_to(p, point(0, 10));
+        close(p);
+        move_to(p, point(3, 3));
+        line_to(p, point(7, 3));
+        line_to(p, point(7, 7));
+        line_to(p, point(3, 7));
+        close(p);
+        int n;
+        Span *nz = spans(p, "nonzero", 5, &n); EQI(n, 1); EQ(nz[0].x0, 0); EQ(nz[0].x1, 10); free(nz);
+        Span *eo = spans(p, "evenodd", 5, &n);
+        EQI(n, 2);
+        EQ(eo[0].x0, 0); EQ(eo[0].x1, 3);
+        EQ(eo[1].x0, 7); EQ(eo[1].x1, 10);
+        free(eo); path_free(p);
+    }
+    S(F, "The star's spans through its middle") {
+        Path *p = star();
+        int n;
+        Span *nz = spans(p, "nonzero", 80, &n);
+        EQI(n, 1); EQ(nz[0].x0, 43.6988); EQ(nz[0].x1, 117.3012); free(nz);
+        Span *eo = spans(p, "evenodd", 80, &n);
+        EQI(n, 2);
+        EQ(eo[0].x0, 43.6988); EQ(eo[0].x1, 57.7556);
+        EQ(eo[1].x0, 103.2444); EQ(eo[1].x1, 117.3012);
+        free(eo); path_free(p);
+    }
+    S(F, "fill_span fills the pixels whose centers are in the span") {
+        CoverageBuffer *cov = coverage_buffer(8, 3);
+        fill_span(cov, 1, 1.25, 4.75);
+        EQ(coverage_at(cov, 0, 1), 0);
+        EQ(coverage_at(cov, 1, 1), 1);
+        EQ(coverage_at(cov, 4, 1), 1);
+        EQ(coverage_at(cov, 5, 1), 0);
+        EQ(coverage_at(cov, 2, 0), 0);
+        EQ(ink(cov), 4);
+        coverage_free(cov);
+    }
+    S(F, "The span is half-open at its right end") {
+        CoverageBuffer *cov = coverage_buffer(8, 3);
+        fill_span(cov, 1, 1.5, 4.5);
+        EQ(coverage_at(cov, 1, 1), 1);
+        EQ(coverage_at(cov, 3, 1), 1);
+        EQ(coverage_at(cov, 4, 1), 0);
+        EQ(ink(cov), 3);
+        coverage_free(cov);
+    }
+    S(F, "A span may run off either side of the buffer") {
+        CoverageBuffer *a = coverage_buffer(8, 3);
+        CoverageBuffer *b = coverage_buffer(8, 3);
+        CoverageBuffer *c = coverage_buffer(8, 3);
+        fill_span(a, 1, -3, 2.5);
+        fill_span(b, 1, 6.5, 20);
+        fill_span(c, 1, 2.5, 2.5);
+        EQ(ink(a), 2);
+        EQ(coverage_at(a, 1, 1), 1);
+        EQ(ink(b), 2);
+        EQ(coverage_at(b, 6, 1), 1);
+        EQ(ink(c), 0);
+        coverage_free(a); coverage_free(b); coverage_free(c);
+    }
+}
+
+/* ============ features/chapter06-sweep.feature ========================= */
+static void feature_sweep(void) {
+    const char *F = "The sweep";
+
+    S(F, "Two buffers that differ") {
+        CoverageBuffer *a = coverage_buffer(3, 3);
+        CoverageBuffer *b = coverage_buffer(3, 3);
+        set_coverage(a, 1, 1, 1);
+        set_coverage(b, 1, 1, 0.25);
+        EQ(max_coverage_difference(a, b), 0.75);
+        EQ(max_coverage_difference(a, a), 0);
+        coverage_free(a); coverage_free(b);
+    }
+    S(F, "Buffers of different sizes are as different as it gets") {
+        CoverageBuffer *a = coverage_buffer(3, 3);
+        CoverageBuffer *b = coverage_buffer(3, 4);
+        EQ(max_coverage_difference(a, b), 1);
+        coverage_free(a); coverage_free(b);
+    }
+    S(F, "A rectangle") {
+        Path *p = polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6));
+        CoverageBuffer *cov = fill_path_aliased(p, "nonzero", 8, 8);
+        EQ(coverage_at(cov, 2, 2), 1);
+        EQ(coverage_at(cov, 5, 5), 1);
+        EQ(coverage_at(cov, 6, 5), 0);
+        EQ(coverage_at(cov, 5, 6), 0);
+        EQ(coverage_at(cov, 1, 2), 0);
+        EQ(ink(cov), 16);
+        Shape s = filled(p, "nonzero");
+        CoverageBuffer *ref = rasterize_centers(s, 8, 8);
+        EQ(max_coverage_difference(cov, ref), 0);
+        coverage_free(cov); coverage_free(ref); shape_free(s); path_free(p);
+    }
+    S(F, "A triangle") {
+        Path *p = polygon(point(0, 0), point(10, 0), point(5, 10));
+        CoverageBuffer *cov = fill_path_aliased(p, "nonzero", 20, 20);
+        EQ(coverage_at(cov, 0, 0), 1);
+        EQ(coverage_at(cov, 9, 0), 1);
+        EQ(coverage_at(cov, 10, 0), 0);
+        EQ(coverage_at(cov, 4, 8), 1);
+        EQ(coverage_at(cov, 3, 8), 0);
+        EQ(coverage_at(cov, 5, 9), 0);
+        EQ(ink(cov), 50);
+        Shape s = filled(p, "nonzero");
+        CoverageBuffer *ref = rasterize_centers(s, 20, 20);
+        EQ(max_coverage_difference(cov, ref), 0);
+        coverage_free(cov); coverage_free(ref); shape_free(s); path_free(p);
+    }
+    S(F, "The same triangle drawn the other way round") {
+        Path *a = polygon(point(0, 0), point(10, 0), point(5, 10));
+        Path *b = polygon(point(0, 0), point(5, 10), point(10, 0));
+        CoverageBuffer *ca = fill_path_aliased(a, "nonzero", 20, 20);
+        CoverageBuffer *cb = fill_path_aliased(b, "nonzero", 20, 20);
+        EQ(max_coverage_difference(ca, cb), 0);
+        coverage_free(ca); coverage_free(cb); path_free(a); path_free(b);
+    }
+    S(F, "A polygon circle") {
+        Path *p = circle_path(10.3, 9.7, 7, 12);
+        CoverageBuffer *cov = fill_path_aliased(p, "nonzero", 20, 20);
+        EQ(ink(cov), 145);
+        Shape s = filled(p, "nonzero");
+        CoverageBuffer *ref = rasterize_centers(s, 20, 20);
+        EQ(max_coverage_difference(cov, ref), 0);
+        coverage_free(cov); coverage_free(ref); shape_free(s); path_free(p);
+    }
+    S(F, "The star, both rules, matches chapter 5 pixel for pixel") {
+        Path *p = star();
+        CoverageBuffer *nz = fill_path_aliased(p, "nonzero", 160, 160);
+        CoverageBuffer *eo = fill_path_aliased(p, "evenodd", 160, 160);
+        EQ(ink(nz), 5480);
+        EQ(ink(eo), 3780);
+        EQ(coverage_at(nz, 80, 80), 1);
+        EQ(coverage_at(eo, 80, 80), 0);
+        Shape sa = filled(p, "nonzero");
+        Shape sb = filled(p, "evenodd");
+        CoverageBuffer *refa = rasterize_centers(sa, 160, 160);
+        CoverageBuffer *refb = rasterize_centers(sb, 160, 160);
+        EQ(max_coverage_difference(nz, refa), 0);
+        EQ(max_coverage_difference(eo, refb), 0);
+        coverage_free(nz); coverage_free(eo); coverage_free(refa); coverage_free(refb);
+        shape_free(sa); shape_free(sb); path_free(p);
+    }
+    S(F, "An edge that starts on a sample height is active there, and one that ends there is not") {
+        Path *p = polygon(point(1.5, 2.5), point(4.5, 2.5), point(4.5, 5.5), point(1.5, 5.5));
+        CoverageBuffer *cov = fill_path_aliased(p, "nonzero", 8, 8);
+        EQ(coverage_at(cov, 2, 1), 0);
+        EQ(coverage_at(cov, 2, 2), 1);
+        EQ(coverage_at(cov, 2, 4), 1);
+        EQ(coverage_at(cov, 2, 5), 0);
+        EQ(coverage_at(cov, 1, 3), 1);
+        EQ(coverage_at(cov, 4, 3), 0);
+        EQ(ink(cov), 9);
+        Shape s = filled(p, "nonzero");
+        CoverageBuffer *ref = rasterize_centers(s, 8, 8);
+        EQ(max_coverage_difference(cov, ref), 0);
+        coverage_free(cov); coverage_free(ref); shape_free(s); path_free(p);
+    }
+    S(F, "A polygon larger than the buffer fills it") {
+        Path *p = polygon(point(-5, -5), point(30, -5), point(30, 30), point(-5, 30));
+        CoverageBuffer *cov = fill_path_aliased(p, "nonzero", 8, 8);
+        EQ(ink(cov), 64);
+        coverage_free(cov); path_free(p);
+    }
+    S(F, "An empty path fills nothing") {
+        Path *p = path();
+        CoverageBuffer *cov = fill_path_aliased(p, "nonzero", 8, 8);
+        EQ(ink(cov), 0);
+        coverage_free(cov); path_free(p);
+    }
+    S(F, "transform_path takes every point through the matrix and keeps the flags") {
+        Path *p = polygon(point(1.25, 2), point(4.75, 2), point(4.75, 5), point(1.25, 5));
+        Path *q = transform_path(p, translation(10, 20));
+        EQI(q->n_subpaths, 1);
+        TRUEP(q->subpaths[0].closed);
+        EQT(q->subpaths[0].points[0], point(11.25, 22));
+        EQT(q->subpaths[0].points[2], point(14.75, 25));
+        EQT(p->subpaths[0].points[0], point(1.25, 2));
+        path_free(p); path_free(q);
+    }
+    S(F, "A transformed star fills where the transform put it") {
+        Path *base = star();
+        Matrix3 m = mul(translation(10, 10), mul(scaling(0.11, 0.11), translation(-80.5, -80.5)));
+        Path *p = transform_path(base, m);
+        path_free(base);
+        CoverageBuffer *nz = fill_path_aliased(p, "nonzero", 20, 20);
+        CoverageBuffer *eo = fill_path_aliased(p, "evenodd", 20, 20);
+        EQ_BOUNDS(bounds(p), 2.6769, 2.3, 17.3231, 16.2294);
+        EQ(ink(nz), 60);
+        EQ(ink(eo), 40);
+        Shape s = filled(p, "nonzero");
+        CoverageBuffer *ref = rasterize_centers(s, 20, 20);
+        EQ(max_coverage_difference(nz, ref), 0);
+        coverage_free(nz); coverage_free(eo); coverage_free(ref); shape_free(s); path_free(p);
+    }
+}
+
+/* ============ features/chapter06-plate.feature ========================= */
+static void feature_plate_06(void) {
+    const char *F = "Plate 6";
+
+    S(F, "The unit star") {
+        Path *p = unit_star();
+        int n; Edge *e = edges(p, &n);
+        EQI(n, 5);
+        free(e);
+        EQT(p->subpaths[0].points[0], point(0, -1));
+        EQT(p->subpaths[0].points[1], point(0.5878, 0.809));
+        EQT(p->subpaths[0].points[2], point(-0.9511, -0.309));
+        EQ_BOUNDS(bounds(p), -0.9511, -1, 0.9511, 0.809);
+        path_free(p);
+    }
+    S(F, "The spiral") {
+        Canvas *c = spiral();
+        Bytes ref = read_file("reference/chapter-06/spiral.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 320);
+        EQI(c->height, 320);
+        EQP1(p6, 180, 160, 243, 196, 89);
+        EQP1(p6, 183, 171, 124, 196, 237);
+        EQP1(p6, 179, 183, 237, 137, 149);
+        EQP1(p6, 104, 139, 237, 137, 149);
+        EQP1(p6, 230, 111, 124, 196, 237);
+        EQP1(p6, 32, 137, 124, 196, 237);
+        EQP1(p6, 34, 104, 237, 137, 149);
+        EQP1(p6, 160, 160, 39, 39, 44);
+        EQP1(p6, 5, 5, 39, 39, 44);
+        EQP1(p6, 300, 20, 39, 39, 44);
+        if (!ref.data) h_fail("could not read reference/chapter-06/spiral.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
+    }
+    S(F, "Plate 6") {
+        Canvas *c = plate_06();
+        Bytes ref = read_file("reference/chapter-06/plate-06.ppm");
+        Bytes p6 = canvas_to_p6(c);
+        EQI(c->width, 640);
+        EQI(c->height, 640);
+        EQP1(p6, 360, 320, 243, 196, 89);
+        EQP1(p6, 68, 208, 237, 137, 149);
+        EQP1(p6, 320, 320, 39, 39, 44);
+        if (!ref.data) h_fail("could not read reference/chapter-06/plate-06.ppm");
+        else { LEI(max_channel_difference(p6, ref), 1); free(ref.data); }
+        free(p6.data); canvas_free(c);
+    }
+}
+
 #include <time.h>
 #define T(f) do { clock_t _s = clock(); f(); if (getenv("TIMING")) fprintf(stderr, "  %-22s %6.1f ms\n", #f, (clock()-_s)*1000.0/CLOCKS_PER_SEC); } while (0)
 
@@ -1780,6 +2684,18 @@ int main(void) {
     T(feature_ch4_shapes);
     T(feature_plate_04);
     h_subtotal("chapter 4");
+
+    T(feature_paths);
+    T(feature_winding);
+    T(feature_rules);
+    T(feature_plate_05);
+    h_subtotal("chapter 5");
+
+    T(feature_edges);
+    T(feature_spans);
+    T(feature_sweep);
+    T(feature_plate_06);
+    h_subtotal("chapter 6");
     h_report();
     return h_failed ? 1 : 0;
 }

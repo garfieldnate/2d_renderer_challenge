@@ -1,9 +1,9 @@
-# The 2D Renderer Challenge — chapters 1 to 4, in C11
+# The 2D Renderer Challenge — chapters 1 to 6, in C11
 
 Run everything from this directory (the tests read `reference/` by relative path).
 
     make          # build bin/tests and bin/render (clang, -std=c11, libm)
-    make test     # every scenario in features/, chapters 1 to 4
+    make test     # every scenario in features/, chapters 1 to 6
     make render   # write the chapters' pictures into out/
 
 `make test` prints a per-chapter subtotal and then a total; it exits non-zero if
@@ -13,9 +13,11 @@ anything failed. `TIMING=1 ./bin/tests` adds a per-feature time.
 `quarter-match`, `ramp`, `clamp-pair`, `plate-01`), chapter 2's as P6 binary
 (`out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/plate-02.ppm`), chapter 3's as P6 binary (`out/fan-bresenham.ppm`,
-`out/fan-wu.ppm`, `out/fan-coverage.ppm`, `out/plate-03.ppm`) and chapter 4's
-as P6 binary (`out/fan-both-orders.ppm`, `out/plate-04.ppm`). Everything from
-chapter 2 on is byte-identical to the matching file under `reference/`.
+`out/fan-wu.ppm`, `out/fan-coverage.ppm`, `out/plate-03.ppm`), chapter 4's
+as P6 binary (`out/fan-both-orders.ppm`, `out/plate-04.ppm`), chapter 5's as
+P6 binary (`out/star-centers.ppm`, `out/star-coverage.ppm`, `out/plate-05.ppm`)
+and chapter 6's as P6 binary (`out/spiral.ppm`, `out/plate-06.ppm`). Everything
+from chapter 2 on is byte-identical to the matching file under `reference/`.
 
 Layout: `src/renderer.h` and `src/renderer.c` are the renderer, `src/tests.c` is
 one function per feature file and one `S(...)` block per scenario,
@@ -57,6 +59,42 @@ an fma breaks that exact cancellation and the answer comes out 9.65625.
 `mix(a, b, t)` reads the global `linear_blending` switch; `mix(a, b, t, linear)`
 is the same function with the switch passed explicitly instead (a variadic
 macro in `renderer.h` picks `mix3` or `mix4` by argument count). `paint_through`
-always calls the four-argument form with `true`: the browser-style switch has
+and `plot` (chapter 3's antialiased line, one pixel of `paint_through`) both
+always call the four-argument form with `true`: the browser-style switch has
 no business inside the rasterizer, so painting ignores it even when a
 scenario has turned it off.
+
+Chapter 5 adds `Path` (`path`, `path_free`, `move_to`, `line_to`, `close`), a
+list of `Subpath`s exposed as public fields the way `Canvas` exposes
+`width`/`height`/`pixels`: `p->subpaths[i].points[j]`, `p->subpaths[i].closed`,
+`p->n_subpaths` (the book's `length(subpaths(p))`). `edges(p, &n)` and
+`bounds(p)` are real functions, since they're derived views, not stored data;
+`edges` hands out a heap array the caller frees. `polygon(p1, p2, ...)` is a
+variadic macro over `polygon_pts(pts, n)`, built the same way the book writes
+it (a compound literal array under the hood, mirroring `EQ_PIXELS`'s trick in
+the test harness). `crossings` and `winding_at` walk each subpath's points
+directly, with wraparound, rather than materializing `edges()`, because
+`coverage()` calls them up to sixty-four times a pixel. `filled(p, rule)` is a
+new `ShapeKind`, `SHAPE_FILLED_PATH`, holding a private deep copy of the path
+(`shape_free` gives it back) and an `int rule` (0 nonzero, 1 evenodd) instead
+of the book's string, since the string only has to survive the call that
+reads it. `rasterize_within(shape, box, w, h)` sits next to chapter 2's
+`rasterize`/`rasterize_centers`. `star`, `star_panel`, `star_centers`,
+`star_coverage` and `plate_05` are chapter 5's picture.
+
+Chapter 6 adds the classical scanline fill: `EdgeEntry` (`edge_table`,
+`x_at`), `Crossing` (`crossings_on_row`), `Span` (`spans_from_crossings`,
+`spans`, `fill_span`) and `fill_path_aliased`, which sweeps rows with an
+active edge list built by walking chapter 5's `edge_table` once, front to
+back. `max_coverage_difference` sits next to chapter 1's
+`max_channel_difference`, for the same reason: it has to return something
+meaningful (1) when the two buffers are different sizes, or a transposed
+sweep could compare equal to the reference. `transform_path(p, m)` is
+`transform_points` with the subpath structure and closed flags kept, used by
+`unit_star`, `spiral` and `plate_06`.
+
+One naming collision worth flagging: `close` is also a POSIX function
+(`<unistd.h>`, closing a file descriptor). Nothing in this project includes
+`<unistd.h>`, so the book's `close(Path *)` is the only `close` in scope and
+the build is clean, but a project that also touches file descriptors would
+need to rename one of the two.

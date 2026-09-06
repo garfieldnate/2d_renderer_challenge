@@ -121,11 +121,60 @@ Matrix3 shearing(double xy, double yx);
    absolute determinant of its upper-left 2 by 2 */
 double approx_scale(Matrix3 m);
 
+/* ---- chapter 5: paths and insideness -----------------------------------
+   A path is a list of subpaths; a subpath is a list of points and a flag
+   for whether it was closed. move_to starts a new subpath, line_to
+   extends the last one (or behaves as move_to if there isn't one, or
+   starts a fresh one at the closed subpath's start if the last one was
+   closed), close marks the last subpath closed. The struct's fields are
+   public, the way Canvas's are: p->subpaths[i], p->n_subpaths. */
+typedef struct { Tuple *points; int n, cap; bool closed; } Subpath;
+typedef struct Path {
+    Subpath *subpaths; int n_subpaths, cap_subpaths;
+} Path;
+
+typedef struct { Tuple a, b; } Edge;
+typedef struct { double min_x, min_y, max_x, max_y; } Bounds;
+
+Path *path(void);
+void  path_free(Path *p);
+void  move_to(Path *p, Tuple pt);
+void  line_to(Path *p, Tuple pt);
+void  close(Path *p);
+
+/* every edge of every subpath as (a, b) pairs, treating every subpath as
+   closed whether or not close() was called; a subpath of one point
+   contributes none. Heap array, caller frees. */
+Edge *edges(const Path *p, int *n);
+/* the smallest axis-aligned box around every point of every subpath;
+   (0, 0, 0, 0) for an empty path */
+Bounds bounds(const Path *p);
+
+/* polygon(p1, p2, ...): a closed subpath through the points */
+Path *polygon_pts(const Tuple *pts, int n);
+#define polygon(...) polygon_pts((Tuple[]){__VA_ARGS__}, \
+        (int)(sizeof((Tuple[]){__VA_ARGS__}) / sizeof(Tuple)))
+
+/* a regular n-gon standing in for a circle: first point at angle 0 (to
+   the right of center), going clockwise on the screen as k increases */
+Path *circle_path(double cx, double cy, double r, int n);
+
+/* the number of times a ray from (x, y) toward +x crosses an edge, and
+   the signed version of the same walk: the winding number. Both use the
+   half-open rule (a.y <= y < b.y, or the reverse) so a vertex on the ray
+   counts once, not twice. */
+int crossings(const Path *p, double x, double y);
+int winding_at(const Path *p, double x, double y);
+bool inside_nonzero(const Path *p, double x, double y);
+bool inside_evenodd(const Path *p, double x, double y);
+
 /* ---- shapes: a shape is a thing that answers "is this point inside?" -- */
 typedef enum { SHAPE_CIRCLE, SHAPE_RECTANGLE, SHAPE_HALF_PLANE, SHAPE_THICK_LINE,
-               SHAPE_UNION, SHAPE_TRANSFORMED, SHAPE_EMPTY } ShapeKind;
+               SHAPE_UNION, SHAPE_TRANSFORMED, SHAPE_EMPTY, SHAPE_FILLED_PATH } ShapeKind;
 /* h[] holds a thick line's four half-planes, each as px, py, nx, ny.
-   parts/nparts belong to a union, base/inv to a transformed shape. */
+   parts/nparts belong to a union, base/inv to a transformed shape.
+   path/rule belong to a filled path (rule 0 = nonzero, 1 = evenodd); the
+   path is owned, a private deep copy made by filled(). */
 typedef struct Shape Shape;
 struct Shape {
     ShapeKind kind;
@@ -133,6 +182,7 @@ struct Shape {
     double h[4][4];
     Shape *parts; int nparts;
     Shape *base;  Matrix3 inv;
+    Path *path;   int rule;
 };
 
 Shape circle(double cx, double cy, double r);
@@ -157,6 +207,11 @@ Shape transformed(Shape base, Matrix3 m);
 Shape outline(const Tuple *pts, int n, Matrix3 m, double width);
 void  shape_free(Shape s);
 
+/* rule is "nonzero" or "evenodd". filled() copies the path it's given, so
+   the caller's path outlives the shape either way; shape_free gives the
+   copy back. */
+Shape filled(const Path *p, const char *rule);
+
 /* ---- coverage -------------------------------------------------------- */
 typedef struct { int width, height; double *values; } CoverageBuffer;
 
@@ -170,6 +225,10 @@ double center_inside(Shape s, int x, int y);        /* 1 or 0 */
 double coverage(Shape s, int x, int y);             /* 8x8 samples, count / 64 */
 CoverageBuffer *rasterize_centers(Shape s, int w, int h);
 CoverageBuffer *rasterize(Shape s, int w, int h);
+/* rasterize restricted to the pixels the box touches: columns from
+   floor(min x) up to but not including ceil(max x), rows likewise,
+   clipped to the buffer, the rest left at zero */
+CoverageBuffer *rasterize_within(Shape s, Bounds box, int w, int h);
 
 void paint_through(Canvas *c, const CoverageBuffer *cov, Color col);
 
@@ -209,5 +268,60 @@ Canvas *fan_transformed(Matrix3 m);
 Canvas *fan_both_orders(void);
 Canvas *f_both_orders(void);
 Canvas *plate_04(void);
+
+/* ---- chapter 5: putting it together ------------------------------------ */
+/* five points on a circle of radius 70 about (80.5, 80.5), the first
+   straight up, visited every second one so the pen crosses itself */
+Path *star(void);
+Canvas *star_panel(const char *rule, const char *method);  /* method: "centers" or "coverage" */
+Canvas *star_centers(void);
+Canvas *star_coverage(void);
+Canvas *plate_05(void);
+
+/* ---- chapter 6: filling a polygon ---------------------------------------
+   The classical scanline fill: prepare every non-horizontal edge for the
+   sweep (edge_table), find where the current row crosses the table
+   (crossings_on_row), turn crossings into filled stretches
+   (spans_from_crossings), and fill a stretch's pixels (fill_span).
+   fill_path_aliased does all four, with an active edge list so the table
+   is read once, front to back. */
+typedef struct { double y_top, y_bottom, x_top, slope; int direction; } EdgeEntry;
+typedef struct { double x; int direction; } Crossing;
+typedef struct { double x0, x1; } Span;
+
+/* sorted by y_top, then by x_top; horizontal edges (a.y == b.y exactly)
+   are dropped. Heap array, caller frees. */
+EdgeEntry *edge_table(const Path *p, int *n);
+double x_at(EdgeEntry e, double y);   /* where the edge crosses height y */
+
+/* (x, direction) for every edge of the table spanning height y, sorted by
+   x, under the half-open rule y_top <= y < y_bottom. Heap array, caller
+   frees. */
+Crossing *crossings_on_row(const EdgeEntry *t, int n, double y, int *out_n);
+/* walks sorted crossings left to right, accumulating the winding number,
+   and returns the maximal intervals where rule ("nonzero" or "evenodd")
+   says inside. Heap array, caller frees. */
+Span *spans_from_crossings(const Crossing *xs, int n, const char *rule, int *out_n);
+/* edge_table + crossings_on_row + spans_from_crossings for one pixel row,
+   sampled at height row + 0.5. Heap array, caller frees. */
+Span *spans(const Path *p, const char *rule, int row, int *out_n);
+/* sets every pixel of the row whose center lies in [x0, x1) to 1 */
+void fill_span(CoverageBuffer *cov, int row, double x0, double x1);
+
+/* the scanline fill: a coverage buffer of 0s and 1s, exactly what
+   rasterize_centers(filled(p, rule), w, h) would give */
+CoverageBuffer *fill_path_aliased(const Path *p, const char *rule, int w, int h);
+/* the largest difference between corresponding entries of two coverage
+   buffers, or 1 when their sizes differ */
+double max_coverage_difference(const CoverageBuffer *a, const CoverageBuffer *b);
+
+/* every point of every subpath through m, closed flags kept; the
+   original is untouched */
+Path *transform_path(const Path *p, Matrix3 m);
+
+/* the chapter 5 star shrunk to radius 1 about the origin */
+Path *unit_star(void);
+Canvas *spiral(void);
+Canvas *plate_06(void);
 
 #endif
