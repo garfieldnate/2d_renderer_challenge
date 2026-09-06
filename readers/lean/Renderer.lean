@@ -575,7 +575,9 @@ def lineBresenham (c0 : Canvas) (x0 y0 x1 y1 : Int) (col : Color) : Canvas := Id
 
 `plot` is `paint_through` for one pixel: it drops writes off the canvas, and
 as a shortcut (not a rule) skips a weight of zero, so the endpoints of a
-line that starts off-canvas never touch a pixel outside it. -/
+line that starts off-canvas never touch a pixel outside it. Like
+`paintThrough`, it mixes in light regardless of what the linear-blending
+switch is set to: `mix(pixel, color, weight, true)`. -/
 
 def plot (c : Canvas) (x y : Int) (col : Color) (weight : Float) : IO Canvas := do
   if weight == 0.0 then
@@ -583,7 +585,7 @@ def plot (c : Canvas) (x y : Int) (col : Color) (weight : Float) : IO Canvas := 
   else if x < 0 || y < 0 || x >= (c.width : Int) || y >= (c.height : Int) then
     return c
   else
-    return writePixel c x y (← mix (pixelAt c x y) col weight)
+    return writePixel c x y (← mix (pixelAt c x y) col weight (some true))
 
 /-- Floor, not truncation: they agree on positive numbers and part company
     below zero, and a line that starts above the canvas has a negative `y`
@@ -621,18 +623,187 @@ def lineWu (c0 : Canvas) (x0 y0 x1 y1 : Int) (col : Color) : IO Canvas := do
 /-! ## § 3.3  The reveal
 
 A line is a rectangle one pixel wide: four half-planes, and chapter 2's
-rasterizer already knows what to do with it. -/
+rasterizer already knows what to do with it. `thick_line` itself is defined
+in chapter 4, § 4.5, as a one-liner over `segment`, once points exist to
+build it from. -/
 
-/-- The rectangle of `width` centered on the segment from the center of pixel
-    `(x0, y0)` to the center of pixel `(x1, y1)`, with square ends. A line of
-    no length has no direction, so it gets `(1, 0)` and its two ends are
-    pushed apart by half the width each, making it a `width`-by-`width`
-    square. -/
-def thickLine (x0 y0 x1 y1 : Int) (width : Float) : Shape :=
-  let ax0 := intToFloat x0 + 0.5
-  let ay0 := intToFloat y0 + 0.5
-  let bx0 := intToFloat x1 + 0.5
-  let by0 := intToFloat y1 + 0.5
+/-! # Chapter 4 -- Points, Vectors, Transforms
+
+Brought forward from where it's introduced below: chapter 4, § 4.5, redefines
+`thick_line` as a one-liner over `segment`, so `Tuple`, `Matrix3` and
+`segment` all need to exist before chapter 3's `thick_line` (used by
+`fan_coverage`, right after this) can be written in terms of them. Everything
+chapter 4 actually adds starts at § 4.1 below; the renders it asks for are in
+§ 4.6, after chapter 3's. -/
+
+/-! ## § 4.1  Points and vectors
+
+A point is a place, a vector is a displacement, and the only thing that
+tells them apart is `w`: 1 for a point, 0 for a vector. Adding two
+components, `w` included, is what makes point - point come out a vector
+and point + vector come out a point without a separate rule for each. -/
+
+structure Tuple where
+  x : Float
+  y : Float
+  w : Float
+deriving Inhabited
+
+def point (x y : Float) : Tuple := ⟨x, y, 1⟩
+def vector (x y : Float) : Tuple := ⟨x, y, 0⟩
+
+namespace Tuple
+
+def add (a b : Tuple) : Tuple := ⟨a.x + b.x, a.y + b.y, a.w + b.w⟩
+def sub (a b : Tuple) : Tuple := ⟨a.x - b.x, a.y - b.y, a.w - b.w⟩
+def neg (a : Tuple) : Tuple := ⟨-a.x, -a.y, -a.w⟩
+def scale (a : Tuple) (s : Float) : Tuple := ⟨a.x * s, a.y * s, a.w * s⟩
+
+def approxEq (a b : Tuple) (eps : Float := epsilon) : Bool :=
+  Renderer.approxEq a.x b.x eps
+    && Renderer.approxEq a.y b.y eps
+    && Renderer.approxEq a.w b.w eps
+
+def toString (t : Tuple) : String := s!"tuple({t.x}, {t.y}, {t.w})"
+
+end Tuple
+
+instance : Add Tuple := ⟨Tuple.add⟩
+instance : Sub Tuple := ⟨Tuple.sub⟩
+instance : Neg Tuple := ⟨Tuple.neg⟩
+instance : HMul Tuple Float Tuple := ⟨Tuple.scale⟩
+instance : HDiv Tuple Float Tuple := ⟨fun a s => Tuple.scale a (1.0 / s)⟩
+instance : ToString Tuple := ⟨Tuple.toString⟩
+
+/-- Looks at `x` and `y` only: a point's `w` of 1 would otherwise leak in. -/
+def magnitude (v : Tuple) : Float := Float.sqrt (v.x * v.x + v.y * v.y)
+
+def normalize (v : Tuple) : Tuple := v * (1.0 / magnitude v)
+
+/-- Looks at `x` and `y` only, same reason as `magnitude`. -/
+def dot (a b : Tuple) : Float := a.x * b.x + a.y * b.y
+
+/-- The 2D cross product: a single number, the area (signed) of the
+    parallelogram the two vectors span. Positive is the side the y axis
+    points to; on a canvas, y points down, so positive reads clockwise. -/
+def cross (a b : Tuple) : Float := a.x * b.y - a.y * b.x
+
+/-! ## § 4.2  Matrices
+
+Nine numbers, row by row. `entries[r * 3 + c]` is `M[r, c]`. -/
+
+structure Matrix3 where
+  entries : Array Float
+deriving Inhabited
+
+def matrix3 (a b c d e f g h i : Float) : Matrix3 := { entries := #[a, b, c, d, e, f, g, h, i] }
+
+namespace Matrix3
+
+/-- `M[r, c]`, both counted from 0. (named `get`, not `at`, because `at` is a reserved token in Lean 4's tactic syntax) -/
+def get (m : Matrix3) (r c : Nat) : Float := m.entries[r * 3 + c]!
+
+def approxEq (a b : Matrix3) (eps : Float := epsilon) : Bool := Id.run do
+  for i in [0:9] do
+    if !Renderer.approxEq a.entries[i]! b.entries[i]! eps then
+      return false
+  return true
+
+def toString (m : Matrix3) : String :=
+  s!"matrix3({m.entries[0]!}, {m.entries[1]!}, {m.entries[2]!}, {m.entries[3]!}, \
+{m.entries[4]!}, {m.entries[5]!}, {m.entries[6]!}, {m.entries[7]!}, {m.entries[8]!})"
+
+end Matrix3
+
+instance : ToString Matrix3 := ⟨Matrix3.toString⟩
+
+/-- The identity matrix: multiplying by it changes nothing. -/
+def identity : Matrix3 := matrix3 1 0 0 0 1 0 0 0 1
+
+def transpose (m : Matrix3) : Matrix3 := Id.run do
+  let mut entries := Array.replicate 9 (0.0 : Float)
+  for r in [0:3] do
+    for c in [0:3] do
+      entries := entries.set! (r * 3 + c) (m.get c r)
+  return { entries := entries }
+
+/-- `(A * B)[r, c]` is the dot product of row `r` of `A` with column `c` of `B`. -/
+def matMul (a b : Matrix3) : Matrix3 := Id.run do
+  let mut entries := Array.replicate 9 (0.0 : Float)
+  for r in [0:3] do
+    for c in [0:3] do
+      entries := entries.set! (r * 3 + c)
+        (a.get r 0 * b.get 0 c + a.get r 1 * b.get 1 c + a.get r 2 * b.get 2 c)
+  return { entries := entries }
+
+instance : Mul Matrix3 := ⟨matMul⟩
+
+/-- A matrix times a tuple, treating `(x, y, w)` as a column. -/
+def matMulTuple (m : Matrix3) (t : Tuple) : Tuple :=
+  ⟨ m.get 0 0 * t.x + m.get 0 1 * t.y + m.get 0 2 * t.w,
+    m.get 1 0 * t.x + m.get 1 1 * t.y + m.get 1 2 * t.w,
+    m.get 2 0 * t.x + m.get 2 1 * t.y + m.get 2 2 * t.w ⟩
+
+instance : HMul Matrix3 Tuple Tuple := ⟨matMulTuple⟩
+
+/-- The 2x2 determinant left when row `r` and column `c` are deleted. -/
+def minor (m : Matrix3) (r c : Nat) : Float :=
+  let rows := (List.range 3).filter (· != r)
+  let cols := (List.range 3).filter (· != c)
+  let r0 := rows[0]!
+  let r1 := rows[1]!
+  let c0 := cols[0]!
+  let c1 := cols[1]!
+  m.get r0 c0 * m.get r1 c1 - m.get r0 c1 * m.get r1 c0
+
+def cofactor (m : Matrix3) (r c : Nat) : Float :=
+  if (r + c) % 2 == 1 then -(minor m r c) else minor m r c
+
+/-- A cofactor expansion along the first row. -/
+def determinant (m : Matrix3) : Float :=
+  m.get 0 0 * cofactor m 0 0 + m.get 0 1 * cofactor m 0 1 + m.get 0 2 * cofactor m 0 2
+
+/-- An exact test against zero, not the book's usual tolerance: a
+    determinant of 0.0001 is not zero, and its inverse is enormous but real. -/
+def isInvertible (m : Matrix3) : Bool := determinant m != 0.0
+
+/-- The matrix of cofactors, transposed, divided by the determinant. The
+    transpose happens by writing straight into `[c, r]`. -/
+def inverse (m : Matrix3) : Matrix3 := Id.run do
+  let d := determinant m
+  let mut entries := Array.replicate 9 (0.0 : Float)
+  for r in [0:3] do
+    for c in [0:3] do
+      entries := entries.set! (c * 3 + r) (cofactor m r c / d)
+  return { entries := entries }
+
+/-! ## § 4.3  The transforms -/
+
+def translation (tx ty : Float) : Matrix3 := matrix3 1 0 tx 0 1 ty 0 0 1
+def scaling (sx sy : Float) : Matrix3 := matrix3 sx 0 0 0 sy 0 0 0 1
+def rotation (r : Float) : Matrix3 :=
+  matrix3 (Float.cos r) (-(Float.sin r)) 0 (Float.sin r) (Float.cos r) 0 0 0 1
+def shearing (xy yx : Float) : Matrix3 := matrix3 1 xy 0 yx 1 0 0 0 1
+
+/-! ## § 4.4  How big is a transform?
+
+The square root of the absolute value of the determinant of the upper-left
+2-by-2: exact for uniform scales and rotations, the geometric mean of the
+two axis scales otherwise. -/
+def approxScale (m : Matrix3) : Float :=
+  Float.sqrt (Float.abs (m.get 0 0 * m.get 1 1 - m.get 0 1 * m.get 1 0))
+
+/-! ## § 4.5  Transforming what you draw -/
+
+/-- `thick_line` with real endpoints instead of pixel indices: the
+    rectangle of `width` centered on the segment from `a` to `b`, square
+    ends. A segment of no length has no direction, so it gets `(1, 0)` and
+    its two ends are pushed apart by half the width each. -/
+def segment (a b : Tuple) (width : Float) : Shape :=
+  let ax0 := a.x
+  let ay0 := a.y
+  let bx0 := b.x
+  let by0 := b.y
   let h := width / 2.0
   let len := Float.sqrt ((bx0 - ax0) * (bx0 - ax0) + (by0 - ay0) * (by0 - ay0))
   let (ax, bx, dx, dy) :=
@@ -648,11 +819,46 @@ def thickLine (x0 y0 x1 y1 : Int) (width : Float) : Shape :=
   let right := halfPlane (ax - nx * h) (ay - ny * h) nx ny
   ⟨fun x y => inside ahead x y && inside behind x y && inside left x y && inside right x y⟩
 
+/-- `thick_line`, now a one-liner over `segment`. -/
+def thickLine (x0 y0 x1 y1 : Int) (width : Float) : Shape :=
+  segment (point (intToFloat x0 + 0.5) (intToFloat y0 + 0.5))
+          (point (intToFloat x1 + 0.5) (intToFloat y1 + 0.5)) width
+
+/-- Inside when any of its parts is. -/
+def union (shapes : Array Shape) : Shape :=
+  ⟨fun x y => shapes.any (fun s => inside s x y)⟩
+
+/-- The shape seen through `m`: to ask whether a device point is inside,
+    send it backwards through the inverse and ask the original shape. A
+    shape seen through a matrix with no inverse is empty. -/
+def transformed (s : Shape) (m : Matrix3) : Shape :=
+  if isInvertible m then
+    let inv := inverse m
+    ⟨fun x y => let p := inv * point x y; inside s p.x p.y⟩
+  else
+    ⟨fun _ _ => false⟩
+
+def transformPoints (pts : Array Tuple) (m : Matrix3) : Array Tuple := pts.map (fun p => m * p)
+
+/-- The points, taken through `m`, joined edge to edge and closed from the
+    last point back to the first, each edge a `segment` of `width` in
+    device space. One shape, so a corner shared by two edges is painted
+    once, not twice. -/
+def outline (pts : Array Tuple) (m : Matrix3) (width : Float) : Shape := Id.run do
+  let tpts := transformPoints pts m
+  let n := tpts.size
+  let mut segs : Array Shape := #[]
+  for i in [0:n] do
+    segs := segs.push (segment tpts[i]! tpts[(i + 1) % n]! width)
+  return union segs
+
 /-! ## § 3.1, 3.2, 3.3, 3.4  The renders -/
 
 private def fanPaper : Color := color 0.02 0.02 0.025
 private def fanInk : Color := color 0.92 0.92 0.88
-private def pi : Float := 3.14159265358979323846
+/-- Needed by chapter 3's fan and chapter 4's rotations both; not private,
+    since the scenarios for rotation(π / 6) need it too. -/
+def pi : Float := 3.14159265358979323846
 
 /-- Twelve points 72 pixels out from (80, 80), one every 30 degrees, rounded
     to integers. -/
@@ -700,5 +906,438 @@ def plate03 : IO Canvas := do
       both := writePixel both x y (pixelAt a x y)
       both := writePixel both (x + 160) y (pixelAt b x y)
   return magnify both 2
+
+/-! # Chapter 4 -- Points, Vectors, Transforms, continued
+
+§§ 4.1-4.5 (Tuple, Matrix3, the transforms, segment/union/transformed/outline)
+live up in chapter 3, right before "The renders", because § 4.5 rewrites
+chapter 3's own thick_line in terms of them. This is the rest: the F, the
+fan as points, and the two plates that need both. -/
+
+/-! ## § 4.6  Putting it together -/
+
+private def dimF : Color := color 0.16 0.16 0.17
+
+/-- The center, then twelve points 36 out from it, one every 30 degrees. -/
+def fanPoints : Array Tuple := Id.run do
+  let mut pts := #[point 0 0]
+  for k in [0:12] do
+    let a := k.toFloat * 30.0 * (pi / 180.0)
+    pts := pts.push (point (36.0 * Float.cos a) (36.0 * Float.sin a))
+  return pts
+
+/-- Ten corners, clockwise from the top left, in a box 40 wide and 60 tall
+    centered on the origin. No symmetry at all: a rotation shows up. -/
+def letterF : Array Tuple :=
+  #[ point (-20) (-30), point 20 (-30), point 20 (-20), point (-10) (-20),
+     point (-10) (-5),  point 12 (-5),  point 12 5,     point (-10) 5,
+     point (-10) 30,    point (-20) 30 ]
+
+def sideBySide (a b : Canvas) : Canvas := Id.run do
+  let mut c := canvas (a.width + b.width) a.height
+  for y in [0:a.height] do
+    for x in [0:a.width] do
+      c := writePixel c x y (pixelAt a x y)
+  for y in [0:b.height] do
+    for x in [0:b.width] do
+      c := writePixel c (a.width + x) y (pixelAt b x y)
+  return c
+
+/-- The fan, described as points around the origin this time, run through
+    `m` and drawn as one union of segments. -/
+def fanTransformed (m : Matrix3) : IO Canvas := do
+  let mut c := canvas 160 160
+  c := fill c fanPaper
+  let pts := transformPoints fanPoints m
+  let mut segs : Array Shape := #[]
+  for k in [1:pts.size] do
+    segs := segs.push (segment pts[0]! pts[k]! 1.0)
+  c ← paintThrough c (rasterize (union segs) 160 160) fanInk
+  return c
+
+def fanBothOrders : IO Canvas := do
+  let turn := rotation (pi / 6.0)
+  let move := translation 104.5 76.5
+  let a ← fanTransformed (move * turn)
+  let b ← fanTransformed (turn * move)
+  return sideBySide a b
+
+/-- A dim copy of the letter at home, for reference, with the two orders
+    of `move * turn` painted on top of their own copy of it. -/
+def fBothOrders : IO Canvas := do
+  let turn := rotation (pi / 6.0)
+  let move := translation 104.5 76.5
+  let home := translation 44.5 44.5
+  let mut ghost := canvas 160 160
+  ghost := fill ghost fanPaper
+  ghost ← paintThrough ghost (rasterize (outline letterF home 1.0) 160 160) dimF
+  let mut a := ghost
+  a ← paintThrough a (rasterize (outline letterF (move * turn) 1.0) 160 160) fanInk
+  let mut b := ghost
+  b ← paintThrough b (rasterize (outline letterF (turn * move) 1.0) 160 160) fanInk
+  return sideBySide a b
+
+def plate04 : IO Canvas := do
+  let c ← fBothOrders
+  return magnify c 2
+
+/-! # Chapter 5 -- Paths and Insideness -/
+
+/-! ## § 5.1  A path is a list of instructions
+
+A path is a list of subpaths, one for each time the pen went down; a
+subpath is a list of points and a flag for whether it was closed. -/
+
+structure Subpath where
+  points : Array Tuple
+  closed : Bool
+deriving Inhabited
+
+structure Path where
+  subpaths : Array Subpath
+deriving Inhabited
+
+def path : Path := { subpaths := #[] }
+
+/-- Lifts the pen and puts it down somewhere new. -/
+def moveTo (p : Path) (pt : Tuple) : Path :=
+  { p with subpaths := p.subpaths.push { points := #[pt], closed := false } }
+
+/-- Draws a line from wherever the pen is to `pt`. With nothing to extend
+    it behaves as `move_to`; after a `close` it starts a new, open subpath
+    at the point the closed one began, because that's where `close` left
+    the pen. -/
+def lineTo (p : Path) (pt : Tuple) : Path :=
+  if p.subpaths.size == 0 then
+    moveTo p pt
+  else
+    let last := p.subpaths.back!
+    if last.closed then
+      { p with subpaths := p.subpaths.push { points := #[last.points[0]!, pt], closed := false } }
+    else
+      { p with subpaths :=
+          p.subpaths.set! (p.subpaths.size - 1) { last with points := last.points.push pt } }
+
+/-- Draws a line back to where the pen was last put down and marks the
+    subpath closed. Nothing to close does nothing; closing twice is the
+    same as closing once. -/
+def close (p : Path) : Path :=
+  if p.subpaths.size == 0 then p
+  else
+    let i := p.subpaths.size - 1
+    { p with subpaths := p.subpaths.set! i { p.subpaths[i]! with closed := true } }
+
+def subpaths (p : Path) : Array Subpath := p.subpaths
+
+/-- Every edge of every subpath, as `(a, b)` pairs, treating every subpath
+    as closed whether or not `close` was called: the edge from the last
+    point back to the first is always included. A subpath of one point
+    contributes no edges. -/
+def edges (p : Path) : Array (Tuple × Tuple) := Id.run do
+  let mut es : Array (Tuple × Tuple) := #[]
+  for sp in p.subpaths do
+    let n := sp.points.size
+    if n >= 2 then
+      for i in [0:n] do
+        es := es.push (sp.points[i]!, sp.points[(i + 1) % n]!)
+  return es
+
+/-- The smallest axis-aligned box around every point of every subpath, as
+    `(min x, min y, max x, max y)`. An empty path is `(0, 0, 0, 0)`. -/
+def bounds (p : Path) : Float × Float × Float × Float := Id.run do
+  let mut minX := 0.0
+  let mut minY := 0.0
+  let mut maxX := 0.0
+  let mut maxY := 0.0
+  let mut first := true
+  for sp in p.subpaths do
+    for pt in sp.points do
+      if first then
+        minX := pt.x
+        maxX := pt.x
+        minY := pt.y
+        maxY := pt.y
+        first := false
+      else
+        minX := min minX pt.x
+        maxX := max maxX pt.x
+        minY := min minY pt.y
+        maxY := max maxY pt.y
+  return (minX, minY, maxX, maxY)
+
+/-- A closed subpath through the given points. -/
+def polygon (pts : Array Tuple) : Path := { subpaths := #[{ points := pts, closed := true }] }
+
+/-- A regular `n`-gon standing in for a circle: first point at angle 0, on
+    the right, going clockwise on the screen (increasing angle, since y
+    points down). -/
+def circlePath (cx cy r : Float) (n : Nat) : Path := Id.run do
+  let mut pts : Array Tuple := #[]
+  for k in [0:n] do
+    let a := k.toFloat * (2.0 * pi / n.toFloat)
+    pts := pts.push (point (cx + r * Float.cos a) (cy + r * Float.sin a))
+  return polygon pts
+
+/-! ## § 5.2  Is this point inside?
+
+Both `crossings` and `winding_at` use the half-open rule: an edge from `a`
+to `b` is crossed when the ray's height `y` satisfies `a.y ≤ y < b.y` or
+`b.y ≤ y < a.y`. The lower endpoint is in, the higher one is out, so a
+vertex on the ray counts once, not twice, and a horizontal edge (`a.y =
+b.y`) is never crossed. -/
+
+/-- How many edges a ray from `(x, y)` toward `+x` crosses. -/
+def crossings (p : Path) (x y : Float) : Nat := Id.run do
+  let mut n := 0
+  for (a, b) in edges p do
+    if (a.y <= y && y < b.y) || (b.y <= y && y < a.y) then
+      let t := (y - a.y) / (b.y - a.y)
+      let xc := a.x + t * (b.x - a.x)
+      if xc > x then
+        n := n + 1
+  return n
+
+/-- The winding number: each edge that crosses the ray's height counts +1
+    heading down the canvas, -1 heading up, found from the sign of
+    `cross(b - a, q - a)` rather than `x` directly. Positive is clockwise
+    on the screen. -/
+def windingAt (p : Path) (x y : Float) : Int := Id.run do
+  let q := point x y
+  let mut w : Int := 0
+  for (a, b) in edges p do
+    if a.y <= y then
+      if b.y > y && cross (b - a) (q - a) > 0.0 then
+        w := w + 1
+    else
+      if b.y <= y && cross (b - a) (q - a) < 0.0 then
+        w := w - 1
+  return w
+
+/-! ## § 5.3  Two rules -/
+
+def insideNonzero (p : Path) (x y : Float) : Bool := windingAt p x y != 0
+
+/-- Odd, by the winding number's parity: `natAbs` first, since a negative
+    winding number is odd exactly when its magnitude is. -/
+def insideEvenOdd (p : Path) (x y : Float) : Bool := (windingAt p x y).natAbs % 2 == 1
+
+/-- The shape a path encloses under `rule`, `"nonzero"` or `"evenodd"`, so
+    chapter 2's rasterizer can draw any path, either rule, correct
+    coverage, slowly. -/
+def filled (p : Path) (rule : String) : Shape :=
+  if rule == "nonzero" then ⟨fun x y => insideNonzero p x y⟩
+  else ⟨fun x y => insideEvenOdd p x y⟩
+
+/-- The ceiling of a `Float`, as an `Int`: the floor of the negation,
+    negated, so it needs no library function beyond `floorInt`. -/
+def ceilInt (x : Float) : Int := -(floorInt (-x))
+
+/-- `rasterize`, restricted to the pixels `box` touches: columns from
+    `floor(min x)` up to but not including `ceil(max x)`, rows likewise,
+    both clipped to the buffer. Same coverage as `rasterize`, less work. -/
+def rasterizeWithin (s : Shape) (box : Float × Float × Float × Float) (w h : Nat) : Coverage :=
+  Id.run do
+    let (minX, minY, maxX, maxY) := box
+    let mut cov := coverageBuffer w h
+    let x0 := (max 0 (floorInt minX)).toNat
+    let x1 := (max 0 (min (w : Int) (ceilInt maxX))).toNat
+    let y0 := (max 0 (floorInt minY)).toNat
+    let y1 := (max 0 (min (h : Int) (ceilInt maxY))).toNat
+    for y in [y0:y1] do
+      for x in [x0:x1] do
+        cov := setCoverage cov x y (coverage s x y)
+    return cov
+
+/-! ## § 5.4  Putting it together -/
+
+/-- Five points on a circle of radius 70 about (80.5, 80.5), the first
+    straight up, visited every second one so the pen crosses itself. -/
+def star : Path := Id.run do
+  let mut p := path
+  for k in [0:5] do
+    let a := (-90.0 + 144.0 * k.toFloat) * (pi / 180.0)
+    let q := point (80.5 + 70.0 * Float.cos a) (80.5 + 70.0 * Float.sin a)
+    p := if k == 0 then moveTo p q else lineTo p q
+  return close p
+
+def starPanel (rule method : String) : IO Canvas := do
+  let mut c := canvas 160 160
+  c := fill c (color 0.02 0.02 0.025)
+  let s := filled star rule
+  let cov := if method == "centers" then rasterizeCenters s 160 160
+             else rasterizeWithin s (bounds star) 160 160
+  c ← paintThrough c cov (color 0.9 0.55 0.1)
+  return c
+
+def starCenters : IO Canvas := do
+  let a ← starPanel "nonzero" "centers"
+  let b ← starPanel "evenodd" "centers"
+  return sideBySide a b
+
+def starCoverage : IO Canvas := do
+  let a ← starPanel "nonzero" "coverage"
+  let b ← starPanel "evenodd" "coverage"
+  return sideBySide a b
+
+def plate05 : IO Canvas := do
+  let top ← starCenters
+  let bottom ← starCoverage
+  let mut both := canvas 320 320
+  for y in [0:160] do
+    for x in [0:320] do
+      both := writePixel both x y (pixelAt top x y)
+      both := writePixel both x (y + 160) (pixelAt bottom x y)
+  return magnify both 2
+
+/-! # Chapter 6 -- Filling a Polygon -/
+
+/-! ## § 6.1  The edge table
+
+Each non-horizontal edge of a path, ready for the sweep: which end is
+higher on the canvas, where it crosses its own top, how far it moves in
+`x` per unit of `y`, and which way the path went along it. -/
+
+structure Edge where
+  yTop : Float
+  yBottom : Float
+  xTop : Float
+  slope : Float
+  direction : Int
+deriving Inhabited
+
+/-- `x_top + (y - y_top) * slope`, the one computation an edge knows how
+    to do. -/
+def xAt (e : Edge) (y : Float) : Float := e.xTop + (y - e.yTop) * e.slope
+
+/-- Every non-horizontal edge of `p`, sorted by `y_top` then `x_top`.
+    Horizontal edges (`a.y = b.y` exactly) are dropped: their slope would
+    be a division by zero, and chapter 5's half-open rule already says
+    they never cross a sample height. -/
+def edgeTable (p : Path) : Array Edge := Id.run do
+  let mut es : Array Edge := #[]
+  for (a, b) in edges p do
+    if a.y != b.y then
+      let slope := (b.x - a.x) / (b.y - a.y)
+      let (yTop, yBottom, xTop, dir) :=
+        if a.y < b.y then (a.y, b.y, a.x, (1 : Int)) else (b.y, a.y, b.x, (-1 : Int))
+      es := es.push { yTop := yTop, yBottom := yBottom, xTop := xTop, slope := slope, direction := dir }
+  return es.qsort (fun e1 e2 => e1.yTop < e2.yTop || (e1.yTop == e2.yTop && e1.xTop < e2.xTop))
+
+/-! ## § 6.2  Crossings on a row, and spans -/
+
+/-- `(x, direction)` for every edge of `table` that spans height `y`, under
+    the half-open rule `y_top ≤ y < y_bottom`, sorted by `x`. The slow
+    version: every edge, every row. -/
+def crossingsOnRow (table : Array Edge) (y : Float) : Array (Float × Int) := Id.run do
+  let mut xs : Array (Float × Int) := #[]
+  for e in table do
+    if e.yTop <= y && y < e.yBottom then
+      xs := xs.push (xAt e y, e.direction)
+  return xs.qsort (fun a b => a.1 < b.1)
+
+/-- A walk left to right, accumulating the winding number and asking the
+    rule whether it's inside; the maximal stretches where it is. -/
+def spansFromCrossings (xs : Array (Float × Int)) (rule : String) : Array (Float × Float) :=
+  Id.run do
+    let mut out : Array (Float × Float) := #[]
+    let mut w : Int := 0
+    let mut start : Option Float := none
+    for (x, d) in xs do
+      w := w + d
+      let insideNow := if rule == "nonzero" then w != 0 else w.natAbs % 2 == 1
+      if insideNow && start.isNone then
+        start := some x
+      if !insideNow && start.isSome then
+        out := out.push (start.get!, x)
+        start := none
+    return out
+
+/-- Crossings and spans together, for one pixel row, sampled at its
+    center: `y = row + 0.5`. -/
+def spans (p : Path) (rule : String) (row : Nat) : Array (Float × Float) :=
+  spansFromCrossings (crossingsOnRow (edgeTable p) (row.toFloat + 0.5)) rule
+
+/-- Sets to 1 every pixel of `row` whose center lies in `[x0, x1)`: the
+    first is `ceil(x0 - 0.5)`, the last is `ceil(x1 - 0.5) - 1`, clipped to
+    the buffer. Half-open at the right end, so two spans meeting at a
+    pixel center fill it exactly once. -/
+def fillSpan (cov : Coverage) (row : Nat) (x0 x1 : Float) : Coverage := Id.run do
+  let first := ceilInt (x0 - 0.5)
+  let last := ceilInt (x1 - 0.5) - 1
+  let lo := max first 0
+  let hi := min last ((cov.width : Int) - 1)
+  let mut c := cov
+  if lo <= hi then
+    for x in [lo.toNat : hi.toNat + 1] do
+      c := setCoverage c x row 1.0
+  return c
+
+/-! ## § 6.3  The sweep -/
+
+/-- The classical scanline fill: sweep the rows top to bottom, keeping the
+    edges that currently span the row's sample height (an edge joins once
+    its `y_top` is reached and reads off the sorted table without
+    searching; it leaves once its `y_bottom` is passed), sort their
+    crossings, and fill the spans. -/
+def fillPathAliased (p : Path) (rule : String) (w h : Nat) : Coverage := Id.run do
+  let table := edgeTable p
+  let mut cov := coverageBuffer w h
+  let mut active : Array Edge := #[]
+  let mut next := 0
+  for row in [0:h] do
+    let y := row.toFloat + 0.5
+    while next < table.size && table[next]!.yTop <= y do
+      active := active.push table[next]!
+      next := next + 1
+    active := active.filter (fun e => e.yBottom > y)
+    let xs := (active.map (fun e => (xAt e y, e.direction))).qsort (fun a b => a.1 < b.1)
+    for (x0, x1) in spansFromCrossings xs rule do
+      cov := fillSpan cov row x0 x1
+  return cov
+
+/-- Chapter 1's `max_channel_difference`, for coverage buffers: the
+    largest difference between corresponding entries, or 1 when the sizes
+    differ. -/
+def maxCoverageDifference (a b : Coverage) : Float :=
+  if a.width != b.width || a.height != b.height then 1.0
+  else Id.run do
+    let n := min a.values.size b.values.size
+    let mut m := 0.0
+    for i in [0:n] do
+      let d := (a.values[i]! - b.values[i]!).abs
+      if d > m then m := d
+    return m
+
+/-! ## § 6.4  Paths through matrices -/
+
+/-- `transform_points` with the subpath structure kept: a new path, every
+    point of every subpath taken through `m`, closed flags and all. The
+    original is untouched. -/
+def transformPath (p : Path) (m : Matrix3) : Path :=
+  { subpaths := p.subpaths.map (fun sp => { sp with points := sp.points.map (fun pt => m * pt) }) }
+
+/-! ## § 6.5  Putting it together -/
+
+/-- The chapter 5 star, moved to the origin and shrunk to radius 1, so one
+    matrix can put it anywhere at any size. -/
+def unitStar : Path :=
+  transformPath star (scaling (1.0 / 70.0) (1.0 / 70.0) * translation (-80.5) (-80.5))
+
+def spiral : IO Canvas := do
+  let mut c := canvas 320 320
+  c := fill c (color 0.02 0.02 0.025)
+  let inks := #[color 0.9 0.55 0.1, color 0.2 0.55 0.85, color 0.85 0.25 0.3]
+  for k in [0:24] do
+    let a := k.toFloat * 25.0 * (pi / 180.0)
+    let rr := 20.0 + 5.0 * k.toFloat
+    let m := translation (160.5 + rr * Float.cos a) (160.5 + rr * Float.sin a) * rotation a *
+             scaling (6.0 + 1.25 * k.toFloat) (6.0 + 1.25 * k.toFloat)
+    let cov := fillPathAliased (transformPath unitStar m) "nonzero" 320 320
+    c ← paintThrough c cov inks[k % 3]!
+  return c
+
+def plate06 : IO Canvas := do
+  let s ← spiral
+  return magnify s 2
 
 end Renderer

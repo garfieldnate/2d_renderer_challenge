@@ -24,8 +24,53 @@ def eqC (label : String) (a b : Color) (eps : Float := epsilon) : T Unit :=
 def neC (label : String) (a b : Color) (eps : Float := epsilon) : T Unit :=
   chk (!a.approxEq b eps) s!"{label}: got {a}, expected not {b} (±{eps})"
 
+/-- `a = b` for tuples (points and vectors), component by component including `w`. -/
+def eqT (label : String) (a b : Tuple) (eps : Float := epsilon) : T Unit :=
+  chk (a.approxEq b eps) s!"{label}: got {a}, expected {b} (±{eps})"
+
+def neT (label : String) (a b : Tuple) (eps : Float := epsilon) : T Unit :=
+  chk (!a.approxEq b eps) s!"{label}: got {a}, expected not {b} (±{eps})"
+
+/-- `A = B` for matrices, entry by entry. -/
+def eqM (label : String) (a b : Matrix3) (eps : Float := epsilon) : T Unit :=
+  chk (a.approxEq b eps) s!"{label}: got {a}, expected {b} (±{eps})"
+
+def neM (label : String) (a b : Matrix3) (eps : Float := epsilon) : T Unit :=
+  chk (!a.approxEq b eps) s!"{label}: got {a}, expected not {b} (±{eps})"
+
+/-- "edges(p)[i] = (a, b)" -/
+def eqEdge (label : String) (a b : Tuple × Tuple) (eps : Float := epsilon) : T Unit := do
+  eqT s!"{label}.a" a.1 b.1 eps
+  eqT s!"{label}.b" a.2 b.2 eps
+
+/-- "bounds(p) = (min x, min y, max x, max y)" -/
+def eqBounds (label : String) (a b : Float × Float × Float × Float) (eps : Float := epsilon) :
+    T Unit := do
+  eqF s!"{label}.minX" a.1 b.1 eps
+  eqF s!"{label}.minY" a.2.1 b.2.1 eps
+  eqF s!"{label}.maxX" a.2.2.1 b.2.2.1 eps
+  eqF s!"{label}.maxY" a.2.2.2 b.2.2.2 eps
+
 def eqN (label : String) (a b : Nat) : T Unit :=
   chk (a == b) s!"{label}: got {a}, expected {b}"
+
+/-- Whole numbers that may be negative, like a winding number. -/
+def eqI (label : String) (a b : Int) : T Unit :=
+  chk (a == b) s!"{label}: got {a}, expected {b}"
+
+/-- "crossings_on_row(...) = [(x, direction), ...]" -/
+def eqCrossings (label : String) (a b : Array (Float × Int)) (eps : Float := epsilon) : T Unit := do
+  eqN s!"length({label})" a.size b.size
+  for i in [0:min a.size b.size] do
+    eqF s!"{label}[{i}].x" a[i]!.1 b[i]!.1 eps
+    eqI s!"{label}[{i}].direction" a[i]!.2 b[i]!.2
+
+/-- "spans(...) = [(x0, x1), ...]" -/
+def eqSpans (label : String) (a b : Array (Float × Float)) (eps : Float := epsilon) : T Unit := do
+  eqN s!"length({label})" a.size b.size
+  for i in [0:min a.size b.size] do
+    eqF s!"{label}[{i}].x0" a[i]!.1 b[i]!.1 eps
+    eqF s!"{label}[{i}].x1" a[i]!.2 b[i]!.2 eps
 
 def leN (label : String) (a b : Nat) : T Unit :=
   chk (a <= b) s!"{label}: got {a}, expected ≤ {b}"

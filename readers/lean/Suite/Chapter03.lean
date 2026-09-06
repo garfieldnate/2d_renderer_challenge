@@ -83,6 +83,13 @@ def chapter03 (r : Runner) : IO Unit := do
     eqC "pixel_at(c, 4, 2)" (pixelAt c 4 2) (color 1 1 1)
     eqF "total_ink(c)" (totalInk c) 5
 
+  r.run "The weights are applied in light, whatever the switch says" do
+    setLinearBlending false
+    let c := canvas 10 10
+    let c ← lineWu c 0 0 4 2 (color 1 1 1)
+    eqC "pixel_at(c, 1, 0)" (pixelAt c 1 0) (color 0.5 0.5 0.5)
+    eqC "pixel_at(c, 1, 1)" (pixelAt c 1 1) (color 0.5 0.5 0.5)
+
   r.run "A diagonal has uniform weights" do
     let c := canvas 10 10
     let c ← lineWu c 0 0 5 5 (color 1 1 1)
