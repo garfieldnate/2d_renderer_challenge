@@ -112,6 +112,12 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   (largest singular value, longest column) and why this one; don't swap it.
 - Shapes are transformed through the inverse (`transformed(shape, m)`), points through the matrix
   (`transform_points`, `segment`, `outline`). The pen-space question is chapter 4's trap.
+- Chapter 5 paths: `path()`, `move_to`, `line_to`, `close`, `subpaths(p)` with `.points`/`.closed`,
+  `edges(p)` treats every subpath as closed, `bounds(p)` of an empty path is `(0, 0, 0, 0)`.
+  `line_to` with no subpath acts as `move_to`; after `close` it starts a new subpath at the closed
+  one's first point. Insideness uses the half-open rule `a.y ≤ y < b.y`; positive winding is
+  clockwise on screen (same sign as `cross`); the boundary belongs to the top and left. Fill rules
+  are the strings `"nonzero"` and `"evenodd"`, via `filled(p, rule)`.
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and
   `Then X is the following matrix:`. The runner understands exactly those two table steps.
 

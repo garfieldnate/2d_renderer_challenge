@@ -1,0 +1,913 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 5 · Paths and Insideness — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 5 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-04.html">← 4</a> · <a href="#plate">Plate&nbsp;5</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Five</p>
+    <h1>Paths and Insideness</h1>
+    <p class="hook">Draw a five-pointed star the way a child does, in one stroke, without lifting the
+      pen. Now fill it in. Is the pentagon in the middle part of the star? Your pen went around it
+      twice, so it's more inside than the points are, and also every drawing program you've ever
+      used has a switch that makes it a hole. This chapter builds the path, the one data structure
+      the rest of the book draws, and then asks it the question that turns out to have two
+      answers.</p>
+  </header>
+
+  <p>Every shape so far has been a question: is this point inside the circle, the half-plane, the
+    rectangle, the transformed union of segments. That was the right way to start, because it made
+    antialiasing fall out of a better question rather than a smoothing pass, and it will keep being
+    the reference renderer for the rest of the book. But nobody ships a tiger as a list of
+    half-planes. They ship it as a <em>path</em>: move the pen here, draw a line to there, and there,
+    and close. A path is a list of instructions, and the instructions don't say what's inside. That's
+    something you have to decide, and it turns out that the decision is a convention, not a fact,
+    and the two conventions in use disagree about the middle of a star.</p>
+
+  <h2><span class="sec">§ 5.1</span> A path is a list of instructions</h2>
+
+  <p>Three instructions, to start. <code>move_to(p, point)</code> lifts the pen and puts it down
+    somewhere new. <code>line_to(p, point)</code> draws a straight line from wherever the pen is to
+    the point. <code>close(p)</code> draws a line back to where the pen was last put down and marks
+    the loop finished. Curves come in chapter 8 and are the same idea with more control points, so
+    everything in this chapter survives them.</p>
+
+  <p>The structure that records this is a list of <em>subpaths</em>, one for each time the pen went
+    down. A subpath is a list of points, in order, and a flag for whether it was closed.
+    <code>path()</code> is empty. <code>move_to</code> appends a new subpath containing one point.
+    <code>line_to</code> appends a point to the last subpath. <code>close</code> sets the flag. That's
+    the whole data structure, and <code>subpaths(p)</code> hands it to the tests, each subpath with
+    <code>.points</code> and <code>.closed</code>.</p>
+
+  <figure>
+    <canvas id="fig51" role="img" aria-label="A path made of two subpaths: a closed triangle drawn with move_to, two line_to calls and close, and an open zigzag drawn with move_to and two line_to calls, each instruction labeled"></canvas>
+    <figcaption><span class="fig">Figure 5.1</span> A path with two subpaths. The pen went down twice. The triangle was closed; the zigzag wasn't, and for filling it doesn't matter, because a fill closes every subpath itself.</figcaption>
+  </figure>
+
+  <p>Then the edge cases, which are exactly the kind of thing that costs an afternoon if the book
+    doesn't pin them, so it does. A <code>line_to</code> when the pen has never been put down
+    behaves as a <code>move_to</code>: there's nothing to draw a line from, so it starts a subpath
+    instead. A <code>line_to</code> after a <code>close</code> starts a <em>new</em> subpath, and it
+    starts at the point the closed subpath began, because that's where <code>close</code> left the
+    pen. PostScript and SVG both do this, and it's surprising the first time. A <code>close</code>
+    with nothing to close does nothing, and closing twice is the same as closing once. Two
+    <code>move_to</code>s in a row leave behind a subpath of one point, which is legal and draws
+    nothing.</p>
+
+  <p>For filling, every subpath is treated as closed whether or not <code>close</code> was called.
+    An open triangle has the same inside as a closed one. The flag matters to a stroke, in chapter 13,
+    where an open path has two ends and a closed one doesn't. So <code>edges(p)</code>, the list of
+    every edge of every subpath as <code>(a, b)</code> pairs, always includes the edge from the last
+    point back to the first, and a subpath of one point contributes no edges at all. A subpath of
+    two points contributes two, there and back, and encloses nothing, which the winding number in
+    the next section will confirm without any special case.</p>
+
+  <p>Last, <code>bounds(p)</code>: the smallest axis-aligned box around every point of every
+    subpath, as <code>(min x, min y, max x, max y)</code>. For a polygon that's the bounding box of
+    the shape; for a curve, in chapter 8, it'll be too big and need work. An empty path has no
+    points, and the book says its bounds are <code>(0, 0, 0, 0)</code> rather than leaving you to
+    discover what your language's <code>min</code> of nothing is. Two helpers the tests lean on:
+    <code>polygon(p1, p2, …)</code> is a closed subpath through the points, and
+    <code>circle_path(cx, cy, r, n)</code> is a regular <code>n</code>-gon standing in for a circle,
+    its first point at angle 0, on the right, going clockwise on the screen. The circle is a polygon
+    for now. Chapter 8 makes it honest.</p>
+
+  <div class="note">
+    <h4>Coordinates</h4>
+    <p>Path coordinates are real numbers in the same space as chapter 2's shapes: pixel
+      <code>(x, y)</code> is the unit square from <code>x</code> to <code>x + 1</code> across and
+      <code>y</code> to <code>y + 1</code> down, and its center is at <code>(x + 0.5, y + 0.5)</code>.
+      A path vertex at <code>(10, 10)</code> sits on a pixel corner. Chapter 4's matrices apply to path
+      points the way they applied to the F: transform the points, then ask about the result.</p>
+  </div>
+
+  <div class="test" data-feature="chapter05-paths.feature">
+    <p class="label">features/chapter05-paths.feature</p>
+<pre><code><span class="kw">Feature</span>: A path is a list of instructions
+  path() is empty. move_to(p, point) starts a new subpath there. line_to(p,
+  point) extends the current subpath. close(p) marks it closed. subpaths(p)
+  is the list, each with .points and .closed. edges(p) lists every edge of
+  every subpath as (a, b) pairs, treating every subpath as closed whether or
+  not close was called. bounds(p) is (min x, min y, max x, max y) over every
+  point.
+
+  <span class="kw">Scenario</span>: An empty path
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">Then</span>  length(subpaths(p)) = 0
+    <span class="kw">And</span>   length(edges(p)) = 0
+    <span class="kw">And</span>   bounds(p) = (0, 0, 0, 0)
+
+  <span class="kw">Scenario</span>: A triangle, closed
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(1, 1))
+    <span class="kw">And</span>   line_to(p, point(9, 1))
+    <span class="kw">And</span>   line_to(p, point(5, 8))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">Then</span>  length(subpaths(p)) = 1
+    <span class="kw">And</span>   subpaths(p)[0].closed = true
+    <span class="kw">And</span>   length(subpaths(p)[0].points) = 3
+    <span class="kw">And</span>   subpaths(p)[0].points[2] = point(5, 8)
+    <span class="kw">And</span>   length(edges(p)) = 3
+    <span class="kw">And</span>   edges(p)[2] = (point(5, 8), point(1, 1))
+    <span class="kw">And</span>   bounds(p) = (1, 1, 9, 8)
+
+  <span class="kw">Scenario</span>: A triangle left open still has three edges
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(1, 1))
+    <span class="kw">And</span>   line_to(p, point(9, 1))
+    <span class="kw">And</span>   line_to(p, point(5, 8))
+    <span class="kw">Then</span>  subpaths(p)[0].closed = false
+    <span class="kw">And</span>   length(edges(p)) = 3
+    <span class="kw">And</span>   edges(p)[2] = (point(5, 8), point(1, 1))
+
+  <span class="kw">Scenario</span>: move_to starts a second subpath
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(0, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 10))
+    <span class="kw">And</span>   line_to(p, point(0, 10))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">And</span>   move_to(p, point(3, 3))
+    <span class="kw">And</span>   line_to(p, point(3, 7))
+    <span class="kw">And</span>   line_to(p, point(7, 7))
+    <span class="kw">And</span>   line_to(p, point(7, 3))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">Then</span>  length(subpaths(p)) = 2
+    <span class="kw">And</span>   subpaths(p)[1].points[0] = point(3, 3)
+    <span class="kw">And</span>   length(edges(p)) = 8
+    <span class="kw">And</span>   bounds(p) = (0, 0, 10, 10)
+
+  <span class="kw">Scenario</span>: line_to after a close starts a new subpath where the closed one began
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(1, 1))
+    <span class="kw">And</span>   line_to(p, point(4, 1))
+    <span class="kw">And</span>   line_to(p, point(4, 4))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">And</span>   line_to(p, point(9, 9))
+    <span class="kw">Then</span>  length(subpaths(p)) = 2
+    <span class="kw">And</span>   subpaths(p)[1].closed = false
+    <span class="kw">And</span>   length(subpaths(p)[1].points) = 2
+    <span class="kw">And</span>   subpaths(p)[1].points[0] = point(1, 1)
+    <span class="kw">And</span>   subpaths(p)[1].points[1] = point(9, 9)
+
+  <span class="kw">Scenario</span>: line_to with nothing to extend behaves as move_to
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  line_to(p, point(2, 3))
+    <span class="kw">Then</span>  length(subpaths(p)) = 1
+    <span class="kw">And</span>   length(subpaths(p)[0].points) = 1
+    <span class="kw">And</span>   subpaths(p)[0].points[0] = point(2, 3)
+
+  <span class="kw">Scenario</span>: A subpath of one point has no edges, and closing nothing does nothing
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  close(p)
+    <span class="kw">And</span>   move_to(p, point(1, 1))
+    <span class="kw">And</span>   move_to(p, point(2, 2))
+    <span class="kw">Then</span>  length(subpaths(p)) = 2
+    <span class="kw">And</span>   length(edges(p)) = 0
+    <span class="kw">And</span>   bounds(p) = (1, 1, 2, 2)
+
+  <span class="kw">Scenario</span>: A subpath of two points has two edges and encloses nothing
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(1, 1))
+    <span class="kw">And</span>   line_to(p, point(9, 9))
+    <span class="kw">Then</span>  length(edges(p)) = 2
+    <span class="kw">And</span>   winding_at(p, 3, 5) = 0
+
+  <span class="kw">Scenario</span>: polygon is a closed subpath through its points
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">Then</span>  length(subpaths(p)) = 1
+    <span class="kw">And</span>   subpaths(p)[0].closed = true
+    <span class="kw">And</span>   length(edges(p)) = 4
+
+  <span class="kw">Scenario</span>: circle_path is a polygon standing in for a circle
+    <span class="kw">Given</span> p ← circle_path(10, 10, 5, 8)
+    <span class="kw">Then</span>  length(subpaths(p)[0].points) = 8
+    <span class="kw">And</span>   subpaths(p)[0].points[0] = point(15, 10)
+    <span class="kw">And</span>   subpaths(p)[0].points[1] = point(13.5355, 13.5355)
+    <span class="kw">And</span>   subpaths(p)[0].points[2] = point(10, 15)
+    <span class="kw">And</span>   bounds(p) = (5, 5, 15, 15)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 5.2</span> Is this point inside?</h2>
+
+  <p>Here's the oldest trick for it. Stand at the point and walk toward the right, forever, counting
+    how many times you cross an edge of the polygon. Odd, and you started inside. Even, and you
+    started outside. It works for any polygon, convex or not, in any number of pieces, because
+    every time you cross an edge you go from in to out or out to in, and you end up outside.</p>
+
+  <p>To count, look at each edge <code>a → b</code> in turn. The ray is horizontal at height
+    <code>y</code>, so the edge is in play only if it spans that height, and if it does, the point
+    where it crosses the height is at <code>x = a.x + t · (b.x - a.x)</code> with
+    <code>t = (y - a.y) / (b.y - a.y)</code>. If that <code>x</code> is to the right of your point,
+    you'll walk through it: count it. That's <code>crossings(p, x, y)</code>, and it's ten lines, and
+    it has a bug that every implementation of it has ever had.</p>
+
+  <figure>
+    <canvas id="fig52" role="img" aria-label="A concave polygon with two horizontal rays cast from points inside it toward the right. Each ray crosses edges at marked points, and one of the upper ray's crossings lands exactly on a vertex, where two edges meet"></canvas>
+    <figcaption><span class="fig">Figure 5.2</span> Ray casting. Odd crossings, inside. The upper ray passes exactly through a vertex, where two edges meet. Count both, and the answer flips.</figcaption>
+  </figure>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>The ray passes exactly through a vertex. Two edges meet there, and both span the ray's height
+      if "spans" means <code>min(a.y, b.y) ≤ y ≤ max(a.y, b.y)</code>, so both count, and a point
+      that's inside comes out even. You might think this is rare. It isn't: a polygon with integer
+      vertices tested at integer heights hits it constantly, and chapter 6 is going to test every
+      polygon at every scanline, so any renderer that gets this wrong draws stray spikes on
+      every flat-topped shape. The fix is to make the interval <em>half-open</em>. An edge spans the
+      height <code>y</code> when <code>a.y ≤ y &lt; b.y</code> or <code>b.y ≤ y &lt; a.y</code>: the
+      lower endpoint is in, the higher one is out. Now a vertex belongs to exactly one of its two
+      edges when the polygon passes through it, going up on one side and down on the other. And
+      when the vertex is a peak or a trough, both edges going the same way from it, both count or
+      neither does, which is also right: a ray that grazes a peak crosses the boundary twice or not
+      at all and stays on the side it started. One more thing falls out. A horizontal edge has
+      <code>a.y = b.y</code>, and no <code>y</code> satisfies <code>a.y ≤ y &lt; a.y</code>, so it's
+      never crossed. You don't drop horizontal edges. The rule drops them for you.</p>
+  </div>
+
+  <p>The scenarios put a ray through a vertex of a diamond, from inside and from outside, and check
+    that the count is 1 and 2. If you wrote <code>≤</code> at both ends you'll get 2 and 4. If you
+    wrote <code>&lt;</code> at both ends you'll get 0 and 0. Only the half-open rule gives the
+    answer that means anything.</p>
+
+  <p>Crossings settle whether you're inside. They don't settle the star. Stand in the middle of the
+    pentagram and walk right: you cross two edges, one of the arm you're heading into and one of the
+    arm beyond it, even, outside. Stand in one of the points and you cross one, inside. So by this
+    rule the star's center is a hole, and a pen that went around it twice counted for nothing.
+    That's a defensible answer. It's also not the one you'd draw.</p>
+
+  <p>To get the other answer, give each crossing a sign. An edge that crosses your ray heading
+    down the canvas, toward larger <code>y</code>, counts <code>+1</code>. One heading up counts
+    <code>-1</code>. Sum them, and you have the <em>winding number</em> of the path around the point:
+    how many times the path goes around you, net, and in which direction. A loop that goes around
+    you once clockwise on the screen is <code>+1</code>. The same loop drawn the other way is
+    <code>-1</code>. A loop drawn twice is <code>2</code>. A loop that doesn't go around you at all
+    is <code>0</code>, no matter how many edges the ray crossed on the way out, because they cancel
+    in pairs.</p>
+
+  <p>You can compute the sign from the crossing's <code>x</code>, as before, but there's a neater
+    way that avoids the division, and chapter 4 built it: the cross product. For an edge
+    <code>a → b</code> and your point <code>q</code>, the sign of <code>cross(b - a, q - a)</code>
+    says which side of the edge <code>q</code> is on. An edge heading down with <code>q</code> to its
+    left crosses your ray to the right of you; heading up, it's <code>q</code> to its right. So the
+    whole thing is:</p>
+
+<pre><code>winding_at(p, x, y):
+  q ← point(x, y)
+  w ← 0
+  <span class="kw">for</span> (a, b) <span class="kw">in</span> edges(p):
+    <span class="kw">if</span> a.y ≤ y:                                   <span class="cm">// heading down, q on the left</span>
+      <span class="kw">if</span> b.y &gt; y <span class="kw">and</span> cross(b - a, q - a) &gt; 0: w ← w + 1
+    <span class="kw">else</span>:                                        <span class="cm">// heading up, q on the right</span>
+      <span class="kw">if</span> b.y ≤ y <span class="kw">and</span> cross(b - a, q - a) &lt; 0: w ← w - 1
+  <span class="kw">return</span> w</code></pre>
+
+  <p>Read the conditions again and you'll find the half-open rule hiding in them: the first branch
+    takes edges with <code>a.y ≤ y &lt; b.y</code>, the second takes <code>b.y ≤ y &lt; a.y</code>,
+    and a horizontal edge satisfies neither. Positive is clockwise on the screen, for the same
+    reason chapter 4's cross product was: the canvas's y points down. A textbook with y up would
+    call the same number counterclockwise. The arithmetic is identical; only the word changes, and
+    the scenarios pin the number.</p>
+
+  <figure>
+    <canvas id="fig53" role="img" aria-label="A pentagram drawn as one stroke, with the winding number written in each region it divides the plane into: 1 in each of the five points, 2 in the central pentagon, 0 outside"></canvas>
+    <figcaption><span class="fig">Figure 5.3</span> The winding number of the pentagram, region by region. The pen went round the middle twice. The crossing count says 2 there as well, and calls it even.</figcaption>
+  </figure>
+
+  <p>Where does it come out on the star? <code>1</code> in each of the five points, <code>2</code> in
+    the middle, <code>0</code> outside. The crossing count is the same size in every region, it only
+    forgot the signs, and for the star the signs happen to agree, so the difference between the
+    two is exactly the difference between "2 is even" and "2 is not zero".</p>
+
+  <div class="test" data-feature="chapter05-winding.feature">
+    <p class="label">features/chapter05-winding.feature</p>
+<pre><code><span class="kw">Feature</span>: Is this point inside?
+  crossings(p, x, y) counts the edges a ray from (x, y) toward +x crosses.
+  winding_at(p, x, y) is the winding number: each edge that crosses the
+  ray's height counts +1 or -1 by direction. Positive is clockwise on the
+  screen. Both use the half-open rule: an edge from a to b is crossed when
+  the ray's height y satisfies a.y ≤ y &lt; b.y or b.y ≤ y &lt; a.y, so a vertex
+  on the ray counts once, not twice.
+
+  <span class="kw">Scenario</span>: Crossings from inside and outside a square
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">Then</span>  crossings(p, 5, 5) = 1
+    <span class="kw">And</span>   crossings(p, 15, 5) = 0
+    <span class="kw">And</span>   crossings(p, -1, 5) = 2
+
+  <span class="kw">Scenario</span>: A clockwise square winds once
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">Then</span>  winding_at(p, 5, 5) = 1
+    <span class="kw">And</span>   winding_at(p, 15, 5) = 0
+    <span class="kw">And</span>   winding_at(p, -1, 5) = 0
+    <span class="kw">And</span>   winding_at(p, 5, -1) = 0
+    <span class="kw">And</span>   winding_at(p, 5, 11) = 0
+
+  <span class="kw">Scenario</span>: The same square the other way round winds minus once
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(0, 10), point(10, 10), point(10, 0))
+    <span class="kw">Then</span>  winding_at(p, 5, 5) = -1
+    <span class="kw">And</span>   crossings(p, 5, 5) = 1
+
+  <span class="kw">Scenario</span>: A ray through a vertex counts it once
+    <span class="kw">Given</span> p ← polygon(point(5, 0), point(10, 5), point(5, 10), point(0, 5))
+    <span class="kw">Then</span>  crossings(p, 2, 5) = 1
+    <span class="kw">And</span>   winding_at(p, 2, 5) = 1
+    <span class="kw">And</span>   crossings(p, -1, 5) = 2
+    <span class="kw">And</span>   winding_at(p, -1, 5) = 0
+    <span class="kw">And</span>   winding_at(p, 12, 5) = 0
+    <span class="kw">And</span>   winding_at(p, 5, 5) = 1
+
+  <span class="kw">Scenario</span>: The boundary belongs to the top and the left
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">Then</span>  winding_at(p, 5, 0) = 1
+    <span class="kw">And</span>   winding_at(p, 0, 5) = 1
+    <span class="kw">And</span>   winding_at(p, 0, 0) = 1
+    <span class="kw">And</span>   winding_at(p, 5, 10) = 0
+    <span class="kw">And</span>   winding_at(p, 10, 5) = 0
+    <span class="kw">And</span>   winding_at(p, 10, 10) = 0
+
+  <span class="kw">Scenario</span>: Two rectangles that share an edge cover it once
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(0, 0))
+    <span class="kw">And</span>   line_to(p, point(5, 0))
+    <span class="kw">And</span>   line_to(p, point(5, 10))
+    <span class="kw">And</span>   line_to(p, point(0, 10))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">And</span>   move_to(p, point(5, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 10))
+    <span class="kw">And</span>   line_to(p, point(5, 10))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">Then</span>  winding_at(p, 2, 5) = 1
+    <span class="kw">And</span>   winding_at(p, 5, 5) = 1
+    <span class="kw">And</span>   winding_at(p, 8, 5) = 1
+
+  <span class="kw">Scenario</span>: A diamond wound twice has winding number 2
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(5, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 5))
+    <span class="kw">And</span>   line_to(p, point(5, 10))
+    <span class="kw">And</span>   line_to(p, point(0, 5))
+    <span class="kw">And</span>   line_to(p, point(5, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 5))
+    <span class="kw">And</span>   line_to(p, point(5, 10))
+    <span class="kw">And</span>   line_to(p, point(0, 5))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">Then</span>  length(edges(p)) = 8
+    <span class="kw">And</span>   winding_at(p, 5, 5) = 2
+    <span class="kw">And</span>   crossings(p, 5, 5) = 2
+    <span class="kw">And</span>   winding_at(p, 12, 5) = 0
+
+  <span class="kw">Scenario</span>: The polygon circle
+    <span class="kw">Given</span> p ← circle_path(10, 10, 5, 8)
+    <span class="kw">Then</span>  winding_at(p, 10, 10) = 1
+    <span class="kw">And</span>   winding_at(p, 14.9, 10) = 1
+    <span class="kw">And</span>   winding_at(p, 15, 10) = 0
+    <span class="kw">And</span>   winding_at(p, 10, 5.1) = 1
+    <span class="kw">And</span>   winding_at(p, 10, 4.9) = 0
+
+  <span class="kw">Scenario</span>: The pentagram's center winds twice
+    <span class="kw">Given</span> p ← star()
+    <span class="kw">Then</span>  winding_at(p, 80.5, 80.5) = 2
+    <span class="kw">And</span>   crossings(p, 80.5, 80.5) = 2
+    <span class="kw">And</span>   winding_at(p, 80.5, 20) = 1
+    <span class="kw">And</span>   winding_at(p, 30, 60) = 1
+    <span class="kw">And</span>   crossings(p, 30, 60) = 3
+    <span class="kw">And</span>   winding_at(p, 80.5, 120) = 0
+    <span class="kw">And</span>   crossings(p, 80.5, 120) = 2
+    <span class="kw">And</span>   winding_at(p, 10, 10) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 5.3</span> Two rules</h2>
+
+  <p>So there are two conventions, and every graphics system offers both. <em>Nonzero</em>: a point
+    is inside when its winding number isn't zero. <em>Even-odd</em>: a point is inside when its
+    winding number is odd. (Or its crossing count, which has the same parity; the winding number
+    covers both, so you only need one function.) They agree on any simple loop. They disagree
+    whenever a path crosses itself or one subpath sits inside another, and the scenarios go through
+    the cases one at a time.</p>
+
+  <p>A square with a smaller square inside it, drawn the <em>opposite</em> way round, is a ring
+    under both rules: the inner loop winds <code>-1</code> against the outer's <code>+1</code>,
+    total <code>0</code>, and zero is even. The same two squares drawn the <em>same</em> way round
+    wind to <code>2</code> in the middle: a ring under even-odd, a solid square under nonzero. A
+    loop drawn twice over itself is solid under nonzero and vanishes entirely under even-odd, which
+    is a real thing that happens to real files when a path gets duplicated onto itself. And the
+    pentagram: solid under nonzero, a hole in the middle under even-odd. The hole nobody drew.</p>
+
+  <p>Which is right? Neither. Nonzero is what you get by thinking about the pen. Even-odd is what
+    you get by thinking about the ray. Nonzero has one large advantage that the book will collect
+    in chapter 22: it survives boolean operations, because the union of two shapes is the path
+    made of both their outlines, and under nonzero that's the union, while under even-odd the
+    overlap becomes a hole. That's why nonzero is the default in SVG, PostScript and every font
+    format. Even-odd survives because it's the one that lets you cut a hole without knowing which
+    way round anything was drawn, which is a convenience people will not give up. Both rules are one
+    line on top of <code>winding_at</code>, so write both.</p>
+
+  <p>To draw either, make it a shape. <code>filled(p, rule)</code>, with <code>rule</code> either
+    <code>"nonzero"</code> or <code>"evenodd"</code>, is a shape whose <code>inside</code> is the rule
+    applied to the path's winding number at the point. One more case in your <code>inside</code>
+    from chapter 2, and every path you'll ever load can go through the same supersampler as the
+    circle in chapter 2, the fan in chapter 3 and the F in chapter 4. That's the reference renderer
+    this book promised, and it's complete now: any path, either rule, correct coverage, slowly.</p>
+
+  <p>One property of the half-open rule deserves a scenario of its own, because it's the reason
+    rasterizers use it. Take the square from <code>(0, 0)</code> to <code>(10, 10)</code> and ask
+    about points exactly on its boundary. The top edge and the left edge are inside: winding
+    <code>1</code>. The bottom edge and the right edge are outside: winding <code>0</code>. That's
+    not an accident of the arithmetic, it's the rule doing its job. Now put two rectangles side by
+    side, sharing the edge <code>x = 5</code>. A point on the shared edge is inside exactly one of
+    them, so the winding there is <code>1</code>, not <code>2</code> and not <code>0</code>. Tiles
+    that share an edge neither overlap nor leave a gap. Chapter 9 will have things to say about how
+    this interacts with antialiasing, but at the level of "is this sample inside", the half-open
+    rule is what makes a mosaic possible.</p>
+
+  <p>Finally, a small kindness to your CPU. <code>rasterize(shape, w, h)</code> asks every pixel of
+    the buffer 64 questions, whether the shape is anywhere near it or not. Now that paths have
+    bounds, <code>rasterize_within(shape, box, w, h)</code> visits only the pixels the box touches:
+    columns from <code>floor(min x)</code> up to but not including <code>ceil(max x)</code>, rows
+    likewise, clipped to the buffer, and leaves the rest at zero. Same coverage, less work, and a
+    scenario checks the two agree on the star. It's a stopgap. Chapters 6 and 7 replace this whole
+    approach, and the reason to have it now is that the plate renders in seconds instead of a
+    minute.</p>
+
+  <div class="test" data-feature="chapter05-rules.feature">
+    <p class="label">features/chapter05-rules.feature</p>
+<pre><code><span class="kw">Feature</span>: Two rules
+  inside_nonzero(p, x, y) is true when the winding number isn't zero.
+  inside_evenodd(p, x, y) is true when it's odd. filled(p, rule) is the
+  shape a path encloses under a rule, "nonzero" or "evenodd", so that
+  chapter 2's rasterizer can draw it. rasterize_within(shape, box, w, h) is
+  chapter 2's rasterize restricted to the pixels the box touches.
+
+  <span class="kw">Scenario</span>: A single loop is inside under both rules
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">Then</span>  inside_nonzero(p, 5, 5) = true
+    <span class="kw">And</span>   inside_evenodd(p, 5, 5) = true
+    <span class="kw">And</span>   inside_nonzero(p, 15, 5) = false
+    <span class="kw">And</span>   inside_evenodd(p, 15, 5) = false
+
+  <span class="kw">Scenario</span>: An inner loop the other way round is a hole under both rules
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(0, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 10))
+    <span class="kw">And</span>   line_to(p, point(0, 10))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">And</span>   move_to(p, point(3, 3))
+    <span class="kw">And</span>   line_to(p, point(3, 7))
+    <span class="kw">And</span>   line_to(p, point(7, 7))
+    <span class="kw">And</span>   line_to(p, point(7, 3))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">Then</span>  winding_at(p, 5, 5) = 0
+    <span class="kw">And</span>   winding_at(p, 1, 1) = 1
+    <span class="kw">And</span>   inside_nonzero(p, 5, 5) = false
+    <span class="kw">And</span>   inside_evenodd(p, 5, 5) = false
+    <span class="kw">And</span>   inside_nonzero(p, 1, 1) = true
+
+  <span class="kw">Scenario</span>: An inner loop the same way round is a hole only under even-odd
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(0, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 10))
+    <span class="kw">And</span>   line_to(p, point(0, 10))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">And</span>   move_to(p, point(3, 3))
+    <span class="kw">And</span>   line_to(p, point(7, 3))
+    <span class="kw">And</span>   line_to(p, point(7, 7))
+    <span class="kw">And</span>   line_to(p, point(3, 7))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">Then</span>  winding_at(p, 5, 5) = 2
+    <span class="kw">And</span>   inside_nonzero(p, 5, 5) = true
+    <span class="kw">And</span>   inside_evenodd(p, 5, 5) = false
+
+  <span class="kw">Scenario</span>: A loop wound twice vanishes under even-odd
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(5, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 5))
+    <span class="kw">And</span>   line_to(p, point(5, 10))
+    <span class="kw">And</span>   line_to(p, point(0, 5))
+    <span class="kw">And</span>   line_to(p, point(5, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 5))
+    <span class="kw">And</span>   line_to(p, point(5, 10))
+    <span class="kw">And</span>   line_to(p, point(0, 5))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">Then</span>  inside_nonzero(p, 5, 5) = true
+    <span class="kw">And</span>   inside_evenodd(p, 5, 5) = false
+
+  <span class="kw">Scenario</span>: The pentagram's center is inside under nonzero and outside under even-odd
+    <span class="kw">Given</span> p ← star()
+    <span class="kw">Then</span>  inside_nonzero(p, 80.5, 80.5) = true
+    <span class="kw">And</span>   inside_evenodd(p, 80.5, 80.5) = false
+    <span class="kw">And</span>   inside_nonzero(p, 80.5, 20) = true
+    <span class="kw">And</span>   inside_evenodd(p, 80.5, 20) = true
+    <span class="kw">And</span>   inside_nonzero(p, 80.5, 120) = false
+    <span class="kw">And</span>   inside_evenodd(p, 80.5, 120) = false
+
+  <span class="kw">Scenario</span>: A filled path is a shape
+    <span class="kw">Given</span> s ← filled(polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6)), "nonzero")
+    <span class="kw">When</span>  cov ← rasterize(s, 8, 8)
+    <span class="kw">Then</span>  inside(s, 3, 3) = true
+    <span class="kw">And</span>   inside(s, 7, 3) = false
+    <span class="kw">And</span>   coverage_at(cov, 3, 3) = 1
+    <span class="kw">And</span>   coverage_at(cov, 1, 3) = 0
+    <span class="kw">And</span>   coverage_at(cov, 6, 3) = 0
+    <span class="kw">And</span>   ink(cov) = 16
+
+  <span class="kw">Scenario</span>: A filled path takes the rule seriously
+    <span class="kw">Given</span> p ← star()
+    <span class="kw">And</span>   a ← filled(p, "nonzero")
+    <span class="kw">And</span>   b ← filled(p, "evenodd")
+    <span class="kw">When</span>  ca ← rasterize(a, 160, 160)
+    <span class="kw">And</span>   cb ← rasterize(b, 160, 160)
+    <span class="kw">Then</span>  coverage_at(ca, 80, 80) = 1
+    <span class="kw">And</span>   coverage_at(cb, 80, 80) = 0
+    <span class="kw">And</span>   coverage_at(ca, 80, 20) = 1
+    <span class="kw">And</span>   coverage_at(cb, 80, 20) = 1
+    <span class="kw">And</span>   coverage_at(ca, 80, 10) = 0.0625
+    <span class="kw">And</span>   coverage_at(cb, 80, 10) = 0.0625
+    <span class="kw">And</span>   ink(ca) = 5499.9375
+    <span class="kw">And</span>   ink(cb) = 3800.375
+
+  <span class="kw">Scenario</span>: Rasterizing within the bounds gives the same coverage
+    <span class="kw">Given</span> p ← star()
+    <span class="kw">And</span>   s ← filled(p, "evenodd")
+    <span class="kw">When</span>  full ← rasterize(s, 160, 160)
+    <span class="kw">And</span>   within ← rasterize_within(s, bounds(p), 160, 160)
+    <span class="kw">Then</span>  ink(within) = ink(full)
+    <span class="kw">And</span>   coverage_at(within, 80, 20) = coverage_at(full, 80, 20)
+    <span class="kw">And</span>   coverage_at(within, 13, 58) = coverage_at(full, 13, 58)
+    <span class="kw">And</span>   coverage_at(within, 10, 10) = 0
+
+  <span class="kw">Scenario</span>: The box is inclusive of the pixels it touches, and clipped to the buffer
+    <span class="kw">Given</span> s ← filled(polygon(point(1.5, 1.5), point(6.5, 1.5), point(6.5, 6.5), point(1.5, 6.5)), "nonzero")
+    <span class="kw">When</span>  cov ← rasterize_within(s, (1.5, 1.5, 6.5, 6.5), 8, 8)
+    <span class="kw">And</span>   big ← rasterize_within(s, (-5, -5, 20, 20), 8, 8)
+    <span class="kw">Then</span>  coverage_at(cov, 1, 1) = 0.25
+    <span class="kw">And</span>   coverage_at(cov, 6, 6) = 0.25
+    <span class="kw">And</span>   coverage_at(cov, 3, 3) = 1
+    <span class="kw">And</span>   ink(cov) = 25
+    <span class="kw">And</span>   ink(big) = 25</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>Illustrator's Attributes panel has two buttons, <em>Use Non-Zero Winding Fill Rule</em> and
+      <em>Use Even-Odd Fill Rule</em>, that switch <code>filled</code>'s second argument for the
+      selected path. Beside them, <em>Reverse Path Direction</em> flips a subpath's winding, which
+      under nonzero makes a hole appear or vanish. Inkscape puts the same pair under Fill &amp;
+      Stroke → Fill.</p>
+  </aside>
+
+  <h2><span class="sec">§ 5.4</span> Putting it together</h2>
+
+  <p>The pentagram, filled four ways. <code>star()</code> is five points on a circle of radius 70
+    about <code>(80.5, 80.5)</code>, the first straight up, visited every second one so the pen
+    crosses itself, and closed. Its vertices are pinned to four decimals so a star drawn the other
+    way round, or starting at the wrong point, fails before it renders. Then a panel per rule per
+    method: the center question from chapter 2 for the jagged pair, chapter 2's coverage within the
+    star's bounds for the smooth pair, and the four side by side and stacked, magnified twice:</p>
+
+<pre><code>star():
+  p ← path()
+  <span class="kw">for</span> k <span class="kw">in</span> 0..4:
+    a ← (-90 + 144 * k) degrees
+    q ← point(80.5 + 70 * cos(a), 80.5 + 70 * sin(a))
+    <span class="kw">if</span> k = 0: move_to(p, q) <span class="kw">else</span>: line_to(p, q)
+  close(p)
+  <span class="kw">return</span> p
+
+star_panel(rule, method):
+  c ← canvas(160, 160)
+  fill(c, color(0.02, 0.02, 0.025))
+  s ← filled(star(), rule)
+  <span class="kw">if</span> method = "centers": cov ← rasterize_centers(s, 160, 160)
+  <span class="kw">else</span>:                  cov ← rasterize_within(s, bounds(star()), 160, 160)
+  paint_through(c, cov, color(0.9, 0.55, 0.1))
+  <span class="kw">return</span> c
+
+star_centers():  <span class="kw">return</span> side_by_side(star_panel("nonzero", "centers"),  star_panel("evenodd", "centers"))
+star_coverage(): <span class="kw">return</span> side_by_side(star_panel("nonzero", "coverage"), star_panel("evenodd", "coverage"))
+
+plate_05():
+  top ← star_centers()
+  bottom ← star_coverage()
+  both ← canvas(320, 320)
+  <span class="kw">for</span> y <span class="kw">in</span> 0..159:
+    <span class="kw">for</span> x <span class="kw">in</span> 0..319:
+      write_pixel(both, x, y,       pixel_at(top, x, y))
+      write_pixel(both, x, y + 160, pixel_at(bottom, x, y))
+  <span class="kw">return</span> magnify(both, 2)</code></pre>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate5" role="img" aria-label="Four orange pentagrams on dark paper in a two by two grid. Left column: solid stars. Right column: stars with a pentagonal hole in the middle. Top row: jagged edges. Bottom row: smooth edges"></canvas>
+    <figcaption><span class="fig">Plate 5</span> One path, two answers about what "inside" means. Left, nonzero: the pen went round the middle twice, so it's in. Right, even-odd: twice is even, so it's out, and the star has a hole nobody drew. Top row by asking each pixel center; bottom row by coverage, and the difference between the rows is chapter 2's whole argument, made again on a shape somebody might actually draw.</figcaption>
+  </figure>
+
+  <p>The coverage panels are two rasterizations of a 160-by-160 canvas at 64 samples a pixel, each
+    sample a winding number over five edges, within the star's bounds: a few seconds in Python,
+    well under a second compiled. The center panels are 64 times cheaper and look it. Every panel
+    scenario probes the middle of the star, where the two rules part company, and a point in an arm,
+    where they agree, and a pixel on the star's top edge where only the coverage rows have a value
+    between 0 and 1.</p>
+
+  <div class="test" data-feature="chapter05-plate.feature">
+    <p class="label">features/chapter05-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 5
+  One pentagram, filled four ways: under each rule, by the center question
+  and by coverage. star() is the path: five points on a circle of radius 70
+  about (80.5, 80.5), the first straight up, visited every second one.
+
+  <span class="kw">Scenario</span>: The pentagram
+    <span class="kw">Given</span> p ← star()
+    <span class="kw">Then</span>  length(subpaths(p)) = 1
+    <span class="kw">And</span>   length(edges(p)) = 5
+    <span class="kw">And</span>   subpaths(p)[0].points[0] = point(80.5, 10.5)
+    <span class="kw">And</span>   subpaths(p)[0].points[1] = point(121.645, 137.1312)
+    <span class="kw">And</span>   subpaths(p)[0].points[2] = point(13.926, 58.8688)
+    <span class="kw">And</span>   subpaths(p)[0].points[3] = point(147.074, 58.8688)
+    <span class="kw">And</span>   subpaths(p)[0].points[4] = point(39.355, 137.1312)
+    <span class="kw">And</span>   bounds(p) = (13.926, 10.5, 147.074, 137.1312)
+
+  <span class="kw">Scenario</span>: The star by the center question
+    <span class="kw">Given</span> c ← star_centers()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-05/star-centers.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 160
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 80) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 80) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 20) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 20) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 30, 60) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 190, 60) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 120) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 10) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The star by coverage
+    <span class="kw">Given</span> c ← star_coverage()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-05/star-coverage.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 160
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 80) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 80) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 20) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 20) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 120) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 10) = (77, 65, 48) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 10) = (77, 65, 48) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 11) = (199, 160, 76) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 14, 58) = (101, 83, 52) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 174, 58) = (101, 83, 52) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 5
+    <span class="kw">Given</span> c ← plate_05()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-05/plate-05.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 640
+    <span class="kw">And</span>   c.height = 640
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 160) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 480, 160) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 480) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 480, 480) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 40) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 480, 360) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 20) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 341) = (77, 65, 48) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 480, 341) = (77, 65, 48) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 348, 437) = (101, 83, 52) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 20, 20) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <nav class="endnav">
+    <a href="chapter-04.html">← 4 · Points, Vectors, Transforms</a>
+    <span>Chapter 5 · Paths and Insideness</span>
+    <span>Next: 6 · Filling a Polygon (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+function toByte(light) {
+  var v = light < 0 ? 0 : light > 1 ? 1 : light;
+  return Math.floor(Plate.l2s(v) * 255 + 0.5);
+}
+function lerp3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+function blit(ctx, pixels, pw, ph, scale, ox, oy) {
+  var img = ctx.createImageData(pw, ph);
+  for (var i = 0; i < pw * ph; i++) {
+    img.data[i * 4] = pixels[i][0]; img.data[i * 4 + 1] = pixels[i][1];
+    img.data[i * 4 + 2] = pixels[i][2]; img.data[i * 4 + 3] = 255;
+  }
+  var off = Plate.offcan(pw, ph);
+  off.getContext('2d').putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, ox, oy, pw * scale, ph * scale);
+}
+var INK = [0.9, 0.55, 0.1], PAPER = [0.02, 0.02, 0.025];
+function Buf(w, h) { this.w = w; this.h = h; this.p = []; for (var i = 0; i < w * h; i++) this.p.push(PAPER.slice()); }
+Buf.prototype.plot = function (x, y, col, k) {
+  if (x < 0 || y < 0 || x >= this.w || y >= this.h || k <= 0) return;
+  this.p[y * this.w + x] = lerp3(this.p[y * this.w + x], col, k);
+};
+Buf.prototype.bytes = function () { return this.p.map(function (c) { return c.map(toByte); }); };
+
+/* the path, exactly as the chapter defines it */
+function point(x, y) { return [x, y, 1]; }
+function cross(a, b) { return a[0] * b[1] - a[1] * b[0]; }
+function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function path() { return { subpaths: [] }; }
+function moveTo(p, q) { p.subpaths.push({ points: [q], closed: false }); }
+function lineTo(p, q) {
+  if (!p.subpaths.length) return moveTo(p, q);
+  var cur = p.subpaths[p.subpaths.length - 1];
+  if (cur.closed) { moveTo(p, cur.points[0]); cur = p.subpaths[p.subpaths.length - 1]; }
+  cur.points.push(q);
+}
+function close(p) { if (p.subpaths.length) p.subpaths[p.subpaths.length - 1].closed = true; }
+function edges(p) {
+  var out = [];
+  p.subpaths.forEach(function (sp) {
+    var n = sp.points.length; if (n < 2) return;
+    for (var i = 0; i < n; i++) out.push([sp.points[i], sp.points[(i + 1) % n]]);
+  });
+  return out;
+}
+function bounds(p) {
+  var xs = [], ys = [];
+  p.subpaths.forEach(function (sp) { sp.points.forEach(function (q) { xs.push(q[0]); ys.push(q[1]); }); });
+  if (!xs.length) return [0, 0, 0, 0];
+  return [Math.min.apply(null, xs), Math.min.apply(null, ys), Math.max.apply(null, xs), Math.max.apply(null, ys)];
+}
+function windingAt(p, x, y) {
+  var q = point(x, y), w = 0;
+  edges(p).forEach(function (e) {
+    var a = e[0], b = e[1];
+    if (a[1] <= y) { if (b[1] > y && cross(sub(b, a), sub(q, a)) > 0) w++; }
+    else { if (b[1] <= y && cross(sub(b, a), sub(q, a)) < 0) w--; }
+  });
+  return w;
+}
+function filled(p, rule) {
+  return { inside: function (x, y) { var w = windingAt(p, x, y); return rule === 'nonzero' ? w !== 0 : (w % 2 !== 0); } };
+}
+function coverage(shape, px, py) {
+  var n = 0;
+  for (var j = 0; j < 8; j++) for (var i = 0; i < 8; i++) if (shape.inside(px + (i + 0.5) / 8, py + (j + 0.5) / 8)) n++;
+  return n / 64;
+}
+function star() {
+  var p = path();
+  for (var k = 0; k < 5; k++) {
+    var a = (-90 + 144 * k) * Math.PI / 180, q = point(80.5 + 70 * Math.cos(a), 80.5 + 70 * Math.sin(a));
+    if (k === 0) moveTo(p, q); else lineTo(p, q);
+  }
+  close(p);
+  return p;
+}
+function starPanel(rule, method) {
+  var b = new Buf(160, 160), s = filled(star(), rule), box = bounds(star());
+  if (method === 'centers') {
+    for (var y = 0; y < 160; y++) for (var x = 0; x < 160; x++) b.plot(x, y, INK, s.inside(x + 0.5, y + 0.5) ? 1 : 0);
+  } else {
+    for (var y2 = Math.floor(box[1]); y2 < Math.ceil(box[3]); y2++) for (var x2 = Math.floor(box[0]); x2 < Math.ceil(box[2]); x2++) b.plot(x2, y2, INK, coverage(s, x2, y2));
+  }
+  return b;
+}
+function sideBySide(a, b) {
+  var out = new Buf(a.w + b.w, a.h);
+  for (var y = 0; y < a.h; y++) {
+    for (var x = 0; x < a.w; x++) out.p[y * out.w + x] = a.p[y * a.w + x];
+    for (x = 0; x < b.w; x++) out.p[y * out.w + a.w + x] = b.p[y * b.w + x];
+  }
+  return out;
+}
+function stack(a, b) {
+  var out = new Buf(a.w, a.h + b.h);
+  out.p = a.p.concat(b.p);
+  return out;
+}
+function grid(ctx, p, ox, oy, cols, rows, cs) {
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.45); ctx.lineWidth = 1;
+  for (var i = 0; i <= cols; i++) { ctx.beginPath(); ctx.moveTo(ox + i * cs, oy); ctx.lineTo(ox + i * cs, oy + rows * cs); ctx.stroke(); }
+  for (var j = 0; j <= rows; j++) { ctx.beginPath(); ctx.moveTo(ox, oy + j * cs); ctx.lineTo(ox + cols * cs, oy + j * cs); ctx.stroke(); }
+}
+function arrow(ctx, x0, y0, x1, y1, col, width) {
+  var a = Math.atan2(y1 - y0, x1 - x0), L = 7;
+  ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = width || 2;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - L * Math.cos(a - 0.4), y1 - L * Math.sin(a - 0.4));
+  ctx.lineTo(x1 - L * Math.cos(a + 0.4), y1 - L * Math.sin(a + 0.4)); ctx.closePath(); ctx.fill();
+}
+function strokePath(ctx, p, ox, oy, cs, col, width) {
+  ctx.strokeStyle = col; ctx.lineWidth = width || 2; ctx.lineJoin = 'round';
+  p.subpaths.forEach(function (sp) {
+    ctx.beginPath();
+    sp.points.forEach(function (q, i) { if (i) ctx.lineTo(ox + q[0] * cs, oy + q[1] * cs); else ctx.moveTo(ox + q[0] * cs, oy + q[1] * cs); });
+    if (sp.closed) ctx.closePath();
+    ctx.stroke();
+  });
+}
+
+/* ---------- Figure 5.1 — two subpaths ---------- */
+Plate.add('fig51', 0.5, function (ctx, w, h, p) {
+  var cols = 16, cs = Math.floor((w - 20) / cols), rows = Math.floor((h - 20) / cs), ox = 10, oy = 10;
+  grid(ctx, p, ox, oy, cols, rows, cs);
+  var q = path();
+  moveTo(q, point(1.5, 1.5)); lineTo(q, point(7, 2.5)); lineTo(q, point(3, 6.5)); close(q);
+  moveTo(q, point(9.5, 6)); lineTo(q, point(12, 1.5)); lineTo(q, point(14.5, 6.5));
+  strokePath(ctx, q, ox, oy, cs, p.ink, 2);
+  q.subpaths.forEach(function (sp) { sp.points.forEach(function (pt) { ctx.fillStyle = p.magenta; ctx.beginPath(); ctx.arc(ox + pt[0] * cs, oy + pt[1] * cs, 3.5, 0, Math.PI * 2); ctx.fill(); }); });
+  var f = 10;
+  Plate.label(ctx, 'move_to', ox + 1.5 * cs - 6, oy + 1.5 * cs - 8, p.magenta, f);
+  Plate.label(ctx, 'line_to', ox + 7 * cs + 6, oy + 2.5 * cs + 4, p.magenta, f);
+  Plate.label(ctx, 'line_to', ox + 3 * cs + 6, oy + 6.5 * cs + 12, p.magenta, f);
+  Plate.label(ctx, 'close', ox + 1.4 * cs, oy + 4.3 * cs, p.cyan, f);
+  Plate.label(ctx, 'move_to', ox + 9.5 * cs - 10, oy + 6 * cs + 14, p.magenta, f);
+  Plate.label(ctx, 'line_to', ox + 12 * cs + 6, oy + 1.5 * cs - 2, p.magenta, f);
+  Plate.label(ctx, 'line_to', ox + 14.5 * cs - 44, oy + 6.5 * cs + 14, p.magenta, f);
+  ctx.setLineDash([3, 3]); ctx.strokeStyle = Plate.rgba(p.cyan, 0.8); ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(ox + 14.5 * cs, oy + 6.5 * cs); ctx.lineTo(ox + 9.5 * cs, oy + 6 * cs); ctx.stroke(); ctx.setLineDash([]);
+  Plate.label(ctx, 'implied when filling', ox + 10.6 * cs, oy + 6.9 * cs, p.cyan, 9);
+});
+
+/* ---------- Figure 5.2 — ray casting, and the vertex ---------- */
+Plate.add('fig52', 0.5, function (ctx, w, h, p) {
+  var cols = 16, cs = Math.floor((w - 20) / cols), rows = Math.floor((h - 20) / cs), ox = 10, oy = 10;
+  grid(ctx, p, ox, oy, cols, rows, cs);
+  var q = path();
+  [[1, 1], [6, 2], [9, 5], [12, 1], [15, 4], [13, 7], [8, 5], [4, 7]].forEach(function (v, i) { if (i) lineTo(q, point(v[0], v[1])); else moveTo(q, point(v[0], v[1])); });
+  close(q);
+  ctx.fillStyle = Plate.rgba(p.magenta, 0.15);
+  ctx.beginPath(); q.subpaths[0].points.forEach(function (pt, i) { if (i) ctx.lineTo(ox + pt[0] * cs, oy + pt[1] * cs); else ctx.moveTo(ox + pt[0] * cs, oy + pt[1] * cs); }); ctx.closePath(); ctx.fill();
+  strokePath(ctx, q, ox, oy, cs, p.ink, 2);
+  function ray(y, x0, col) {
+    ctx.setLineDash([4, 3]); arrow(ctx, ox + x0 * cs, oy + y * cs, ox + cols * cs - 4, oy + y * cs, col, 1.4); ctx.setLineDash([]);
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(ox + x0 * cs, oy + y * cs, 4, 0, Math.PI * 2); ctx.fill();
+    var n = 0;
+    edges(q).forEach(function (e) {
+      var a = e[0], b = e[1];
+      if ((a[1] <= y) !== (b[1] <= y)) {
+        var t = (y - a[1]) / (b[1] - a[1]), x = a[0] + t * (b[0] - a[0]);
+        if (x > x0) { n++; ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(ox + x * cs, oy + y * cs, 5, 0, Math.PI * 2); ctx.stroke(); }
+      }
+    });
+    return n;
+  }
+  var n1 = ray(3.6, 2.5, p.cyan), n2 = ray(2, 2.5, p.magenta);
+  Plate.label(ctx, n1 + ' crossings: inside', ox + 2.5 * cs - 4, oy + 3.6 * cs + 16, p.cyan, 10);
+  Plate.label(ctx, 'through the vertex at (6, 2): ' + n2 + ' by the half-open rule, not 4', ox + 2.5 * cs - 4, oy + 2 * cs - 9, p.magenta, 10);
+});
+
+/* ---------- Figure 5.3 — winding numbers of the star ---------- */
+Plate.add('fig53', 0.62, function (ctx, w, h, p) {
+  var s = star(), cs = Math.min(w, h) / 165, ox = (w - 160 * cs) / 2, oy = (h - 160 * cs) / 2;
+  var b = new Buf(160, 160), shp = filled(s, 'nonzero');
+  for (var y = 0; y < 160; y++) for (var x = 0; x < 160; x++) {
+    var wn = windingAt(s, x + 0.5, y + 0.5);
+    b.p[y * 160 + x] = wn === 2 ? [0.9, 0.55, 0.1] : wn === 1 ? [0.35, 0.22, 0.06] : PAPER;
+  }
+  blit(ctx, b.bytes(), 160, 160, cs, ox, oy);
+  strokePath(ctx, s, ox, oy, cs, p.ink, 1.5);
+  var spots = [[80.5, 80.5, '2'], [80.5, 30, '1'], [35, 62, '1'], [126, 62, '1'], [50, 125, '1'], [111, 125, '1'], [80.5, 118, '0'], [80.5, 152, '0'], [20, 20, '0']];
+  spots.forEach(function (q) { Plate.label(ctx, q[2], ox + q[0] * cs, oy + q[1] * cs + 5, q[2] === '0' ? p.ink2 : '#fff', 13, 'center'); });
+});
+
+/* ---------- Plate 5 — plate_05(), pixel for pixel ---------- */
+Plate.add('plate5', 1, function (ctx, w, h, p) {
+  var top = sideBySide(starPanel('nonzero', 'centers'), starPanel('evenodd', 'centers'));
+  var bottom = sideBySide(starPanel('nonzero', 'coverage'), starPanel('evenodd', 'coverage'));
+  var b = stack(top, bottom);
+  var scale = Math.max(1, Math.floor(Math.min(w / 320, h / 320))), ox = (w - 320 * scale) / 2;
+  blit(ctx, b.bytes(), 320, 320, scale, ox, 0);
+  Plate.label(ctx, 'NONZERO, CENTERS', ox + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+  Plate.label(ctx, 'EVEN-ODD, CENTERS', ox + 160 * scale + 4, 12, 'rgba(180,180,180,0.9)', 9.5);
+  Plate.label(ctx, 'NONZERO, COVERAGE', ox + 4, 160 * scale + 12, 'rgba(180,180,180,0.9)', 9.5);
+  Plate.label(ctx, 'EVEN-ODD, COVERAGE', ox + 160 * scale + 4, 160 * scale + 12, 'rgba(180,180,180,0.9)', 9.5);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, Buf, point, cross, sub, path, moveTo, lineTo, close, edges, bounds, windingAt, filled, coverage, star, starPanel, sideBySide, stack].concat(Plate.helpers).map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>

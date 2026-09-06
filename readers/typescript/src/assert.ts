@@ -1,5 +1,7 @@
 import type { Color } from "./color.ts";
 import type { Canvas } from "./canvas.ts";
+import type { Tuple } from "./tuple.ts";
+import { at, type Matrix3 } from "./matrix.ts";
 
 export const EPS = 0.0001;
 
@@ -145,4 +147,46 @@ export function total_ink(c: Canvas): number {
   let t = 0;
   for (const p of c.pixels) t += p.red;
   return t;
+}
+
+function show_tuple(t: Tuple): string {
+  return `(${t.x}, ${t.y}, ${t.w})`;
+}
+
+export function tuple_eq(a: Tuple, b: Tuple, eps = EPS): boolean {
+  return eq(a.x, b.x, eps) && eq(a.y, b.y, eps) && eq(a.w, b.w, eps);
+}
+
+export function assert_tuple(a: Tuple, b: Tuple, eps = EPS, msg = ""): void {
+  if (!tuple_eq(a, b, eps)) {
+    throw new Error(`${msg} expected ${show_tuple(b)}, got ${show_tuple(a)}`);
+  }
+}
+
+export function assert_tuple_ne(a: Tuple, b: Tuple, eps = EPS): void {
+  if (tuple_eq(a, b, eps)) {
+    throw new Error(`expected ${show_tuple(a)} != ${show_tuple(b)}`);
+  }
+}
+
+function show_matrix(M: Matrix3): string {
+  const rows = [0, 1, 2].map((r) => [0, 1, 2].map((c) => at(M, r, c)).join(", "));
+  return rows.map((r) => `| ${r} |`).join(" ");
+}
+
+export function matrix_eq(A: Matrix3, B: Matrix3, eps = EPS): boolean {
+  for (let i = 0; i < 9; i++) if (!eq(A.v[i], B.v[i], eps)) return false;
+  return true;
+}
+
+export function assert_matrix(A: Matrix3, B: Matrix3, eps = EPS, msg = ""): void {
+  if (!matrix_eq(A, B, eps)) {
+    throw new Error(`${msg} expected ${show_matrix(B)}, got ${show_matrix(A)}`);
+  }
+}
+
+export function assert_matrix_ne(A: Matrix3, B: Matrix3, eps = EPS): void {
+  if (matrix_eq(A, B, eps)) {
+    throw new Error(`expected ${show_matrix(A)} != ${show_matrix(B)}`);
+  }
 }

@@ -39,3 +39,21 @@ export function magnify(c: Canvas, k: number): Canvas {
   }
   return m;
 }
+
+/** A copy of c: same pixels, different array, so painting one never touches the other. */
+export function clone(c: Canvas): Canvas {
+  return { width: c.width, height: c.height, pixels: c.pixels.slice() };
+}
+
+/** a copied into the left half of a wider canvas, b into the right half. */
+export function side_by_side(a: Canvas, b: Canvas): Canvas {
+  const h = Math.max(a.height, b.height);
+  const out = canvas(a.width + b.width, h);
+  for (let y = 0; y < a.height; y++) {
+    for (let x = 0; x < a.width; x++) write_pixel(out, x, y, pixel_at(a, x, y));
+  }
+  for (let y = 0; y < b.height; y++) {
+    for (let x = 0; x < b.width; x++) write_pixel(out, a.width + x, y, pixel_at(b, x, y));
+  }
+  return out;
+}

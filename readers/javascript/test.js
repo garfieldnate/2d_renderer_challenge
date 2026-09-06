@@ -1001,6 +1001,17 @@ function inside(shape, x, y) {
       }
     }
     return true;
+  } else if (shape instanceof Segment) {
+    return inside_segment(shape, x, y);
+  } else if (shape instanceof Union) {
+    for (const s of shape.shapes) {
+      if (inside(s, x, y)) return true;
+    }
+    return false;
+  } else if (shape instanceof Transformed) {
+    if (!shape.m_inv) return false;
+    const p = shape.m_inv.multiply(point(x, y));
+    return inside(shape.shape, p.x, p.y);
   }
   return false;
 }
@@ -2261,6 +2272,928 @@ test('Plate: Plate 3', () => {
   assert(max_channel_difference(p6, ref) <= 1);
 });
 
+// ===========================
+// Chapter 4: Points, Vectors, Transforms
+// ===========================
+
+// Tuple class for points and vectors
+class Tuple {
+  constructor(x, y, w) {
+    this.x = x;
+    this.y = y;
+    this.w = w;
+  }
+
+  static equals(a, b, tolerance = 0.0001) {
+    return Math.abs(a.x - b.x) <= tolerance &&
+           Math.abs(a.y - b.y) <= tolerance &&
+           Math.abs(a.w - b.w) <= tolerance;
+  }
+
+  add(other) {
+    return new Tuple(this.x + other.x, this.y + other.y, this.w + other.w);
+  }
+
+  subtract(other) {
+    return new Tuple(this.x - other.x, this.y - other.y, this.w - other.w);
+  }
+
+  negate() {
+    return new Tuple(-this.x, -this.y, -this.w);
+  }
+
+  multiply(scalar) {
+    return new Tuple(this.x * scalar, this.y * scalar, this.w * scalar);
+  }
+
+  divide(scalar) {
+    return new Tuple(this.x / scalar, this.y / scalar, this.w / scalar);
+  }
+
+  magnitude() {
+    return Math.sqrt(this.x * this.x + this.y * this.y + this.w * this.w);
+  }
+
+  normalize() {
+    const mag = this.magnitude();
+    if (mag === 0) return new Tuple(0, 0, 0);
+    return this.divide(mag);
+  }
+}
+
+function point(x, y) {
+  return new Tuple(x, y, 1);
+}
+
+function vector(x, y) {
+  return new Tuple(x, y, 0);
+}
+
+function magnitude(v) {
+  return v.magnitude();
+}
+
+function normalize(v) {
+  return v.normalize();
+}
+
+function dot(a, b) {
+  return a.x * b.x + a.y * b.y + a.w * b.w;
+}
+
+function cross(a, b) {
+  return a.x * b.y - a.y * b.x;
+}
+
+// Matrix3 class
+class Matrix3 {
+  constructor(...args) {
+    if (args.length === 9) {
+      // row-major order: 9 numbers
+      this.m = args.slice();
+    } else if (args.length === 3 && Array.isArray(args[0])) {
+      // 3 arrays of 3 numbers each (rows)
+      this.m = [];
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) {
+          this.m.push(args[r][c]);
+        }
+      }
+    } else {
+      throw new Error('Invalid matrix constructor arguments');
+    }
+  }
+
+  get(r, c) {
+    return this.m[r * 3 + c];
+  }
+
+  set(r, c, value) {
+    this.m[r * 3 + c] = value;
+  }
+
+  static equals(a, b, tolerance = 0.0001) {
+    for (let i = 0; i < 9; i++) {
+      if (Math.abs(a.m[i] - b.m[i]) > tolerance) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  multiply(other) {
+    if (other instanceof Matrix3) {
+      const out = new Matrix3(0, 0, 0, 0, 0, 0, 0, 0, 0);
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) {
+          let sum = 0;
+          for (let i = 0; i < 3; i++) {
+            sum += this.get(r, i) * other.get(i, c);
+          }
+          out.set(r, c, sum);
+        }
+      }
+      return out;
+    } else if (other instanceof Tuple) {
+      // Matrix multiplied by tuple
+      const x = this.get(0, 0) * other.x + this.get(0, 1) * other.y + this.get(0, 2) * other.w;
+      const y = this.get(1, 0) * other.x + this.get(1, 1) * other.y + this.get(1, 2) * other.w;
+      const w = this.get(2, 0) * other.x + this.get(2, 1) * other.y + this.get(2, 2) * other.w;
+      return new Tuple(x, y, w);
+    } else {
+      throw new Error('Cannot multiply matrix by this type');
+    }
+  }
+}
+
+// Allow a * b syntax for matrices
+Matrix3.prototype[Symbol.for('matrix.multiply')] = function(other) {
+  return this.multiply(other);
+};
+
+function matrix3(...args) {
+  return new Matrix3(...args);
+}
+
+function identity() {
+  return new Matrix3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+}
+
+function translation(tx, ty) {
+  return new Matrix3(1, 0, tx, 0, 1, ty, 0, 0, 1);
+}
+
+function scaling(sx, sy) {
+  return new Matrix3(sx, 0, 0, 0, sy, 0, 0, 0, 1);
+}
+
+function rotation(r) {
+  const c = Math.cos(r);
+  const s = Math.sin(r);
+  return new Matrix3(c, -s, 0, s, c, 0, 0, 0, 1);
+}
+
+function shearing(xy, yx) {
+  return new Matrix3(1, xy, 0, yx, 1, 0, 0, 0, 1);
+}
+
+function transpose(m) {
+  const out = new Matrix3(0, 0, 0, 0, 0, 0, 0, 0, 0);
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      out.set(r, c, m.get(c, r));
+    }
+  }
+  return out;
+}
+
+function minor(m, r, c) {
+  // Get the 2x2 determinant when row r and column c are deleted
+  const rows = [];
+  const cols = [];
+  for (let i = 0; i < 3; i++) {
+    if (i !== r) rows.push(i);
+    if (i !== c) cols.push(i);
+  }
+  const a = m.get(rows[0], cols[0]);
+  const b = m.get(rows[0], cols[1]);
+  const c_val = m.get(rows[1], cols[0]);
+  const d = m.get(rows[1], cols[1]);
+  return a * d - b * c_val;
+}
+
+function cofactor(m, r, c) {
+  const min = minor(m, r, c);
+  return ((r + c) % 2 === 1) ? -min : min;
+}
+
+function determinant(m) {
+  return m.get(0, 0) * cofactor(m, 0, 0) +
+         m.get(0, 1) * cofactor(m, 0, 1) +
+         m.get(0, 2) * cofactor(m, 0, 2);
+}
+
+function is_invertible(m) {
+  return determinant(m) !== 0;
+}
+
+function inverse(m) {
+  const d = determinant(m);
+  if (d === 0) {
+    // Return an empty/null matrix or throw
+    return null;
+  }
+  const out = new Matrix3(0, 0, 0, 0, 0, 0, 0, 0, 0);
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      const cf = cofactor(m, r, c);
+      out.set(c, r, cf / d);  // Note: c, r is the transpose
+    }
+  }
+  return out;
+}
+
+function approx_scale(m) {
+  const det = m.get(0, 0) * m.get(1, 1) - m.get(0, 1) * m.get(1, 0);
+  return Math.sqrt(Math.abs(det));
+}
+
+// Shape classes for Chapter 4
+class Segment extends Shape {
+  constructor(a, b, width) {
+    super();
+    this.a = a;
+    this.b = b;
+    this.width = width;
+  }
+}
+
+class Union extends Shape {
+  constructor(shapes) {
+    super();
+    this.shapes = shapes;
+  }
+}
+
+class Transformed extends Shape {
+  constructor(shape, m) {
+    super();
+    this.shape = shape;
+    this.m = m;
+    this.m_inv = inverse(m);
+  }
+}
+
+function segment(a, b, width) {
+  return new Segment(a, b, width);
+}
+
+function union(shapes) {
+  return new Union(shapes);
+}
+
+function transformed(shape, m) {
+  return new Transformed(shape, m);
+}
+
+function outline(points, m, width) {
+  const segs = [];
+  const transformed_points = points.map(p => m.multiply(p));
+  for (let i = 0; i < transformed_points.length; i++) {
+    const p0 = transformed_points[i];
+    const p1 = transformed_points[(i + 1) % transformed_points.length];
+    segs.push(segment(p0, p1, width));
+  }
+  return union(segs);
+}
+
+function transform_points(points, m) {
+  return points.map(p => m.multiply(p));
+}
+
+// Update inside() to handle Chapter 4 shapes
+function inside_segment(shape, x, y) {
+  // A segment is implemented as four half-planes (same as chapter 3's thick_line)
+  // but using real coordinates instead of pixel indices.
+  const a = shape.a;
+  const b = shape.b;
+  const px0 = a.x;
+  const py0 = a.y;
+  const px1 = b.x;
+  const py1 = b.y;
+
+  // Direction vector
+  const dx = px1 - px0;
+  const dy = py1 - py0;
+  const len = Math.sqrt(dx * dx + dy * dy);
+
+  const half_width = shape.width / 2;
+
+  let dsx, dsy;
+  let a_adj_x = px0;
+  let a_adj_y = py0;
+  let b_adj_x = px1;
+  let b_adj_y = py1;
+
+  if (len > 0) {
+    dsx = dx / len;
+    dsy = dy / len;
+  } else {
+    // A line of no length gets direction (1, 0) and pushed apart by half_width
+    dsx = 1;
+    dsy = 0;
+    a_adj_x -= half_width * dsx;
+    a_adj_y -= half_width * dsy;
+    b_adj_x += half_width * dsx;
+    b_adj_y += half_width * dsy;
+  }
+
+  const nsx = -dsy;
+  const nsy = dsx;
+
+  // Test point against all four half-planes
+  // Start cap: through start point, normal along direction
+  let vx = x - a_adj_x;
+  let vy = y - a_adj_y;
+  if (vx * dsx + vy * dsy < 0) return false;
+
+  // End cap: through end point, normal back along -direction
+  vx = x - b_adj_x;
+  vy = y - b_adj_y;
+  if (vx * (-dsx) + vy * (-dsy) < 0) return false;
+
+  // Side 1: offset along normal, normal faces inward (-nsx, -nsy)
+  vx = x - (a_adj_x + nsx * half_width);
+  vy = y - (a_adj_y + nsy * half_width);
+  if (vx * (-nsx) + vy * (-nsy) < 0) return false;
+
+  // Side 2: offset along -normal, normal faces inward (nsx, nsy)
+  vx = x - (a_adj_x - nsx * half_width);
+  vy = y - (a_adj_y - nsy * half_width);
+  if (vx * nsx + vy * nsy < 0) return false;
+
+  return true;
+}
+
+// Rendering helpers for Chapter 4
+function fan_points() {
+  const pts = [point(0, 0)];
+  for (let k = 0; k < 12; k++) {
+    const a = k * Math.PI / 6;
+    pts.push(point(36 * Math.cos(a), 36 * Math.sin(a)));
+  }
+  return pts;
+}
+
+function fan_transformed(m) {
+  const c = new Canvas(160, 160);
+  c.fill(new Color(0.02, 0.02, 0.025));
+  const pts = fan_points().map(p => m.multiply(p));
+  const segs = [];
+  for (let k = 1; k <= 12; k++) {
+    segs.push(segment(pts[0], pts[k], 1));
+  }
+  const shape = union(segs);
+  paint_through(c, rasterize(shape, 160, 160), new Color(0.92, 0.92, 0.88));
+  return c;
+}
+
+function letter_f() {
+  return [
+    point(-20, -30), point(20, -30), point(20, -20), point(-10, -20),
+    point(-10, -5), point(12, -5), point(12, 5), point(-10, 5),
+    point(-10, 30), point(-20, 30)
+  ];
+}
+
+function side_by_side(a, b) {
+  const c = new Canvas(a.width + b.width, a.height);
+  for (let y = 0; y < a.height; y++) {
+    for (let x = 0; x < a.width; x++) {
+      c.write_pixel(x, y, a.pixel_at(x, y));
+    }
+    for (let x = 0; x < b.width; x++) {
+      c.write_pixel(a.width + x, y, b.pixel_at(x, y));
+    }
+  }
+  return c;
+}
+
+function fan_both_orders() {
+  const turn = rotation(Math.PI / 6);
+  const move = translation(104.5, 76.5);
+  return side_by_side(fan_transformed(move.multiply(turn)), fan_transformed(turn.multiply(move)));
+}
+
+function f_both_orders() {
+  const turn = rotation(Math.PI / 6);
+  const move = translation(104.5, 76.5);
+  const home = translation(44.5, 44.5);
+  const ink = new Color(0.92, 0.92, 0.88);
+  const dim = new Color(0.16, 0.16, 0.17);
+
+  const ghost = new Canvas(160, 160);
+  ghost.fill(new Color(0.02, 0.02, 0.025));
+  paint_through(ghost, rasterize(outline(letter_f(), home, 1), 160, 160), dim);
+
+  const a = new Canvas(160, 160);
+  for (let y = 0; y < 160; y++) {
+    for (let x = 0; x < 160; x++) {
+      a.write_pixel(x, y, ghost.pixel_at(x, y));
+    }
+  }
+  paint_through(a, rasterize(outline(letter_f(), move.multiply(turn), 1), 160, 160), ink);
+
+  const b = new Canvas(160, 160);
+  for (let y = 0; y < 160; y++) {
+    for (let x = 0; x < 160; x++) {
+      b.write_pixel(x, y, ghost.pixel_at(x, y));
+    }
+  }
+  paint_through(b, rasterize(outline(letter_f(), turn.multiply(move), 1), 160, 160), ink);
+
+  return side_by_side(a, b);
+}
+
+function plate_04() {
+  return magnify(f_both_orders(), 2);
+}
+
+// Chapter 4 Tests
+test('Chapter 4: A point has w = 1', () => {
+  const p = point(4, -4);
+  assert.strictEqual(p.x, 4);
+  assert.strictEqual(p.y, -4);
+  assert.strictEqual(p.w, 1);
+});
+
+test('Chapter 4: A vector has w = 0', () => {
+  const v = vector(4, -4);
+  assert.strictEqual(v.x, 4);
+  assert.strictEqual(v.y, -4);
+  assert.strictEqual(v.w, 0);
+});
+
+test('Chapter 4: The difference of two points is a vector', () => {
+  const a = point(3, 2);
+  const b = point(5, 6);
+  assert(Tuple.equals(b.subtract(a), vector(2, 4)));
+  assert(Tuple.equals(a.subtract(b), vector(-2, -4)));
+});
+
+test('Chapter 4: A point plus a vector is a point', () => {
+  const p = point(3, -2);
+  const v = vector(-2, 3);
+  assert(Tuple.equals(p.add(v), point(1, 1)));
+  assert(Tuple.equals(p.subtract(v), point(5, -5)));
+});
+
+test('Chapter 4: A vector plus a vector is a vector', () => {
+  const a = vector(3, -2);
+  const b = vector(-2, 3);
+  assert(Tuple.equals(a.add(b), vector(1, 1)));
+  assert(Tuple.equals(a.subtract(b), vector(5, -5)));
+});
+
+test('Chapter 4: Negating, scaling and dividing a vector', () => {
+  const v = vector(1, -2);
+  assert(Tuple.equals(v.negate(), vector(-1, 2)));
+  assert(Tuple.equals(v.multiply(3.5), vector(3.5, -7)));
+  assert(Tuple.equals(v.multiply(0.5), vector(0.5, -1)));
+  assert(Tuple.equals(v.divide(2), vector(0.5, -1)));
+});
+
+test('Chapter 4: The magnitude of a vector', () => {
+  assert.strictEqual(magnitude(vector(1, 0)), 1);
+  assert.strictEqual(magnitude(vector(0, 1)), 1);
+  assert.strictEqual(magnitude(vector(3, 4)), 5);
+  assert.strictEqual(magnitude(vector(-3, -4)), 5);
+  assert(Math.abs(magnitude(vector(-1, -2)) - 2.2361) <= 0.0001);
+});
+
+test('Chapter 4: Normalizing a vector', () => {
+  assert(Tuple.equals(normalize(vector(4, 0)), vector(1, 0)));
+  assert(Tuple.equals(normalize(vector(1, 2)), vector(0.4472, 0.8944), 0.0001));
+  assert(Math.abs(magnitude(normalize(vector(1, 2))) - 1) <= 0.0001);
+});
+
+test('Chapter 4: The dot product of two vectors', () => {
+  const a = vector(1, 2);
+  const b = vector(2, 3);
+  assert.strictEqual(dot(a, b), 8);
+  assert.strictEqual(dot(a, vector(-2, 1)), 0);
+});
+
+test('Chapter 4: The cross product of two vectors', () => {
+  const a = vector(1, 0);
+  const b = vector(0, 1);
+  assert.strictEqual(cross(a, b), 1);
+  assert.strictEqual(cross(b, a), -1);
+  assert.strictEqual(cross(a, a), 0);
+  assert.strictEqual(cross(vector(2, 3), vector(4, 5)), -2);
+});
+
+test('Chapter 4: The cross product and line insideness', () => {
+  const a = point(0, 0);
+  const b = point(10, 0);
+  assert.strictEqual(cross(b.subtract(a), point(5, 3).subtract(a)), 30);
+  assert.strictEqual(cross(b.subtract(a), point(5, -3).subtract(a)), -30);
+  assert.strictEqual(cross(b.subtract(a), point(20, 0).subtract(a)), 0);
+});
+
+test('Chapter 4: Constructing and inspecting a matrix', () => {
+  const m = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9);
+  assert.strictEqual(m.get(0, 0), 1);
+  assert.strictEqual(m.get(0, 2), 3);
+  assert.strictEqual(m.get(1, 0), 4);
+  assert.strictEqual(m.get(1, 1), 5);
+  assert.strictEqual(m.get(2, 0), 7);
+  assert.strictEqual(m.get(2, 2), 9);
+});
+
+test('Chapter 4: Matrix equality with identical matrices', () => {
+  const a = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9);
+  const b = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9);
+  assert(Matrix3.equals(a, b));
+});
+
+test('Chapter 4: Matrix equality with different matrices', () => {
+  const a = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9);
+  const b = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 8);
+  assert(!Matrix3.equals(a, b));
+});
+
+test('Chapter 4: Multiplying two matrices', () => {
+  const a = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9);
+  const b = matrix3(2, -1, 0, 1, 3, 1, 0, 1, 2);
+  const expected = matrix3(4, 8, 8, 13, 17, 17, 22, 26, 26);
+  assert(Matrix3.equals(a.multiply(b), expected));
+});
+
+test('Chapter 4: Matrix multiplication is not commutative', () => {
+  const a = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9);
+  const b = matrix3(2, -1, 0, 1, 3, 1, 0, 1, 2);
+  assert(!Matrix3.equals(a.multiply(b), b.multiply(a)));
+});
+
+test('Chapter 4: A matrix multiplied by a point', () => {
+  const a = matrix3(1, 2, 3, 4, 5, 6, 0, 0, 1);
+  const p = point(1, 2);
+  assert(Tuple.equals(a.multiply(p), point(8, 20)));
+});
+
+test('Chapter 4: A matrix multiplied by a vector ignores the last column', () => {
+  const a = matrix3(1, 2, 3, 4, 5, 6, 0, 0, 1);
+  const v = vector(1, 2);
+  assert(Tuple.equals(a.multiply(v), vector(5, 14)));
+});
+
+test('Chapter 4: Multiplying by the identity matrix', () => {
+  const a = matrix3(0, 1, 2, 1, 2, 4, 2, 4, 8);
+  const p = point(1, 2);
+  assert(Matrix3.equals(a.multiply(identity()), a));
+  assert(Matrix3.equals(identity().multiply(a), a));
+  assert(Tuple.equals(identity().multiply(p), p));
+});
+
+test('Chapter 4: Transposing a matrix', () => {
+  const a = matrix3(0, 9, 3, 9, 8, 0, 1, 8, 5);
+  const expected = matrix3(0, 9, 1, 9, 8, 8, 3, 0, 5);
+  assert(Matrix3.equals(transpose(a), expected));
+});
+
+test('Chapter 4: Transposing the identity matrix', () => {
+  assert(Matrix3.equals(transpose(identity()), identity()));
+});
+
+test('Chapter 4: The determinant of a 3x3 matrix', () => {
+  const a = matrix3(1, 2, 6, -5, 8, -4, 2, 6, 4);
+  assert.strictEqual(determinant(a), -196);
+});
+
+test('Chapter 4: The determinant of transforms', () => {
+  assert.strictEqual(determinant(identity()), 1);
+  assert.strictEqual(determinant(scaling(2, 3)), 6);
+  assert(Math.abs(determinant(rotation(0.7)) - 1) <= 0.0001);
+  assert.strictEqual(determinant(translation(4, 9)), 1);
+  assert.strictEqual(determinant(scaling(-1, 1)), -1);
+});
+
+test('Chapter 4: Testing an invertible matrix', () => {
+  const a = matrix3(3, 0, 2, 2, 0, -2, 0, 1, 1);
+  assert.strictEqual(determinant(a), 10);
+  assert.strictEqual(is_invertible(a), true);
+});
+
+test('Chapter 4: Testing a non-invertible matrix', () => {
+  const a = matrix3(1, 2, 3, 2, 4, 6, 0, 0, 1);
+  assert.strictEqual(determinant(a), 0);
+  assert.strictEqual(is_invertible(a), false);
+});
+
+test('Chapter 4: Calculating the inverse of a matrix', () => {
+  const a = matrix3(3, 0, 2, 2, 0, -2, 0, 1, 1);
+  const b = inverse(a);
+  assert(Math.abs(b.get(0, 0) - 0.2) <= 0.0001);
+  assert(Math.abs(b.get(1, 2) - 1) <= 0.0001);
+  assert(Math.abs(b.get(2, 1) - (-0.3)) <= 0.0001);
+  const expected = matrix3(0.2, 0.2, 0, -0.2, 0.3, 1, 0.2, -0.3, 0);
+  assert(Matrix3.equals(b, expected));
+  assert(Matrix3.equals(a.multiply(b), identity()));
+});
+
+test('Chapter 4: Multiplying a product by its inverse', () => {
+  const a = matrix3(1, 2, 3, 4, 5, 6, 7, 8, 9);
+  const b = matrix3(2, -1, 0, 1, 3, 1, 0, 1, 2);
+  const c = a.multiply(b);
+  assert(Matrix3.equals(c.multiply(inverse(b)), a));
+});
+
+test('Chapter 4: The inverse of a transform is a transform', () => {
+  const a = translation(5, -3).multiply(rotation(Math.PI / 6)).multiply(scaling(2, 3));
+  const b = inverse(a);
+  assert(Math.abs(b.get(2, 0) - 0) <= 0.0001);
+  assert(Math.abs(b.get(2, 1) - 0) <= 0.0001);
+  assert(Math.abs(b.get(2, 2) - 1) <= 0.0001);
+  assert(Math.abs(b.get(0, 0) - 0.4330) <= 0.0001);
+  assert(Math.abs(b.get(0, 2) - (-1.4151)) <= 0.0001);
+  assert(Math.abs(b.get(1, 2) - 1.6994) <= 0.0001);
+  assert(Matrix3.equals(b.multiply(a), identity()));
+});
+
+test('Chapter 4: Multiplying by a translation matrix', () => {
+  const t = translation(5, -3);
+  const p = point(-3, 4);
+  assert(Tuple.equals(t.multiply(p), point(2, 1)));
+});
+
+test('Chapter 4: The inverse of a translation', () => {
+  const t = translation(5, -3);
+  const p = point(-3, 4);
+  assert(Tuple.equals(inverse(t).multiply(p), point(-8, 7)));
+});
+
+test('Chapter 4: Translation does not affect vectors', () => {
+  const t = translation(5, -3);
+  const v = vector(-3, 4);
+  assert(Tuple.equals(t.multiply(v), v));
+});
+
+test('Chapter 4: A scaling matrix applied to a point', () => {
+  const s = scaling(2, 3);
+  const p = point(-4, 6);
+  assert(Tuple.equals(s.multiply(p), point(-8, 18)));
+});
+
+test('Chapter 4: A scaling matrix applied to a vector', () => {
+  const s = scaling(2, 3);
+  const v = vector(-4, 6);
+  assert(Tuple.equals(s.multiply(v), vector(-8, 18)));
+});
+
+test('Chapter 4: The inverse of a scaling', () => {
+  const s = scaling(2, 3);
+  const v = vector(-4, 6);
+  assert(Tuple.equals(inverse(s).multiply(v), vector(-2, 2)));
+});
+
+test('Chapter 4: Reflection is scaling by a negative', () => {
+  const s = scaling(-1, 1);
+  const p = point(2, 3);
+  assert(Tuple.equals(s.multiply(p), point(-2, 3)));
+});
+
+test('Chapter 4: A positive rotation turns x toward y', () => {
+  const p = point(1, 0);
+  assert(Tuple.equals(rotation(Math.PI / 4).multiply(p), point(0.7071, 0.7071), 0.0001));
+  assert(Tuple.equals(rotation(Math.PI / 2).multiply(p), point(0, 1), 0.0001));
+  assert(Tuple.equals(rotation(Math.PI).multiply(p), point(-1, 0), 0.0001));
+});
+
+test('Chapter 4: The inverse of a rotation', () => {
+  const p = point(1, 0);
+  assert(Tuple.equals(inverse(rotation(Math.PI / 4)).multiply(p), point(0.7071, -0.7071), 0.0001));
+  assert(Tuple.equals(rotation(-Math.PI / 4).multiply(p), point(0.7071, -0.7071), 0.0001));
+});
+
+test('Chapter 4: A rotation preserves length', () => {
+  const v = vector(3, 4);
+  assert(Math.abs(magnitude(rotation(1.2).multiply(v)) - 5) <= 0.0001);
+  assert(Math.abs(magnitude(rotation(-2.8).multiply(v)) - 5) <= 0.0001);
+});
+
+test('Chapter 4: Shearing moves x in proportion to y', () => {
+  const s = shearing(1, 0);
+  const p = point(2, 3);
+  assert(Tuple.equals(s.multiply(p), point(5, 3)));
+});
+
+test('Chapter 4: Shearing moves y in proportion to x', () => {
+  const s = shearing(0, 1);
+  const p = point(2, 3);
+  assert(Tuple.equals(s.multiply(p), point(2, 5)));
+});
+
+test('Chapter 4: Individual transformations applied in sequence', () => {
+  const p = point(1, 0);
+  const a = rotation(Math.PI / 2);
+  const b = scaling(5, 5);
+  const c = translation(10, 5);
+  const p2 = a.multiply(p);
+  const p3 = b.multiply(p2);
+  const p4 = c.multiply(p3);
+  assert(Tuple.equals(p2, point(0, 1), 0.0001));
+  assert(Tuple.equals(p3, point(0, 5), 0.0001));
+  assert(Tuple.equals(p4, point(10, 10), 0.0001));
+});
+
+test('Chapter 4: Chained transformations applied in reverse order', () => {
+  const p = point(1, 0);
+  const a = rotation(Math.PI / 2);
+  const b = scaling(5, 5);
+  const c = translation(10, 5);
+  const t = c.multiply(b).multiply(a);
+  assert(Tuple.equals(t.multiply(p), point(10, 10), 0.0001));
+});
+
+test('Chapter 4: Different multiplication order is a different transform', () => {
+  const p = point(1, 0);
+  const a = rotation(Math.PI / 2);
+  const b = scaling(5, 5);
+  const c = translation(10, 5);
+  const t = a.multiply(b).multiply(c);
+  assert(Tuple.equals(t.multiply(p), point(-25, 55), 0.0001));
+});
+
+test('Chapter 4: Rotating about a point that is not the origin', () => {
+  const t = translation(4, 4).multiply(rotation(Math.PI / 2)).multiply(translation(-4, -4));
+  assert(Tuple.equals(t.multiply(point(6, 4)), point(4, 6), 0.0001));
+  assert(Tuple.equals(t.multiply(point(4, 4)), point(4, 4), 0.0001));
+});
+
+test('Chapter 4: The identity, translation and rotation do not stretch', () => {
+  assert.strictEqual(approx_scale(identity()), 1);
+  assert.strictEqual(approx_scale(translation(7, 9)), 1);
+  assert(Math.abs(approx_scale(rotation(1.1)) - 1) <= 0.0001);
+});
+
+test('Chapter 4: A uniform scale is reported exactly', () => {
+  assert.strictEqual(approx_scale(scaling(2, 2)), 2);
+  assert.strictEqual(approx_scale(scaling(0.5, 0.5)), 0.5);
+  assert(Math.abs(approx_scale(scaling(3, 3).multiply(rotation(0.7))) - 3) <= 0.0001);
+  assert(Math.abs(approx_scale(translation(5, 5).multiply(scaling(3, 3))) - 3) <= 0.0001);
+});
+
+test('Chapter 4: A reflection is not a negative scale', () => {
+  assert.strictEqual(approx_scale(scaling(-2, 2)), 2);
+});
+
+test('Chapter 4: A non-uniform scale is the geometric mean', () => {
+  assert.strictEqual(approx_scale(scaling(4, 1)), 2);
+  assert(Math.abs(approx_scale(scaling(4, 1).multiply(rotation(0.4))) - 2) <= 0.0001);
+  assert.strictEqual(approx_scale(scaling(9, 1)), 3);
+});
+
+test('Chapter 4: A shear that preserves area reports 1', () => {
+  assert.strictEqual(approx_scale(shearing(1, 0)), 1);
+  assert(Math.abs(approx_scale(shearing(0.5, 0.5)) - 0.8660) <= 0.0001);
+});
+
+test('Chapter 4: A collapsed transform reports 0', () => {
+  assert.strictEqual(approx_scale(scaling(0, 1)), 0);
+  assert.strictEqual(approx_scale(matrix3(1, 2, 0, 2, 4, 0, 0, 0, 1)), 0);
+});
+
+test('Chapter 4: A segment between pixel centers', () => {
+  const s = segment(point(2.5, 2.5), point(11.5, 5.5), 1);
+  const cov = rasterize(s, 16, 10);
+  assert(Math.abs(coverage_at(cov, 2, 2) - 0.484375) <= 0.0001);
+  assert(Math.abs(coverage_at(cov, 6, 3) - 0.6875) <= 0.0001);
+  assert(Math.abs(coverage_at(cov, 7, 3) - 0.359375) <= 0.0001);
+});
+
+test('Chapter 4: A segment need not start on a pixel center', () => {
+  const s = segment(point(1, 3.5), point(7, 3.5), 1);
+  const cov = rasterize(s, 10, 10);
+  assert.strictEqual(coverage_at(cov, 0, 3), 0);
+  assert.strictEqual(coverage_at(cov, 1, 3), 1);
+  assert.strictEqual(coverage_at(cov, 6, 3), 1);
+  assert.strictEqual(coverage_at(cov, 7, 3), 0);
+  assert.strictEqual(coverage_at(cov, 3, 2), 0);
+});
+
+test('Chapter 4: A segment of no length is a square', () => {
+  const s = segment(point(3.5, 3.5), point(3.5, 3.5), 1);
+  const cov = rasterize(s, 8, 8);
+  assert.strictEqual(coverage_at(cov, 3, 3), 1);
+});
+
+test('Chapter 4: A union is inside when any part is', () => {
+  const s = union([circle(2, 2, 1), rectangle(5, 0, 7, 4)]);
+  assert.strictEqual(inside(s, 2, 2), true);
+  assert.strictEqual(inside(s, 6, 1), true);
+  assert.strictEqual(inside(s, 4, 2), false);
+});
+
+test('Chapter 4: A circle seen through a scale is an ellipse', () => {
+  const s = transformed(circle(0, 0, 4), scaling(2, 1));
+  assert.strictEqual(inside(s, 7.9, 0), true);
+  assert.strictEqual(inside(s, 8.1, 0), false);
+  assert.strictEqual(inside(s, 0, 3.9), true);
+  assert.strictEqual(inside(s, 0, 4.1), false);
+  assert(Math.abs(inside(s, 5.6, 1.4) ? 1 : 0) === 1);
+  assert(Math.abs(inside(s, 5.6, 2.9) ? 1 : 0) === 0);
+});
+
+test('Chapter 4: Transformed circle through translation and scale', () => {
+  const s = transformed(circle(0, 0, 4), translation(10, 10).multiply(scaling(2, 1)));
+  assert.strictEqual(inside(s, 10, 10), true);
+  assert.strictEqual(inside(s, 17.9, 10), true);
+  assert.strictEqual(inside(s, 18.1, 10), false);
+  assert.strictEqual(inside(s, 10, 13.9), true);
+  assert.strictEqual(inside(s, 10, 14.1), false);
+});
+
+test('Chapter 4: A shape through a collapsed transform is empty', () => {
+  const s = transformed(circle(0, 0, 4), scaling(0, 1));
+  assert.strictEqual(inside(s, 0, 0), false);
+});
+
+test('Chapter 4: The fan as points', () => {
+  const pts = fan_points();
+  assert.strictEqual(pts.length, 13);
+  assert(Tuple.equals(pts[0], point(0, 0)));
+  assert(Tuple.equals(pts[1], point(36, 0)));
+  assert(Tuple.equals(pts[4], point(0, 36)));
+  assert(Tuple.equals(pts[7], point(-36, 0)));
+  assert(Tuple.equals(pts[2], point(31.1769, 18), 0.0001));
+});
+
+test('Chapter 4: Rotate then translate: fan turns about its center', () => {
+  const m = translation(104.5, 76.5).multiply(rotation(Math.PI / 6));
+  const pts = transform_points(fan_points(), m);
+  assert(Tuple.equals(pts[0], point(104.5, 76.5), 0.0001));
+  assert(Tuple.equals(pts[1], point(135.6769, 94.5), 0.0001));
+  assert(Tuple.equals(pts[4], point(86.5, 107.6769), 0.0001));
+});
+
+test('Chapter 4: Translate then rotate: fan swings about canvas corner', () => {
+  const m = rotation(Math.PI / 6).multiply(translation(104.5, 76.5));
+  const pts = transform_points(fan_points(), m);
+  assert(Tuple.equals(pts[0], point(52.2497, 118.5009), 0.0001));
+  assert(Tuple.equals(pts[1], point(83.4266, 136.5009), 0.0001));
+});
+
+test('Chapter 4: The letter F', () => {
+  const f = letter_f();
+  assert.strictEqual(f.length, 10);
+  assert(Tuple.equals(f[0], point(-20, -30)));
+  assert(Tuple.equals(f[1], point(20, -30)));
+  assert(Tuple.equals(f[5], point(12, -5)));
+  assert(Tuple.equals(f[9], point(-20, 30)));
+});
+
+test('Chapter 4: The F at home', () => {
+  const f = transform_points(letter_f(), translation(44.5, 44.5));
+  assert(Tuple.equals(f[0], point(24.5, 14.5), 0.0001));
+  assert(Tuple.equals(f[1], point(64.5, 14.5), 0.0001));
+  assert(Tuple.equals(f[9], point(24.5, 74.5), 0.0001));
+});
+
+test('Chapter 4: The F, rotated then translated', () => {
+  const m = translation(104.5, 76.5).multiply(rotation(Math.PI / 6));
+  const f = transform_points(letter_f(), m);
+  assert(Tuple.equals(f[0], point(102.1795, 40.5192), 0.0001));
+  assert(Tuple.equals(f[1], point(136.8205, 60.5192), 0.0001));
+  assert(Tuple.equals(f[5], point(117.3923, 78.1699), 0.0001));
+  assert(Tuple.equals(f[9], point(72.1795, 92.4808), 0.0001));
+});
+
+test('Chapter 4: The F, translated then rotated', () => {
+  const m = rotation(Math.PI / 6).multiply(translation(104.5, 76.5));
+  const f = transform_points(letter_f(), m);
+  assert(Tuple.equals(f[0], point(49.9291, 82.5202), 0.0001));
+  assert(Tuple.equals(f[1], point(84.5702, 102.5202), 0.0001));
+  assert(Tuple.equals(f[5], point(65.142, 120.1708), 0.0001));
+  assert(Tuple.equals(f[9], point(19.9291, 134.4817), 0.0001));
+});
+
+test('Chapter 4: The fan, both orders', () => {
+  const c = fan_both_orders();
+  const ref = read_file('reference/chapter-04/fan-both-orders.ppm');
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(c.width, 320);
+  assert.strictEqual(c.height, 160);
+  const test_pixels = [
+    [104, 76], [124, 76], [104, 56], [125, 88], [116, 97], [141, 76],
+    [10, 10], [212, 118], [232, 118], [233, 130], [224, 139], [200, 139],
+    [310, 10]
+  ];
+  for (const [x, y] of test_pixels) {
+    const pix = ppm_pixel(p6, x, y);
+    assert(pix, `Pixel at ${x},${y} should exist`);
+  }
+  assert(max_channel_difference(p6, ref) <= 1);
+});
+
+test('Chapter 4: Plate 04', () => {
+  const c = plate_04();
+  const ref = read_file('reference/chapter-04/plate-04.ppm');
+  const p6 = canvas_to_p6(c);
+  assert.strictEqual(c.width, 640);
+  assert.strictEqual(c.height, 320);
+  const test_pixels = [
+    [48, 28], [80, 28], [48, 100], [10, 10], [200, 150], [268, 129],
+    [215, 145], [239, 101], [174, 173], [368, 28], [500, 60],
+    [453, 207], [431, 229], [445, 249], [368, 273]
+  ];
+  for (const [x, y] of test_pixels) {
+    const pix = ppm_pixel(p6, x, y);
+    assert(pix, `Pixel at ${x},${y} should exist`);
+  }
+  assert(max_channel_difference(p6, ref) <= 1);
+});
+
 // Write Chapter 3 output files
 test('Write chapter 3 output files', async () => {
   const cb = fan_bresenham();
@@ -2278,4 +3211,15 @@ test('Write chapter 3 output files', async () => {
   const c2 = plate_03();
   const p6b = canvas_to_p6(c2);
   await fs.writeFile('out/plate-03.ppm', p6b);
+});
+
+// Write Chapter 4 output files
+test('Write chapter 4 output files', async () => {
+  const c1 = fan_both_orders();
+  const p6a = canvas_to_p6(c1);
+  await fs.writeFile('out/fan-both-orders.ppm', p6a);
+
+  const c2 = plate_04();
+  const p6b = canvas_to_p6(c2);
+  await fs.writeFile('out/plate-04.ppm', p6b);
 });

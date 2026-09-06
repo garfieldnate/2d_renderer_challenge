@@ -55,6 +55,19 @@ Feature: Plate 4
     And   f[5] = point(65.142, 120.1708)
     And   f[9] = point(19.9291, 134.4817)
 
+  Scenario: side_by_side puts the first canvas on the left
+    Given a ← canvas(2, 3)
+    And   b ← canvas(4, 3)
+    When  fill(a, color(1, 0, 0))
+    And   fill(b, color(0, 0, 1))
+    And   c ← side_by_side(a, b)
+    Then  c.width = 6
+    And   c.height = 3
+    And   pixel_at(c, 0, 0) = color(1, 0, 0)
+    And   pixel_at(c, 1, 2) = color(1, 0, 0)
+    And   pixel_at(c, 2, 0) = color(0, 0, 1)
+    And   pixel_at(c, 5, 2) = color(0, 0, 1)
+
   Scenario: The fan, both orders
     Given c ← fan_both_orders()
     And   ref ← read_file("reference/chapter-04/fan-both-orders.ppm")

@@ -1,8 +1,9 @@
 Feature: How big is a transform
   approx_scale(m) is one number for how much m stretches lengths: the
   square root of the absolute value of the determinant of its upper-left
-  2 by 2. Exact for uniform scales and rotations, a compromise otherwise,
-  and the chapter says which.
+  2 by 2, which is ad - bc for the block [[a, b], [c, d]]. Exact for
+  uniform scales and rotations, a compromise otherwise, and the chapter
+  says which.
 
   Scenario: The identity, a translation and a rotation don't stretch
     Then  approx_scale(identity()) = 1

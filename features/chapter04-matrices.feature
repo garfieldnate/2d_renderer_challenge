@@ -112,6 +112,11 @@ Feature: Matrices
     Then  determinant(A) = 0
     And   is_invertible(A) = false
 
+  Scenario: Invertibility is an exact test against zero
+    Then  is_invertible(scaling(0.0001, 1)) = true
+    And   determinant(scaling(0.0001, 1)) = 0.0001
+    And   inverse(scaling(0.0001, 1)) * point(0.0001, 3) = point(1, 3)
+
   Scenario: Calculating the inverse of a matrix
     Given the following matrix A:
       | 3 | 0 |  2 |

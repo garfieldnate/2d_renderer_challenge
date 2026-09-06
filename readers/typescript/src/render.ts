@@ -6,6 +6,7 @@ import {
   disc_centers,
   disc_coverage,
   fan_bresenham,
+  fan_both_orders,
   fan_coverage,
   fan_wu,
   gray_match,
@@ -13,6 +14,7 @@ import {
   plate_01,
   plate_02,
   plate_03,
+  plate_04,
   quarter_match,
   ramp,
 } from "./scenes.ts";
@@ -34,6 +36,8 @@ const p6: [string, () => Canvas][] = [
   ["out/fan-wu.ppm", fan_wu],
   ["out/fan-coverage.ppm", fan_coverage],
   ["out/plate-03.ppm", plate_03],
+  ["out/fan-both-orders.ppm", fan_both_orders],
+  ["out/plate-04.ppm", plate_04],
 ];
 
 Deno.mkdirSync("out", { recursive: true });

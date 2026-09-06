@@ -224,6 +224,11 @@ cofactor(M, r, c):
 determinant(M):
   <span class="kw">return</span> M[0,0] * cofactor(M, 0, 0) + M[0,1] * cofactor(M, 0, 1) + M[0,2] * cofactor(M, 0, 2)</code></pre>
 
+  <p><code>is_invertible(M)</code> is <code>determinant(M) ≠ 0</code>, and the comparison is
+    exact, not within the book's tolerance: a determinant of 0.0001 is not zero, the matrix has an
+    inverse, and the inverse is enormous. That's the right answer. A scenario pins it so nobody
+    "helpfully" adds an epsilon and turns a legal scale of 0.01 into an error.</p>
+
   <p>The <em>inverse</em> of a matrix undoes it: <code>inverse(M) * M</code> is the identity. Once
     you have cofactors it's two lines. Build the matrix of every cofactor, transpose it, and divide
     every entry by the determinant. The transpose is the part everyone forgets, so the pseudo-code
@@ -361,6 +366,11 @@ determinant(M):
       | 0 | 0 | 1 |
     <span class="kw">Then</span>  determinant(A) = 0
     <span class="kw">And</span>   is_invertible(A) = false
+
+  <span class="kw">Scenario</span>: Invertibility is an exact test against zero
+    <span class="kw">Then</span>  is_invertible(scaling(0.0001, 1)) = true
+    <span class="kw">And</span>   determinant(scaling(0.0001, 1)) = 0.0001
+    <span class="kw">And</span>   inverse(scaling(0.0001, 1)) * point(0.0001, 3) = point(1, 3)
 
   <span class="kw">Scenario</span>: Calculating the inverse of a matrix
     <span class="kw">Given</span> the following matrix A:
@@ -607,9 +617,10 @@ determinant(M):
     change area by the same amount if it were uniform. For any uniform scale, with any rotation and
     translation mixed in, it's exact. For <code>scaling(4, 1)</code> it's 2, the geometric mean of
     4 and 1. For <code>shearing(1, 0)</code> it's 1, which is too small along the diagonal and
-    right about the area. It's one line: <code>sqrt(|m[0,0]·m[1,1] - m[0,1]·m[1,0]|)</code>. The
-    absolute value is there because a reflection has a negative determinant and is still a scale
-    of 1.</p>
+    right about the area. It's one line: <code>sqrt(|m[0,0]·m[1,1] - m[0,1]·m[1,0]|)</code>, which is
+    <code>ad - bc</code> for the upper-left block <code>[[a, b], [c, d]]</code>, the 2-by-2
+    determinant that §4.2's minors were made of. The absolute value is there because a reflection
+    has a negative determinant and is still a scale of 1.</p>
 
   <p>The book uses the third one, and here's the reasoning. Most transforms a renderer meets are
     uniform scales with rotations and translations, where all three candidates agree and the
@@ -633,8 +644,9 @@ determinant(M):
 <pre><code><span class="kw">Feature</span>: How big is a transform
   approx_scale(m) is one number for how much m stretches lengths: the
   square root of the absolute value of the determinant of its upper-left
-  2 by 2. Exact for uniform scales and rotations, a compromise otherwise,
-  and the chapter says which.
+  2 by 2, which is ad - bc for the block [[a, b], [c, d]]. Exact for
+  uniform scales and rotations, a compromise otherwise, and the chapter
+  says which.
 
   <span class="kw">Scenario</span>: The identity, a translation and a rotation don't stretch
     <span class="kw">Then</span>  approx_scale(identity()) = 1
@@ -734,8 +746,8 @@ determinant(M):
       one half as wide. Neither is the bug. The bug is not having decided.</p>
   </div>
 
-  <div class="test" data-feature="chapter04-shapes.feature">
-    <p class="label">features/chapter04-shapes.feature</p>
+  <div class="test" data-feature="chapter04-drawing.feature">
+    <p class="label">features/chapter04-drawing.feature</p>
 <pre><code><span class="kw">Feature</span>: Transforming what you draw
   segment(a, b, width) is chapter 3's thick_line with real endpoints: the
   rectangle of that width centered on the segment from point a to point b,
@@ -883,7 +895,9 @@ determinant(M):
     one union of segments. Then draw it twice with the same two matrices, <code>rotation(π / 6)</code>
     and <code>translation(104.5, 76.5)</code>, in both orders, and put the results side by side with a
     four-line helper, <code>side_by_side(a, b)</code>, that copies <code>a</code> into the left half
-    of a wider canvas and <code>b</code> into the right:</p>
+    of a wider canvas and <code>b</code> into the right. It has a scenario of its own, with two
+    canvases of different colors, because a helper the plate depends on is a place a transposed
+    loop can hide:</p>
 
 <pre><code>fan_points():
   pts ← [point(0, 0)]
@@ -1037,6 +1051,19 @@ plate_04():
     <span class="kw">And</span>   f[5] = point(65.142, 120.1708)
     <span class="kw">And</span>   f[9] = point(19.9291, 134.4817)
 
+  <span class="kw">Scenario</span>: side_by_side puts the first canvas on the left
+    <span class="kw">Given</span> a ← canvas(2, 3)
+    <span class="kw">And</span>   b ← canvas(4, 3)
+    <span class="kw">When</span>  fill(a, color(1, 0, 0))
+    <span class="kw">And</span>   fill(b, color(0, 0, 1))
+    <span class="kw">And</span>   c ← side_by_side(a, b)
+    <span class="kw">Then</span>  c.width = 6
+    <span class="kw">And</span>   c.height = 3
+    <span class="kw">And</span>   pixel_at(c, 0, 0) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_at(c, 1, 2) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_at(c, 2, 0) = color(0, 0, 1)
+    <span class="kw">And</span>   pixel_at(c, 5, 2) = color(0, 0, 1)
+
   <span class="kw">Scenario</span>: The fan, both orders
     <span class="kw">Given</span> c ← fan_both_orders()
     <span class="kw">And</span>   ref ← read_file("reference/chapter-04/fan-both-orders.ppm")
@@ -1085,7 +1112,7 @@ plate_04():
   <nav class="endnav">
     <a href="chapter-03.html">← 3 · Lines</a>
     <span>Chapter 4 · Points, Vectors, Transforms</span>
-    <span>Next: 5 · Paths and Insideness (not yet written)</span>
+    <a href="chapter-05.html">Next: 5 · Paths and Insideness →</a>
   </nav>
 
 </div>

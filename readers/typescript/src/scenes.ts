@@ -1,8 +1,8 @@
 import { type Color, color } from "./color.ts";
-import { type Canvas, canvas, fill, magnify, pixel_at, write_pixel } from "./canvas.ts";
+import { type Canvas, canvas, clone, fill, magnify, pixel_at, side_by_side, write_pixel } from "./canvas.ts";
 import { decode } from "./srgb.ts";
 import { mix, set_linear_blending } from "./mix.ts";
-import { circle, thick_line } from "./shape.ts";
+import { circle, outline, segment, thick_line, union } from "./shape.ts";
 import { line_bresenham, line_wu } from "./line.ts";
 import {
   coverage_at,
@@ -12,6 +12,9 @@ import {
   rasterize_centers,
   set_coverage,
 } from "./coverage.ts";
+import { point, type Tuple } from "./tuple.ts";
+import { type Matrix3, multiply, rotation, transform_points, translation } from "./matrix.ts";
+import type { Shape } from "./shape.ts";
 
 const WHITE = color(1, 1, 1);
 const BLACK = color(0, 0, 0);
@@ -200,4 +203,74 @@ export function plate_03(): Canvas {
     }
   }
   return magnify(both, 2);
+}
+
+// ---- chapter 4 -----------------------------------------------------------
+
+const FAN_PAPER = color(0.02, 0.02, 0.025);
+const FAN_INK = color(0.92, 0.92, 0.88);
+
+/** The center, then twelve ends at radius 36, a ray every 30 degrees. */
+export function fan_points(): Tuple[] {
+  const pts: Tuple[] = [point(0, 0)];
+  for (let k = 0; k <= 11; k++) {
+    const a = (k * 30 * Math.PI) / 180;
+    pts.push(point(36 * Math.cos(a), 36 * Math.sin(a)));
+  }
+  return pts;
+}
+
+/** fan_points(), taken through m and drawn as one union of segments. */
+export function fan_transformed(m: Matrix3): Canvas {
+  const c = canvas(160, 160);
+  fill(c, FAN_PAPER);
+  const pts = transform_points(fan_points(), m);
+  const rays: Shape[] = [];
+  for (let k = 1; k <= 12; k++) rays.push(segment(pts[0], pts[k], 1));
+  paint_through(c, rasterize(union(rays), 160, 160), FAN_INK);
+  return c;
+}
+
+/** The same two matrices, in both orders, side by side. */
+export function fan_both_orders(): Canvas {
+  const turn = rotation(Math.PI / 6);
+  const move = translation(104.5, 76.5);
+  return side_by_side(
+    fan_transformed(multiply(move, turn)),
+    fan_transformed(multiply(turn, move)),
+  );
+}
+
+/**
+ * Ten corners, clockwise from the top left, in a box 40 wide and 60 tall
+ * centered on the origin: an F with no symmetry at all.
+ */
+export function letter_f(): Tuple[] {
+  return [
+    point(-20, -30), point(20, -30), point(20, -20), point(-10, -20),
+    point(-10, -5), point(12, -5), point(12, 5), point(-10, 5),
+    point(-10, 30), point(-20, 30),
+  ];
+}
+
+const F_INK = color(0.92, 0.92, 0.88);
+const F_DIM = color(0.16, 0.16, 0.17);
+
+/** The F drawn at home, then through move*turn and turn*move, side by side. */
+export function f_both_orders(): Canvas {
+  const turn = rotation(Math.PI / 6);
+  const move = translation(104.5, 76.5);
+  const home = translation(44.5, 44.5);
+  const ghost = canvas(160, 160);
+  fill(ghost, FAN_PAPER);
+  paint_through(ghost, rasterize(outline(letter_f(), home, 1), 160, 160), F_DIM);
+  const a = clone(ghost);
+  const b = clone(ghost);
+  paint_through(a, rasterize(outline(letter_f(), multiply(move, turn), 1), 160, 160), F_INK);
+  paint_through(b, rasterize(outline(letter_f(), multiply(turn, move), 1), 160, 160), F_INK);
+  return side_by_side(a, b);
+}
+
+export function plate_04(): Canvas {
+  return magnify(f_both_orders(), 2);
 }
