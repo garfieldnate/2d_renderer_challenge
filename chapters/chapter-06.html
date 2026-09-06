@@ -85,7 +85,9 @@
       thin, so it crosses nothing. It only matters if you were counting on the count. The scenarios
       don't pin the length of the star's table for exactly this reason, and neither should
       you. The rule is <code>a.y = b.y</code>, exactly, and what your <code>sin</code> does in the
-      last bit is between you and your libm.</p>
+      last bit is between you and your libm. Don't be tempted to widen it to "within a tolerance":
+      an edge that rises a thousandth of a pixel over ten is a real edge, it crosses a real sample
+      height, and a scenario has one.</p>
   </div>
 
   <div class="test" data-feature="chapter06-edges.feature">
@@ -148,6 +150,18 @@
     <span class="kw">Then</span>  length(t) = 2
     <span class="kw">And</span>   t[0].x_top = 0
     <span class="kw">And</span>   t[1].x_top = 10
+
+  <span class="kw">Scenario</span>: A nearly horizontal edge is still an edge
+    <span class="kw">Given</span> p ← polygon(point(0, 2.4995), point(10, 2.5005), point(10, 6), point(0, 6))
+    <span class="kw">When</span>  t ← edge_table(p)
+    <span class="kw">And</span>   cov ← fill_path_aliased(p, "nonzero", 16, 8)
+    <span class="kw">Then</span>  length(t) = 3
+    <span class="kw">And</span>   spans(p, "nonzero", 2) = [(0, 5)]
+    <span class="kw">And</span>   spans(p, "nonzero", 3) = [(0, 10)]
+    <span class="kw">And</span>   coverage_at(cov, 4, 2) = 1
+    <span class="kw">And</span>   coverage_at(cov, 5, 2) = 0
+    <span class="kw">And</span>   ink(cov) = 35
+    <span class="kw">And</span>   max_coverage_difference(cov, rasterize_centers(filled(p, "nonzero"), 16, 8)) = 0
 
   <span class="kw">Scenario</span>: An edge knows where it crosses a height
     <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(5, 10))

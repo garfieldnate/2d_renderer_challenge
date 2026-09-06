@@ -57,6 +57,18 @@ Feature: The edge table
     And   t[0].x_top = 0
     And   t[1].x_top = 10
 
+  Scenario: A nearly horizontal edge is still an edge
+    Given p ← polygon(point(0, 2.4995), point(10, 2.5005), point(10, 6), point(0, 6))
+    When  t ← edge_table(p)
+    And   cov ← fill_path_aliased(p, "nonzero", 16, 8)
+    Then  length(t) = 3
+    And   spans(p, "nonzero", 2) = [(0, 5)]
+    And   spans(p, "nonzero", 3) = [(0, 10)]
+    And   coverage_at(cov, 4, 2) = 1
+    And   coverage_at(cov, 5, 2) = 0
+    And   ink(cov) = 35
+    And   max_coverage_difference(cov, rasterize_centers(filled(p, "nonzero"), 16, 8)) = 0
+
   Scenario: An edge knows where it crosses a height
     Given p ← polygon(point(0, 0), point(10, 0), point(5, 10))
     When  t ← edge_table(p)

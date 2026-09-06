@@ -1315,6 +1315,12 @@ runner.Run("chapter04-tuples", "The dot product of two vectors", () =>
     Check.Equal(0, Tuple2.Dot(a, Tuple2.Vector(-2, 1)));
 });
 
+runner.Run("chapter04-tuples", "magnitude and dot look at x and y only", () =>
+{
+    Check.Equal(5, Tuple2.Point(3, 4).Magnitude());
+    Check.Equal(8, Tuple2.Dot(Tuple2.Point(1, 2), Tuple2.Point(2, 3)));
+});
+
 runner.Run("chapter04-tuples", "The cross product of two vectors is a number", () =>
 {
     var a = Tuple2.Vector(1, 0);
@@ -1438,6 +1444,13 @@ runner.Run("chapter04-matrices", "Testing a non-invertible matrix for invertibil
     var A = new Matrix3(1, 2, 3, 2, 4, 6, 0, 0, 1);
     Check.Equal(0, A.Determinant());
     Check.True(!A.IsInvertible(), "expected A not to be invertible");
+});
+
+runner.Run("chapter04-matrices", "Invertibility is an exact test against zero", () =>
+{
+    Check.True(Matrix3.Scaling(0.0001, 1).IsInvertible(), "expected scaling(0.0001, 1) to be invertible");
+    Check.Equal(0.0001, Matrix3.Scaling(0.0001, 1).Determinant());
+    Check.TupleEqual(Tuple2.Point(1, 3), Matrix3.Scaling(0.0001, 1).Inverse() * Tuple2.Point(0.0001, 3));
 });
 
 runner.Run("chapter04-matrices", "Calculating the inverse of a matrix", () =>
@@ -1676,6 +1689,13 @@ runner.Run("chapter04-shapes", "A segment of no length is a square", () =>
     Check.Equal(1, cov.Ink);
 });
 
+runner.Run("chapter04-shapes", "A union of nothing is inside nowhere", () =>
+{
+    var s = new Union(Array.Empty<IShape>());
+    Check.True(!s.Inside(0, 0), "expected (0, 0) outside an empty union");
+    Check.Equal(0, Rasterizer.Rasterize(s, 4, 4).Ink);
+});
+
 runner.Run("chapter04-shapes", "A union is inside when any of its parts is", () =>
 {
     var s = new Union(new IShape[] { new Circle(2, 2, 1), new Rectangle(5, 0, 7, 4) });
@@ -1862,6 +1882,20 @@ runner.Run("chapter04-plate", "The F, translated then rotated", () =>
     Check.TupleEqual(Tuple2.Point(19.9291, 134.4817), f[9]);
 });
 
+runner.Run("chapter04-plate", "side_by_side puts the first canvas on the left", () =>
+{
+    var a = new Canvas(2, 3);
+    var b = new Canvas(4, 3);
+    a.Fill(new Color(1, 0, 0));
+    b.Fill(new Color(0, 0, 1));
+    var c = Renders.SideBySide(a, b);
+    Check.IntEqual(6, c.Width);
+    Check.IntEqual(3, c.Height);
+    Check.ColorEqual(new Color(1, 0, 0), c.PixelAt(0, 0));
+    Check.ColorEqual(new Color(1, 0, 0), c.PixelAt(1, 2));
+    Check.ColorEqual(new Color(0, 0, 1), c.PixelAt(2, 0));
+});
+
 runner.Run("chapter04-plate", "The fan, both orders", () =>
 {
     var c = Renders.FanBothOrders();
@@ -1910,6 +1944,936 @@ runner.Run("chapter04-plate", "Plate 4", () =>
     Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
 });
 
+// ---------------------------------------------------------------------
+// features/chapter05-paths.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter05-paths", "An empty path", () =>
+{
+    var p = new Chapter01.Path();
+    Check.IntEqual(0, p.Subpaths.Count);
+    Check.IntEqual(0, p.Edges().Count);
+    var b = p.Bounds();
+    Check.Equal(0, b.MinX);
+    Check.Equal(0, b.MinY);
+    Check.Equal(0, b.MaxX);
+    Check.Equal(0, b.MaxY);
+});
+
+runner.Run("chapter05-paths", "A triangle, closed", () =>
+{
+    var p = new Chapter01.Path();
+    p.MoveTo(Tuple2.Point(1, 1));
+    p.LineTo(Tuple2.Point(9, 1));
+    p.LineTo(Tuple2.Point(5, 8));
+    p.Close();
+    Check.IntEqual(1, p.Subpaths.Count);
+    Check.True(p.Subpaths[0].Closed, "expected subpath 0 closed");
+    Check.IntEqual(3, p.Subpaths[0].Points.Count);
+    Check.TupleEqual(Tuple2.Point(5, 8), p.Subpaths[0].Points[2]);
+    var edges = p.Edges();
+    Check.IntEqual(3, edges.Count);
+    Check.TupleEqual(Tuple2.Point(5, 8), edges[2].A);
+    Check.TupleEqual(Tuple2.Point(1, 1), edges[2].B);
+    var b = p.Bounds();
+    Check.Equal(1, b.MinX);
+    Check.Equal(1, b.MinY);
+    Check.Equal(9, b.MaxX);
+    Check.Equal(8, b.MaxY);
+});
+
+runner.Run("chapter05-paths", "A triangle left open still has three edges", () =>
+{
+    var p = new Chapter01.Path();
+    p.MoveTo(Tuple2.Point(1, 1));
+    p.LineTo(Tuple2.Point(9, 1));
+    p.LineTo(Tuple2.Point(5, 8));
+    Check.True(!p.Subpaths[0].Closed, "expected subpath 0 not closed");
+    var edges = p.Edges();
+    Check.IntEqual(3, edges.Count);
+    Check.TupleEqual(Tuple2.Point(5, 8), edges[2].A);
+    Check.TupleEqual(Tuple2.Point(1, 1), edges[2].B);
+});
+
+runner.Run("chapter05-paths", "move_to starts a second subpath", () =>
+{
+    var p = new Chapter01.Path();
+    p.MoveTo(Tuple2.Point(0, 0));
+    p.LineTo(Tuple2.Point(10, 0));
+    p.LineTo(Tuple2.Point(10, 10));
+    p.LineTo(Tuple2.Point(0, 10));
+    p.Close();
+    p.MoveTo(Tuple2.Point(3, 3));
+    p.LineTo(Tuple2.Point(3, 7));
+    p.LineTo(Tuple2.Point(7, 7));
+    p.LineTo(Tuple2.Point(7, 3));
+    p.Close();
+    Check.IntEqual(2, p.Subpaths.Count);
+    Check.TupleEqual(Tuple2.Point(3, 3), p.Subpaths[1].Points[0]);
+    Check.IntEqual(8, p.Edges().Count);
+    var b = p.Bounds();
+    Check.Equal(0, b.MinX);
+    Check.Equal(0, b.MinY);
+    Check.Equal(10, b.MaxX);
+    Check.Equal(10, b.MaxY);
+});
+
+runner.Run("chapter05-paths", "line_to after a close starts a new subpath where the closed one began", () =>
+{
+    var p = new Chapter01.Path();
+    p.MoveTo(Tuple2.Point(1, 1));
+    p.LineTo(Tuple2.Point(4, 1));
+    p.LineTo(Tuple2.Point(4, 4));
+    p.Close();
+    p.LineTo(Tuple2.Point(9, 9));
+    Check.IntEqual(2, p.Subpaths.Count);
+    Check.True(!p.Subpaths[1].Closed, "expected subpath 1 not closed");
+    Check.IntEqual(2, p.Subpaths[1].Points.Count);
+    Check.TupleEqual(Tuple2.Point(1, 1), p.Subpaths[1].Points[0]);
+    Check.TupleEqual(Tuple2.Point(9, 9), p.Subpaths[1].Points[1]);
+});
+
+runner.Run("chapter05-paths", "line_to with nothing to extend behaves as move_to", () =>
+{
+    var p = new Chapter01.Path();
+    p.LineTo(Tuple2.Point(2, 3));
+    Check.IntEqual(1, p.Subpaths.Count);
+    Check.IntEqual(1, p.Subpaths[0].Points.Count);
+    Check.TupleEqual(Tuple2.Point(2, 3), p.Subpaths[0].Points[0]);
+});
+
+runner.Run("chapter05-paths", "A subpath of one point has no edges, and closing nothing does nothing", () =>
+{
+    var p = new Chapter01.Path();
+    p.Close();
+    p.MoveTo(Tuple2.Point(1, 1));
+    p.MoveTo(Tuple2.Point(2, 2));
+    Check.IntEqual(2, p.Subpaths.Count);
+    Check.IntEqual(0, p.Edges().Count);
+    var b = p.Bounds();
+    Check.Equal(1, b.MinX);
+    Check.Equal(1, b.MinY);
+    Check.Equal(2, b.MaxX);
+    Check.Equal(2, b.MaxY);
+});
+
+runner.Run("chapter05-paths", "A subpath of two points has two edges and encloses nothing", () =>
+{
+    var p = new Chapter01.Path();
+    p.MoveTo(Tuple2.Point(1, 1));
+    p.LineTo(Tuple2.Point(9, 9));
+    Check.IntEqual(2, p.Edges().Count);
+    Check.IntEqual(0, Winding.WindingAt(p, 3, 5));
+});
+
+runner.Run("chapter05-paths", "polygon is a closed subpath through its points", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(10, 10), Tuple2.Point(0, 10));
+    Check.IntEqual(1, p.Subpaths.Count);
+    Check.True(p.Subpaths[0].Closed, "expected closed");
+    Check.IntEqual(4, p.Edges().Count);
+});
+
+runner.Run("chapter05-paths", "circle_path is a polygon standing in for a circle", () =>
+{
+    var p = Chapter01.Path.CirclePath(10, 10, 5, 8);
+    Check.IntEqual(8, p.Subpaths[0].Points.Count);
+    Check.TupleEqual(Tuple2.Point(15, 10), p.Subpaths[0].Points[0]);
+    Check.TupleEqual(Tuple2.Point(13.5355, 13.5355), p.Subpaths[0].Points[1]);
+    Check.TupleEqual(Tuple2.Point(10, 15), p.Subpaths[0].Points[2]);
+    var b = p.Bounds();
+    Check.Equal(5, b.MinX);
+    Check.Equal(5, b.MinY);
+    Check.Equal(15, b.MaxX);
+    Check.Equal(15, b.MaxY);
+});
+
+// ---------------------------------------------------------------------
+// features/chapter05-winding.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter05-winding", "Crossings from inside and outside a square", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(10, 10), Tuple2.Point(0, 10));
+    Check.IntEqual(1, Winding.Crossings(p, 5, 5));
+    Check.IntEqual(0, Winding.Crossings(p, 15, 5));
+    Check.IntEqual(2, Winding.Crossings(p, -1, 5));
+});
+
+runner.Run("chapter05-winding", "A clockwise square winds once", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(10, 10), Tuple2.Point(0, 10));
+    Check.IntEqual(1, Winding.WindingAt(p, 5, 5));
+    Check.IntEqual(0, Winding.WindingAt(p, 15, 5));
+    Check.IntEqual(0, Winding.WindingAt(p, -1, 5));
+    Check.IntEqual(0, Winding.WindingAt(p, 5, -1));
+    Check.IntEqual(0, Winding.WindingAt(p, 5, 11));
+});
+
+runner.Run("chapter05-winding", "The same square the other way round winds minus once", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(0, 10), Tuple2.Point(10, 10), Tuple2.Point(10, 0));
+    Check.IntEqual(-1, Winding.WindingAt(p, 5, 5));
+    Check.IntEqual(1, Winding.Crossings(p, 5, 5));
+});
+
+runner.Run("chapter05-winding", "A ray through a vertex counts it once", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(5, 0), Tuple2.Point(10, 5), Tuple2.Point(5, 10), Tuple2.Point(0, 5));
+    Check.IntEqual(1, Winding.Crossings(p, 2, 5));
+    Check.IntEqual(1, Winding.WindingAt(p, 2, 5));
+    Check.IntEqual(2, Winding.Crossings(p, -1, 5));
+    Check.IntEqual(0, Winding.WindingAt(p, -1, 5));
+    Check.IntEqual(0, Winding.WindingAt(p, 12, 5));
+    Check.IntEqual(1, Winding.WindingAt(p, 5, 5));
+});
+
+runner.Run("chapter05-winding", "The boundary belongs to the top and the left", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(10, 10), Tuple2.Point(0, 10));
+    Check.IntEqual(1, Winding.WindingAt(p, 5, 0));
+    Check.IntEqual(1, Winding.WindingAt(p, 0, 5));
+    Check.IntEqual(1, Winding.WindingAt(p, 0, 0));
+    Check.IntEqual(0, Winding.WindingAt(p, 5, 10));
+    Check.IntEqual(0, Winding.WindingAt(p, 10, 5));
+    Check.IntEqual(0, Winding.WindingAt(p, 10, 10));
+});
+
+runner.Run("chapter05-winding", "Two rectangles that share an edge cover it once", () =>
+{
+    var p = new Chapter01.Path();
+    p.MoveTo(Tuple2.Point(0, 0));
+    p.LineTo(Tuple2.Point(5, 0));
+    p.LineTo(Tuple2.Point(5, 10));
+    p.LineTo(Tuple2.Point(0, 10));
+    p.Close();
+    p.MoveTo(Tuple2.Point(5, 0));
+    p.LineTo(Tuple2.Point(10, 0));
+    p.LineTo(Tuple2.Point(10, 10));
+    p.LineTo(Tuple2.Point(5, 10));
+    p.Close();
+    Check.IntEqual(1, Winding.WindingAt(p, 2, 5));
+    Check.IntEqual(1, Winding.WindingAt(p, 5, 5));
+    Check.IntEqual(1, Winding.WindingAt(p, 8, 5));
+});
+
+runner.Run("chapter05-winding", "A diamond wound twice has winding number 2", () =>
+{
+    var p = new Chapter01.Path();
+    p.MoveTo(Tuple2.Point(5, 0));
+    p.LineTo(Tuple2.Point(10, 5));
+    p.LineTo(Tuple2.Point(5, 10));
+    p.LineTo(Tuple2.Point(0, 5));
+    p.LineTo(Tuple2.Point(5, 0));
+    p.LineTo(Tuple2.Point(10, 5));
+    p.LineTo(Tuple2.Point(5, 10));
+    p.LineTo(Tuple2.Point(0, 5));
+    p.Close();
+    Check.IntEqual(8, p.Edges().Count);
+    Check.IntEqual(2, Winding.WindingAt(p, 5, 5));
+    Check.IntEqual(2, Winding.Crossings(p, 5, 5));
+    Check.IntEqual(0, Winding.WindingAt(p, 12, 5));
+});
+
+runner.Run("chapter05-winding", "The polygon circle", () =>
+{
+    var p = Chapter01.Path.CirclePath(10, 10, 5, 8);
+    Check.IntEqual(1, Winding.WindingAt(p, 10, 10));
+    Check.IntEqual(1, Winding.WindingAt(p, 14.9, 10));
+    Check.IntEqual(0, Winding.WindingAt(p, 15, 10));
+    Check.IntEqual(1, Winding.WindingAt(p, 10, 5.1));
+    Check.IntEqual(0, Winding.WindingAt(p, 10, 4.9));
+});
+
+runner.Run("chapter05-winding", "The pentagram's center winds twice", () =>
+{
+    var p = Renders.Star();
+    Check.IntEqual(2, Winding.WindingAt(p, 80.5, 80.5));
+    Check.IntEqual(2, Winding.Crossings(p, 80.5, 80.5));
+    Check.IntEqual(1, Winding.WindingAt(p, 80.5, 20));
+    Check.IntEqual(1, Winding.WindingAt(p, 30, 60));
+    Check.IntEqual(3, Winding.Crossings(p, 30, 60));
+    Check.IntEqual(0, Winding.WindingAt(p, 80.5, 120));
+    Check.IntEqual(2, Winding.Crossings(p, 80.5, 120));
+    Check.IntEqual(0, Winding.WindingAt(p, 10, 10));
+});
+
+// ---------------------------------------------------------------------
+// features/chapter05-rules.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter05-rules", "A single loop is inside under both rules", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(10, 10), Tuple2.Point(0, 10));
+    Check.True(Winding.InsideNonzero(p, 5, 5), "expected (5, 5) inside under nonzero");
+    Check.True(Winding.InsideEvenOdd(p, 5, 5), "expected (5, 5) inside under evenodd");
+    Check.True(!Winding.InsideNonzero(p, 15, 5), "expected (15, 5) outside under nonzero");
+    Check.True(!Winding.InsideEvenOdd(p, 15, 5), "expected (15, 5) outside under evenodd");
+});
+
+runner.Run("chapter05-rules", "An inner loop the other way round is a hole under both rules", () =>
+{
+    var p = new Chapter01.Path();
+    p.MoveTo(Tuple2.Point(0, 0));
+    p.LineTo(Tuple2.Point(10, 0));
+    p.LineTo(Tuple2.Point(10, 10));
+    p.LineTo(Tuple2.Point(0, 10));
+    p.Close();
+    p.MoveTo(Tuple2.Point(3, 3));
+    p.LineTo(Tuple2.Point(3, 7));
+    p.LineTo(Tuple2.Point(7, 7));
+    p.LineTo(Tuple2.Point(7, 3));
+    p.Close();
+    Check.IntEqual(0, Winding.WindingAt(p, 5, 5));
+    Check.IntEqual(1, Winding.WindingAt(p, 1, 1));
+    Check.True(!Winding.InsideNonzero(p, 5, 5), "expected (5, 5) outside under nonzero");
+    Check.True(!Winding.InsideEvenOdd(p, 5, 5), "expected (5, 5) outside under evenodd");
+    Check.True(Winding.InsideNonzero(p, 1, 1), "expected (1, 1) inside under nonzero");
+});
+
+runner.Run("chapter05-rules", "An inner loop the same way round is a hole only under even-odd", () =>
+{
+    var p = new Chapter01.Path();
+    p.MoveTo(Tuple2.Point(0, 0));
+    p.LineTo(Tuple2.Point(10, 0));
+    p.LineTo(Tuple2.Point(10, 10));
+    p.LineTo(Tuple2.Point(0, 10));
+    p.Close();
+    p.MoveTo(Tuple2.Point(3, 3));
+    p.LineTo(Tuple2.Point(7, 3));
+    p.LineTo(Tuple2.Point(7, 7));
+    p.LineTo(Tuple2.Point(3, 7));
+    p.Close();
+    Check.IntEqual(2, Winding.WindingAt(p, 5, 5));
+    Check.True(Winding.InsideNonzero(p, 5, 5), "expected (5, 5) inside under nonzero");
+    Check.True(!Winding.InsideEvenOdd(p, 5, 5), "expected (5, 5) outside under evenodd");
+});
+
+runner.Run("chapter05-rules", "A loop wound twice vanishes under even-odd", () =>
+{
+    var p = new Chapter01.Path();
+    p.MoveTo(Tuple2.Point(5, 0));
+    p.LineTo(Tuple2.Point(10, 5));
+    p.LineTo(Tuple2.Point(5, 10));
+    p.LineTo(Tuple2.Point(0, 5));
+    p.LineTo(Tuple2.Point(5, 0));
+    p.LineTo(Tuple2.Point(10, 5));
+    p.LineTo(Tuple2.Point(5, 10));
+    p.LineTo(Tuple2.Point(0, 5));
+    p.Close();
+    Check.True(Winding.InsideNonzero(p, 5, 5), "expected (5, 5) inside under nonzero");
+    Check.True(!Winding.InsideEvenOdd(p, 5, 5), "expected (5, 5) outside under evenodd");
+});
+
+runner.Run("chapter05-rules", "The pentagram's center is inside under nonzero and outside under even-odd", () =>
+{
+    var p = Renders.Star();
+    Check.True(Winding.InsideNonzero(p, 80.5, 80.5), "expected center inside under nonzero");
+    Check.True(!Winding.InsideEvenOdd(p, 80.5, 80.5), "expected center outside under evenodd");
+    Check.True(Winding.InsideNonzero(p, 80.5, 20), "expected arm point inside under nonzero");
+    Check.True(Winding.InsideEvenOdd(p, 80.5, 20), "expected arm point inside under evenodd");
+    Check.True(!Winding.InsideNonzero(p, 80.5, 120), "expected outside point outside under nonzero");
+    Check.True(!Winding.InsideEvenOdd(p, 80.5, 120), "expected outside point outside under evenodd");
+});
+
+runner.Run("chapter05-rules", "A filled path is a shape", () =>
+{
+    var s = new Filled(Chapter01.Path.Polygon(Tuple2.Point(2, 2), Tuple2.Point(6, 2), Tuple2.Point(6, 6), Tuple2.Point(2, 6)), "nonzero");
+    var cov = Rasterizer.Rasterize(s, 8, 8);
+    Check.True(s.Inside(3, 3), "expected (3, 3) inside");
+    Check.True(!s.Inside(7, 3), "expected (7, 3) outside");
+    Check.Equal(1, cov.CoverageAt(3, 3));
+    Check.Equal(0, cov.CoverageAt(1, 3));
+    Check.Equal(0, cov.CoverageAt(6, 3));
+    Check.Equal(16, cov.Ink);
+});
+
+runner.Run("chapter05-rules", "A filled path takes the rule seriously", () =>
+{
+    var p = Renders.Star();
+    var a = new Filled(p, "nonzero");
+    var b = new Filled(p, "evenodd");
+    var ca = Rasterizer.Rasterize(a, 160, 160);
+    var cb = Rasterizer.Rasterize(b, 160, 160);
+    Check.Equal(1, ca.CoverageAt(80, 80));
+    Check.Equal(0, cb.CoverageAt(80, 80));
+    Check.Equal(1, ca.CoverageAt(80, 20));
+    Check.Equal(1, cb.CoverageAt(80, 20));
+    Check.Equal(0.0625, ca.CoverageAt(80, 10));
+    Check.Equal(0.0625, cb.CoverageAt(80, 10));
+    Check.Equal(5499.9375, ca.Ink);
+    Check.Equal(3800.375, cb.Ink);
+});
+
+runner.Run("chapter05-rules", "Rasterizing within the bounds gives the same coverage", () =>
+{
+    var p = Renders.Star();
+    var s = new Filled(p, "evenodd");
+    var full = Rasterizer.Rasterize(s, 160, 160);
+    var within = Rasterizer.RasterizeWithin(s, p.Bounds(), 160, 160);
+    Check.Equal(full.Ink, within.Ink);
+    Check.Equal(full.CoverageAt(80, 20), within.CoverageAt(80, 20));
+    Check.Equal(full.CoverageAt(13, 58), within.CoverageAt(13, 58));
+    Check.Equal(0, within.CoverageAt(10, 10));
+});
+
+runner.Run("chapter05-rules", "The box is inclusive of the pixels it touches, and clipped to the buffer", () =>
+{
+    var s = new Filled(Chapter01.Path.Polygon(Tuple2.Point(1.5, 1.5), Tuple2.Point(6.5, 1.5), Tuple2.Point(6.5, 6.5), Tuple2.Point(1.5, 6.5)), "nonzero");
+    var cov = Rasterizer.RasterizeWithin(s, (1.5, 1.5, 6.5, 6.5), 8, 8);
+    var big = Rasterizer.RasterizeWithin(s, (-5, -5, 20, 20), 8, 8);
+    Check.Equal(0.25, cov.CoverageAt(1, 1));
+    Check.Equal(0.25, cov.CoverageAt(6, 6));
+    Check.Equal(1, cov.CoverageAt(3, 3));
+    Check.Equal(25, cov.Ink);
+    Check.Equal(25, big.Ink);
+});
+
+// ---------------------------------------------------------------------
+// features/chapter05-plate.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter05-plate", "The pentagram", () =>
+{
+    var p = Renders.Star();
+    Check.IntEqual(1, p.Subpaths.Count);
+    Check.IntEqual(5, p.Edges().Count);
+    Check.TupleEqual(Tuple2.Point(80.5, 10.5), p.Subpaths[0].Points[0]);
+    Check.TupleEqual(Tuple2.Point(121.645, 137.1312), p.Subpaths[0].Points[1]);
+    Check.TupleEqual(Tuple2.Point(13.926, 58.8688), p.Subpaths[0].Points[2]);
+    Check.TupleEqual(Tuple2.Point(147.074, 58.8688), p.Subpaths[0].Points[3]);
+    Check.TupleEqual(Tuple2.Point(39.355, 137.1312), p.Subpaths[0].Points[4]);
+    var b = p.Bounds();
+    Check.Equal(13.926, b.MinX);
+    Check.Equal(10.5, b.MinY);
+    Check.Equal(147.074, b.MaxX);
+    Check.Equal(137.1312, b.MaxY);
+});
+
+runner.Run("chapter05-plate", "The star by the center question", () =>
+{
+    var c = Renders.StarCenters();
+    var ppmRef = File.ReadAllBytes("reference/chapter-05/star-centers.ppm");
+    var p6 = Ppm.CanvasToP6(c);
+    Check.IntEqual(320, c.Width);
+    Check.IntEqual(160, c.Height);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 80, 80), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 240, 80), 1);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 80, 20), 1);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 240, 20), 1);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 30, 60), 1);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 190, 60), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 80, 120), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 80, 10), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 10, 10), 1);
+    Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
+});
+
+runner.Run("chapter05-plate", "The star by coverage", () =>
+{
+    var c = Renders.StarCoverage();
+    var ppmRef = File.ReadAllBytes("reference/chapter-05/star-coverage.ppm");
+    var p6 = Ppm.CanvasToP6(c);
+    Check.IntEqual(320, c.Width);
+    Check.IntEqual(160, c.Height);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 80, 80), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 240, 80), 1);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 80, 20), 1);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 240, 20), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 80, 120), 1);
+    Check.TripleEqual((77, 65, 48), Ppm.PpmPixel(p6, 80, 10), 1);
+    Check.TripleEqual((77, 65, 48), Ppm.PpmPixel(p6, 240, 10), 1);
+    Check.TripleEqual((199, 160, 76), Ppm.PpmPixel(p6, 80, 11), 1);
+    Check.TripleEqual((101, 83, 52), Ppm.PpmPixel(p6, 14, 58), 1);
+    Check.TripleEqual((101, 83, 52), Ppm.PpmPixel(p6, 174, 58), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 10, 10), 1);
+    Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
+});
+
+runner.Run("chapter05-plate", "Plate 5", () =>
+{
+    var c = Renders.Plate05();
+    var ppmRef = File.ReadAllBytes("reference/chapter-05/plate-05.ppm");
+    var p6 = Ppm.CanvasToP6(c);
+    Check.IntEqual(640, c.Width);
+    Check.IntEqual(640, c.Height);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 160, 160), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 480, 160), 1);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 160, 480), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 480, 480), 1);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 160, 40), 1);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 480, 360), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 160, 20), 1);
+    Check.TripleEqual((77, 65, 48), Ppm.PpmPixel(p6, 160, 341), 1);
+    Check.TripleEqual((77, 65, 48), Ppm.PpmPixel(p6, 480, 341), 1);
+    Check.TripleEqual((101, 83, 52), Ppm.PpmPixel(p6, 348, 437), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 20, 20), 1);
+    Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
+});
+
+
+// ---------------------------------------------------------------------
+// features/chapter06-edges.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter06-edges", "A rectangle has two edges in its table", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(2, 2), Tuple2.Point(6, 2), Tuple2.Point(6, 6), Tuple2.Point(2, 6));
+    var t = EdgeTable.Build(p);
+    Check.IntEqual(2, t.Count);
+    Check.Equal(2, t[0].YTop);
+    Check.Equal(6, t[0].YBottom);
+    Check.Equal(2, t[0].XTop);
+    Check.Equal(0, t[0].Slope);
+    Check.IntEqual(-1, t[0].Direction);
+    Check.Equal(6, t[1].XTop);
+    Check.IntEqual(1, t[1].Direction);
+});
+
+runner.Run("chapter06-edges", "A triangle's edges carry their slopes", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(5, 10));
+    var t = EdgeTable.Build(p);
+    Check.IntEqual(2, t.Count);
+    Check.Equal(0, t[0].XTop);
+    Check.Equal(0.5, t[0].Slope);
+    Check.IntEqual(-1, t[0].Direction);
+    Check.Equal(10, t[1].XTop);
+    Check.Equal(-0.5, t[1].Slope);
+    Check.IntEqual(1, t[1].Direction);
+});
+
+runner.Run("chapter06-edges", "The table is sorted by top, then by x at the top", () =>
+{
+    var p = new Chapter01.Path();
+    p.MoveTo(Tuple2.Point(2, 2));
+    p.LineTo(Tuple2.Point(4, 1));
+    p.LineTo(Tuple2.Point(6, 3));
+    p.LineTo(Tuple2.Point(8, 1));
+    p.LineTo(Tuple2.Point(9, 6));
+    p.LineTo(Tuple2.Point(1, 6));
+    p.Close();
+    var t = EdgeTable.Build(p);
+    Check.IntEqual(5, t.Count);
+    Check.Equal(1, t[0].YTop);
+    Check.Equal(4, t[0].XTop);
+    Check.Equal(1, t[1].YTop);
+    Check.Equal(4, t[1].XTop);
+    Check.Equal(1, t[2].YTop);
+    Check.Equal(8, t[2].XTop);
+    Check.Equal(1, t[3].YTop);
+    Check.Equal(8, t[3].XTop);
+    Check.Equal(2, t[4].YTop);
+    Check.Equal(2, t[4].XTop);
+});
+
+runner.Run("chapter06-edges", "A horizontal edge is dropped, not clamped", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(10, 5), Tuple2.Point(0, 5));
+    var t = EdgeTable.Build(p);
+    Check.IntEqual(2, t.Count);
+    Check.Equal(0, t[0].XTop);
+    Check.Equal(10, t[1].XTop);
+});
+
+runner.Run("chapter06-edges", "An edge knows where it crosses a height", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(5, 10));
+    var t = EdgeTable.Build(p);
+    Check.Equal(2, EdgeTable.XAt(t[0], 4));
+    Check.Equal(8, EdgeTable.XAt(t[1], 4));
+    Check.Equal(0.25, EdgeTable.XAt(t[0], 0.5));
+});
+
+runner.Run("chapter06-edges", "The edge table is the same whichever way the path was drawn", () =>
+{
+    var a = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(5, 10));
+    var b = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(5, 10), Tuple2.Point(10, 0));
+    var ta = EdgeTable.Build(a);
+    var tb = EdgeTable.Build(b);
+    Check.Equal(ta[0].XTop, tb[0].XTop);
+    Check.Equal(ta[0].Slope, tb[0].Slope);
+    Check.IntEqual(-1, ta[0].Direction);
+    Check.IntEqual(1, tb[0].Direction);
+});
+
+// ---------------------------------------------------------------------
+// features/chapter06-spans.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter06-spans", "Crossings on a row, sorted by x", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(2, 2), Tuple2.Point(6, 2), Tuple2.Point(6, 6), Tuple2.Point(2, 6));
+    var xs = Sweep.CrossingsOnRow(EdgeTable.Build(p), 3.5);
+    Check.IntEqual(2, xs.Count);
+    Check.Equal(2, xs[0].X);
+    Check.IntEqual(-1, xs[0].Direction);
+    Check.Equal(6, xs[1].X);
+    Check.IntEqual(1, xs[1].Direction);
+    Check.IntEqual(0, Sweep.CrossingsOnRow(EdgeTable.Build(p), 1.5).Count);
+    Check.IntEqual(0, Sweep.CrossingsOnRow(EdgeTable.Build(p), 6).Count);
+    Check.IntEqual(2, Sweep.CrossingsOnRow(EdgeTable.Build(p), 2).Count);
+});
+
+runner.Run("chapter06-spans", "The star's crossings through its middle", () =>
+{
+    var p = Renders.Star();
+    var xs = Sweep.CrossingsOnRow(EdgeTable.Build(p), 80.5);
+    Check.IntEqual(4, xs.Count);
+    Check.Equal(43.6988, xs[0].X);
+    Check.IntEqual(-1, xs[0].Direction);
+    Check.Equal(57.7556, xs[1].X);
+    Check.IntEqual(-1, xs[1].Direction);
+    Check.Equal(103.2444, xs[2].X);
+    Check.IntEqual(1, xs[2].Direction);
+    Check.Equal(117.3012, xs[3].X);
+    Check.IntEqual(1, xs[3].Direction);
+});
+
+runner.Run("chapter06-spans", "Spans from crossings under each rule", () =>
+{
+    var xs = new List<(double X, int Direction)> { (1, 1), (3, 1), (5, -1), (7, -1) };
+    var nonzero = Sweep.SpansFromCrossings(xs, "nonzero");
+    Check.IntEqual(1, nonzero.Count);
+    Check.Equal(1, nonzero[0].Start);
+    Check.Equal(7, nonzero[0].End);
+    var evenodd = Sweep.SpansFromCrossings(xs, "evenodd");
+    Check.IntEqual(2, evenodd.Count);
+    Check.Equal(1, evenodd[0].Start);
+    Check.Equal(3, evenodd[0].End);
+    Check.Equal(5, evenodd[1].Start);
+    Check.Equal(7, evenodd[1].End);
+    Check.IntEqual(0, Sweep.SpansFromCrossings(new List<(double, int)>(), "nonzero").Count);
+});
+
+runner.Run("chapter06-spans", "The spans of an axis-aligned rectangle are exact", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(1.25, 2), Tuple2.Point(4.75, 2), Tuple2.Point(4.75, 5), Tuple2.Point(1.25, 5));
+    Check.IntEqual(0, Sweep.Spans(p, "nonzero", 1).Count);
+    var row2 = Sweep.Spans(p, "nonzero", 2);
+    Check.IntEqual(1, row2.Count);
+    Check.Equal(1.25, row2[0].Start);
+    Check.Equal(4.75, row2[0].End);
+    var row4 = Sweep.Spans(p, "nonzero", 4);
+    Check.IntEqual(1, row4.Count);
+    Check.Equal(1.25, row4[0].Start);
+    Check.Equal(4.75, row4[0].End);
+    Check.IntEqual(0, Sweep.Spans(p, "nonzero", 5).Count);
+});
+
+runner.Run("chapter06-spans", "A rectangle whose edges sit on sample heights", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(1.5, 2.5), Tuple2.Point(4.5, 2.5), Tuple2.Point(4.5, 5.5), Tuple2.Point(1.5, 5.5));
+    Check.IntEqual(0, Sweep.Spans(p, "nonzero", 1).Count);
+    var row2 = Sweep.Spans(p, "nonzero", 2);
+    Check.IntEqual(1, row2.Count);
+    Check.Equal(1.5, row2[0].Start);
+    Check.Equal(4.5, row2[0].End);
+    var row4 = Sweep.Spans(p, "nonzero", 4);
+    Check.IntEqual(1, row4.Count);
+    Check.Equal(1.5, row4[0].Start);
+    Check.Equal(4.5, row4[0].End);
+    Check.IntEqual(0, Sweep.Spans(p, "nonzero", 5).Count);
+});
+
+(int Row, double X0, double X1)[] triangleSpans =
+{
+    (0, 0.25, 9.75), (1, 0.75, 9.25), (4, 2.25, 7.75), (9, 4.75, 5.25)
+};
+foreach (var (row, x0, x1) in triangleSpans)
+{
+    runner.Run("chapter06-spans", $"A triangle's spans narrow by one per row <{row}>", () =>
+    {
+        var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(5, 10));
+        var spans = Sweep.Spans(p, "nonzero", row);
+        Check.IntEqual(1, spans.Count);
+        Check.Equal(x0, spans[0].Start);
+        Check.Equal(x1, spans[0].End);
+    });
+}
+
+runner.Run("chapter06-spans", "The row past the triangle's apex has no span", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(5, 10));
+    Check.IntEqual(0, Sweep.Spans(p, "nonzero", 10).Count);
+});
+
+runner.Run("chapter06-spans", "A flat top is not a span of its own", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(10, 5), Tuple2.Point(0, 5));
+    Check.IntEqual(2, EdgeTable.Build(p).Count);
+    var row0 = Sweep.Spans(p, "nonzero", 0);
+    Check.IntEqual(1, row0.Count);
+    Check.Equal(0, row0[0].Start);
+    Check.Equal(10, row0[0].End);
+    var row4 = Sweep.Spans(p, "nonzero", 4);
+    Check.IntEqual(1, row4.Count);
+    Check.Equal(0, row4[0].Start);
+    Check.Equal(10, row4[0].End);
+    Check.IntEqual(0, Sweep.Spans(p, "nonzero", 5).Count);
+});
+
+runner.Run("chapter06-spans", "A ring is two spans under even-odd and one under nonzero", () =>
+{
+    var p = new Chapter01.Path();
+    p.MoveTo(Tuple2.Point(0, 0));
+    p.LineTo(Tuple2.Point(10, 0));
+    p.LineTo(Tuple2.Point(10, 10));
+    p.LineTo(Tuple2.Point(0, 10));
+    p.Close();
+    p.MoveTo(Tuple2.Point(3, 3));
+    p.LineTo(Tuple2.Point(7, 3));
+    p.LineTo(Tuple2.Point(7, 7));
+    p.LineTo(Tuple2.Point(3, 7));
+    p.Close();
+    var nz = Sweep.Spans(p, "nonzero", 5);
+    Check.IntEqual(1, nz.Count);
+    Check.Equal(0, nz[0].Start);
+    Check.Equal(10, nz[0].End);
+    var eo = Sweep.Spans(p, "evenodd", 5);
+    Check.IntEqual(2, eo.Count);
+    Check.Equal(0, eo[0].Start);
+    Check.Equal(3, eo[0].End);
+    Check.Equal(7, eo[1].Start);
+    Check.Equal(10, eo[1].End);
+});
+
+runner.Run("chapter06-spans", "The star's spans through its middle", () =>
+{
+    var p = Renders.Star();
+    var nz = Sweep.Spans(p, "nonzero", 80);
+    Check.IntEqual(1, nz.Count);
+    Check.Equal(43.6988, nz[0].Start);
+    Check.Equal(117.3012, nz[0].End);
+    var eo = Sweep.Spans(p, "evenodd", 80);
+    Check.IntEqual(2, eo.Count);
+    Check.Equal(43.6988, eo[0].Start);
+    Check.Equal(57.7556, eo[0].End);
+    Check.Equal(103.2444, eo[1].Start);
+    Check.Equal(117.3012, eo[1].End);
+});
+
+runner.Run("chapter06-spans", "fill_span fills the pixels whose centers are in the span", () =>
+{
+    var cov = new CoverageBuffer(8, 3);
+    Sweep.FillSpan(cov, 1, 1.25, 4.75);
+    Check.Equal(0, cov.CoverageAt(0, 1));
+    Check.Equal(1, cov.CoverageAt(1, 1));
+    Check.Equal(1, cov.CoverageAt(4, 1));
+    Check.Equal(0, cov.CoverageAt(5, 1));
+    Check.Equal(0, cov.CoverageAt(2, 0));
+    Check.Equal(4, cov.Ink);
+});
+
+runner.Run("chapter06-spans", "The span is half-open at its right end", () =>
+{
+    var cov = new CoverageBuffer(8, 3);
+    Sweep.FillSpan(cov, 1, 1.5, 4.5);
+    Check.Equal(1, cov.CoverageAt(1, 1));
+    Check.Equal(1, cov.CoverageAt(3, 1));
+    Check.Equal(0, cov.CoverageAt(4, 1));
+    Check.Equal(3, cov.Ink);
+});
+
+runner.Run("chapter06-spans", "A span may run off either side of the buffer", () =>
+{
+    var a = new CoverageBuffer(8, 3);
+    var b = new CoverageBuffer(8, 3);
+    var c = new CoverageBuffer(8, 3);
+    Sweep.FillSpan(a, 1, -3, 2.5);
+    Sweep.FillSpan(b, 1, 6.5, 20);
+    Sweep.FillSpan(c, 1, 2.5, 2.5);
+    Check.Equal(2, a.Ink);
+    Check.Equal(1, a.CoverageAt(1, 1));
+    Check.Equal(2, b.Ink);
+    Check.Equal(1, b.CoverageAt(6, 1));
+    Check.Equal(0, c.Ink);
+});
+
+// ---------------------------------------------------------------------
+// features/chapter06-sweep.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter06-sweep", "Two buffers that differ", () =>
+{
+    var a = new CoverageBuffer(3, 3);
+    var b = new CoverageBuffer(3, 3);
+    a.SetCoverage(1, 1, 1);
+    b.SetCoverage(1, 1, 0.25);
+    Check.Equal(0.75, Sweep.MaxCoverageDifference(a, b));
+    Check.Equal(0, Sweep.MaxCoverageDifference(a, a));
+});
+
+runner.Run("chapter06-sweep", "Buffers of different sizes are as different as it gets", () =>
+{
+    var a = new CoverageBuffer(3, 3);
+    var b = new CoverageBuffer(3, 4);
+    Check.Equal(1, Sweep.MaxCoverageDifference(a, b));
+});
+
+runner.Run("chapter06-sweep", "A rectangle", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(2, 2), Tuple2.Point(6, 2), Tuple2.Point(6, 6), Tuple2.Point(2, 6));
+    var cov = Sweep.FillPathAliased(p, "nonzero", 8, 8);
+    Check.Equal(1, cov.CoverageAt(2, 2));
+    Check.Equal(1, cov.CoverageAt(5, 5));
+    Check.Equal(0, cov.CoverageAt(6, 5));
+    Check.Equal(0, cov.CoverageAt(5, 6));
+    Check.Equal(0, cov.CoverageAt(1, 2));
+    Check.Equal(16, cov.Ink);
+    var reference = Rasterizer.RasterizeCenters(new Filled(p, "nonzero"), 8, 8);
+    Check.Equal(0, Sweep.MaxCoverageDifference(cov, reference));
+});
+
+runner.Run("chapter06-sweep", "A triangle", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(5, 10));
+    var cov = Sweep.FillPathAliased(p, "nonzero", 20, 20);
+    Check.Equal(1, cov.CoverageAt(0, 0));
+    Check.Equal(1, cov.CoverageAt(9, 0));
+    Check.Equal(0, cov.CoverageAt(10, 0));
+    Check.Equal(1, cov.CoverageAt(4, 8));
+    Check.Equal(0, cov.CoverageAt(3, 8));
+    Check.Equal(0, cov.CoverageAt(5, 9));
+    Check.Equal(50, cov.Ink);
+    var reference = Rasterizer.RasterizeCenters(new Filled(p, "nonzero"), 20, 20);
+    Check.Equal(0, Sweep.MaxCoverageDifference(cov, reference));
+});
+
+runner.Run("chapter06-sweep", "The same triangle drawn the other way round", () =>
+{
+    var a = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(10, 0), Tuple2.Point(5, 10));
+    var b = Chapter01.Path.Polygon(Tuple2.Point(0, 0), Tuple2.Point(5, 10), Tuple2.Point(10, 0));
+    var ca = Sweep.FillPathAliased(a, "nonzero", 20, 20);
+    var cb = Sweep.FillPathAliased(b, "nonzero", 20, 20);
+    Check.Equal(0, Sweep.MaxCoverageDifference(ca, cb));
+});
+
+runner.Run("chapter06-sweep", "A polygon circle", () =>
+{
+    var p = Chapter01.Path.CirclePath(10.3, 9.7, 7, 12);
+    var cov = Sweep.FillPathAliased(p, "nonzero", 20, 20);
+    Check.Equal(145, cov.Ink);
+    var reference = Rasterizer.RasterizeCenters(new Filled(p, "nonzero"), 20, 20);
+    Check.Equal(0, Sweep.MaxCoverageDifference(cov, reference));
+});
+
+runner.Run("chapter06-sweep", "The star, both rules, matches chapter 5 pixel for pixel", () =>
+{
+    var p = Renders.Star();
+    var nz = Sweep.FillPathAliased(p, "nonzero", 160, 160);
+    var eo = Sweep.FillPathAliased(p, "evenodd", 160, 160);
+    Check.Equal(5480, nz.Ink);
+    Check.Equal(3780, eo.Ink);
+    Check.Equal(1, nz.CoverageAt(80, 80));
+    Check.Equal(0, eo.CoverageAt(80, 80));
+    var refNz = Rasterizer.RasterizeCenters(new Filled(p, "nonzero"), 160, 160);
+    var refEo = Rasterizer.RasterizeCenters(new Filled(p, "evenodd"), 160, 160);
+    Check.Equal(0, Sweep.MaxCoverageDifference(nz, refNz));
+    Check.Equal(0, Sweep.MaxCoverageDifference(eo, refEo));
+});
+
+runner.Run("chapter06-sweep", "An edge that starts on a sample height is active there, and one that ends there is not", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(1.5, 2.5), Tuple2.Point(4.5, 2.5), Tuple2.Point(4.5, 5.5), Tuple2.Point(1.5, 5.5));
+    var cov = Sweep.FillPathAliased(p, "nonzero", 8, 8);
+    Check.Equal(0, cov.CoverageAt(2, 1));
+    Check.Equal(1, cov.CoverageAt(2, 2));
+    Check.Equal(1, cov.CoverageAt(2, 4));
+    Check.Equal(0, cov.CoverageAt(2, 5));
+    Check.Equal(1, cov.CoverageAt(1, 3));
+    Check.Equal(0, cov.CoverageAt(4, 3));
+    Check.Equal(9, cov.Ink);
+    var reference = Rasterizer.RasterizeCenters(new Filled(p, "nonzero"), 8, 8);
+    Check.Equal(0, Sweep.MaxCoverageDifference(cov, reference));
+});
+
+runner.Run("chapter06-sweep", "A polygon larger than the buffer fills it", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(-5, -5), Tuple2.Point(30, -5), Tuple2.Point(30, 30), Tuple2.Point(-5, 30));
+    var cov = Sweep.FillPathAliased(p, "nonzero", 8, 8);
+    Check.Equal(64, cov.Ink);
+});
+
+runner.Run("chapter06-sweep", "An empty path fills nothing", () =>
+{
+    var p = new Chapter01.Path();
+    var cov = Sweep.FillPathAliased(p, "nonzero", 8, 8);
+    Check.Equal(0, cov.Ink);
+});
+
+runner.Run("chapter06-sweep", "transform_path takes every point through the matrix and keeps the flags", () =>
+{
+    var p = Chapter01.Path.Polygon(Tuple2.Point(1.25, 2), Tuple2.Point(4.75, 2), Tuple2.Point(4.75, 5), Tuple2.Point(1.25, 5));
+    var q = Chapter01.Path.TransformPath(p, Matrix3.Translation(10, 20));
+    Check.IntEqual(1, q.Subpaths.Count);
+    Check.True(q.Subpaths[0].Closed, "expected q's subpath closed");
+    Check.TupleEqual(Tuple2.Point(11.25, 22), q.Subpaths[0].Points[0]);
+    Check.TupleEqual(Tuple2.Point(14.75, 25), q.Subpaths[0].Points[2]);
+    Check.TupleEqual(Tuple2.Point(1.25, 2), p.Subpaths[0].Points[0]);
+});
+
+runner.Run("chapter06-sweep", "A transformed star fills where the transform put it", () =>
+{
+    var m = Matrix3.Translation(10, 10) * Matrix3.Scaling(0.11, 0.11) * Matrix3.Translation(-80.5, -80.5);
+    var p = Chapter01.Path.TransformPath(Renders.Star(), m);
+    var nz = Sweep.FillPathAliased(p, "nonzero", 20, 20);
+    var eo = Sweep.FillPathAliased(p, "evenodd", 20, 20);
+    var b = p.Bounds();
+    Check.Equal(2.6769, b.MinX);
+    Check.Equal(2.3, b.MinY);
+    Check.Equal(17.3231, b.MaxX);
+    Check.Equal(16.2294, b.MaxY);
+    Check.Equal(60, nz.Ink);
+    Check.Equal(40, eo.Ink);
+    var reference = Rasterizer.RasterizeCenters(new Filled(p, "nonzero"), 20, 20);
+    Check.Equal(0, Sweep.MaxCoverageDifference(nz, reference));
+});
+
+// ---------------------------------------------------------------------
+// features/chapter06-plate.feature
+// ---------------------------------------------------------------------
+runner.Run("chapter06-plate", "The unit star", () =>
+{
+    var p = Renders.UnitStar();
+    Check.IntEqual(5, p.Edges().Count);
+    Check.TupleEqual(Tuple2.Point(0, -1), p.Subpaths[0].Points[0]);
+    Check.TupleEqual(Tuple2.Point(0.5878, 0.809), p.Subpaths[0].Points[1]);
+    Check.TupleEqual(Tuple2.Point(-0.9511, -0.309), p.Subpaths[0].Points[2]);
+    var b = p.Bounds();
+    Check.Equal(-0.9511, b.MinX);
+    Check.Equal(-1, b.MinY);
+    Check.Equal(0.9511, b.MaxX);
+    Check.Equal(0.809, b.MaxY);
+});
+
+runner.Run("chapter06-plate", "The spiral", () =>
+{
+    var c = Renders.Spiral();
+    var ppmRef = File.ReadAllBytes("reference/chapter-06/spiral.ppm");
+    var p6 = Ppm.CanvasToP6(c);
+    Check.IntEqual(320, c.Width);
+    Check.IntEqual(320, c.Height);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 180, 160), 1);
+    Check.TripleEqual((124, 196, 237), Ppm.PpmPixel(p6, 183, 171), 1);
+    Check.TripleEqual((237, 137, 149), Ppm.PpmPixel(p6, 179, 183), 1);
+    Check.TripleEqual((237, 137, 149), Ppm.PpmPixel(p6, 104, 139), 1);
+    Check.TripleEqual((124, 196, 237), Ppm.PpmPixel(p6, 230, 111), 1);
+    Check.TripleEqual((124, 196, 237), Ppm.PpmPixel(p6, 32, 137), 1);
+    Check.TripleEqual((237, 137, 149), Ppm.PpmPixel(p6, 34, 104), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 160, 160), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 5, 5), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 300, 20), 1);
+    Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
+});
+
+runner.Run("chapter06-plate", "Plate 6", () =>
+{
+    var c = Renders.Plate06();
+    var ppmRef = File.ReadAllBytes("reference/chapter-06/plate-06.ppm");
+    var p6 = Ppm.CanvasToP6(c);
+    Check.IntEqual(640, c.Width);
+    Check.IntEqual(640, c.Height);
+    Check.TripleEqual((243, 196, 89), Ppm.PpmPixel(p6, 360, 320), 1);
+    Check.TripleEqual((237, 137, 149), Ppm.PpmPixel(p6, 68, 208), 1);
+    Check.TripleEqual((39, 39, 44), Ppm.PpmPixel(p6, 320, 320), 1);
+    Check.True(Ppm.MaxChannelDifference(p6, ppmRef) <= 1, "max_channel_difference exceeds 1");
+});
+
+
 runner.PrintSummary();
 
 // ---------------------------------------------------------------------
@@ -1931,10 +2895,16 @@ File.WriteAllBytes("out/fan-coverage.ppm", Ppm.CanvasToP6(Renders.FanCoverage())
 File.WriteAllBytes("out/plate-03.ppm", Ppm.CanvasToP6(Renders.Plate03()));
 File.WriteAllBytes("out/fan-both-orders.ppm", Ppm.CanvasToP6(Renders.FanBothOrders()));
 File.WriteAllBytes("out/plate-04.ppm", Ppm.CanvasToP6(Renders.Plate04()));
+File.WriteAllBytes("out/star-centers.ppm", Ppm.CanvasToP6(Renders.StarCenters()));
+File.WriteAllBytes("out/star-coverage.ppm", Ppm.CanvasToP6(Renders.StarCoverage()));
+File.WriteAllBytes("out/plate-05.ppm", Ppm.CanvasToP6(Renders.Plate05()));
+File.WriteAllBytes("out/spiral.ppm", Ppm.CanvasToP6(Renders.Spiral()));
+File.WriteAllBytes("out/plate-06.ppm", Ppm.CanvasToP6(Renders.Plate06()));
 Console.WriteLine();
 Console.WriteLine("Wrote out/gray-match.ppm, out/quarter-match.ppm, out/ramp.ppm, out/clamp-pair.ppm, out/plate-01.ppm,");
 Console.WriteLine("      out/disc-centers.ppm, out/disc-coverage.ppm, out/painted-twice.ppm, out/plate-02.ppm,");
 Console.WriteLine("      out/fan-bresenham.ppm, out/fan-wu.ppm, out/fan-coverage.ppm, out/plate-03.ppm,");
-Console.WriteLine("      out/fan-both-orders.ppm, out/plate-04.ppm");
+Console.WriteLine("      out/fan-both-orders.ppm, out/plate-04.ppm, out/star-centers.ppm, out/star-coverage.ppm,");
+Console.WriteLine("      out/plate-05.ppm, out/spiral.ppm, out/plate-06.ppm");
 
 return runner.FailedCount == 0 ? 0 : 1;

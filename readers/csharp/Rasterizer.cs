@@ -59,4 +59,29 @@ public static class Rasterizer
         }
         return cov;
     }
+
+    /// <summary>
+    /// Rasterize restricted to the pixels box touches: columns from
+    /// floor(min x) up to but not including ceil(max x), rows likewise,
+    /// clipped to the buffer. Everything else is left at zero, same
+    /// coverage as Rasterize, less work.
+    /// </summary>
+    public static CoverageBuffer RasterizeWithin(IShape shape, (double MinX, double MinY, double MaxX, double MaxY) box, int width, int height)
+    {
+        var cov = new CoverageBuffer(width, height);
+
+        int x0 = Math.Max(0, (int)Math.Floor(box.MinX));
+        int x1 = Math.Min(width, (int)Math.Ceiling(box.MaxX));
+        int y0 = Math.Max(0, (int)Math.Floor(box.MinY));
+        int y1 = Math.Min(height, (int)Math.Ceiling(box.MaxY));
+
+        for (int y = y0; y < y1; y++)
+        {
+            for (int x = x0; x < x1; x++)
+            {
+                cov.SetCoverage(x, y, Coverage(shape, x, y));
+            }
+        }
+        return cov;
+    }
 }

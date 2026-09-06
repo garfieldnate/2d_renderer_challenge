@@ -201,6 +201,31 @@ public sealed class Transformed : IShape
 }
 
 /// <summary>
+/// A path, filled: inside is the rule ("nonzero" or "evenodd") applied to
+/// the path's winding number at the point. One more IShape, so any path -
+/// self-intersecting, nested subpaths and all - goes through the same
+/// supersampler as every shape before it.
+/// </summary>
+public sealed class Filled : IShape
+{
+    private readonly Path _path;
+    private readonly string _rule;
+
+    public Filled(Path path, string rule)
+    {
+        _path = path;
+        _rule = rule;
+    }
+
+    public bool Inside(double x, double y) => _rule switch
+    {
+        "nonzero" => Winding.InsideNonzero(_path, x, y),
+        "evenodd" => Winding.InsideEvenOdd(_path, x, y),
+        _ => throw new ArgumentException($"unknown fill rule: {_rule}"),
+    };
+}
+
+/// <summary>
 /// The closed polygon through points, after m: every edge a segment of
 /// that width in device space, last point back to first, built as one
 /// shape. That's what makes a shared corner's coverage the coverage of the

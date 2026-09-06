@@ -343,7 +343,7 @@ public static class Renders
     public static Canvas Plate04() => Magnifier.Magnify(FBothOrders(), 2);
 
     /// <summary>Copies a into the left half of a canvas twice as wide, b into the right half.</summary>
-    private static Canvas SideBySide(Canvas a, Canvas b)
+    public static Canvas SideBySide(Canvas a, Canvas b)
     {
         var both = new Canvas(a.Width + b.Width, Math.Max(a.Height, b.Height));
         for (int y = 0; y < a.Height; y++)
@@ -354,6 +354,95 @@ public static class Renders
                 both.WritePixel(x + a.Width, y, b.PixelAt(x, y));
         return both;
     }
+
+    // -----------------------------------------------------------------
+    // Chapter 5 - a five-pointed star, filled four ways: under each rule,
+    // by the center question and by coverage.
+    // -----------------------------------------------------------------
+
+    /// <summary>Five points on a circle of radius 70 about (80.5, 80.5), the first straight up, visited every second one, closed.</summary>
+    public static Path Star()
+    {
+        var p = new Path();
+        for (int k = 0; k < 5; k++)
+        {
+            double a = (-90 + 144.0 * k) * Math.PI / 180.0;
+            var q = Tuple2.Point(80.5 + 70 * Math.Cos(a), 80.5 + 70 * Math.Sin(a));
+            if (k == 0) p.MoveTo(q); else p.LineTo(q);
+        }
+        p.Close();
+        return p;
+    }
+
+    private static Canvas StarPanel(string rule, string method)
+    {
+        var c = new Canvas(160, 160);
+        c.Fill(Paper);
+        var star = Star();
+        var s = new Filled(star, rule);
+        CoverageBuffer cov = method == "centers"
+            ? Rasterizer.RasterizeCenters(s, 160, 160)
+            : Rasterizer.RasterizeWithin(s, star.Bounds(), 160, 160);
+        Paint.PaintThrough(c, cov, Ink);
+        return c;
+    }
+
+    public static Canvas StarCenters() => SideBySide(StarPanel("nonzero", "centers"), StarPanel("evenodd", "centers"));
+
+    public static Canvas StarCoverage() => SideBySide(StarPanel("nonzero", "coverage"), StarPanel("evenodd", "coverage"));
+
+    public static Canvas Plate05()
+    {
+        var top = StarCenters();
+        var bottom = StarCoverage();
+        var both = new Canvas(320, 320);
+        for (int y = 0; y < 160; y++)
+        {
+            for (int x = 0; x < 320; x++)
+            {
+                both.WritePixel(x, y, top.PixelAt(x, y));
+                both.WritePixel(x, y + 160, bottom.PixelAt(x, y));
+            }
+        }
+        return Magnifier.Magnify(both, 2);
+    }
+
+    // -----------------------------------------------------------------
+    // Chapter 6 - the star shrunk to radius 1 about the origin, then
+    // twenty-four of them along a spiral, each bigger and turned a
+    // little further, filled nonzero by the sweep.
+    // -----------------------------------------------------------------
+
+    private static readonly Color SpiralInkA = new(0.9, 0.55, 0.1);
+    private static readonly Color SpiralInkB = new(0.2, 0.55, 0.85);
+    private static readonly Color SpiralInkC = new(0.85, 0.25, 0.3);
+
+    /// <summary>Chapter 5's star, moved to the origin and shrunk to radius 1, so one matrix can put it anywhere at any size.</summary>
+    public static Path UnitStar() =>
+        Path.TransformPath(Star(), Matrix3.Scaling(1.0 / 70, 1.0 / 70) * Matrix3.Translation(-80.5, -80.5));
+
+    public static Canvas Spiral()
+    {
+        var c = new Canvas(320, 320);
+        c.Fill(Paper);
+        var inks = new[] { SpiralInkA, SpiralInkB, SpiralInkC };
+        var unitStar = UnitStar();
+
+        for (int k = 0; k < 24; k++)
+        {
+            double a = k * 25.0 * Math.PI / 180.0;
+            double r = 20 + 5 * k;
+            var m = Matrix3.Translation(160.5 + r * Math.Cos(a), 160.5 + r * Math.Sin(a)) *
+                    Matrix3.Rotation(a) *
+                    Matrix3.Scaling(6 + 1.25 * k, 6 + 1.25 * k);
+            var cov = Sweep.FillPathAliased(Path.TransformPath(unitStar, m), "nonzero", 320, 320);
+            Paint.PaintThrough(c, cov, inks[k % 3]);
+        }
+
+        return c;
+    }
+
+    public static Canvas Plate06() => Magnifier.Magnify(Spiral(), 2);
 
     private static Canvas CopyCanvas(Canvas c)
     {
