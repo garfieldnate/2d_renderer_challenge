@@ -144,6 +144,12 @@ Before declaring a chapter done, have subagents implement it cold, as readers:
    `readers/<lang>/`, `FEEDBACK.md` goes to `readers/feedback/chapterNN-<lang>.md`, renders and
    copies of the book do not come back. Every reader's README must run its tests from its own
    directory, which the staging layout satisfies.
+1c. The prompt is `tools/reader_prompt.md`; fill in the placeholders rather than improvising.
+   Ten agents at once can hit the org's monthly spend limit mid-round (the chapter-4 round lost
+   seven of ten that way, four of them after their code was complete). Check the limit before a
+   round, launch in two waves, and collect each reader the moment it finishes. A reader cut off
+   after its tests pass can still be collected: run its suite yourself, revert any mutation it
+   left in place, and leave a note in its feedback file saying the feedback is the author's.
 2. Spread agents across model tiers (haiku, sonnet, opus) and language families (dynamic, managed,
    systems). Tell them to translate every scenario, write the renders to `out/` with the
    reference filenames, and write a candid `FEEDBACK.md` (ambiguities, hard-to-translate steps,
