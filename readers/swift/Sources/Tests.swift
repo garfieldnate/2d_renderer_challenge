@@ -94,6 +94,18 @@ func eqM(_ a: Matrix3, _ b: Matrix3, _ label: String) throws {
 func neM(_ a: Matrix3, _ b: Matrix3, _ label: String) throws {
     try step(!a.equals(b), "\(label): matrices unexpectedly equal (\(a.cells))")
 }
+func eqBounds(_ a: (Double, Double, Double, Double), _ b: (Double, Double, Double, Double), _ label: String) throws {
+    let ok = equal(a.0, b.0) && equal(a.1, b.1) && equal(a.2, b.2) && equal(a.3, b.3)
+    try step(ok, "\(label): \(a) != \(b)")
+}
+func eqSpans(_ a: [(Double, Double)], _ b: [(Double, Double)], _ label: String) throws {
+    let ok = a.count == b.count && zip(a, b).allSatisfy { equal($0.0, $1.0) && equal($0.1, $1.1) }
+    try step(ok, "\(label): \(a) != \(b)")
+}
+func eqXings(_ a: [(Double, Int)], _ b: [(Double, Int)], _ label: String) throws {
+    let ok = a.count == b.count && zip(a, b).allSatisfy { equal($0.0, $1.0) && $0.1 == $1.1 }
+    try step(ok, "\(label): \(a) != \(b)")
+}
 
 func runTests() {
     chapter(1)
@@ -922,6 +934,14 @@ func runTests() {
         try eqC(pixelAt(c, 4, 2), color(1, 1, 1), "pixel_at(c, 4, 2)")
         try eq(totalInk(c), 5, EPSILON, "total_ink(c)")
     }
+    scenario("The weights are applied in light, whatever the switch says") {
+        linearBlending = false
+        let c = canvas(10, 10)
+        lineWu(c, 0, 0, 4, 2, color(1, 1, 1))
+        try eqC(pixelAt(c, 1, 0), color(0.5, 0.5, 0.5), "pixel_at(c, 1, 0)")
+        try eqC(pixelAt(c, 1, 1), color(0.5, 0.5, 0.5), "pixel_at(c, 1, 1)")
+        linearBlending = true
+    }
     scenario("A diagonal has uniform weights") {
         let c = canvas(10, 10)
         lineWu(c, 0, 0, 5, 5, color(1, 1, 1))
@@ -1181,6 +1201,10 @@ func runTests() {
         try eq(dot(a, b), 8, EPSILON, "dot(a, b)")
         try eq(dot(a, vector(-2, 1)), 0, EPSILON, "dot(a, vector(-2, 1))")
     }
+    scenario("magnitude and dot look at x and y only") {
+        try eq(magnitude(point(3, 4)), 5, EPSILON, "magnitude(point(3, 4))")
+        try eq(dot(point(1, 2), point(2, 3)), 8, EPSILON, "dot(point(1, 2), point(2, 3))")
+    }
     scenario("The cross product of two vectors is a number") {
         let a = vector(1, 0), b = vector(0, 1)
         try eq(cross(a, b), 1, EPSILON, "cross(a, b)")
@@ -1272,6 +1296,11 @@ func runTests() {
         let A = matrix3(1, 2, 3, 2, 4, 6, 0, 0, 1)
         try eq(determinant(A), 0, EPSILON, "determinant(A)")
         try eqBool(isInvertible(A), false, "is_invertible(A)")
+    }
+    scenario("Invertibility is an exact test against zero") {
+        try eqBool(isInvertible(scaling(0.0001, 1)), true, "is_invertible(scaling(0.0001, 1))")
+        try eq(determinant(scaling(0.0001, 1)), 0.0001, EPSILON, "determinant(scaling(0.0001, 1))")
+        try eqT(inverse(scaling(0.0001, 1)) * point(0.0001, 3), point(1, 3), "inverse(scaling(0.0001, 1)) * point(0.0001, 3)")
     }
     scenario("Calculating the inverse of a matrix") {
         let A = matrix3(3, 0, 2, 2, 0, -2, 0, 1, 1)
@@ -1441,6 +1470,11 @@ func runTests() {
         try eq(coverageAt(cov, 3, 3), 1, EPSILON, "coverage_at(cov, 3, 3)")
         try eq(ink(cov), 1, EPSILON, "ink(cov)")
     }
+    scenario("A union of nothing is inside nowhere") {
+        let s = union([])
+        try eqBool(inside(s, 0, 0), false, "inside(s, 0, 0)")
+        try eq(ink(rasterize(s, 4, 4)), 0, EPSILON, "ink(rasterize(s, 4, 4))")
+    }
     scenario("A union is inside when any of its parts is") {
         let s = union([circle(2, 2, 1), rectangle(5, 0, 7, 4)])
         try eqBool(inside(s, 2, 2), true, "inside(s, 2, 2)")
@@ -1594,6 +1628,18 @@ func runTests() {
         try eqT(f[5], point(65.142, 120.1708), "f[5]")
         try eqT(f[9], point(19.9291, 134.4817), "f[9]")
     }
+    scenario("side_by_side puts the first canvas on the left") {
+        let a = canvas(2, 3), b = canvas(4, 3)
+        fill(a, color(1, 0, 0))
+        fill(b, color(0, 0, 1))
+        let c = sideBySide(a, b)
+        try eqI(c.width, 6, "c.width")
+        try eqI(c.height, 3, "c.height")
+        try eqC(pixelAt(c, 0, 0), color(1, 0, 0), "pixel_at(c, 0, 0)")
+        try eqC(pixelAt(c, 1, 2), color(1, 0, 0), "pixel_at(c, 1, 2)")
+        try eqC(pixelAt(c, 2, 0), color(0, 0, 1), "pixel_at(c, 2, 0)")
+        try eqC(pixelAt(c, 5, 2), color(0, 0, 1), "pixel_at(c, 5, 2)")
+    }
     scenario("The fan, both orders") {
         let c = fanBothOrders()
         let ref = readFile("reference/chapter-04/fan-both-orders.ppm")
@@ -1637,6 +1683,719 @@ func runTests() {
         try eqPx(ppmPixel(p6, 431, 229), (234, 234, 229), 1, "ppm_pixel(p6, 431, 229)")
         try eqPx(ppmPixel(p6, 445, 249), (234, 234, 229), 1, "ppm_pixel(p6, 445, 249)")
         try eqPx(ppmPixel(p6, 368, 273), (177, 177, 174), 1, "ppm_pixel(p6, 368, 273)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+
+    chapter(5)
+    // ============================================== chapter05-paths.feature
+    feature("A path is a list of instructions")
+
+    scenario("An empty path") {
+        let p = path()
+        try eqI(subpaths(p).count, 0, "length(subpaths(p))")
+        try eqI(edges(p).count, 0, "length(edges(p))")
+        try eqBounds(bounds(p), (0, 0, 0, 0), "bounds(p)")
+    }
+    scenario("A triangle, closed") {
+        let p = path()
+        moveTo(p, point(1, 1))
+        lineTo(p, point(9, 1))
+        lineTo(p, point(5, 8))
+        close(p)
+        try eqI(subpaths(p).count, 1, "length(subpaths(p))")
+        try eqBool(subpaths(p)[0].closed, true, "subpaths(p)[0].closed")
+        try eqI(subpaths(p)[0].points.count, 3, "length(subpaths(p)[0].points)")
+        try eqT(subpaths(p)[0].points[2], point(5, 8), "subpaths(p)[0].points[2]")
+        try eqI(edges(p).count, 3, "length(edges(p))")
+        try eqT(edges(p)[2].0, point(5, 8), "edges(p)[2].0")
+        try eqT(edges(p)[2].1, point(1, 1), "edges(p)[2].1")
+        try eqBounds(bounds(p), (1, 1, 9, 8), "bounds(p)")
+    }
+    scenario("A triangle left open still has three edges") {
+        let p = path()
+        moveTo(p, point(1, 1))
+        lineTo(p, point(9, 1))
+        lineTo(p, point(5, 8))
+        try eqBool(subpaths(p)[0].closed, false, "subpaths(p)[0].closed")
+        try eqI(edges(p).count, 3, "length(edges(p))")
+        try eqT(edges(p)[2].0, point(5, 8), "edges(p)[2].0")
+        try eqT(edges(p)[2].1, point(1, 1), "edges(p)[2].1")
+    }
+    scenario("move_to starts a second subpath") {
+        let p = path()
+        moveTo(p, point(0, 0))
+        lineTo(p, point(10, 0))
+        lineTo(p, point(10, 10))
+        lineTo(p, point(0, 10))
+        close(p)
+        moveTo(p, point(3, 3))
+        lineTo(p, point(3, 7))
+        lineTo(p, point(7, 7))
+        lineTo(p, point(7, 3))
+        close(p)
+        try eqI(subpaths(p).count, 2, "length(subpaths(p))")
+        try eqT(subpaths(p)[1].points[0], point(3, 3), "subpaths(p)[1].points[0]")
+        try eqI(edges(p).count, 8, "length(edges(p))")
+        try eqBounds(bounds(p), (0, 0, 10, 10), "bounds(p)")
+    }
+    scenario("line_to after a close starts a new subpath where the closed one began") {
+        let p = path()
+        moveTo(p, point(1, 1))
+        lineTo(p, point(4, 1))
+        lineTo(p, point(4, 4))
+        close(p)
+        lineTo(p, point(9, 9))
+        try eqI(subpaths(p).count, 2, "length(subpaths(p))")
+        try eqBool(subpaths(p)[1].closed, false, "subpaths(p)[1].closed")
+        try eqI(subpaths(p)[1].points.count, 2, "length(subpaths(p)[1].points)")
+        try eqT(subpaths(p)[1].points[0], point(1, 1), "subpaths(p)[1].points[0]")
+        try eqT(subpaths(p)[1].points[1], point(9, 9), "subpaths(p)[1].points[1]")
+    }
+    scenario("line_to with nothing to extend behaves as move_to") {
+        let p = path()
+        lineTo(p, point(2, 3))
+        try eqI(subpaths(p).count, 1, "length(subpaths(p))")
+        try eqI(subpaths(p)[0].points.count, 1, "length(subpaths(p)[0].points)")
+        try eqT(subpaths(p)[0].points[0], point(2, 3), "subpaths(p)[0].points[0]")
+    }
+    scenario("A subpath of one point has no edges, and closing nothing does nothing") {
+        let p = path()
+        close(p)
+        moveTo(p, point(1, 1))
+        moveTo(p, point(2, 2))
+        try eqI(subpaths(p).count, 2, "length(subpaths(p))")
+        try eqI(edges(p).count, 0, "length(edges(p))")
+        try eqBounds(bounds(p), (1, 1, 2, 2), "bounds(p)")
+    }
+    scenario("A subpath of two points has two edges and encloses nothing") {
+        let p = path()
+        moveTo(p, point(1, 1))
+        lineTo(p, point(9, 9))
+        try eqI(edges(p).count, 2, "length(edges(p))")
+        try eqI(windingAt(p, 3, 5), 0, "winding_at(p, 3, 5)")
+    }
+    scenario("polygon is a closed subpath through its points") {
+        let p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+        try eqI(subpaths(p).count, 1, "length(subpaths(p))")
+        try eqBool(subpaths(p)[0].closed, true, "subpaths(p)[0].closed")
+        try eqI(edges(p).count, 4, "length(edges(p))")
+    }
+    scenario("circle_path is a polygon standing in for a circle") {
+        let p = circlePath(10, 10, 5, 8)
+        try eqI(subpaths(p)[0].points.count, 8, "length(subpaths(p)[0].points)")
+        try eqT(subpaths(p)[0].points[0], point(15, 10), "subpaths(p)[0].points[0]")
+        try eqT(subpaths(p)[0].points[1], point(13.5355, 13.5355), "subpaths(p)[0].points[1]")
+        try eqT(subpaths(p)[0].points[2], point(10, 15), "subpaths(p)[0].points[2]")
+        try eqBounds(bounds(p), (5, 5, 15, 15), "bounds(p)")
+    }
+
+    // ============================================ chapter05-winding.feature
+    feature("Is this point inside?")
+
+    scenario("Crossings from inside and outside a square") {
+        let p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+        try eqI(crossings(p, 5, 5), 1, "crossings(p, 5, 5)")
+        try eqI(crossings(p, 15, 5), 0, "crossings(p, 15, 5)")
+        try eqI(crossings(p, -1, 5), 2, "crossings(p, -1, 5)")
+    }
+    scenario("A clockwise square winds once") {
+        let p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+        try eqI(windingAt(p, 5, 5), 1, "winding_at(p, 5, 5)")
+        try eqI(windingAt(p, 15, 5), 0, "winding_at(p, 15, 5)")
+        try eqI(windingAt(p, -1, 5), 0, "winding_at(p, -1, 5)")
+        try eqI(windingAt(p, 5, -1), 0, "winding_at(p, 5, -1)")
+        try eqI(windingAt(p, 5, 11), 0, "winding_at(p, 5, 11)")
+    }
+    scenario("The same square the other way round winds minus once") {
+        let p = polygon(point(0, 0), point(0, 10), point(10, 10), point(10, 0))
+        try eqI(windingAt(p, 5, 5), -1, "winding_at(p, 5, 5)")
+        try eqI(crossings(p, 5, 5), 1, "crossings(p, 5, 5)")
+    }
+    scenario("A ray through a vertex counts it once") {
+        let p = polygon(point(5, 0), point(10, 5), point(5, 10), point(0, 5))
+        try eqI(crossings(p, 2, 5), 1, "crossings(p, 2, 5)")
+        try eqI(windingAt(p, 2, 5), 1, "winding_at(p, 2, 5)")
+        try eqI(crossings(p, -1, 5), 2, "crossings(p, -1, 5)")
+        try eqI(windingAt(p, -1, 5), 0, "winding_at(p, -1, 5)")
+        try eqI(windingAt(p, 12, 5), 0, "winding_at(p, 12, 5)")
+        try eqI(windingAt(p, 5, 5), 1, "winding_at(p, 5, 5)")
+    }
+    scenario("The boundary belongs to the top and the left") {
+        let p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+        try eqI(windingAt(p, 5, 0), 1, "winding_at(p, 5, 0)")
+        try eqI(windingAt(p, 0, 5), 1, "winding_at(p, 0, 5)")
+        try eqI(windingAt(p, 0, 0), 1, "winding_at(p, 0, 0)")
+        try eqI(windingAt(p, 5, 10), 0, "winding_at(p, 5, 10)")
+        try eqI(windingAt(p, 10, 5), 0, "winding_at(p, 10, 5)")
+        try eqI(windingAt(p, 10, 10), 0, "winding_at(p, 10, 10)")
+    }
+    scenario("Two rectangles that share an edge cover it once") {
+        let p = path()
+        moveTo(p, point(0, 0))
+        lineTo(p, point(5, 0))
+        lineTo(p, point(5, 10))
+        lineTo(p, point(0, 10))
+        close(p)
+        moveTo(p, point(5, 0))
+        lineTo(p, point(10, 0))
+        lineTo(p, point(10, 10))
+        lineTo(p, point(5, 10))
+        close(p)
+        try eqI(windingAt(p, 2, 5), 1, "winding_at(p, 2, 5)")
+        try eqI(windingAt(p, 5, 5), 1, "winding_at(p, 5, 5)")
+        try eqI(windingAt(p, 8, 5), 1, "winding_at(p, 8, 5)")
+    }
+    scenario("A diamond wound twice has winding number 2") {
+        let p = path()
+        moveTo(p, point(5, 0))
+        lineTo(p, point(10, 5))
+        lineTo(p, point(5, 10))
+        lineTo(p, point(0, 5))
+        lineTo(p, point(5, 0))
+        lineTo(p, point(10, 5))
+        lineTo(p, point(5, 10))
+        lineTo(p, point(0, 5))
+        close(p)
+        try eqI(edges(p).count, 8, "length(edges(p))")
+        try eqI(windingAt(p, 5, 5), 2, "winding_at(p, 5, 5)")
+        try eqI(crossings(p, 5, 5), 2, "crossings(p, 5, 5)")
+        try eqI(windingAt(p, 12, 5), 0, "winding_at(p, 12, 5)")
+    }
+    scenario("The polygon circle") {
+        let p = circlePath(10, 10, 5, 8)
+        try eqI(windingAt(p, 10, 10), 1, "winding_at(p, 10, 10)")
+        try eqI(windingAt(p, 14.9, 10), 1, "winding_at(p, 14.9, 10)")
+        try eqI(windingAt(p, 15, 10), 0, "winding_at(p, 15, 10)")
+        try eqI(windingAt(p, 10, 5.1), 1, "winding_at(p, 10, 5.1)")
+        try eqI(windingAt(p, 10, 4.9), 0, "winding_at(p, 10, 4.9)")
+    }
+    scenario("The pentagram's center winds twice") {
+        let p = star()
+        try eqI(windingAt(p, 80.5, 80.5), 2, "winding_at(p, 80.5, 80.5)")
+        try eqI(crossings(p, 80.5, 80.5), 2, "crossings(p, 80.5, 80.5)")
+        try eqI(windingAt(p, 80.5, 20), 1, "winding_at(p, 80.5, 20)")
+        try eqI(windingAt(p, 30, 60), 1, "winding_at(p, 30, 60)")
+        try eqI(crossings(p, 30, 60), 3, "crossings(p, 30, 60)")
+        try eqI(windingAt(p, 80.5, 120), 0, "winding_at(p, 80.5, 120)")
+        try eqI(crossings(p, 80.5, 120), 2, "crossings(p, 80.5, 120)")
+        try eqI(windingAt(p, 10, 10), 0, "winding_at(p, 10, 10)")
+    }
+
+    // ============================================== chapter05-rules.feature
+    feature("Two rules")
+
+    scenario("A single loop is inside under both rules") {
+        let p = polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+        try eqBool(insideNonzero(p, 5, 5), true, "inside_nonzero(p, 5, 5)")
+        try eqBool(insideEvenOdd(p, 5, 5), true, "inside_evenodd(p, 5, 5)")
+        try eqBool(insideNonzero(p, 15, 5), false, "inside_nonzero(p, 15, 5)")
+        try eqBool(insideEvenOdd(p, 15, 5), false, "inside_evenodd(p, 15, 5)")
+    }
+    scenario("An inner loop the other way round is a hole under both rules") {
+        let p = path()
+        moveTo(p, point(0, 0))
+        lineTo(p, point(10, 0))
+        lineTo(p, point(10, 10))
+        lineTo(p, point(0, 10))
+        close(p)
+        moveTo(p, point(3, 3))
+        lineTo(p, point(3, 7))
+        lineTo(p, point(7, 7))
+        lineTo(p, point(7, 3))
+        close(p)
+        try eqI(windingAt(p, 5, 5), 0, "winding_at(p, 5, 5)")
+        try eqI(windingAt(p, 1, 1), 1, "winding_at(p, 1, 1)")
+        try eqBool(insideNonzero(p, 5, 5), false, "inside_nonzero(p, 5, 5)")
+        try eqBool(insideEvenOdd(p, 5, 5), false, "inside_evenodd(p, 5, 5)")
+        try eqBool(insideNonzero(p, 1, 1), true, "inside_nonzero(p, 1, 1)")
+    }
+    scenario("An inner loop the same way round is a hole only under even-odd") {
+        let p = path()
+        moveTo(p, point(0, 0))
+        lineTo(p, point(10, 0))
+        lineTo(p, point(10, 10))
+        lineTo(p, point(0, 10))
+        close(p)
+        moveTo(p, point(3, 3))
+        lineTo(p, point(7, 3))
+        lineTo(p, point(7, 7))
+        lineTo(p, point(3, 7))
+        close(p)
+        try eqI(windingAt(p, 5, 5), 2, "winding_at(p, 5, 5)")
+        try eqBool(insideNonzero(p, 5, 5), true, "inside_nonzero(p, 5, 5)")
+        try eqBool(insideEvenOdd(p, 5, 5), false, "inside_evenodd(p, 5, 5)")
+    }
+    scenario("A loop wound twice vanishes under even-odd") {
+        let p = path()
+        moveTo(p, point(5, 0))
+        lineTo(p, point(10, 5))
+        lineTo(p, point(5, 10))
+        lineTo(p, point(0, 5))
+        lineTo(p, point(5, 0))
+        lineTo(p, point(10, 5))
+        lineTo(p, point(5, 10))
+        lineTo(p, point(0, 5))
+        close(p)
+        try eqBool(insideNonzero(p, 5, 5), true, "inside_nonzero(p, 5, 5)")
+        try eqBool(insideEvenOdd(p, 5, 5), false, "inside_evenodd(p, 5, 5)")
+    }
+    scenario("The pentagram's center is inside under nonzero and outside under even-odd") {
+        let p = star()
+        try eqBool(insideNonzero(p, 80.5, 80.5), true, "inside_nonzero(p, 80.5, 80.5)")
+        try eqBool(insideEvenOdd(p, 80.5, 80.5), false, "inside_evenodd(p, 80.5, 80.5)")
+        try eqBool(insideNonzero(p, 80.5, 20), true, "inside_nonzero(p, 80.5, 20)")
+        try eqBool(insideEvenOdd(p, 80.5, 20), true, "inside_evenodd(p, 80.5, 20)")
+        try eqBool(insideNonzero(p, 80.5, 120), false, "inside_nonzero(p, 80.5, 120)")
+        try eqBool(insideEvenOdd(p, 80.5, 120), false, "inside_evenodd(p, 80.5, 120)")
+    }
+    scenario("A filled path is a shape") {
+        let s = filled(polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6)), "nonzero")
+        let cov = rasterize(s, 8, 8)
+        try eqBool(inside(s, 3, 3), true, "inside(s, 3, 3)")
+        try eqBool(inside(s, 7, 3), false, "inside(s, 7, 3)")
+        try eq(coverageAt(cov, 3, 3), 1, EPSILON, "coverage_at(cov, 3, 3)")
+        try eq(coverageAt(cov, 1, 3), 0, EPSILON, "coverage_at(cov, 1, 3)")
+        try eq(coverageAt(cov, 6, 3), 0, EPSILON, "coverage_at(cov, 6, 3)")
+        try eq(ink(cov), 16, EPSILON, "ink(cov)")
+    }
+    scenario("A filled path takes the rule seriously") {
+        let p = star()
+        let a = filled(p, "nonzero"), b = filled(p, "evenodd")
+        let ca = rasterize(a, 160, 160), cb = rasterize(b, 160, 160)
+        try eq(coverageAt(ca, 80, 80), 1, EPSILON, "coverage_at(ca, 80, 80)")
+        try eq(coverageAt(cb, 80, 80), 0, EPSILON, "coverage_at(cb, 80, 80)")
+        try eq(coverageAt(ca, 80, 20), 1, EPSILON, "coverage_at(ca, 80, 20)")
+        try eq(coverageAt(cb, 80, 20), 1, EPSILON, "coverage_at(cb, 80, 20)")
+        try eq(coverageAt(ca, 80, 10), 0.0625, EPSILON, "coverage_at(ca, 80, 10)")
+        try eq(coverageAt(cb, 80, 10), 0.0625, EPSILON, "coverage_at(cb, 80, 10)")
+        try eq(ink(ca), 5499.9375, EPSILON, "ink(ca)")
+        try eq(ink(cb), 3800.375, EPSILON, "ink(cb)")
+    }
+    scenario("Rasterizing within the bounds gives the same coverage") {
+        let p = star()
+        let s = filled(p, "evenodd")
+        let full = rasterize(s, 160, 160)
+        let within = rasterizeWithin(s, bounds(p), 160, 160)
+        try eq(ink(within), ink(full), EPSILON, "ink(within)")
+        try eq(coverageAt(within, 80, 20), coverageAt(full, 80, 20), EPSILON, "coverage_at(within, 80, 20)")
+        try eq(coverageAt(within, 13, 58), coverageAt(full, 13, 58), EPSILON, "coverage_at(within, 13, 58)")
+        try eq(coverageAt(within, 10, 10), 0, EPSILON, "coverage_at(within, 10, 10)")
+    }
+    scenario("The box is inclusive of the pixels it touches, and clipped to the buffer") {
+        let s = filled(polygon(point(1.5, 1.5), point(6.5, 1.5), point(6.5, 6.5), point(1.5, 6.5)), "nonzero")
+        let cov = rasterizeWithin(s, (1.5, 1.5, 6.5, 6.5), 8, 8)
+        let big = rasterizeWithin(s, (-5, -5, 20, 20), 8, 8)
+        try eq(coverageAt(cov, 1, 1), 0.25, EPSILON, "coverage_at(cov, 1, 1)")
+        try eq(coverageAt(cov, 6, 6), 0.25, EPSILON, "coverage_at(cov, 6, 6)")
+        try eq(coverageAt(cov, 3, 3), 1, EPSILON, "coverage_at(cov, 3, 3)")
+        try eq(ink(cov), 25, EPSILON, "ink(cov)")
+        try eq(ink(big), 25, EPSILON, "ink(big)")
+    }
+
+    // ============================================== chapter05-plate.feature
+    feature("Plate 5")
+
+    scenario("The pentagram") {
+        let p = star()
+        try eqI(subpaths(p).count, 1, "length(subpaths(p))")
+        try eqI(edges(p).count, 5, "length(edges(p))")
+        try eqT(subpaths(p)[0].points[0], point(80.5, 10.5), "subpaths(p)[0].points[0]")
+        try eqT(subpaths(p)[0].points[1], point(121.645, 137.1312), "subpaths(p)[0].points[1]")
+        try eqT(subpaths(p)[0].points[2], point(13.926, 58.8688), "subpaths(p)[0].points[2]")
+        try eqT(subpaths(p)[0].points[3], point(147.074, 58.8688), "subpaths(p)[0].points[3]")
+        try eqT(subpaths(p)[0].points[4], point(39.355, 137.1312), "subpaths(p)[0].points[4]")
+        try eqBounds(bounds(p), (13.926, 10.5, 147.074, 137.1312), "bounds(p)")
+    }
+    scenario("The star by the center question") {
+        let c = starCenters()
+        let ref = readFile("reference/chapter-05/star-centers.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 320, "c.width")
+        try eqI(c.height, 160, "c.height")
+        try eqPx(ppmPixel(p6, 80, 80), (243, 196, 89), 1, "ppm_pixel(p6, 80, 80)")
+        try eqPx(ppmPixel(p6, 240, 80), (39, 39, 44), 1, "ppm_pixel(p6, 240, 80)")
+        try eqPx(ppmPixel(p6, 80, 20), (243, 196, 89), 1, "ppm_pixel(p6, 80, 20)")
+        try eqPx(ppmPixel(p6, 240, 20), (243, 196, 89), 1, "ppm_pixel(p6, 240, 20)")
+        try eqPx(ppmPixel(p6, 30, 60), (243, 196, 89), 1, "ppm_pixel(p6, 30, 60)")
+        try eqPx(ppmPixel(p6, 190, 60), (243, 196, 89), 1, "ppm_pixel(p6, 190, 60)")
+        try eqPx(ppmPixel(p6, 80, 120), (39, 39, 44), 1, "ppm_pixel(p6, 80, 120)")
+        try eqPx(ppmPixel(p6, 80, 10), (39, 39, 44), 1, "ppm_pixel(p6, 80, 10)")
+        try eqPx(ppmPixel(p6, 10, 10), (39, 39, 44), 1, "ppm_pixel(p6, 10, 10)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+    scenario("The star by coverage") {
+        let c = starCoverage()
+        let ref = readFile("reference/chapter-05/star-coverage.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 320, "c.width")
+        try eqI(c.height, 160, "c.height")
+        try eqPx(ppmPixel(p6, 80, 80), (243, 196, 89), 1, "ppm_pixel(p6, 80, 80)")
+        try eqPx(ppmPixel(p6, 240, 80), (39, 39, 44), 1, "ppm_pixel(p6, 240, 80)")
+        try eqPx(ppmPixel(p6, 80, 20), (243, 196, 89), 1, "ppm_pixel(p6, 80, 20)")
+        try eqPx(ppmPixel(p6, 240, 20), (243, 196, 89), 1, "ppm_pixel(p6, 240, 20)")
+        try eqPx(ppmPixel(p6, 80, 120), (39, 39, 44), 1, "ppm_pixel(p6, 80, 120)")
+        try eqPx(ppmPixel(p6, 80, 10), (77, 65, 48), 1, "ppm_pixel(p6, 80, 10)")
+        try eqPx(ppmPixel(p6, 240, 10), (77, 65, 48), 1, "ppm_pixel(p6, 240, 10)")
+        try eqPx(ppmPixel(p6, 80, 11), (199, 160, 76), 1, "ppm_pixel(p6, 80, 11)")
+        try eqPx(ppmPixel(p6, 14, 58), (101, 83, 52), 1, "ppm_pixel(p6, 14, 58)")
+        try eqPx(ppmPixel(p6, 174, 58), (101, 83, 52), 1, "ppm_pixel(p6, 174, 58)")
+        try eqPx(ppmPixel(p6, 10, 10), (39, 39, 44), 1, "ppm_pixel(p6, 10, 10)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+    scenario("Plate 5") {
+        let c = plate05()
+        let ref = readFile("reference/chapter-05/plate-05.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 640, "c.width")
+        try eqI(c.height, 640, "c.height")
+        try eqPx(ppmPixel(p6, 160, 160), (243, 196, 89), 1, "ppm_pixel(p6, 160, 160)")
+        try eqPx(ppmPixel(p6, 480, 160), (39, 39, 44), 1, "ppm_pixel(p6, 480, 160)")
+        try eqPx(ppmPixel(p6, 160, 480), (243, 196, 89), 1, "ppm_pixel(p6, 160, 480)")
+        try eqPx(ppmPixel(p6, 480, 480), (39, 39, 44), 1, "ppm_pixel(p6, 480, 480)")
+        try eqPx(ppmPixel(p6, 160, 40), (243, 196, 89), 1, "ppm_pixel(p6, 160, 40)")
+        try eqPx(ppmPixel(p6, 480, 360), (243, 196, 89), 1, "ppm_pixel(p6, 480, 360)")
+        try eqPx(ppmPixel(p6, 160, 20), (39, 39, 44), 1, "ppm_pixel(p6, 160, 20)")
+        try eqPx(ppmPixel(p6, 160, 341), (77, 65, 48), 1, "ppm_pixel(p6, 160, 341)")
+        try eqPx(ppmPixel(p6, 480, 341), (77, 65, 48), 1, "ppm_pixel(p6, 480, 341)")
+        try eqPx(ppmPixel(p6, 348, 437), (101, 83, 52), 1, "ppm_pixel(p6, 348, 437)")
+        try eqPx(ppmPixel(p6, 20, 20), (39, 39, 44), 1, "ppm_pixel(p6, 20, 20)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+
+    chapter(6)
+    // ============================================== chapter06-edges.feature
+    feature("The edge table")
+
+    scenario("A rectangle has two edges in its table") {
+        let p = polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6))
+        let t = edgeTable(p)
+        try eqI(t.count, 2, "length(t)")
+        try eq(t[0].yTop, 2, EPSILON, "t[0].y_top")
+        try eq(t[0].yBottom, 6, EPSILON, "t[0].y_bottom")
+        try eq(t[0].xTop, 2, EPSILON, "t[0].x_top")
+        try eq(t[0].slope, 0, EPSILON, "t[0].slope")
+        try eqI(t[0].direction, -1, "t[0].direction")
+        try eq(t[1].xTop, 6, EPSILON, "t[1].x_top")
+        try eqI(t[1].direction, 1, "t[1].direction")
+    }
+    scenario("A triangle's edges carry their slopes") {
+        let p = polygon(point(0, 0), point(10, 0), point(5, 10))
+        let t = edgeTable(p)
+        try eqI(t.count, 2, "length(t)")
+        try eq(t[0].xTop, 0, EPSILON, "t[0].x_top")
+        try eq(t[0].slope, 0.5, EPSILON, "t[0].slope")
+        try eqI(t[0].direction, -1, "t[0].direction")
+        try eq(t[1].xTop, 10, EPSILON, "t[1].x_top")
+        try eq(t[1].slope, -0.5, EPSILON, "t[1].slope")
+        try eqI(t[1].direction, 1, "t[1].direction")
+    }
+    scenario("The table is sorted by top, then by x at the top") {
+        let p = path()
+        moveTo(p, point(2, 2))
+        lineTo(p, point(4, 1))
+        lineTo(p, point(6, 3))
+        lineTo(p, point(8, 1))
+        lineTo(p, point(9, 6))
+        lineTo(p, point(1, 6))
+        close(p)
+        let t = edgeTable(p)
+        try eqI(t.count, 5, "length(t)")
+        try eq(t[0].yTop, 1, EPSILON, "t[0].y_top")
+        try eq(t[0].xTop, 4, EPSILON, "t[0].x_top")
+        try eq(t[1].yTop, 1, EPSILON, "t[1].y_top")
+        try eq(t[1].xTop, 4, EPSILON, "t[1].x_top")
+        try eq(t[2].yTop, 1, EPSILON, "t[2].y_top")
+        try eq(t[2].xTop, 8, EPSILON, "t[2].x_top")
+        try eq(t[3].yTop, 1, EPSILON, "t[3].y_top")
+        try eq(t[3].xTop, 8, EPSILON, "t[3].x_top")
+        try eq(t[4].yTop, 2, EPSILON, "t[4].y_top")
+        try eq(t[4].xTop, 2, EPSILON, "t[4].x_top")
+    }
+    scenario("A horizontal edge is dropped, not clamped") {
+        let p = polygon(point(0, 0), point(10, 0), point(10, 5), point(0, 5))
+        let t = edgeTable(p)
+        try eqI(t.count, 2, "length(t)")
+        try eq(t[0].xTop, 0, EPSILON, "t[0].x_top")
+        try eq(t[1].xTop, 10, EPSILON, "t[1].x_top")
+    }
+    scenario("An edge knows where it crosses a height") {
+        let p = polygon(point(0, 0), point(10, 0), point(5, 10))
+        let t = edgeTable(p)
+        try eq(xAt(t[0], 4), 2, EPSILON, "x_at(t[0], 4)")
+        try eq(xAt(t[1], 4), 8, EPSILON, "x_at(t[1], 4)")
+        try eq(xAt(t[0], 0.5), 0.25, EPSILON, "x_at(t[0], 0.5)")
+    }
+    scenario("The edge table is the same whichever way the path was drawn") {
+        let a = polygon(point(0, 0), point(10, 0), point(5, 10))
+        let b = polygon(point(0, 0), point(5, 10), point(10, 0))
+        let ta = edgeTable(a), tb = edgeTable(b)
+        try eq(ta[0].xTop, tb[0].xTop, EPSILON, "ta[0].x_top = tb[0].x_top")
+        try eq(ta[0].slope, tb[0].slope, EPSILON, "ta[0].slope = tb[0].slope")
+        try eqI(ta[0].direction, -1, "ta[0].direction")
+        try eqI(tb[0].direction, 1, "tb[0].direction")
+    }
+
+    // ============================================== chapter06-spans.feature
+    feature("Crossings on a row, and spans")
+
+    scenario("Crossings on a row, sorted by x") {
+        let p = polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6))
+        let table = edgeTable(p)
+        try eqXings(crossingsOnRow(table, 3.5), [(2, -1), (6, 1)], "crossings_on_row(edge_table(p), 3.5)")
+        try eqXings(crossingsOnRow(table, 1.5), [], "crossings_on_row(edge_table(p), 1.5)")
+        try eqXings(crossingsOnRow(table, 6), [], "crossings_on_row(edge_table(p), 6)")
+        try eqI(crossingsOnRow(table, 2).count, 2, "length(crossings_on_row(edge_table(p), 2))")
+    }
+    scenario("The star's crossings through its middle") {
+        let xs = crossingsOnRow(edgeTable(star()), 80.5)
+        try eqI(xs.count, 4, "length(xs)")
+        try eqXings([xs[0]], [(43.6988, -1)], "xs[0]")
+        try eqXings([xs[1]], [(57.7556, -1)], "xs[1]")
+        try eqXings([xs[2]], [(103.2444, 1)], "xs[2]")
+        try eqXings([xs[3]], [(117.3012, 1)], "xs[3]")
+    }
+    scenario("Spans from crossings under each rule") {
+        let xs: [(Double, Int)] = [(1, 1), (3, 1), (5, -1), (7, -1)]
+        try eqSpans(spansFromCrossings(xs, "nonzero"), [(1, 7)], "spans_from_crossings(xs, \"nonzero\")")
+        try eqSpans(spansFromCrossings(xs, "evenodd"), [(1, 3), (5, 7)], "spans_from_crossings(xs, \"evenodd\")")
+        try eqSpans(spansFromCrossings([], "nonzero"), [], "spans_from_crossings([], \"nonzero\")")
+    }
+    scenario("The spans of an axis-aligned rectangle are exact") {
+        let p = polygon(point(1.25, 2), point(4.75, 2), point(4.75, 5), point(1.25, 5))
+        try eqSpans(spans(p, "nonzero", 1), [], "spans(p, \"nonzero\", 1)")
+        try eqSpans(spans(p, "nonzero", 2), [(1.25, 4.75)], "spans(p, \"nonzero\", 2)")
+        try eqSpans(spans(p, "nonzero", 4), [(1.25, 4.75)], "spans(p, \"nonzero\", 4)")
+        try eqSpans(spans(p, "nonzero", 5), [], "spans(p, \"nonzero\", 5)")
+    }
+    scenario("A rectangle whose edges sit on sample heights") {
+        let p = polygon(point(1.5, 2.5), point(4.5, 2.5), point(4.5, 5.5), point(1.5, 5.5))
+        try eqSpans(spans(p, "nonzero", 1), [], "spans(p, \"nonzero\", 1)")
+        try eqSpans(spans(p, "nonzero", 2), [(1.5, 4.5)], "spans(p, \"nonzero\", 2)")
+        try eqSpans(spans(p, "nonzero", 4), [(1.5, 4.5)], "spans(p, \"nonzero\", 4)")
+        try eqSpans(spans(p, "nonzero", 5), [], "spans(p, \"nonzero\", 5)")
+    }
+    let triangleSpanRows: [(Int, Double, Double)] = [
+        (0, 0.25, 9.75), (1, 0.75, 9.25), (4, 2.25, 7.75), (9, 4.75, 5.25),
+    ]
+    for (row, x0, x1) in triangleSpanRows {
+        scenario("A triangle's spans narrow by one per row [row=\(row), x0=\(x0), x1=\(x1)]") {
+            let p = polygon(point(0, 0), point(10, 0), point(5, 10))
+            try eqSpans(spans(p, "nonzero", row), [(x0, x1)], "spans(p, \"nonzero\", \(row))")
+        }
+    }
+    scenario("The row past the triangle's apex has no span") {
+        let p = polygon(point(0, 0), point(10, 0), point(5, 10))
+        try eqSpans(spans(p, "nonzero", 10), [], "spans(p, \"nonzero\", 10)")
+    }
+    scenario("A flat top is not a span of its own") {
+        let p = polygon(point(0, 0), point(10, 0), point(10, 5), point(0, 5))
+        try eqI(edgeTable(p).count, 2, "length(edge_table(p))")
+        try eqSpans(spans(p, "nonzero", 0), [(0, 10)], "spans(p, \"nonzero\", 0)")
+        try eqSpans(spans(p, "nonzero", 4), [(0, 10)], "spans(p, \"nonzero\", 4)")
+        try eqSpans(spans(p, "nonzero", 5), [], "spans(p, \"nonzero\", 5)")
+    }
+    scenario("A ring is two spans under even-odd and one under nonzero") {
+        let p = path()
+        moveTo(p, point(0, 0))
+        lineTo(p, point(10, 0))
+        lineTo(p, point(10, 10))
+        lineTo(p, point(0, 10))
+        close(p)
+        moveTo(p, point(3, 3))
+        lineTo(p, point(7, 3))
+        lineTo(p, point(7, 7))
+        lineTo(p, point(3, 7))
+        close(p)
+        try eqSpans(spans(p, "nonzero", 5), [(0, 10)], "spans(p, \"nonzero\", 5)")
+        try eqSpans(spans(p, "evenodd", 5), [(0, 3), (7, 10)], "spans(p, \"evenodd\", 5)")
+    }
+    scenario("The star's spans through its middle") {
+        let p = star()
+        try eqSpans(spans(p, "nonzero", 80), [(43.6988, 117.3012)], "spans(p, \"nonzero\", 80)")
+        try eqSpans(spans(p, "evenodd", 80), [(43.6988, 57.7556), (103.2444, 117.3012)], "spans(p, \"evenodd\", 80)")
+    }
+    scenario("fill_span fills the pixels whose centers are in the span") {
+        let cov = coverageBuffer(8, 3)
+        fillSpan(cov, 1, 1.25, 4.75)
+        try eq(coverageAt(cov, 0, 1), 0, EPSILON, "coverage_at(cov, 0, 1)")
+        try eq(coverageAt(cov, 1, 1), 1, EPSILON, "coverage_at(cov, 1, 1)")
+        try eq(coverageAt(cov, 4, 1), 1, EPSILON, "coverage_at(cov, 4, 1)")
+        try eq(coverageAt(cov, 5, 1), 0, EPSILON, "coverage_at(cov, 5, 1)")
+        try eq(coverageAt(cov, 2, 0), 0, EPSILON, "coverage_at(cov, 2, 0)")
+        try eq(ink(cov), 4, EPSILON, "ink(cov)")
+    }
+    scenario("The span is half-open at its right end") {
+        let cov = coverageBuffer(8, 3)
+        fillSpan(cov, 1, 1.5, 4.5)
+        try eq(coverageAt(cov, 1, 1), 1, EPSILON, "coverage_at(cov, 1, 1)")
+        try eq(coverageAt(cov, 3, 1), 1, EPSILON, "coverage_at(cov, 3, 1)")
+        try eq(coverageAt(cov, 4, 1), 0, EPSILON, "coverage_at(cov, 4, 1)")
+        try eq(ink(cov), 3, EPSILON, "ink(cov)")
+    }
+    scenario("A span may run off either side of the buffer") {
+        let a = coverageBuffer(8, 3), b = coverageBuffer(8, 3), c = coverageBuffer(8, 3)
+        fillSpan(a, 1, -3, 2.5)
+        fillSpan(b, 1, 6.5, 20)
+        fillSpan(c, 1, 2.5, 2.5)
+        try eq(ink(a), 2, EPSILON, "ink(a)")
+        try eq(coverageAt(a, 1, 1), 1, EPSILON, "coverage_at(a, 1, 1)")
+        try eq(ink(b), 2, EPSILON, "ink(b)")
+        try eq(coverageAt(b, 6, 1), 1, EPSILON, "coverage_at(b, 6, 1)")
+        try eq(ink(c), 0, EPSILON, "ink(c)")
+    }
+
+    // ============================================== chapter06-sweep.feature
+    feature("The sweep")
+
+    scenario("Two buffers that differ") {
+        let a = coverageBuffer(3, 3), b = coverageBuffer(3, 3)
+        setCoverage(a, 1, 1, 1)
+        setCoverage(b, 1, 1, 0.25)
+        try eq(maxCoverageDifference(a, b), 0.75, EPSILON, "max_coverage_difference(a, b)")
+        try eq(maxCoverageDifference(a, a), 0, EPSILON, "max_coverage_difference(a, a)")
+    }
+    scenario("Buffers of different sizes are as different as it gets") {
+        let a = coverageBuffer(3, 3), b = coverageBuffer(3, 4)
+        try eq(maxCoverageDifference(a, b), 1, EPSILON, "max_coverage_difference(a, b)")
+    }
+    scenario("A rectangle") {
+        let p = polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6))
+        let cov = fillPathAliased(p, "nonzero", 8, 8)
+        try eq(coverageAt(cov, 2, 2), 1, EPSILON, "coverage_at(cov, 2, 2)")
+        try eq(coverageAt(cov, 5, 5), 1, EPSILON, "coverage_at(cov, 5, 5)")
+        try eq(coverageAt(cov, 6, 5), 0, EPSILON, "coverage_at(cov, 6, 5)")
+        try eq(coverageAt(cov, 5, 6), 0, EPSILON, "coverage_at(cov, 5, 6)")
+        try eq(coverageAt(cov, 1, 2), 0, EPSILON, "coverage_at(cov, 1, 2)")
+        try eq(ink(cov), 16, EPSILON, "ink(cov)")
+        try eq(maxCoverageDifference(cov, rasterizeCenters(filled(p, "nonzero"), 8, 8)), 0, EPSILON,
+               "max_coverage_difference(cov, rasterize_centers(filled(p, \"nonzero\"), 8, 8))")
+    }
+    scenario("A triangle") {
+        let p = polygon(point(0, 0), point(10, 0), point(5, 10))
+        let cov = fillPathAliased(p, "nonzero", 20, 20)
+        try eq(coverageAt(cov, 0, 0), 1, EPSILON, "coverage_at(cov, 0, 0)")
+        try eq(coverageAt(cov, 9, 0), 1, EPSILON, "coverage_at(cov, 9, 0)")
+        try eq(coverageAt(cov, 10, 0), 0, EPSILON, "coverage_at(cov, 10, 0)")
+        try eq(coverageAt(cov, 4, 8), 1, EPSILON, "coverage_at(cov, 4, 8)")
+        try eq(coverageAt(cov, 3, 8), 0, EPSILON, "coverage_at(cov, 3, 8)")
+        try eq(coverageAt(cov, 5, 9), 0, EPSILON, "coverage_at(cov, 5, 9)")
+        try eq(ink(cov), 50, EPSILON, "ink(cov)")
+        try eq(maxCoverageDifference(cov, rasterizeCenters(filled(p, "nonzero"), 20, 20)), 0, EPSILON,
+               "max_coverage_difference(cov, rasterize_centers(filled(p, \"nonzero\"), 20, 20))")
+    }
+    scenario("The same triangle drawn the other way round") {
+        let a = polygon(point(0, 0), point(10, 0), point(5, 10))
+        let b = polygon(point(0, 0), point(5, 10), point(10, 0))
+        let ca = fillPathAliased(a, "nonzero", 20, 20)
+        let cb = fillPathAliased(b, "nonzero", 20, 20)
+        try eq(maxCoverageDifference(ca, cb), 0, EPSILON, "max_coverage_difference(ca, cb)")
+    }
+    scenario("A polygon circle") {
+        let p = circlePath(10.3, 9.7, 7, 12)
+        let cov = fillPathAliased(p, "nonzero", 20, 20)
+        try eq(ink(cov), 145, EPSILON, "ink(cov)")
+        try eq(maxCoverageDifference(cov, rasterizeCenters(filled(p, "nonzero"), 20, 20)), 0, EPSILON,
+               "max_coverage_difference(cov, rasterize_centers(filled(p, \"nonzero\"), 20, 20))")
+    }
+    scenario("The star, both rules, matches chapter 5 pixel for pixel") {
+        let p = star()
+        let nz = fillPathAliased(p, "nonzero", 160, 160)
+        let eo = fillPathAliased(p, "evenodd", 160, 160)
+        try eq(ink(nz), 5480, EPSILON, "ink(nz)")
+        try eq(ink(eo), 3780, EPSILON, "ink(eo)")
+        try eq(coverageAt(nz, 80, 80), 1, EPSILON, "coverage_at(nz, 80, 80)")
+        try eq(coverageAt(eo, 80, 80), 0, EPSILON, "coverage_at(eo, 80, 80)")
+        try eq(maxCoverageDifference(nz, rasterizeCenters(filled(p, "nonzero"), 160, 160)), 0, EPSILON,
+               "max_coverage_difference(nz, rasterize_centers(filled(p, \"nonzero\"), 160, 160))")
+        try eq(maxCoverageDifference(eo, rasterizeCenters(filled(p, "evenodd"), 160, 160)), 0, EPSILON,
+               "max_coverage_difference(eo, rasterize_centers(filled(p, \"evenodd\"), 160, 160))")
+    }
+    scenario("An edge that starts on a sample height is active there, and one that ends there is not") {
+        let p = polygon(point(1.5, 2.5), point(4.5, 2.5), point(4.5, 5.5), point(1.5, 5.5))
+        let cov = fillPathAliased(p, "nonzero", 8, 8)
+        try eq(coverageAt(cov, 2, 1), 0, EPSILON, "coverage_at(cov, 2, 1)")
+        try eq(coverageAt(cov, 2, 2), 1, EPSILON, "coverage_at(cov, 2, 2)")
+        try eq(coverageAt(cov, 2, 4), 1, EPSILON, "coverage_at(cov, 2, 4)")
+        try eq(coverageAt(cov, 2, 5), 0, EPSILON, "coverage_at(cov, 2, 5)")
+        try eq(coverageAt(cov, 1, 3), 1, EPSILON, "coverage_at(cov, 1, 3)")
+        try eq(coverageAt(cov, 4, 3), 0, EPSILON, "coverage_at(cov, 4, 3)")
+        try eq(ink(cov), 9, EPSILON, "ink(cov)")
+        try eq(maxCoverageDifference(cov, rasterizeCenters(filled(p, "nonzero"), 8, 8)), 0, EPSILON,
+               "max_coverage_difference(cov, rasterize_centers(filled(p, \"nonzero\"), 8, 8))")
+    }
+    scenario("A polygon larger than the buffer fills it") {
+        let p = polygon(point(-5, -5), point(30, -5), point(30, 30), point(-5, 30))
+        let cov = fillPathAliased(p, "nonzero", 8, 8)
+        try eq(ink(cov), 64, EPSILON, "ink(cov)")
+    }
+    scenario("An empty path fills nothing") {
+        let p = path()
+        let cov = fillPathAliased(p, "nonzero", 8, 8)
+        try eq(ink(cov), 0, EPSILON, "ink(cov)")
+    }
+    scenario("transform_path takes every point through the matrix and keeps the flags") {
+        let p = polygon(point(1.25, 2), point(4.75, 2), point(4.75, 5), point(1.25, 5))
+        let q = transformPath(p, translation(10, 20))
+        try eqI(subpaths(q).count, 1, "length(subpaths(q))")
+        try eqBool(subpaths(q)[0].closed, true, "subpaths(q)[0].closed")
+        try eqT(subpaths(q)[0].points[0], point(11.25, 22), "subpaths(q)[0].points[0]")
+        try eqT(subpaths(q)[0].points[2], point(14.75, 25), "subpaths(q)[0].points[2]")
+        try eqT(subpaths(p)[0].points[0], point(1.25, 2), "subpaths(p)[0].points[0]")
+    }
+    scenario("A transformed star fills where the transform put it") {
+        let p = transformPath(star(), translation(10, 10) * scaling(0.11, 0.11) * translation(-80.5, -80.5))
+        let nz = fillPathAliased(p, "nonzero", 20, 20)
+        let eo = fillPathAliased(p, "evenodd", 20, 20)
+        try eqBounds(bounds(p), (2.6769, 2.3, 17.3231, 16.2294), "bounds(p)")
+        try eq(ink(nz), 60, EPSILON, "ink(nz)")
+        try eq(ink(eo), 40, EPSILON, "ink(eo)")
+        try eq(maxCoverageDifference(nz, rasterizeCenters(filled(p, "nonzero"), 20, 20)), 0, EPSILON,
+               "max_coverage_difference(nz, rasterize_centers(filled(p, \"nonzero\"), 20, 20))")
+    }
+
+    // ============================================== chapter06-plate.feature
+    feature("Plate 6")
+
+    scenario("The unit star") {
+        let p = unitStar()
+        try eqI(edges(p).count, 5, "length(edges(p))")
+        try eqT(subpaths(p)[0].points[0], point(0, -1), "subpaths(p)[0].points[0]")
+        try eqT(subpaths(p)[0].points[1], point(0.5878, 0.809), "subpaths(p)[0].points[1]")
+        try eqT(subpaths(p)[0].points[2], point(-0.9511, -0.309), "subpaths(p)[0].points[2]")
+        try eqBounds(bounds(p), (-0.9511, -1, 0.9511, 0.809), "bounds(p)")
+    }
+    scenario("The spiral") {
+        let c = spiral()
+        let ref = readFile("reference/chapter-06/spiral.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 320, "c.width")
+        try eqI(c.height, 320, "c.height")
+        try eqPx(ppmPixel(p6, 180, 160), (243, 196, 89), 1, "ppm_pixel(p6, 180, 160)")
+        try eqPx(ppmPixel(p6, 183, 171), (124, 196, 237), 1, "ppm_pixel(p6, 183, 171)")
+        try eqPx(ppmPixel(p6, 179, 183), (237, 137, 149), 1, "ppm_pixel(p6, 179, 183)")
+        try eqPx(ppmPixel(p6, 104, 139), (237, 137, 149), 1, "ppm_pixel(p6, 104, 139)")
+        try eqPx(ppmPixel(p6, 230, 111), (124, 196, 237), 1, "ppm_pixel(p6, 230, 111)")
+        try eqPx(ppmPixel(p6, 32, 137), (124, 196, 237), 1, "ppm_pixel(p6, 32, 137)")
+        try eqPx(ppmPixel(p6, 34, 104), (237, 137, 149), 1, "ppm_pixel(p6, 34, 104)")
+        try eqPx(ppmPixel(p6, 160, 160), (39, 39, 44), 1, "ppm_pixel(p6, 160, 160)")
+        try eqPx(ppmPixel(p6, 5, 5), (39, 39, 44), 1, "ppm_pixel(p6, 5, 5)")
+        try eqPx(ppmPixel(p6, 300, 20), (39, 39, 44), 1, "ppm_pixel(p6, 300, 20)")
+        let d = maxChannelDifference(p6, ref)
+        try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
+    }
+    scenario("Plate 6") {
+        let c = plate06()
+        let ref = readFile("reference/chapter-06/plate-06.ppm")
+        let p6 = canvasToP6(c)
+        try eqI(c.width, 640, "c.width")
+        try eqI(c.height, 640, "c.height")
+        try eqPx(ppmPixel(p6, 360, 320), (243, 196, 89), 1, "ppm_pixel(p6, 360, 320)")
+        try eqPx(ppmPixel(p6, 68, 208), (237, 137, 149), 1, "ppm_pixel(p6, 68, 208)")
+        try eqPx(ppmPixel(p6, 320, 320), (39, 39, 44), 1, "ppm_pixel(p6, 320, 320)")
         let d = maxChannelDifference(p6, ref)
         try step(d <= 1, "max_channel_difference(p6, ref) = \(d)")
     }

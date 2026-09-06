@@ -541,13 +541,13 @@ func fanBresenham() -> Canvas {
 }
 
 // ---------------------------------------------------------------- § 3.2 Wu
-/// paint_through for one pixel: mixes the pixel toward col by weight, drops
-/// writes off the canvas, and, as a shortcut rather than a rule, skips a
-/// weight of zero.
+/// paint_through for one pixel: mixes the pixel toward col by weight, in
+/// light whatever the global switch says (mix(..., true)), drops writes off
+/// the canvas, and, as a shortcut rather than a rule, skips a weight of zero.
 func plot(_ c: Canvas, _ x: Int, _ y: Int, _ col: Color, _ weight: Double) {
     guard x >= 0, x < c.width, y >= 0, y < c.height else { return }
     if weight == 0 { return }
-    c.writePixel(x, y, mix(c.pixelAt(x, y), col, weight))
+    c.writePixel(x, y, mix(c.pixelAt(x, y), col, weight, true))
 }
 
 /// Two pixels per column (or row, if steep), weighted by where the ideal
@@ -911,3 +911,368 @@ func fBothOrders() -> Canvas {
 }
 
 func plate04() -> Canvas { magnify(fBothOrders(), 2) }
+
+// ==================================================================
+// Chapter 5 -- Paths and Insideness
+// ==================================================================
+
+// ---------------------------------------------------------------- § 5.1 a path is a list of instructions
+/// A subpath is a list of points, in order, and a flag for whether it was closed.
+struct Subpath {
+    var points: [Tuple]
+    var closed: Bool
+}
+
+/// A path is a list of subpaths, one for each time the pen went down.
+final class Path {
+    var subpaths: [Subpath] = []
+}
+
+func path() -> Path { Path() }
+
+/// Lifts the pen and puts it down somewhere new: a new subpath of one point.
+func moveTo(_ p: Path, _ pt: Tuple) {
+    p.subpaths.append(Subpath(points: [pt], closed: false))
+}
+
+/// Draws a line from wherever the pen is to pt. With nothing to draw from --
+/// no subpath yet, or the last one closed -- this behaves as move_to. After a
+/// close, the new subpath starts where the closed one began, because that's
+/// where close left the pen.
+func lineTo(_ p: Path, _ pt: Tuple) {
+    guard let last = p.subpaths.last else {
+        moveTo(p, pt)
+        return
+    }
+    if last.closed {
+        p.subpaths.append(Subpath(points: [last.points[0], pt], closed: false))
+    } else {
+        p.subpaths[p.subpaths.count - 1].points.append(pt)
+    }
+}
+
+/// Draws a line back to where the pen was last put down and marks the loop
+/// finished. Nothing to close does nothing; closing twice is the same as
+/// closing once.
+func close(_ p: Path) {
+    guard !p.subpaths.isEmpty else { return }
+    p.subpaths[p.subpaths.count - 1].closed = true
+}
+
+func subpaths(_ p: Path) -> [Subpath] { p.subpaths }
+
+/// Every edge of every subpath as (a, b) pairs. Every subpath is treated as
+/// closed whether or not close was called -- filling doesn't care about the
+/// flag. A subpath of one point contributes no edges; two points contribute
+/// two, there and back.
+func edges(_ p: Path) -> [(Tuple, Tuple)] {
+    var result: [(Tuple, Tuple)] = []
+    for sp in p.subpaths {
+        let n = sp.points.count
+        guard n >= 2 else { continue }
+        for i in 0..<n {
+            result.append((sp.points[i], sp.points[(i + 1) % n]))
+        }
+    }
+    return result
+}
+
+/// The smallest axis-aligned box around every point of every subpath. An
+/// empty path has no points, and its bounds are (0, 0, 0, 0) rather than
+/// whatever the language's min of nothing is.
+func bounds(_ p: Path) -> (Double, Double, Double, Double) {
+    var minX = 0.0, minY = 0.0, maxX = 0.0, maxY = 0.0
+    var first = true
+    for sp in p.subpaths {
+        for pt in sp.points {
+            if first {
+                minX = pt.x; minY = pt.y; maxX = pt.x; maxY = pt.y
+                first = false
+            } else {
+                minX = min(minX, pt.x); minY = min(minY, pt.y)
+                maxX = max(maxX, pt.x); maxY = max(maxY, pt.y)
+            }
+        }
+    }
+    return (minX, minY, maxX, maxY)
+}
+
+/// A closed subpath through the given points.
+func polygon(_ points: [Tuple]) -> Path {
+    let p = path()
+    for (i, pt) in points.enumerated() {
+        if i == 0 { moveTo(p, pt) } else { lineTo(p, pt) }
+    }
+    close(p)
+    return p
+}
+func polygon(_ points: Tuple...) -> Path { polygon(points) }
+
+/// A regular n-gon standing in for a circle: first point at angle 0, on the
+/// right, going clockwise on the screen (increasing angle, same convention
+/// as chapter 4's rotation).
+func circlePath(_ cx: Double, _ cy: Double, _ r: Double, _ n: Int) -> Path {
+    var pts: [Tuple] = []
+    for i in 0..<n {
+        let a = 2.0 * Double.pi * Double(i) / Double(n)
+        pts.append(point(cx + r * cos(a), cy + r * sin(a)))
+    }
+    return polygon(pts)
+}
+
+// ---------------------------------------------------------------- § 5.2 is this point inside?
+/// Counts the edges a ray from (x, y) toward +x crosses. An edge spans the
+/// ray's height under the half-open rule -- a.y ≤ y < b.y or b.y ≤ y < a.y --
+/// so a vertex on the ray counts once, not twice, and a horizontal edge is
+/// never crossed.
+func crossings(_ p: Path, _ x: Double, _ y: Double) -> Int {
+    var count = 0
+    for (a, b) in edges(p) {
+        let spans = (a.y <= y && y < b.y) || (b.y <= y && y < a.y)
+        guard spans else { continue }
+        let t = (y - a.y) / (b.y - a.y)
+        let xc = a.x + t * (b.x - a.x)
+        if xc > x { count += 1 }
+    }
+    return count
+}
+
+/// The winding number: each edge that crosses the ray's height, under the
+/// same half-open rule, counts +1 when the path heads down the canvas along
+/// it and -1 when it heads up. The cross product picks the sign without a
+/// division.
+func windingAt(_ p: Path, _ x: Double, _ y: Double) -> Int {
+    let q = point(x, y)
+    var w = 0
+    for (a, b) in edges(p) {
+        if a.y <= y {
+            if b.y > y && cross(b - a, q - a) > 0 { w += 1 }
+        } else {
+            if b.y <= y && cross(b - a, q - a) < 0 { w -= 1 }
+        }
+    }
+    return w
+}
+
+// ---------------------------------------------------------------- § 5.3 two rules
+func insideNonzero(_ p: Path, _ x: Double, _ y: Double) -> Bool { windingAt(p, x, y) != 0 }
+func insideEvenOdd(_ p: Path, _ x: Double, _ y: Double) -> Bool { abs(windingAt(p, x, y)) % 2 == 1 }
+
+/// The shape a path encloses under a rule, "nonzero" or "evenodd" -- one more
+/// case in `inside`, so a path can go through the same supersampler as every
+/// other shape.
+func filled(_ p: Path, _ rule: String) -> Shape {
+    Shape { x, y in rule == "nonzero" ? insideNonzero(p, x, y) : insideEvenOdd(p, x, y) }
+}
+
+/// Chapter 2's rasterize, restricted to the pixels the box touches: columns
+/// from floor(min x) up to but not including ceil(max x), rows likewise,
+/// clipped to the buffer.
+func rasterizeWithin(_ s: Shape, _ box: (Double, Double, Double, Double), _ w: Int, _ h: Int) -> CoverageBuffer {
+    let cov = coverageBuffer(w, h)
+    let (minX, minY, maxX, maxY) = box
+    let x0 = max(0, Int(floor(minX)))
+    let x1 = min(w - 1, Int(ceil(maxX)) - 1)
+    let y0 = max(0, Int(floor(minY)))
+    let y1 = min(h - 1, Int(ceil(maxY)) - 1)
+    guard x0 <= x1, y0 <= y1 else { return cov }
+    for y in y0...y1 {
+        for x in x0...x1 {
+            cov.setCoverage(x, y, coverage(s, x, y))
+        }
+    }
+    return cov
+}
+
+// ---------------------------------------------------------------- § 5.4 putting it together
+/// Five points on a circle of radius 70 about (80.5, 80.5), the first
+/// straight up, visited every second one so the pen crosses itself.
+func star() -> Path {
+    let p = path()
+    for k in 0..<5 {
+        let a = (-90.0 + 144.0 * Double(k)) * Double.pi / 180.0
+        let q = point(80.5 + 70 * cos(a), 80.5 + 70 * sin(a))
+        if k == 0 { moveTo(p, q) } else { lineTo(p, q) }
+    }
+    close(p)
+    return p
+}
+
+func starPanel(_ rule: String, _ method: String) -> Canvas {
+    let c = canvas(160, 160)
+    fill(c, color(0.02, 0.02, 0.025))
+    let s = filled(star(), rule)
+    let cov = method == "centers" ? rasterizeCenters(s, 160, 160) : rasterizeWithin(s, bounds(star()), 160, 160)
+    paintThrough(c, cov, color(0.9, 0.55, 0.1))
+    return c
+}
+
+func starCenters() -> Canvas { sideBySide(starPanel("nonzero", "centers"), starPanel("evenodd", "centers")) }
+func starCoverage() -> Canvas { sideBySide(starPanel("nonzero", "coverage"), starPanel("evenodd", "coverage")) }
+
+func plate05() -> Canvas {
+    let top = starCenters()
+    let bottom = starCoverage()
+    let both = canvas(320, 320)
+    for y in 0...159 {
+        for x in 0...319 {
+            writePixel(both, x, y, pixelAt(top, x, y))
+            writePixel(both, x, y + 160, pixelAt(bottom, x, y))
+        }
+    }
+    return magnify(both, 2)
+}
+
+// ==================================================================
+// Chapter 6 -- Filling a Polygon
+// ==================================================================
+
+// ---------------------------------------------------------------- § 6.1 the edge table
+/// One non-horizontal edge, prepared for the sweep: its top and bottom
+/// height, where it crosses its top, its slope in x per unit of y, and its
+/// direction, +1 heading down the canvas, -1 heading up.
+struct Edge {
+    var yTop: Double
+    var yBottom: Double
+    var xTop: Double
+    var slope: Double
+    var direction: Int
+}
+
+/// x_top + (y - y_top) * slope: the one computation an edge knows how to do.
+func xAt(_ e: Edge, _ y: Double) -> Double { e.xTop + (y - e.yTop) * e.slope }
+
+/// Every non-horizontal edge of the path, sorted by y_top then by x_top.
+/// Horizontal edges (a.y = b.y exactly) are dropped, not clamped: their
+/// slope would be a division by zero, and the half-open rule already says
+/// they never cross a sample height.
+func edgeTable(_ p: Path) -> [Edge] {
+    var table: [Edge] = []
+    for (a, b) in edges(p) {
+        guard a.y != b.y else { continue }
+        if a.y < b.y {
+            table.append(Edge(yTop: a.y, yBottom: b.y, xTop: a.x,
+                               slope: (b.x - a.x) / (b.y - a.y), direction: 1))
+        } else {
+            table.append(Edge(yTop: b.y, yBottom: a.y, xTop: b.x,
+                               slope: (a.x - b.x) / (a.y - b.y), direction: -1))
+        }
+    }
+    table.sort { $0.yTop != $1.yTop ? $0.yTop < $1.yTop : $0.xTop < $1.xTop }
+    return table
+}
+
+// ---------------------------------------------------------------- § 6.2 crossings on a row, and spans
+/// (x, direction) for every edge of the table that spans height y under the
+/// half-open rule y_top ≤ y < y_bottom, sorted by x.
+func crossingsOnRow(_ table: [Edge], _ y: Double) -> [(Double, Int)] {
+    var xs: [(Double, Int)] = []
+    for e in table {
+        if e.yTop <= y && y < e.yBottom {
+            xs.append((xAt(e, y), e.direction))
+        }
+    }
+    xs.sort { $0.0 < $1.0 }
+    return xs
+}
+
+/// Walks sorted crossings left to right, accumulating the winding number,
+/// and returns the maximal intervals where the rule says inside.
+func spansFromCrossings(_ xs: [(Double, Int)], _ rule: String) -> [(Double, Double)] {
+    var out: [(Double, Double)] = []
+    var w = 0
+    var start: Double? = nil
+    for (x, d) in xs {
+        w += d
+        let inside = rule == "nonzero" ? (w != 0) : (abs(w) % 2 == 1)
+        if inside && start == nil { start = x }
+        if !inside, let s = start { out.append((s, x)); start = nil }
+    }
+    return out
+}
+
+/// Both together, for pixel row `row`, sampled at height row + 0.5.
+func spans(_ p: Path, _ rule: String, _ row: Int) -> [(Double, Double)] {
+    spansFromCrossings(crossingsOnRow(edgeTable(p), Double(row) + 0.5), rule)
+}
+
+/// Sets to 1 every pixel of the row whose center lies in [x0, x1): the first
+/// is ceil(x0 - 0.5), the last is ceil(x1 - 0.5) - 1, clipped to the buffer.
+func fillSpan(_ cov: CoverageBuffer, _ row: Int, _ x0: Double, _ x1: Double) {
+    let first = Int(ceil(x0 - 0.5))
+    let last = Int(ceil(x1 - 0.5)) - 1
+    guard first <= last else { return }
+    let cf = max(first, 0), cl = min(last, cov.width - 1)
+    guard cf <= cl else { return }
+    for x in cf...cl { cov.setCoverage(x, row, 1) }
+}
+
+// ---------------------------------------------------------------- § 6.3 the sweep
+/// The scanline fill: sweep the rows top to bottom, keeping the list of
+/// edges that span the current row's sample height (an active edge list),
+/// sort their crossings, and fill the spans.
+func fillPathAliased(_ p: Path, _ rule: String, _ w: Int, _ h: Int) -> CoverageBuffer {
+    let cov = coverageBuffer(w, h)
+    let table = edgeTable(p)
+    var active: [Edge] = []
+    var next = 0
+    for row in 0..<h {
+        let y = Double(row) + 0.5
+        while next < table.count && table[next].yTop <= y {
+            active.append(table[next])
+            next += 1
+        }
+        active = active.filter { $0.yBottom > y }
+        let xs = active.map { (xAt($0, y), $0.direction) }.sorted { $0.0 < $1.0 }
+        for (x0, x1) in spansFromCrossings(xs, rule) {
+            fillSpan(cov, row, x0, x1)
+        }
+    }
+    return cov
+}
+
+/// Chapter 1's max_channel_difference, for coverage buffers: the largest
+/// difference between corresponding entries, or 1 when the sizes differ.
+func maxCoverageDifference(_ a: CoverageBuffer, _ b: CoverageBuffer) -> Double {
+    guard a.width == b.width, a.height == b.height else { return 1 }
+    var m = 0.0
+    for y in 0..<a.height {
+        for x in 0..<a.width {
+            m = max(m, abs(a.coverageAt(x, y) - b.coverageAt(x, y)))
+        }
+    }
+    return m
+}
+
+// ---------------------------------------------------------------- § 6.4 paths through matrices
+/// transform_points with the subpath structure kept: every point of every
+/// subpath taken through m, closed flags and all. The original is untouched.
+func transformPath(_ p: Path, _ m: Matrix3) -> Path {
+    let q = path()
+    q.subpaths = p.subpaths.map { sp in Subpath(points: sp.points.map { m * $0 }, closed: sp.closed) }
+    return q
+}
+
+// ---------------------------------------------------------------- § 6.5 putting it together
+/// The chapter 5 star, moved to the origin and shrunk to radius 1, so one
+/// matrix can put it anywhere at any size.
+func unitStar() -> Path {
+    transformPath(star(), scaling(1.0 / 70.0, 1.0 / 70.0) * translation(-80.5, -80.5))
+}
+
+func spiral() -> Canvas {
+    let c = canvas(320, 320)
+    fill(c, color(0.02, 0.02, 0.025))
+    let inks = [color(0.9, 0.55, 0.1), color(0.2, 0.55, 0.85), color(0.85, 0.25, 0.3)]
+    for k in 0..<24 {
+        let a = Double(k) * 25.0 * Double.pi / 180.0
+        let r = 20.0 + 5.0 * Double(k)
+        let m = translation(160.5 + r * cos(a), 160.5 + r * sin(a)) * rotation(a)
+              * scaling(6 + 1.25 * Double(k), 6 + 1.25 * Double(k))
+        let cov = fillPathAliased(transformPath(unitStar(), m), "nonzero", 320, 320)
+        paintThrough(c, cov, inks[k % 3])
+    }
+    return c
+}
+
+func plate06() -> Canvas { magnify(spiral(), 2) }

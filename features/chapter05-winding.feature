@@ -11,6 +11,8 @@ Feature: Is this point inside?
     Then  crossings(p, 5, 5) = 1
     And   crossings(p, 15, 5) = 0
     And   crossings(p, -1, 5) = 2
+    And   crossings(p, 0, 5) = 1
+    And   crossings(p, 10, 5) = 0
 
   Scenario: A clockwise square winds once
     Given p ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
