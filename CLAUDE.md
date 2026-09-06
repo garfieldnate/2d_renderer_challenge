@@ -118,6 +118,12 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   one's first point. Insideness uses the half-open rule `a.y ≤ y < b.y`; positive winding is
   clockwise on screen (same sign as `cross`); the boundary belongs to the top and left. Fill rules
   are the strings `"nonzero"` and `"evenodd"`, via `filled(p, rule)`.
+- Chapter 6 sweep: `edge_table` drops edges with `a.y = b.y` exactly and sorts by `(y_top, x_top)`;
+  ties beyond that are unordered and never pinned. Rows sample at `row + 0.5`; an edge is active
+  when `y_top ≤ y < y_bottom`; `fill_span` fills pixels whose centers lie in `[x0, x1)`.
+  `fill_path_aliased` must equal `rasterize_centers(filled(p, rule))` exactly, and the scenarios
+  say so via `max_coverage_difference`. Never pin the length of the star's edge table: two of
+  its vertices differ in the last bit of y.
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and
   `Then X is the following matrix:`. The runner understands exactly those two table steps.
 

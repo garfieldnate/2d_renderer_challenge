@@ -118,7 +118,7 @@ def run_step(text, doc, env):
         elif not R.LINEAR_BLENDING:
             raise StepError("linear blending is off")
         return
-    m = re.match(r"(write_pixel|fill|set_coverage|paint_through|line_bresenham|line_wu|move_to|line_to|close)\((.+)\)$", text)
+    m = re.match(r"(write_pixel|fill|set_coverage|paint_through|line_bresenham|line_wu|move_to|line_to|close|fill_span)\((.+)\)$", text)
     if m:
         evaluate(text, env)
         return

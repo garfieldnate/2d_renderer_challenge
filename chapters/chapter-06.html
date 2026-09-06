@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 6 · Filling a Polygon — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 6 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-05.html">← 5</a> · <a href="#plate">Plate&nbsp;6</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Six</p>
+    <h1>Filling a Polygon</h1>
+    <p class="hook">Chapter 5's fill asks every pixel on the canvas whether it's inside, and to answer,
+      every pixel walks every edge of the path. A 160-by-160 star costs 25,600 winding numbers, each
+      over five edges, before you've antialiased anything. This chapter turns the question around:
+      instead of asking each pixel about the edges, walk down the canvas one row at a time and ask
+      each edge where it crosses the row. Same picture, pixel for pixel, seventy times faster in
+      Python, and the gap grows with the canvas. The
+      picture is still jagged. That's deliberate.</p>
+  </header>
+
+  <p>Here's the shape of the idea. A row of pixels is a horizontal line at some height. Where a
+    polygon crosses that line, it crosses at a handful of points, and between the crossings the row
+    is either entirely inside or entirely outside. So for each row: find the crossings, sort them,
+    and fill the stretches that the winding number says are inside. Those stretches are called
+    <em>spans</em>, and the whole algorithm is a sweep, top to bottom, emitting spans.</p>
+
+  <p>The scanline fill is older than raster displays, it's what every renderer did until the
+    analytic one in chapter 7 took over, and its bones are still inside chapter 7. This chapter
+    writes it the classical way, with an edge table and an active edge list, on purpose. Each part
+    has a job, each part has a scenario, and the result has to be <em>exactly</em> the buffer chapter
+    5's center test produced, which is the best kind of test: a slow implementation you already
+    trust, checking a fast one you don't yet.</p>
+
+  <h2><span class="sec">§ 6.1</span> The edge table</h2>
+
+  <p>Start by taking the path apart. Chapter 5's <code>edges(p)</code> gives you every edge of every
+    subpath as a pair of points. For the sweep you want each edge in a more useful form: which of
+    its two ends is higher on the canvas (smaller <code>y</code>), which is lower, where it crosses
+    its own top, how far it moves in <code>x</code> for each unit it descends, and which way the path
+    was going along it. Store those five numbers as <code>y_top</code>, <code>y_bottom</code>,
+    <code>x_top</code>, <code>slope</code> and <code>direction</code>, with <code>direction</code>
+    <code>+1</code> when the path heads down the canvas along the edge, from <code>a</code> to
+    <code>b</code> with <code>a.y &lt; b.y</code>, and <code>-1</code> when it heads up. That's the
+    same sign chapter 5's winding number gave a crossing, and it's about to be used the same way.</p>
+
+  <figure>
+    <canvas id="fig61" role="img" aria-label="A polygon on a grid with each non-horizontal edge annotated: a tick at its top, an arrow showing the direction the path travels along it, and its slope; the one horizontal edge is drawn dashed and marked as dropped"></canvas>
+    <figcaption><span class="fig">Figure 6.1</span> The edge table. Each edge keeps its top, its x there, its slope and its direction. The horizontal edge along the bottom isn't in the table at all.</figcaption>
+  </figure>
+
+  <p><code>edge_table(p)</code> builds that for every edge that isn't horizontal and sorts the
+    result by <code>y_top</code>, then by <code>x_top</code>. Ties beyond that are allowed to fall
+    in any order; the sweep sorts crossings again on every row, so the table's order only has to
+    be good enough to know which edges to bring in next. The tests reach into an entry with
+    <code>t[0].y_top</code> and friends, and <code>x_at(edge, y)</code> is the one computation an
+    edge knows how to do: <code>x_top + (y - y_top) · slope</code>.</p>
+
+  <p>Horizontal edges are dropped. Not clamped, not given a slope of zero and a height of one row,
+    not special-cased into a span of their own: dropped. Chapter 5's half-open rule already said
+    they never cross a sample height, and here there's a second reason, which is that their slope
+    is a division by zero. A naive implementation that keeps them draws a spike out of every flat
+    top, because the edge's <code>x</code> at the row is undefined and whatever it comes out as gets
+    filled up to. If your first render of a rectangle has a hair sticking out of a corner, this is
+    where it came from. Two scenarios check the flat-topped rectangle: two edges in the table, and
+    a span on every row from the top to one before the bottom.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>"Horizontal" means <code>a.y = b.y</code> exactly. Two vertices that should be at the same
+      height and were computed by two different trigonometric calls can differ in the last bit:
+      chapter 5's star has such a pair, at <code>58.86881039375369</code> and
+      <code>58.86881039375366</code>, and its edge table has five entries rather than the four
+      you'd get on paper. The fifth edge has a slope of about <code>-4.7 × 10¹⁵</code> and a height
+      of <code>3 × 10⁻¹⁴</code>, and it's harmless: no sample height will ever fall inside a span that
+      thin, so it crosses nothing. It only matters if you were counting on the count. The scenarios
+      don't pin the length of the star's table for exactly this reason, and neither should
+      you. The rule is <code>a.y = b.y</code>, exactly, and what your <code>sin</code> does in the
+      last bit is between you and your libm.</p>
+  </div>
+
+  <div class="test" data-feature="chapter06-edges.feature">
+    <p class="label">features/chapter06-edges.feature</p>
+<pre><code><span class="kw">Feature</span>: The edge table
+  edge_table(p) prepares every non-horizontal edge of a path for the sweep:
+  its y_top and y_bottom, x_top (where it crosses its top), its slope in x
+  per unit of y, and its direction, +1 when the path heads down the canvas
+  along it (increasing y) and -1 when it heads up. Sorted by y_top, then by
+  x_top. Horizontal edges are dropped.
+
+  <span class="kw">Scenario</span>: A rectangle has two edges in its table
+    <span class="kw">Given</span> p ← polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6))
+    <span class="kw">When</span>  t ← edge_table(p)
+    <span class="kw">Then</span>  length(t) = 2
+    <span class="kw">And</span>   t[0].y_top = 2
+    <span class="kw">And</span>   t[0].y_bottom = 6
+    <span class="kw">And</span>   t[0].x_top = 2
+    <span class="kw">And</span>   t[0].slope = 0
+    <span class="kw">And</span>   t[0].direction = -1
+    <span class="kw">And</span>   t[1].x_top = 6
+    <span class="kw">And</span>   t[1].direction = 1
+
+  <span class="kw">Scenario</span>: A triangle's edges carry their slopes
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(5, 10))
+    <span class="kw">When</span>  t ← edge_table(p)
+    <span class="kw">Then</span>  length(t) = 2
+    <span class="kw">And</span>   t[0].x_top = 0
+    <span class="kw">And</span>   t[0].slope = 0.5
+    <span class="kw">And</span>   t[0].direction = -1
+    <span class="kw">And</span>   t[1].x_top = 10
+    <span class="kw">And</span>   t[1].slope = -0.5
+    <span class="kw">And</span>   t[1].direction = 1
+
+  <span class="kw">Scenario</span>: The table is sorted by top, then by x at the top
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(2, 2))
+    <span class="kw">And</span>   line_to(p, point(4, 1))
+    <span class="kw">And</span>   line_to(p, point(6, 3))
+    <span class="kw">And</span>   line_to(p, point(8, 1))
+    <span class="kw">And</span>   line_to(p, point(9, 6))
+    <span class="kw">And</span>   line_to(p, point(1, 6))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">And</span>   t ← edge_table(p)
+    <span class="kw">Then</span>  length(t) = 5
+    <span class="kw">And</span>   t[0].y_top = 1
+    <span class="kw">And</span>   t[0].x_top = 4
+    <span class="kw">And</span>   t[1].y_top = 1
+    <span class="kw">And</span>   t[1].x_top = 4
+    <span class="kw">And</span>   t[2].y_top = 1
+    <span class="kw">And</span>   t[2].x_top = 8
+    <span class="kw">And</span>   t[3].y_top = 1
+    <span class="kw">And</span>   t[3].x_top = 8
+    <span class="kw">And</span>   t[4].y_top = 2
+    <span class="kw">And</span>   t[4].x_top = 2
+
+  <span class="kw">Scenario</span>: A horizontal edge is dropped, not clamped
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(10, 5), point(0, 5))
+    <span class="kw">When</span>  t ← edge_table(p)
+    <span class="kw">Then</span>  length(t) = 2
+    <span class="kw">And</span>   t[0].x_top = 0
+    <span class="kw">And</span>   t[1].x_top = 10
+
+  <span class="kw">Scenario</span>: An edge knows where it crosses a height
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(5, 10))
+    <span class="kw">When</span>  t ← edge_table(p)
+    <span class="kw">Then</span>  x_at(t[0], 4) = 2
+    <span class="kw">And</span>   x_at(t[1], 4) = 8
+    <span class="kw">And</span>   x_at(t[0], 0.5) = 0.25
+
+  <span class="kw">Scenario</span>: The edge table is the same whichever way the path was drawn
+    <span class="kw">Given</span> a ← polygon(point(0, 0), point(10, 0), point(5, 10))
+    <span class="kw">And</span>   b ← polygon(point(0, 0), point(5, 10), point(10, 0))
+    <span class="kw">When</span>  ta ← edge_table(a)
+    <span class="kw">And</span>   tb ← edge_table(b)
+    <span class="kw">Then</span>  ta[0].x_top = tb[0].x_top
+    <span class="kw">And</span>   ta[0].slope = tb[0].slope
+    <span class="kw">And</span>   ta[0].direction = -1
+    <span class="kw">And</span>   tb[0].direction = 1</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 6.2</span> Crossings on a row, and spans</h2>
+
+  <p>Now one row. Pixel row <code>r</code> is sampled at its centers, height
+    <code>y = r + 0.5</code>, the same place chapter 5's center test looked. An edge crosses that
+    height when <code>y_top ≤ y &lt; y_bottom</code>, half-open, lower end in and upper end out,
+    which is chapter 5's rule again with the ends named. Where it crosses is <code>x_at(edge,
+    y)</code>. <code>crossings_on_row(table, y)</code> collects <code>(x, direction)</code> for every
+    edge in the table that qualifies and sorts by <code>x</code>. This is the slow version: it looks at
+    every edge for every row. §6.3 stops doing that.</p>
+
+  <p>From sorted crossings to spans is a walk. Start with winding <code>0</code> on the far left,
+    which is outside. At each crossing add its direction. After each addition ask the rule, nonzero
+    or even-odd, whether you're now inside. The moment the answer turns true, a span starts at that
+    crossing; the moment it turns false, the span ends there. <code>spans_from_crossings(xs,
+    rule)</code> returns the list of <code>(x_start, x_end)</code> pairs, as real numbers, merged: two
+    inside stretches that touch are one span, because the rule never turned false between them.
+    The scenarios hand it the same four crossings under both rules: nonzero sees one span, even-odd
+    sees two with a gap, and that gap is the star's hole, one row at a time.</p>
+
+  <figure>
+    <canvas id="fig62" role="img" aria-label="A self-intersecting polygon with one pixel row highlighted. Along the row, each crossing is marked with a plus one or minus one, the running winding number is written between crossings, and the stretches where it is nonzero are filled"></canvas>
+    <figcaption><span class="fig">Figure 6.2</span> One row of the sweep. Crossings sorted left to right, each carrying its direction; the winding number accumulates between them, and the spans are where the rule says inside. Change the rule and the same crossings give different spans.</figcaption>
+  </figure>
+
+  <p><code>spans(p, rule, row)</code> puts the two together for one pixel row, and it's the function
+    the scenarios use to check the geometry without a buffer in the way. An axis-aligned rectangle
+    from <code>x = 1.25</code> to <code>4.75</code> has exactly that span on every row it covers, and
+    no span on the row above or the row of its bottom edge. A triangle with its base on
+    <code>y = 0</code> and apex at <code>(5, 10)</code> has spans that narrow by exactly one pixel per
+    row, <code>0.25</code> to <code>9.75</code> on row 0, <code>4.75</code> to <code>5.25</code> on
+    row 9, and nothing on row 10, where the sample height of <code>10.5</code> is past the apex.</p>
+
+  <p>The last step turns a span into pixels. <code>fill_span(cov, row, x0, x1)</code> sets to 1
+    every pixel of the row whose <em>center</em> lies in <code>[x0, x1)</code>: the first is
+    <code>ceil(x0 - 0.5)</code>, the last is <code>ceil(x1 - 0.5) - 1</code>, clipped to the buffer,
+    and if the first is past the last there's nothing to do. Half-open at the right end, which is
+    what makes two spans that meet at a pixel center fill that pixel exactly once. The span from
+    <code>1.25</code> to <code>4.75</code> fills pixels 1 through 4, because their centers
+    <code>1.5</code> through <code>4.5</code> are inside it. The span from <code>1.5</code> to
+    <code>4.5</code> fills 1 through 3: <code>4.5</code> is the right end and the right end is out.
+    A span may run off either side of the buffer or have no width at all, and there are scenarios
+    for each, because clipping is where off-by-ones live.</p>
+
+<pre><code>spans_from_crossings(xs, rule):          <span class="cm">// xs sorted by x, each (x, direction)</span>
+  out ← []
+  w ← 0
+  start ← none
+  <span class="kw">for</span> (x, d) <span class="kw">in</span> xs:
+    w ← w + d
+    inside ← rule = "nonzero" ? w ≠ 0 : w is odd
+    <span class="kw">if</span> inside <span class="kw">and</span> start is none:  start ← x
+    <span class="kw">if</span> not inside <span class="kw">and</span> start is not none:  out.append((start, x));  start ← none
+  <span class="kw">return</span> out
+
+fill_span(cov, row, x0, x1):
+  first ← ceil(x0 - 0.5)
+  last  ← ceil(x1 - 0.5) - 1
+  <span class="kw">for</span> x <span class="kw">in</span> max(first, 0)..min(last, cov.width - 1):     <span class="cm">// inclusive; empty when first &gt; last</span>
+    set_coverage(cov, x, row, 1)</code></pre>
+
+  <div class="test" data-feature="chapter06-spans.feature">
+    <p class="label">features/chapter06-spans.feature</p>
+<pre><code><span class="kw">Feature</span>: Crossings on a row, and spans
+  crossings_on_row(table, y) lists (x, direction) for every edge of the
+  table that spans height y under the half-open rule y_top ≤ y &lt; y_bottom,
+  sorted by x. spans_from_crossings(xs, rule) walks them left to right,
+  accumulating the winding number, and returns the maximal intervals where
+  the rule says inside. spans(p, rule, row) does both for pixel row `row`,
+  sampled at height row + 0.5. fill_span(cov, row, x0, x1) sets every pixel
+  of the row whose center lies in [x0, x1) to 1.
+
+  <span class="kw">Scenario</span>: Crossings on a row, sorted by x
+    <span class="kw">Given</span> p ← polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6))
+    <span class="kw">When</span>  xs ← crossings_on_row(edge_table(p), 3.5)
+    <span class="kw">Then</span>  xs = [(2, -1), (6, 1)]
+    <span class="kw">And</span>   crossings_on_row(edge_table(p), 1.5) = []
+    <span class="kw">And</span>   crossings_on_row(edge_table(p), 6) = []
+    <span class="kw">And</span>   length(crossings_on_row(edge_table(p), 2)) = 2
+
+  <span class="kw">Scenario</span>: The star's crossings through its middle
+    <span class="kw">Given</span> p ← star()
+    <span class="kw">When</span>  xs ← crossings_on_row(edge_table(p), 80.5)
+    <span class="kw">Then</span>  length(xs) = 4
+    <span class="kw">And</span>   xs[0] = (43.6988, -1)
+    <span class="kw">And</span>   xs[1] = (57.7556, -1)
+    <span class="kw">And</span>   xs[2] = (103.2444, 1)
+    <span class="kw">And</span>   xs[3] = (117.3012, 1)
+
+  <span class="kw">Scenario</span>: Spans from crossings under each rule
+    <span class="kw">Given</span> xs ← [(1, 1), (3, 1), (5, -1), (7, -1)]
+    <span class="kw">Then</span>  spans_from_crossings(xs, "nonzero") = [(1, 7)]
+    <span class="kw">And</span>   spans_from_crossings(xs, "evenodd") = [(1, 3), (5, 7)]
+    <span class="kw">And</span>   spans_from_crossings([], "nonzero") = []
+
+  <span class="kw">Scenario</span>: The spans of an axis-aligned rectangle are exact
+    <span class="kw">Given</span> p ← polygon(point(1.25, 2), point(4.75, 2), point(4.75, 5), point(1.25, 5))
+    <span class="kw">Then</span>  spans(p, "nonzero", 1) = []
+    <span class="kw">And</span>   spans(p, "nonzero", 2) = [(1.25, 4.75)]
+    <span class="kw">And</span>   spans(p, "nonzero", 4) = [(1.25, 4.75)]
+    <span class="kw">And</span>   spans(p, "nonzero", 5) = []
+
+  <span class="kw">Scenario</span>: A rectangle whose edges sit on sample heights
+    <span class="kw">Given</span> p ← polygon(point(1.5, 2.5), point(4.5, 2.5), point(4.5, 5.5), point(1.5, 5.5))
+    <span class="kw">Then</span>  spans(p, "nonzero", 1) = []
+    <span class="kw">And</span>   spans(p, "nonzero", 2) = [(1.5, 4.5)]
+    <span class="kw">And</span>   spans(p, "nonzero", 4) = [(1.5, 4.5)]
+    <span class="kw">And</span>   spans(p, "nonzero", 5) = []
+
+  <span class="kw">Scenario Outline</span>: A triangle's spans narrow by one per row
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(5, 10))
+    <span class="kw">Then</span>  spans(p, "nonzero", &lt;row&gt;) = [(&lt;x0&gt;, &lt;x1&gt;)]
+
+    <span class="kw">Examples</span>:
+      | row | x0   | x1   |
+      | 0   | 0.25 | 9.75 |
+      | 1   | 0.75 | 9.25 |
+      | 4   | 2.25 | 7.75 |
+      | 9   | 4.75 | 5.25 |
+
+  <span class="kw">Scenario</span>: The row past the triangle's apex has no span
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(5, 10))
+    <span class="kw">Then</span>  spans(p, "nonzero", 10) = []
+
+  <span class="kw">Scenario</span>: A flat top is not a span of its own
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(10, 5), point(0, 5))
+    <span class="kw">Then</span>  length(edge_table(p)) = 2
+    <span class="kw">And</span>   spans(p, "nonzero", 0) = [(0, 10)]
+    <span class="kw">And</span>   spans(p, "nonzero", 4) = [(0, 10)]
+    <span class="kw">And</span>   spans(p, "nonzero", 5) = []
+
+  <span class="kw">Scenario</span>: A ring is two spans under even-odd and one under nonzero
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(0, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 10))
+    <span class="kw">And</span>   line_to(p, point(0, 10))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">And</span>   move_to(p, point(3, 3))
+    <span class="kw">And</span>   line_to(p, point(7, 3))
+    <span class="kw">And</span>   line_to(p, point(7, 7))
+    <span class="kw">And</span>   line_to(p, point(3, 7))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">Then</span>  spans(p, "nonzero", 5) = [(0, 10)]
+    <span class="kw">And</span>   spans(p, "evenodd", 5) = [(0, 3), (7, 10)]
+
+  <span class="kw">Scenario</span>: The star's spans through its middle
+    <span class="kw">Given</span> p ← star()
+    <span class="kw">Then</span>  spans(p, "nonzero", 80) = [(43.6988, 117.3012)]
+    <span class="kw">And</span>   spans(p, "evenodd", 80) = [(43.6988, 57.7556), (103.2444, 117.3012)]
+
+  <span class="kw">Scenario</span>: fill_span fills the pixels whose centers are in the span
+    <span class="kw">Given</span> cov ← coverage_buffer(8, 3)
+    <span class="kw">When</span>  fill_span(cov, 1, 1.25, 4.75)
+    <span class="kw">Then</span>  coverage_at(cov, 0, 1) = 0
+    <span class="kw">And</span>   coverage_at(cov, 1, 1) = 1
+    <span class="kw">And</span>   coverage_at(cov, 4, 1) = 1
+    <span class="kw">And</span>   coverage_at(cov, 5, 1) = 0
+    <span class="kw">And</span>   coverage_at(cov, 2, 0) = 0
+    <span class="kw">And</span>   ink(cov) = 4
+
+  <span class="kw">Scenario</span>: The span is half-open at its right end
+    <span class="kw">Given</span> cov ← coverage_buffer(8, 3)
+    <span class="kw">When</span>  fill_span(cov, 1, 1.5, 4.5)
+    <span class="kw">Then</span>  coverage_at(cov, 1, 1) = 1
+    <span class="kw">And</span>   coverage_at(cov, 3, 1) = 1
+    <span class="kw">And</span>   coverage_at(cov, 4, 1) = 0
+    <span class="kw">And</span>   ink(cov) = 3
+
+  <span class="kw">Scenario</span>: A span may run off either side of the buffer
+    <span class="kw">Given</span> a ← coverage_buffer(8, 3)
+    <span class="kw">And</span>   b ← coverage_buffer(8, 3)
+    <span class="kw">And</span>   c ← coverage_buffer(8, 3)
+    <span class="kw">When</span>  fill_span(a, 1, -3, 2.5)
+    <span class="kw">And</span>   fill_span(b, 1, 6.5, 20)
+    <span class="kw">And</span>   fill_span(c, 1, 2.5, 2.5)
+    <span class="kw">Then</span>  ink(a) = 2
+    <span class="kw">And</span>   coverage_at(a, 1, 1) = 1
+    <span class="kw">And</span>   ink(b) = 2
+    <span class="kw">And</span>   coverage_at(b, 6, 1) = 1
+    <span class="kw">And</span>   ink(c) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 6.3</span> The sweep</h2>
+
+  <p>You could fill a path now: for every row, <code>crossings_on_row</code> over the whole table,
+    spans, <code>fill_span</code>. It would work and it would already be fast. But it checks every
+    edge on every row, and a path with a thousand edges on a thousand-row canvas does a million
+    checks to find the handful that matter. The classical fix is the <em>active edge list</em>, and
+    it's what makes this a renderer rather than a demo.</p>
+
+  <p>The table is sorted by <code>y_top</code>. Sweep the rows from the top. Keep a list of the
+    edges that are currently active, meaning they span the current sample height. At each row, two
+    things change: edges whose <code>y_top</code> has been reached join the list, and since the
+    table is sorted you take them off its front without searching; and edges whose
+    <code>y_bottom</code> has been passed leave it. Everything else in the list stays. Then compute
+    <code>x_at</code> for each active edge, sort those crossings, and fill the spans. The table is
+    read once, front to back, and every row touches only the edges that cross it:</p>
+
+<pre><code>fill_path_aliased(p, rule, w, h):
+  cov    ← coverage_buffer(w, h)
+  table  ← edge_table(p)                       <span class="cm">// sorted by y_top</span>
+  active ← []
+  next   ← 0                                   <span class="cm">// index of the first edge not yet activated</span>
+  <span class="kw">for</span> row <span class="kw">in</span> 0..h-1:
+    y ← row + 0.5
+    <span class="kw">while</span> next &lt; length(table) <span class="kw">and</span> table[next].y_top ≤ y:
+      active.append(table[next]);  next ← next + 1
+    active ← [e <span class="kw">for</span> e <span class="kw">in</span> active <span class="kw">if</span> e.y_bottom &gt; y]     <span class="cm">// half-open: out once y reaches the bottom</span>
+    xs ← [(x_at(e, y), e.direction) <span class="kw">for</span> e <span class="kw">in</span> active], sorted by x
+    <span class="kw">for</span> (x0, x1) <span class="kw">in</span> spans_from_crossings(xs, rule):
+      fill_span(cov, row, x0, x1)
+  <span class="kw">return</span> cov</code></pre>
+
+  <p>Two remarks about the sort. Sorting the crossings on each row is the honest simple version.
+    Renderers that care keep the active list ordered by <code>x</code> and re-sort it with one pass
+    of insertion sort, because between one row and the next the order almost never changes: edges
+    swap places only where they cross, and a polygon's edges rarely do. You can do that here if you
+    like; nothing in the scenarios can tell. The other remark is the one that matters. The edge
+    that starts exactly at a sample height, <code>y_top = y</code>, is active on that row, and the
+    edge that ends there, <code>y_bottom = y</code>, is not. That's the half-open rule for the third
+    time, and it's what makes the sweep agree with chapter 5's <code>winding_at</code> at every
+    pixel center, including the ones that sit on a vertex. A rectangle from <code>y = 2.5</code> to
+    <code>5.5</code> has its edges exactly on sample heights, and the scenario for it fills rows 2, 3
+    and 4 and not row 5; get either comparison wrong and it fills four rows or two.</p>
+
+  <p>Which brings you to the test. <code>fill_path_aliased(p, rule, w, h)</code> returns a coverage
+    buffer of zeros and ones. Chapter 5's <code>rasterize_centers(filled(p, rule), w, h)</code>
+    returns a coverage buffer of zeros and ones. They are the <em>same buffer</em>, for every path,
+    under either rule, and the scenarios say so with <code>max_coverage_difference(a, b) = 0</code>,
+    a helper that's chapter 1's <code>max_channel_difference</code> for coverage buffers: the
+    largest difference between corresponding entries, or 1 when the sizes differ, because two
+    buffers of different sizes can't be the same picture. It has a scenario of its own, including
+    the size case, so that a transposed sweep can't compare equal to anything.</p>
+
+  <p>Run the star through both and time them. On this machine, in Python, the sweep takes about a
+    millisecond and the center test about seventy: the ratio is the number of edges times the
+    number of pixels that don't touch them, and it only grows. In a compiled language the sweep is
+    too fast to time with a stopwatch. The scenario compares them on a rectangle, a triangle, a
+    polygon circle at an awkward offset, and the star under both rules, and every one comes out
+    identical. If yours doesn't, the first place to look is the two half-open comparisons in the
+    sweep and the two in <code>fill_span</code>; a <code>≤</code> where a <code>&lt;</code> belongs
+    shows up as one extra row or one extra column, and the diff will tell you which.</p>
+
+  <div class="test" data-feature="chapter06-sweep.feature">
+    <p class="label">features/chapter06-sweep.feature</p>
+<pre><code><span class="kw">Feature</span>: The sweep
+  fill_path_aliased(p, rule, w, h) is the scanline fill: it sweeps the rows
+  from top to bottom keeping the list of edges that span the current row's
+  sample height, sorts their crossings, and fills the spans. Its result is
+  a coverage buffer of 0s and 1s, and it is exactly the buffer chapter 5's
+  rasterize_centers(filled(p, rule), w, h) produces.
+  max_coverage_difference(a, b) is the largest difference between
+  corresponding entries of two coverage buffers, and 1 when their sizes
+  differ. transform_path(p, m) takes every point of every subpath through m.
+
+  <span class="kw">Scenario</span>: Two buffers that differ
+    <span class="kw">Given</span> a ← coverage_buffer(3, 3)
+    <span class="kw">And</span>   b ← coverage_buffer(3, 3)
+    <span class="kw">When</span>  set_coverage(a, 1, 1, 1)
+    <span class="kw">And</span>   set_coverage(b, 1, 1, 0.25)
+    <span class="kw">Then</span>  max_coverage_difference(a, b) = 0.75
+    <span class="kw">And</span>   max_coverage_difference(a, a) = 0
+
+  <span class="kw">Scenario</span>: Buffers of different sizes are as different as it gets
+    <span class="kw">Given</span> a ← coverage_buffer(3, 3)
+    <span class="kw">And</span>   b ← coverage_buffer(3, 4)
+    <span class="kw">Then</span>  max_coverage_difference(a, b) = 1
+
+  <span class="kw">Scenario</span>: A rectangle
+    <span class="kw">Given</span> p ← polygon(point(2, 2), point(6, 2), point(6, 6), point(2, 6))
+    <span class="kw">When</span>  cov ← fill_path_aliased(p, "nonzero", 8, 8)
+    <span class="kw">Then</span>  coverage_at(cov, 2, 2) = 1
+    <span class="kw">And</span>   coverage_at(cov, 5, 5) = 1
+    <span class="kw">And</span>   coverage_at(cov, 6, 5) = 0
+    <span class="kw">And</span>   coverage_at(cov, 5, 6) = 0
+    <span class="kw">And</span>   coverage_at(cov, 1, 2) = 0
+    <span class="kw">And</span>   ink(cov) = 16
+    <span class="kw">And</span>   max_coverage_difference(cov, rasterize_centers(filled(p, "nonzero"), 8, 8)) = 0
+
+  <span class="kw">Scenario</span>: A triangle
+    <span class="kw">Given</span> p ← polygon(point(0, 0), point(10, 0), point(5, 10))
+    <span class="kw">When</span>  cov ← fill_path_aliased(p, "nonzero", 20, 20)
+    <span class="kw">Then</span>  coverage_at(cov, 0, 0) = 1
+    <span class="kw">And</span>   coverage_at(cov, 9, 0) = 1
+    <span class="kw">And</span>   coverage_at(cov, 10, 0) = 0
+    <span class="kw">And</span>   coverage_at(cov, 4, 8) = 1
+    <span class="kw">And</span>   coverage_at(cov, 3, 8) = 0
+    <span class="kw">And</span>   coverage_at(cov, 5, 9) = 0
+    <span class="kw">And</span>   ink(cov) = 50
+    <span class="kw">And</span>   max_coverage_difference(cov, rasterize_centers(filled(p, "nonzero"), 20, 20)) = 0
+
+  <span class="kw">Scenario</span>: The same triangle drawn the other way round
+    <span class="kw">Given</span> a ← polygon(point(0, 0), point(10, 0), point(5, 10))
+    <span class="kw">And</span>   b ← polygon(point(0, 0), point(5, 10), point(10, 0))
+    <span class="kw">When</span>  ca ← fill_path_aliased(a, "nonzero", 20, 20)
+    <span class="kw">And</span>   cb ← fill_path_aliased(b, "nonzero", 20, 20)
+    <span class="kw">Then</span>  max_coverage_difference(ca, cb) = 0
+
+  <span class="kw">Scenario</span>: A polygon circle
+    <span class="kw">Given</span> p ← circle_path(10.3, 9.7, 7, 12)
+    <span class="kw">When</span>  cov ← fill_path_aliased(p, "nonzero", 20, 20)
+    <span class="kw">Then</span>  ink(cov) = 145
+    <span class="kw">And</span>   max_coverage_difference(cov, rasterize_centers(filled(p, "nonzero"), 20, 20)) = 0
+
+  <span class="kw">Scenario</span>: The star, both rules, matches chapter 5 pixel for pixel
+    <span class="kw">Given</span> p ← star()
+    <span class="kw">When</span>  nz ← fill_path_aliased(p, "nonzero", 160, 160)
+    <span class="kw">And</span>   eo ← fill_path_aliased(p, "evenodd", 160, 160)
+    <span class="kw">Then</span>  ink(nz) = 5480
+    <span class="kw">And</span>   ink(eo) = 3780
+    <span class="kw">And</span>   coverage_at(nz, 80, 80) = 1
+    <span class="kw">And</span>   coverage_at(eo, 80, 80) = 0
+    <span class="kw">And</span>   max_coverage_difference(nz, rasterize_centers(filled(p, "nonzero"), 160, 160)) = 0
+    <span class="kw">And</span>   max_coverage_difference(eo, rasterize_centers(filled(p, "evenodd"), 160, 160)) = 0
+
+  <span class="kw">Scenario</span>: An edge that starts on a sample height is active there, and one that ends there is not
+    <span class="kw">Given</span> p ← polygon(point(1.5, 2.5), point(4.5, 2.5), point(4.5, 5.5), point(1.5, 5.5))
+    <span class="kw">When</span>  cov ← fill_path_aliased(p, "nonzero", 8, 8)
+    <span class="kw">Then</span>  coverage_at(cov, 2, 1) = 0
+    <span class="kw">And</span>   coverage_at(cov, 2, 2) = 1
+    <span class="kw">And</span>   coverage_at(cov, 2, 4) = 1
+    <span class="kw">And</span>   coverage_at(cov, 2, 5) = 0
+    <span class="kw">And</span>   coverage_at(cov, 1, 3) = 1
+    <span class="kw">And</span>   coverage_at(cov, 4, 3) = 0
+    <span class="kw">And</span>   ink(cov) = 9
+    <span class="kw">And</span>   max_coverage_difference(cov, rasterize_centers(filled(p, "nonzero"), 8, 8)) = 0
+
+  <span class="kw">Scenario</span>: A polygon larger than the buffer fills it
+    <span class="kw">Given</span> p ← polygon(point(-5, -5), point(30, -5), point(30, 30), point(-5, 30))
+    <span class="kw">When</span>  cov ← fill_path_aliased(p, "nonzero", 8, 8)
+    <span class="kw">Then</span>  ink(cov) = 64
+
+  <span class="kw">Scenario</span>: An empty path fills nothing
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  cov ← fill_path_aliased(p, "nonzero", 8, 8)
+    <span class="kw">Then</span>  ink(cov) = 0
+
+  <span class="kw">Scenario</span>: transform_path takes every point through the matrix and keeps the flags
+    <span class="kw">Given</span> p ← polygon(point(1.25, 2), point(4.75, 2), point(4.75, 5), point(1.25, 5))
+    <span class="kw">When</span>  q ← transform_path(p, translation(10, 20))
+    <span class="kw">Then</span>  length(subpaths(q)) = 1
+    <span class="kw">And</span>   subpaths(q)[0].closed = true
+    <span class="kw">And</span>   subpaths(q)[0].points[0] = point(11.25, 22)
+    <span class="kw">And</span>   subpaths(q)[0].points[2] = point(14.75, 25)
+    <span class="kw">And</span>   subpaths(p)[0].points[0] = point(1.25, 2)
+
+  <span class="kw">Scenario</span>: A transformed star fills where the transform put it
+    <span class="kw">Given</span> p ← transform_path(star(), translation(10, 10) * scaling(0.11, 0.11) * translation(-80.5, -80.5))
+    <span class="kw">When</span>  nz ← fill_path_aliased(p, "nonzero", 20, 20)
+    <span class="kw">And</span>   eo ← fill_path_aliased(p, "evenodd", 20, 20)
+    <span class="kw">Then</span>  bounds(p) = (2.6769, 2.3, 17.3231, 16.2294)
+    <span class="kw">And</span>   ink(nz) = 60
+    <span class="kw">And</span>   ink(eo) = 40
+    <span class="kw">And</span>   max_coverage_difference(nz, rasterize_centers(filled(p, "nonzero"), 20, 20)) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 6.4</span> Paths through matrices</h2>
+
+  <p>One small function has been waiting since chapter 4. <code>transform_path(p, m)</code> is a new
+    path with every point of every subpath taken through <code>m</code>, closed flags and all; it's
+    <code>transform_points</code> with the subpath structure kept. The original is untouched, and a
+    scenario checks that, because the alternative, transforming in place, is the kind of thing that
+    works until you draw the same path twice. With it, a path you've described once can be drawn
+    anywhere, at any size, at any angle, which is the whole reason chapter 4 happened.</p>
+
+  <p>The pen question from chapter 4's trap doesn't come up here: a fill has no pen. Transform
+    the points, fill the result, and the picture is right. Strokes, in chapter 13, will have to
+    decide.</p>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>View → Pixel Preview in Illustrator, and the <em>Antialiasing</em> checkbox in Inkscape's
+      Document Properties, switched off. Both show you this chapter's output: the shape filled by
+      pixel centers, hard-edged. Designers use it to see what an icon will do at 16 pixels, which is
+      a question chapter 7's smooth edges answer less honestly.</p>
+  </aside>
+
+  <h2><span class="sec">§ 6.5</span> Putting it together</h2>
+
+  <p>Something that would have taken chapter 5 all afternoon. Take the star, move it to the origin
+    and shrink it to radius 1, so that one matrix can put it anywhere at any size:
+    <code>unit_star()</code> is <code>transform_path(star(), scaling(1/70, 1/70) *
+    translation(-80.5, -80.5))</code>. Then twenty-four of them along a spiral, each one bigger,
+    each one turned a little further, in three inks, filled nonzero by the sweep into a 320-by-320
+    canvas and magnified by 2:</p>
+
+<pre><code>unit_star():
+  <span class="kw">return</span> transform_path(star(), scaling(1 / 70, 1 / 70) * translation(-80.5, -80.5))
+
+spiral():
+  c ← canvas(320, 320)
+  fill(c, color(0.02, 0.02, 0.025))
+  inks ← [color(0.9, 0.55, 0.1), color(0.2, 0.55, 0.85), color(0.85, 0.25, 0.3)]
+  <span class="kw">for</span> k <span class="kw">in</span> 0..23:
+    a ← k * 25 degrees
+    r ← 20 + 5 * k
+    m ← translation(160.5 + r * cos(a), 160.5 + r * sin(a)) * rotation(a) * scaling(6 + 1.25 * k, 6 + 1.25 * k)
+    cov ← fill_path_aliased(transform_path(unit_star(), m), "nonzero", 320, 320)
+    paint_through(c, cov, inks[k mod 3])
+  <span class="kw">return</span> c
+
+plate_06():
+  <span class="kw">return</span> magnify(spiral(), 2)</code></pre>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate6" role="img" aria-label="Twenty-four five-pointed stars in orange, blue and red arranged along a spiral on dark paper, growing from tiny at the center to large at the outer end, each turned a little further than the last, all with hard jagged edges"></canvas>
+    <figcaption><span class="fig">Plate 6</span> Twenty-four stars, one path, one matrix each, filled by the sweep. Twenty-four fills of a 320-by-320 canvas: under half a second in Python, a few milliseconds compiled. Look closely at the edges. They're staircases, and chapter 7 is about why they don't have to be.</figcaption>
+  </figure>
+
+  <p>Read the matrix right to left, as chapter 4 taught you: scale the unit star up, turn it,
+    move it out along the spiral. Every star is the same five points. The scenarios pin the unit
+    star's corners and bounds, then probe one pixel in the middle of a star of each ink and one
+    in an arm of the biggest, then diff the whole picture. If your spiral winds the other way,
+    your rotation turns the wrong way, and chapter 4's F would have told you.</p>
+
+  <div class="test" data-feature="chapter06-plate.feature">
+    <p class="label">features/chapter06-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 6
+  Twenty-four stars along a spiral, each the chapter 5 star shrunk to
+  radius 1 about the origin and then scaled, turned and moved by one
+  matrix, filled nonzero by the sweep. unit_star() is that star of radius
+  1. spiral() is the 320 by 320 picture and plate_06() is it magnified by 2.
+
+  <span class="kw">Scenario</span>: The unit star
+    <span class="kw">Given</span> p ← unit_star()
+    <span class="kw">Then</span>  length(edges(p)) = 5
+    <span class="kw">And</span>   subpaths(p)[0].points[0] = point(0, -1)
+    <span class="kw">And</span>   subpaths(p)[0].points[1] = point(0.5878, 0.809)
+    <span class="kw">And</span>   subpaths(p)[0].points[2] = point(-0.9511, -0.309)
+    <span class="kw">And</span>   bounds(p) = (-0.9511, -1, 0.9511, 0.809)
+
+  <span class="kw">Scenario</span>: The spiral
+    <span class="kw">Given</span> c ← spiral()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-06/spiral.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 320
+    <span class="kw">And</span>   ppm_pixel(p6, 180, 160) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 183, 171) = (124, 196, 237) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 179, 183) = (237, 137, 149) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 104, 139) = (237, 137, 149) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 230, 111) = (124, 196, 237) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 32, 137) = (124, 196, 237) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 34, 104) = (237, 137, 149) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 160) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 5, 5) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 300, 20) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 6
+    <span class="kw">Given</span> c ← plate_06()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-06/plate-06.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 640
+    <span class="kw">And</span>   c.height = 640
+    <span class="kw">And</span>   ppm_pixel(p6, 360, 320) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 68, 208) = (237, 137, 149) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 320, 320) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <nav class="endnav">
+    <a href="chapter-05.html">← 5 · Paths and Insideness</a>
+    <span>Chapter 6 · Filling a Polygon</span>
+    <span>Next: 7 · Analytic Antialiasing (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+function toByte(light) {
+  var v = light < 0 ? 0 : light > 1 ? 1 : light;
+  return Math.floor(Plate.l2s(v) * 255 + 0.5);
+}
+function lerp3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+function blit(ctx, pixels, pw, ph, scale, ox, oy) {
+  var img = ctx.createImageData(pw, ph);
+  for (var i = 0; i < pw * ph; i++) {
+    img.data[i * 4] = pixels[i][0]; img.data[i * 4 + 1] = pixels[i][1];
+    img.data[i * 4 + 2] = pixels[i][2]; img.data[i * 4 + 3] = 255;
+  }
+  var off = Plate.offcan(pw, ph);
+  off.getContext('2d').putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, ox, oy, pw * scale, ph * scale);
+}
+var PAPER = [0.02, 0.02, 0.025], INKS = [[0.9, 0.55, 0.1], [0.2, 0.55, 0.85], [0.85, 0.25, 0.3]];
+function Buf(w, h) { this.w = w; this.h = h; this.p = []; for (var i = 0; i < w * h; i++) this.p.push(PAPER.slice()); }
+Buf.prototype.plot = function (x, y, col, k) {
+  if (x < 0 || y < 0 || x >= this.w || y >= this.h || k <= 0) return;
+  this.p[y * this.w + x] = lerp3(this.p[y * this.w + x], col, k);
+};
+Buf.prototype.bytes = function () { return this.p.map(function (c) { return c.map(toByte); }); };
+
+/* points, matrices and paths, as the chapters define them */
+function point(x, y) { return [x, y, 1]; }
+function mul(a, b) {
+  if (b.length === 3) return [a[0] * b[0] + a[1] * b[1] + a[2] * b[2], a[3] * b[0] + a[4] * b[1] + a[5] * b[2], a[6] * b[0] + a[7] * b[1] + a[8] * b[2]];
+  var out = [];
+  for (var r = 0; r < 3; r++) for (var c = 0; c < 3; c++) out.push(a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]);
+  return out;
+}
+function translation(x, y) { return [1, 0, x, 0, 1, y, 0, 0, 1]; }
+function scaling(x, y) { return [x, 0, 0, 0, y, 0, 0, 0, 1]; }
+function rotation(r) { var c = Math.cos(r), s = Math.sin(r); return [c, -s, 0, s, c, 0, 0, 0, 1]; }
+function path() { return { subpaths: [] }; }
+function moveTo(p, q) { p.subpaths.push({ points: [q], closed: false }); }
+function lineTo(p, q) {
+  if (!p.subpaths.length) return moveTo(p, q);
+  var cur = p.subpaths[p.subpaths.length - 1];
+  if (cur.closed) { moveTo(p, cur.points[0]); cur = p.subpaths[p.subpaths.length - 1]; }
+  cur.points.push(q);
+}
+function close(p) { if (p.subpaths.length) p.subpaths[p.subpaths.length - 1].closed = true; }
+function edges(p) {
+  var out = [];
+  p.subpaths.forEach(function (sp) {
+    var n = sp.points.length; if (n < 2) return;
+    for (var i = 0; i < n; i++) out.push([sp.points[i], sp.points[(i + 1) % n]]);
+  });
+  return out;
+}
+function transformPath(p, m) {
+  return { subpaths: p.subpaths.map(function (sp) { return { points: sp.points.map(function (q) { return mul(m, q); }), closed: sp.closed }; }) };
+}
+function star() {
+  var p = path();
+  for (var k = 0; k < 5; k++) {
+    var a = (-90 + 144 * k) * Math.PI / 180, q = point(80.5 + 70 * Math.cos(a), 80.5 + 70 * Math.sin(a));
+    if (k === 0) moveTo(p, q); else lineTo(p, q);
+  }
+  close(p);
+  return p;
+}
+
+/* the sweep, exactly as the chapter defines it */
+function edgeTable(p) {
+  var out = [];
+  edges(p).forEach(function (e) {
+    var a = e[0], b = e[1];
+    if (a[1] === b[1]) return;
+    var top = a[1] < b[1] ? a : b, bottom = a[1] < b[1] ? b : a;
+    out.push({ yTop: top[1], yBottom: bottom[1], xTop: top[0], slope: (bottom[0] - top[0]) / (bottom[1] - top[1]), direction: a[1] < b[1] ? 1 : -1 });
+  });
+  out.sort(function (u, v) { return u.yTop - v.yTop || u.xTop - v.xTop; });
+  return out;
+}
+function xAt(e, y) { return e.xTop + (y - e.yTop) * e.slope; }
+function spansFromCrossings(xs, rule) {
+  var out = [], w = 0, start = null;
+  xs.forEach(function (c) {
+    w += c[1];
+    var inside = rule === 'nonzero' ? w !== 0 : (w % 2 !== 0);
+    if (inside && start === null) start = c[0];
+    else if (!inside && start !== null) { out.push([start, c[0]]); start = null; }
+  });
+  return out;
+}
+function fillPathAliased(p, rule, w, h) {
+  var cov = new Array(w * h).fill(0), table = edgeTable(p), active = [], next = 0;
+  for (var row = 0; row < h; row++) {
+    var y = row + 0.5;
+    while (next < table.length && table[next].yTop <= y) active.push(table[next++]);
+    active = active.filter(function (e) { return e.yBottom > y; });
+    var xs = active.map(function (e) { return [xAt(e, y), e.direction]; }).sort(function (u, v) { return u[0] - v[0]; });
+    spansFromCrossings(xs, rule).forEach(function (s) {
+      var first = Math.max(Math.ceil(s[0] - 0.5), 0), last = Math.min(Math.ceil(s[1] - 0.5) - 1, w - 1);
+      for (var x = first; x <= last; x++) cov[row * w + x] = 1;
+    });
+  }
+  return cov;
+}
+function unitStar() { return transformPath(star(), mul(scaling(1 / 70, 1 / 70), translation(-80.5, -80.5))); }
+function spiral() {
+  var b = new Buf(320, 320);
+  for (var k = 0; k < 24; k++) {
+    var a = k * 25 * Math.PI / 180, r = 20 + 5 * k;
+    var m = mul(mul(translation(160.5 + r * Math.cos(a), 160.5 + r * Math.sin(a)), rotation(a)), scaling(6 + 1.25 * k, 6 + 1.25 * k));
+    var cov = fillPathAliased(transformPath(unitStar(), m), 'nonzero', 320, 320);
+    for (var i = 0; i < cov.length; i++) if (cov[i]) b.p[i] = lerp3(b.p[i], INKS[k % 3], 1);
+  }
+  return b;
+}
+
+function grid(ctx, p, ox, oy, cols, rows, cs) {
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.45); ctx.lineWidth = 1;
+  for (var i = 0; i <= cols; i++) { ctx.beginPath(); ctx.moveTo(ox + i * cs, oy); ctx.lineTo(ox + i * cs, oy + rows * cs); ctx.stroke(); }
+  for (var j = 0; j <= rows; j++) { ctx.beginPath(); ctx.moveTo(ox, oy + j * cs); ctx.lineTo(ox + cols * cs, oy + j * cs); ctx.stroke(); }
+}
+function arrow(ctx, x0, y0, x1, y1, col, width) {
+  var a = Math.atan2(y1 - y0, x1 - x0), L = 7;
+  ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = width || 2;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - L * Math.cos(a - 0.4), y1 - L * Math.sin(a - 0.4));
+  ctx.lineTo(x1 - L * Math.cos(a + 0.4), y1 - L * Math.sin(a + 0.4)); ctx.closePath(); ctx.fill();
+}
+
+/* ---------- Figure 6.1 — the edge table ---------- */
+Plate.add('fig61', 0.5, function (ctx, w, h, p) {
+  var cols = 16, cs = Math.floor((w - 20) / cols), rows = Math.floor((h - 20) / cs), ox = 10, oy = 10;
+  grid(ctx, p, ox, oy, cols, rows, cs);
+  var q = path();
+  [[2, 2], [4, 1], [6, 3], [8, 1], [9, 6], [1, 6]].forEach(function (v, i) { if (i) lineTo(q, point(v[0], v[1])); else moveTo(q, point(v[0], v[1])); });
+  close(q);
+  edges(q).forEach(function (e) {
+    var a = e[0], b = e[1], X = function (v) { return ox + v * cs; }, Y = function (v) { return oy + v * cs; };
+    if (a[1] === b[1]) {
+      ctx.setLineDash([4, 4]); ctx.strokeStyle = Plate.rgba(p.ink3, 0.9); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(X(a[0]), Y(a[1])); ctx.lineTo(X(b[0]), Y(b[1])); ctx.stroke(); ctx.setLineDash([]);
+      Plate.label(ctx, 'horizontal: dropped', X((a[0] + b[0]) / 2), Y(a[1]) + 14, p.ink3, 10, 'center');
+      return;
+    }
+    var down = a[1] < b[1];
+    arrow(ctx, X(a[0]), Y(a[1]), X(a[0] + (b[0] - a[0]) * 0.92), Y(a[1] + (b[1] - a[1]) * 0.92), down ? p.magenta : p.cyan, 2);
+    var top = down ? a : b;
+    ctx.fillStyle = p.ink; ctx.beginPath(); ctx.arc(X(top[0]), Y(top[1]), 3.5, 0, Math.PI * 2); ctx.fill();
+    var slope = (b[0] - a[0]) / (b[1] - a[1]), mx = X((a[0] + b[0]) / 2), my = Y((a[1] + b[1]) / 2);
+    /* label on the outside of the edge: the side away from the polygon's middle */
+    var side = mx < X(3) ? 1 : (mx < X(5) ? -1 : 1);
+    Plate.label(ctx, (down ? '+1' : '-1') + '  slope ' + slope.toFixed(2), mx + side * 10, my + (down ? 12 : -6), down ? p.magenta : p.cyan, 9.5, side > 0 ? 'left' : 'right');
+  });
+  Plate.label(ctx, 'y_top, x_top', ox + 4 * cs + 8, oy + 1 * cs - 6, p.ink, 10);
+  Plate.label(ctx, 'magenta: heading down the canvas (+1).  cyan: heading up (-1).', ox, oy + rows * cs - 4, p.ink2, 9.5);
+});
+
+/* ---------- Figure 6.2 — one row of the sweep ---------- */
+Plate.add('fig62', 0.5, function (ctx, w, h, p) {
+  var cols = 16, cs = Math.floor((w - 20) / cols), rows = Math.floor((h - 20) / cs), ox = 10, oy = 10;
+  var X = function (v) { return ox + v * cs; }, Y = function (v) { return oy + v * cs; };
+  /* a bow tie: it crosses itself, so the two rules disagree on part of the row */
+  var q = path();
+  [[1, 1], [15, 6], [15, 1], [1, 6]].forEach(function (v, i) { if (i) lineTo(q, point(v[0], v[1])); else moveTo(q, point(v[0], v[1])); });
+  close(q);
+  var row = 2, y = row + 0.5, table = edgeTable(q);
+  var xs = table.filter(function (e) { return e.yTop <= y && y < e.yBottom; }).map(function (e) { return [xAt(e, y), e.direction]; }).sort(function (u, v) { return u[0] - v[0]; });
+  ctx.fillStyle = Plate.rgba(p.ink3, 0.18); ctx.fillRect(ox, Y(row), cols * cs, cs);
+  spansFromCrossings(xs, 'nonzero').forEach(function (s) {
+    var first = Math.ceil(s[0] - 0.5), last = Math.ceil(s[1] - 0.5) - 1;
+    for (var x = first; x <= last; x++) { ctx.fillStyle = Plate.rgba(p.magenta, 0.55); ctx.fillRect(X(x), Y(row), cs, cs); }
+  });
+  grid(ctx, p, ox, oy, cols, rows, cs);
+  ctx.strokeStyle = p.ink; ctx.lineWidth = 2; ctx.beginPath();
+  q.subpaths[0].points.forEach(function (pt, i) { if (i) ctx.lineTo(X(pt[0]), Y(pt[1])); else ctx.moveTo(X(pt[0]), Y(pt[1])); }); ctx.closePath(); ctx.stroke();
+  ctx.setLineDash([3, 3]); ctx.strokeStyle = Plate.rgba(p.cyan, 0.9); ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(ox, Y(y)); ctx.lineTo(ox + cols * cs, Y(y)); ctx.stroke(); ctx.setLineDash([]);
+  Plate.label(ctx, 'y = ' + y, ox + cols * cs - 4, Y(y) - 5, p.cyan, 10, 'right');
+  var wsum = 0, prev = ox;
+  Plate.label(ctx, '0', (prev + X(xs[0][0])) / 2, Y(row) - 8, p.ink2, 10, 'center');
+  xs.forEach(function (c, i) {
+    ctx.fillStyle = c[1] > 0 ? p.magenta : p.cyan; ctx.beginPath(); ctx.arc(X(c[0]), Y(y), 4, 0, Math.PI * 2); ctx.fill();
+    Plate.label(ctx, c[1] > 0 ? '+1' : '-1', X(c[0]), Y(y) + 18, c[1] > 0 ? p.magenta : p.cyan, 10, 'center');
+    wsum += c[1];
+    var nx = i + 1 < xs.length ? X(xs[i + 1][0]) : ox + cols * cs;
+    Plate.label(ctx, String(wsum), (X(c[0]) + nx) / 2, Y(row) - 8, p.ink2, 10, 'center');
+  });
+  Plate.label(ctx, 'winding between crossings; filled where nonzero', ox, oy + rows * cs - 4, p.ink2, 9.5);
+});
+
+/* ---------- Plate 6 — plate_06(), pixel for pixel ---------- */
+Plate.add('plate6', 1, function (ctx, w, h, p) {
+  var b = spiral();
+  var scale = Math.max(1, Math.floor(Math.min(w / 320, h / 320))), ox = (w - 320 * scale) / 2;
+  blit(ctx, b.bytes(), 320, 320, scale, ox, 0);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, Buf, point, mul, translation, scaling, rotation, path, moveTo, lineTo, close, edges, transformPath, star, edgeTable, xAt, spansFromCrossings, fillPathAliased, unitStar, spiral].concat(Plate.helpers).map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>
