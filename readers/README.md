@@ -18,6 +18,7 @@ code the previous chapters produced, not a rewrite.
 | `swift/` | Swift 6 toolchain, Swift 5 mode | `./build.sh && ./run` |
 | `lean/` | Lean 4.29.1 (via `lean-toolchain`) | `lake test` or as its README says |
 | `dart/` | Dart SDK 2.18, no pub packages | `dart test/run_tests.dart` |
+| `lua/` | Lua 5.4, standard library only | `lua run_tests.lua` |
 
 Each directory's own `README.md` is the authority on how to build, test and render; agents
 keep it current. `feedback/chapterNN-<lang>.md` is the candid report each agent wrote after
