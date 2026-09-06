@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # never copied back into the repo
 # build products are anchored to the reader's root: rust keeps its src/bin/
-EXCLUDE = ["/out/", "/reference/", "/features/", "/chapter-*.html", "/FEEDBACK.md",
+EXCLUDE = ["/out/", "/reference/", "/features/", "/chapter-*.html", "/FEEDBACK.md", "/TASK.md",
            "/target/", "/classes/", "/bin/", "/obj/", "/.build/", "__pycache__/",
            "node_modules/", ".lake/", "*.olean", "*.ilean", "*.o", "*.class",
            "*.pyc", ".DS_Store"]
