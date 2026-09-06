@@ -1005,6 +1005,12 @@ def inside(shape, x, y):
     elif isinstance(shape, Outline):
         # Check if inside the union of segments
         return inside(shape.union, x, y)
+    elif isinstance(shape, Filled):
+        # Inside according to the path's winding number under the given rule
+        if shape.rule == "nonzero":
+            return inside_nonzero(shape.path, x, y)
+        else:  # "evenodd"
+            return inside_evenodd(shape.path, x, y)
     return False
 
 
@@ -1599,4 +1605,433 @@ def f_both_orders():
 def plate_04():
     """The final plate for chapter 4: F in two transformation orders, magnified by 2."""
     return magnify(f_both_orders(), 2)
+
+
+# ============================================================================
+# Chapter 5: Paths and Insideness
+# ============================================================================
+
+class Subpath:
+    """A list of points, in order, and a flag for whether it was closed."""
+
+    def __init__(self, points=None, closed=False):
+        self.points = points if points is not None else []
+        self.closed = closed
+
+    def __repr__(self):
+        return f"Subpath({self.points}, closed={self.closed})"
+
+
+class Edge:
+    """An edge of a path, as an (a, b) pair. Compares equal to a plain
+    (a, b) tuple, component-wise with the usual tolerance."""
+
+    def __init__(self, a, b):
+        self.a = a
+        self.b = b
+
+    def __getitem__(self, idx):
+        if idx == 0:
+            return self.a
+        elif idx == 1:
+            return self.b
+        raise IndexError("Edge index out of range")
+
+    def __len__(self):
+        return 2
+
+    def __eq__(self, other):
+        if isinstance(other, Edge):
+            return self.a == other.a and self.b == other.b
+        elif isinstance(other, tuple) and len(other) == 2:
+            return self.a == other[0] and self.b == other[1]
+        return False
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __repr__(self):
+        return f"Edge({self.a}, {self.b})"
+
+
+class Path:
+    """A path: a list of subpaths, each a list of points and a closed flag."""
+
+    def __init__(self):
+        self.subpaths = []
+
+
+def path():
+    """Create an empty path."""
+    return Path()
+
+
+def move_to(p, pt):
+    """Lift the pen and put it down at pt, starting a new subpath."""
+    p.subpaths.append(Subpath([pt], False))
+
+
+def line_to(p, pt):
+    """Draw a straight line from wherever the pen is to pt.
+
+    With nothing to draw from, behaves as move_to. After a close, the
+    pen is where the closed subpath began, so this starts a new subpath
+    there and draws to pt."""
+    if not p.subpaths:
+        move_to(p, pt)
+        return
+    last = p.subpaths[-1]
+    if last.closed:
+        start = last.points[0]
+        p.subpaths.append(Subpath([start, pt], False))
+    else:
+        last.points.append(pt)
+
+
+def close(p):
+    """Draw a line back to where the pen was last put down, and mark the
+    subpath closed. Closing nothing, or closing twice, does nothing more."""
+    if not p.subpaths:
+        return
+    p.subpaths[-1].closed = True
+
+
+def subpaths(p):
+    """The list of subpaths, each with .points and .closed."""
+    return p.subpaths
+
+
+def edges(p):
+    """Every edge of every subpath as (a, b) pairs, treating every subpath
+    as closed whether or not close() was called. A subpath of one point
+    contributes no edges."""
+    result = []
+    for sp in p.subpaths:
+        n = len(sp.points)
+        if n < 2:
+            continue
+        for i in range(n):
+            a = sp.points[i]
+            b = sp.points[(i + 1) % n]
+            result.append(Edge(a, b))
+    return result
+
+
+def bounds(p):
+    """The smallest axis-aligned box around every point of every subpath,
+    as (min x, min y, max x, max y). An empty path is (0, 0, 0, 0)."""
+    pts = [pt for sp in p.subpaths for pt in sp.points]
+    if not pts:
+        return (0.0, 0.0, 0.0, 0.0)
+    xs = [pt.x for pt in pts]
+    ys = [pt.y for pt in pts]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def polygon(*points):
+    """A closed subpath through the given points."""
+    p = Path()
+    p.subpaths = [Subpath(list(points), True)]
+    return p
+
+
+def circle_path(cx, cy, r, n):
+    """A regular n-gon standing in for a circle: first point at angle 0
+    (on the right), going clockwise on the screen."""
+    pts = []
+    for k in range(n):
+        angle = 2 * math.pi * k / n
+        pts.append(point(cx + r * math.cos(angle), cy + r * math.sin(angle)))
+    return polygon(*pts)
+
+
+def crossings(p, x, y):
+    """Count the edges a ray from (x, y) toward +x crosses, using the
+    half-open rule: an edge from a to b is crossed when the ray's height y
+    satisfies a.y <= y < b.y or b.y <= y < a.y."""
+    count = 0
+    for e in edges(p):
+        a, b = e.a, e.b
+        if (a.y <= y < b.y) or (b.y <= y < a.y):
+            t = (y - a.y) / (b.y - a.y)
+            cx = a.x + t * (b.x - a.x)
+            if cx > x:
+                count += 1
+    return count
+
+
+def winding_at(p, x, y):
+    """The winding number of the path around (x, y): each edge that
+    crosses the ray's height counts +1 (heading down the canvas) or -1
+    (heading up). Positive is clockwise on the screen."""
+    q = point(x, y)
+    w = 0
+    for e in edges(p):
+        a, b = e.a, e.b
+        if a.y <= y:
+            if b.y > y and cross(b - a, q - a) > 0:
+                w += 1
+        else:
+            if b.y <= y and cross(b - a, q - a) < 0:
+                w -= 1
+    return w
+
+
+def inside_nonzero(p, x, y):
+    """Nonzero rule: inside when the winding number isn't zero."""
+    return winding_at(p, x, y) != 0
+
+
+def inside_evenodd(p, x, y):
+    """Even-odd rule: inside when the winding number is odd."""
+    return winding_at(p, x, y) % 2 != 0
+
+
+class Filled(Shape):
+    """The shape a path encloses under a rule, "nonzero" or "evenodd"."""
+
+    def __init__(self, path, rule):
+        self.path = path
+        self.rule = rule
+
+
+def filled(p, rule):
+    """Create a filled-path shape."""
+    return Filled(p, rule)
+
+
+def rasterize_within(shape, box, width, height):
+    """Chapter 2's rasterize, restricted to the pixels a box touches:
+    columns from floor(min x) up to but not including ceil(max x), rows
+    likewise, clipped to the buffer."""
+    min_x, min_y, max_x, max_y = box
+    cov = CoverageBuffer(width, height)
+    x0 = max(0, math.floor(min_x))
+    x1 = min(width, math.ceil(max_x))
+    y0 = max(0, math.floor(min_y))
+    y1 = min(height, math.ceil(max_y))
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            cov.coverage[y][x] = coverage(shape, x, y)
+    return cov
+
+
+def star():
+    """Five points on a circle of radius 70 about (80.5, 80.5), the first
+    straight up, visited every second one so the pen crosses itself."""
+    p = path()
+    for k in range(5):
+        a = math.radians(-90 + 144 * k)
+        q = point(80.5 + 70 * math.cos(a), 80.5 + 70 * math.sin(a))
+        if k == 0:
+            move_to(p, q)
+        else:
+            line_to(p, q)
+    close(p)
+    return p
+
+
+def star_panel(rule, method):
+    """One panel of plate 5: the star filled under rule, rasterized either
+    by center sampling or by coverage within its bounds."""
+    c = canvas(160, 160)
+    fill(c, color(0.02, 0.02, 0.025))
+    s = filled(star(), rule)
+    if method == "centers":
+        cov = rasterize_centers(s, 160, 160)
+    else:
+        cov = rasterize_within(s, bounds(star()), 160, 160)
+    paint_through(c, cov, color(0.9, 0.55, 0.1))
+    return c
+
+
+def star_centers():
+    """Nonzero and even-odd panels, by the center question, side by side."""
+    return side_by_side(star_panel("nonzero", "centers"), star_panel("evenodd", "centers"))
+
+
+def star_coverage():
+    """Nonzero and even-odd panels, by coverage, side by side."""
+    return side_by_side(star_panel("nonzero", "coverage"), star_panel("evenodd", "coverage"))
+
+
+def plate_05():
+    """The final plate for chapter 5: centers on top, coverage below,
+    magnified by 2."""
+    top = star_centers()
+    bottom = star_coverage()
+    both = canvas(320, 320)
+    for y in range(160):
+        for x in range(320):
+            write_pixel(both, x, y, pixel_at(top, x, y))
+            write_pixel(both, x, y + 160, pixel_at(bottom, x, y))
+    return magnify(both, 2)
+
+
+# ============================================================================
+# Chapter 6: Filling a Polygon
+# ============================================================================
+
+class EdgeTableEntry:
+    """One edge, prepared for the sweep: its top, its x there, its slope
+    in x per unit of y, and its direction (+1 down the canvas, -1 up)."""
+
+    def __init__(self, y_top, y_bottom, x_top, slope, direction):
+        self.y_top = y_top
+        self.y_bottom = y_bottom
+        self.x_top = x_top
+        self.slope = slope
+        self.direction = direction
+
+    def __repr__(self):
+        return (f"EdgeTableEntry(y_top={self.y_top}, y_bottom={self.y_bottom}, "
+                f"x_top={self.x_top}, slope={self.slope}, direction={self.direction})")
+
+
+def edge_table(p):
+    """Every non-horizontal edge of a path, prepared for the sweep and
+    sorted by y_top, then by x_top. Horizontal edges (a.y = b.y exactly)
+    are dropped."""
+    entries = []
+    for e in edges(p):
+        a, b = e.a, e.b
+        if a.y == b.y:
+            continue
+        dy = b.y - a.y
+        slope = (b.x - a.x) / dy
+        if a.y < b.y:
+            y_top, y_bottom, x_top, direction = a.y, b.y, a.x, 1
+        else:
+            y_top, y_bottom, x_top, direction = b.y, a.y, b.x, -1
+        entries.append(EdgeTableEntry(y_top, y_bottom, x_top, slope, direction))
+    entries.sort(key=lambda entry: (entry.y_top, entry.x_top))
+    return entries
+
+
+def x_at(edge, y):
+    """Where an edge crosses height y: x_top + (y - y_top) * slope."""
+    return edge.x_top + (y - edge.y_top) * edge.slope
+
+
+def crossings_on_row(table, y):
+    """(x, direction) for every edge of the table that spans height y
+    under the half-open rule y_top <= y < y_bottom, sorted by x."""
+    result = []
+    for e in table:
+        if e.y_top <= y < e.y_bottom:
+            result.append((x_at(e, y), e.direction))
+    result.sort(key=lambda t: t[0])
+    return result
+
+
+def spans_from_crossings(xs, rule):
+    """Walk sorted (x, direction) crossings left to right, accumulating
+    the winding number, and return the maximal intervals where the rule
+    says inside. Touching inside stretches merge into one span."""
+    out = []
+    w = 0
+    start = None
+    for (x, d) in xs:
+        w += d
+        if rule == "nonzero":
+            is_inside = w != 0
+        else:
+            is_inside = (w % 2) != 0
+        if is_inside and start is None:
+            start = x
+        if not is_inside and start is not None:
+            out.append((start, x))
+            start = None
+    return out
+
+
+def spans(p, rule, row):
+    """The spans of a path on pixel row `row`, sampled at height row + 0.5."""
+    y = row + 0.5
+    table = edge_table(p)
+    xs = crossings_on_row(table, y)
+    return spans_from_crossings(xs, rule)
+
+
+def fill_span(cov, row, x0, x1):
+    """Set to 1 every pixel of the row whose center lies in [x0, x1)."""
+    first = math.ceil(x0 - 0.5)
+    last = math.ceil(x1 - 0.5) - 1
+    lo = max(first, 0)
+    hi = min(last, cov.width - 1)
+    for x in range(lo, hi + 1):
+        set_coverage(cov, x, row, 1)
+
+
+def fill_path_aliased(p, rule, width, height):
+    """The scanline fill: sweep the rows top to bottom keeping the active
+    edge list, sorting crossings and filling spans on each row."""
+    cov = coverage_buffer(width, height)
+    table = edge_table(p)
+    active = []
+    next_idx = 0
+    n = len(table)
+    for row in range(height):
+        y = row + 0.5
+        while next_idx < n and table[next_idx].y_top <= y:
+            active.append(table[next_idx])
+            next_idx += 1
+        active = [e for e in active if e.y_bottom > y]
+        xs = sorted(((x_at(e, y), e.direction) for e in active), key=lambda t: t[0])
+        for (x0, x1) in spans_from_crossings(xs, rule):
+            fill_span(cov, row, x0, x1)
+    return cov
+
+
+def max_coverage_difference(a, b):
+    """The largest difference between corresponding entries of two
+    coverage buffers, or 1 when their sizes differ."""
+    if a.width != b.width or a.height != b.height:
+        return 1
+    max_diff = 0.0
+    for y in range(a.height):
+        for x in range(a.width):
+            diff = abs(coverage_at(a, x, y) - coverage_at(b, x, y))
+            if diff > max_diff:
+                max_diff = diff
+    return max_diff
+
+
+def transform_path(p, m):
+    """A new path with every point of every subpath taken through m,
+    closed flags and all. The original path is untouched."""
+    if not isinstance(m, Matrix3):
+        raise TypeError("transform_path requires a Matrix3")
+    new_p = Path()
+    for sp in p.subpaths:
+        new_points = [m * pt for pt in sp.points]
+        new_p.subpaths.append(Subpath(new_points, sp.closed))
+    return new_p
+
+
+def unit_star():
+    """The chapter 5 star, shrunk to radius 1 about the origin."""
+    return transform_path(star(), scaling(1 / 70, 1 / 70) * translation(-80.5, -80.5))
+
+
+def spiral():
+    """Twenty-four unit stars along a spiral, each bigger and turned a
+    little further, in three inks, filled nonzero by the sweep."""
+    c = canvas(320, 320)
+    fill(c, color(0.02, 0.02, 0.025))
+    inks = [color(0.9, 0.55, 0.1), color(0.2, 0.55, 0.85), color(0.85, 0.25, 0.3)]
+    for k in range(24):
+        a = math.radians(k * 25)
+        r = 20 + 5 * k
+        m = (translation(160.5 + r * math.cos(a), 160.5 + r * math.sin(a)) *
+             rotation(a) *
+             scaling(6 + 1.25 * k, 6 + 1.25 * k))
+        cov = fill_path_aliased(transform_path(unit_star(), m), "nonzero", 320, 320)
+        paint_through(c, cov, inks[k % 3])
+    return c
+
+
+def plate_06():
+    """The final plate for chapter 6: the spiral, magnified by 2."""
+    return magnify(spiral(), 2)
 

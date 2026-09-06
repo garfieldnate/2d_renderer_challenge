@@ -264,6 +264,40 @@ def evaluate_expression(expr_str, ctx):
             'f_both_orders': renderer.f_both_orders,
             'plate_04': renderer.plate_04,
             'π': math.pi,
+            # Chapter 5
+            'path': renderer.path,
+            'move_to': renderer.move_to,
+            'line_to': renderer.line_to,
+            'close': renderer.close,
+            'subpaths': renderer.subpaths,
+            'edges': renderer.edges,
+            'bounds': renderer.bounds,
+            'polygon': renderer.polygon,
+            'circle_path': renderer.circle_path,
+            'crossings': renderer.crossings,
+            'winding_at': renderer.winding_at,
+            'inside_nonzero': renderer.inside_nonzero,
+            'inside_evenodd': renderer.inside_evenodd,
+            'filled': renderer.filled,
+            'rasterize_within': renderer.rasterize_within,
+            'star': renderer.star,
+            'star_panel': renderer.star_panel,
+            'star_centers': renderer.star_centers,
+            'star_coverage': renderer.star_coverage,
+            'plate_05': renderer.plate_05,
+            # Chapter 6
+            'edge_table': renderer.edge_table,
+            'x_at': renderer.x_at,
+            'crossings_on_row': renderer.crossings_on_row,
+            'spans_from_crossings': renderer.spans_from_crossings,
+            'spans': renderer.spans,
+            'fill_span': renderer.fill_span,
+            'fill_path_aliased': renderer.fill_path_aliased,
+            'max_coverage_difference': renderer.max_coverage_difference,
+            'transform_path': renderer.transform_path,
+            'unit_star': renderer.unit_star,
+            'spiral': renderer.spiral,
+            'plate_06': renderer.plate_06,
         }
         namespace.update(ctx.variables)
 
@@ -287,9 +321,13 @@ def compare_values(left_val, right_val, op, tolerance=0.0001):
             return all(abs(a - b) <= tolerance for a, b in zip(left_val.values, right_val.values))
         elif isinstance(left_val, (int, float)) and isinstance(right_val, (int, float)):
             return abs(left_val - right_val) <= tolerance
-        elif isinstance(left_val, tuple) and isinstance(right_val, tuple):
-            # Compare tuples (pixel values)
-            return all(abs(a - b) <= tolerance for a, b in zip(left_val, right_val))
+        elif isinstance(left_val, (tuple, list)) and isinstance(right_val, (tuple, list)):
+            # Compare tuples/lists element-wise, recursively (so a list of
+            # (x, direction) crossings or spans compares each float with
+            # the usual tolerance instead of falling back to exact ==).
+            if len(left_val) != len(right_val):
+                return False
+            return all(compare_values(a, b, '=', tolerance) for a, b in zip(left_val, right_val))
         else:
             return left_val == right_val
     elif op in ['≠', '!=']:
