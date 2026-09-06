@@ -45,8 +45,10 @@ public final class Lines {
     }
 
     /**
-     * §3.2: paint_through for one pixel. Drops writes off the canvas, same
-     * rule as Canvas itself, and skips a weight of zero.
+     * §3.2: paint_through for one pixel: mix(pixel_at(c, x, y), col, weight,
+     * true), in light whatever the global switch says, for the same reason
+     * as chapter 2's paint_through. Drops writes off the canvas, same rule
+     * as Canvas itself, and skips a weight of zero.
      */
     public static void plot(Canvas c, int x, int y, Color col, double weight) {
         if (weight == 0) {
@@ -55,7 +57,7 @@ public final class Lines {
         if (x < 0 || x >= c.width || y < 0 || y >= c.height) {
             return;
         }
-        c.writePixel(x, y, Mixer.mix(c.pixelAt(x, y), col, weight));
+        c.writePixel(x, y, Mixer.mix(c.pixelAt(x, y), col, weight, true));
     }
 
     /**

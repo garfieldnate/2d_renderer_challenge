@@ -35,6 +35,12 @@ Deno.test("A segment of no length is a square", () => {
   assert_eq(ink(cov), 1);
 });
 
+Deno.test("A union of nothing is inside nowhere", () => {
+  const s = union([]);
+  assert_true(inside(s, 0, 0) === false, "inside(s, 0, 0)");
+  assert_eq(ink(rasterize(s, 4, 4)), 0);
+});
+
 Deno.test("A union is inside when any of its parts is", () => {
   const s = union([circle(2, 2, 1), rectangle(5, 0, 7, 4)]);
   assert_true(inside(s, 2, 2) === true, "inside(s, 2, 2)");

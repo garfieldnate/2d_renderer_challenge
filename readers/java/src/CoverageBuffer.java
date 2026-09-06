@@ -36,4 +36,21 @@ public final class CoverageBuffer {
         }
         return sum;
     }
+
+    /**
+     * §6.3: the largest difference between corresponding entries of two
+     * coverage buffers, chapter 1's max_channel_difference for coverage
+     * instead of file bytes -- and 1 when the sizes differ, because two
+     * buffers of different shapes aren't the same picture.
+     */
+    public static double maxCoverageDifference(CoverageBuffer a, CoverageBuffer b) {
+        if (a.width != b.width || a.height != b.height) {
+            return 1.0;
+        }
+        double max = 0;
+        for (int i = 0; i < a.values.length; i++) {
+            max = Math.max(max, Math.abs(a.values[i] - b.values[i]));
+        }
+        return max;
+    }
 }

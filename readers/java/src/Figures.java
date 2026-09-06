@@ -320,4 +320,94 @@ public final class Figures {
     public static Canvas plate04() {
         return Magnify.magnify(fBothOrders(), 2);
     }
+
+    /**
+     * §5.4: the pentagram -- five points on a circle of radius 70 about
+     * (80.5, 80.5), the first straight up, visited every second one, closed
+     * so the pen crosses itself.
+     */
+    public static Path star() {
+        Path p = new Path();
+        for (int k = 0; k < 5; k++) {
+            double a = Math.toRadians(-90 + 144 * k);
+            Tuple q = Tuple.point(80.5 + 70 * Math.cos(a), 80.5 + 70 * Math.sin(a));
+            if (k == 0) {
+                p.moveTo(q);
+            } else {
+                p.lineTo(q);
+            }
+        }
+        p.close();
+        return p;
+    }
+
+    /**
+     * §5.4: one panel of plate 5 -- the star filled under `rule`
+     * ("nonzero" or "evenodd"), rasterized by `method` ("centers" or
+     * "coverage"), painted onto a 160-by-160 canvas.
+     */
+    public static Canvas starPanel(String rule, String method) {
+        Canvas c = new Canvas(160, 160);
+        c.fill(PAPER);
+        Path star = star();
+        Shape s = Paths.filled(star, rule);
+        CoverageBuffer cov = method.equals("centers")
+                ? Rasterizer.rasterizeCenters(s, 160, 160)
+                : Paths.rasterizeWithin(s, star.bounds(), 160, 160);
+        Painter.paintThrough(c, cov, INK);
+        return c;
+    }
+
+    /** §5.4: the star under both rules, by the center question, side by side. */
+    public static Canvas starCenters() {
+        return sideBySide(starPanel("nonzero", "centers"), starPanel("evenodd", "centers"));
+    }
+
+    /** §5.4: the star under both rules, by coverage within its bounds, side by side. */
+    public static Canvas starCoverage() {
+        return sideBySide(starPanel("nonzero", "coverage"), starPanel("evenodd", "coverage"));
+    }
+
+    /** §5.4: star_centers() over star_coverage(), magnified by 2. */
+    public static Canvas plate05() {
+        Canvas top = starCenters();
+        Canvas bottom = starCoverage();
+        Canvas both = new Canvas(320, 320);
+        for (int y = 0; y < 160; y++) {
+            for (int x = 0; x < 320; x++) {
+                both.writePixel(x, y, top.pixelAt(x, y));
+                both.writePixel(x, y + 160, bottom.pixelAt(x, y));
+            }
+        }
+        return Magnify.magnify(both, 2);
+    }
+
+    /** §6.5: the chapter 5 star, moved to the origin and shrunk to radius 1. */
+    public static Path unitStar() {
+        return Paths.transformPath(star(),
+                Transforms.scaling(1.0 / 70, 1.0 / 70).multiply(Transforms.translation(-80.5, -80.5)));
+    }
+
+    /** §6.5: twenty-four unit stars along a spiral, filled nonzero by the sweep, in three inks. */
+    public static Canvas spiral() {
+        Canvas c = new Canvas(320, 320);
+        c.fill(PAPER);
+        Color[] inks = {new Color(0.9, 0.55, 0.1), new Color(0.2, 0.55, 0.85), new Color(0.85, 0.25, 0.3)};
+        Path unit = unitStar();
+        for (int k = 0; k <= 23; k++) {
+            double a = Math.toRadians(k * 25);
+            double r = 20 + 5 * k;
+            Matrix m = Transforms.translation(160.5 + r * Math.cos(a), 160.5 + r * Math.sin(a))
+                    .multiply(Transforms.rotation(a))
+                    .multiply(Transforms.scaling(6 + 1.25 * k, 6 + 1.25 * k));
+            CoverageBuffer cov = Sweep.fillPathAliased(Paths.transformPath(unit, m), "nonzero", 320, 320);
+            Painter.paintThrough(c, cov, inks[k % 3]);
+        }
+        return c;
+    }
+
+    /** §6.5: spiral(), magnified by 2. */
+    public static Canvas plate06() {
+        return Magnify.magnify(spiral(), 2);
+    }
 }

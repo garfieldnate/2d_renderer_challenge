@@ -3,7 +3,9 @@ import { multiply, rotation, transform_points, translation } from "../src/matrix
 import { point } from "../src/tuple.ts";
 import { fan_both_orders, fan_points, letter_f, plate_04 } from "../src/scenes.ts";
 import { canvas_to_p6, max_channel_difference, ppm_pixel } from "../src/ppm.ts";
-import { assert_eq, assert_triple, assert_true, assert_tuple, read_file } from "../src/assert.ts";
+import { canvas, fill, pixel_at, side_by_side } from "../src/canvas.ts";
+import { color } from "../src/color.ts";
+import { assert_color, assert_eq, assert_triple, assert_true, assert_tuple, read_file } from "../src/assert.ts";
 
 Deno.test("The fan as points", () => {
   const pts = fan_points();
@@ -62,6 +64,20 @@ Deno.test("The F, translated then rotated", () => {
   assert_tuple(f[1], point(84.5702, 102.5202));
   assert_tuple(f[5], point(65.142, 120.1708));
   assert_tuple(f[9], point(19.9291, 134.4817));
+});
+
+Deno.test("side_by_side puts the first canvas on the left", () => {
+  const a = canvas(2, 3);
+  const b = canvas(4, 3);
+  fill(a, color(1, 0, 0));
+  fill(b, color(0, 0, 1));
+  const c = side_by_side(a, b);
+  assert_eq(c.width, 6, 0);
+  assert_eq(c.height, 3, 0);
+  assert_color(pixel_at(c, 0, 0), color(1, 0, 0));
+  assert_color(pixel_at(c, 1, 2), color(1, 0, 0));
+  assert_color(pixel_at(c, 2, 0), color(0, 0, 1));
+  assert_color(pixel_at(c, 5, 2), color(0, 0, 1));
 });
 
 Deno.test("The fan, both orders", () => {

@@ -15,8 +15,13 @@ import {
   plate_02,
   plate_03,
   plate_04,
+  plate_05,
+  plate_06,
   quarter_match,
   ramp,
+  spiral,
+  star_centers,
+  star_coverage,
 } from "./scenes.ts";
 
 const p3: [string, () => Canvas][] = [
@@ -38,6 +43,11 @@ const p6: [string, () => Canvas][] = [
   ["out/plate-03.ppm", plate_03],
   ["out/fan-both-orders.ppm", fan_both_orders],
   ["out/plate-04.ppm", plate_04],
+  ["out/star-centers.ppm", star_centers],
+  ["out/star-coverage.ppm", star_coverage],
+  ["out/plate-05.ppm", plate_05],
+  ["out/spiral.ppm", spiral],
+  ["out/plate-06.ppm", plate_06],
 ];
 
 Deno.mkdirSync("out", { recursive: true });

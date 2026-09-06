@@ -194,6 +194,14 @@ public final class Chapter03Tests {
             assertDoubleEq("total_ink(c)", Lines.totalInk(c), 5);
         });
 
+        scenario("Wu: the weights are applied in light, whatever the switch says", () -> {
+            Mixer.linearBlending = false;
+            Canvas c = new Canvas(10, 10);
+            Lines.lineWu(c, 0, 0, 4, 2, new Color(1, 1, 1));
+            assertColorEq("pixel_at(c, 1, 0)", c.pixelAt(1, 0), new Color(0.5, 0.5, 0.5));
+            assertColorEq("pixel_at(c, 1, 1)", c.pixelAt(1, 1), new Color(0.5, 0.5, 0.5));
+        });
+
         scenario("Wu: a diagonal has uniform weights", () -> {
             Canvas c = new Canvas(10, 10);
             Lines.lineWu(c, 0, 0, 5, 5, new Color(1, 1, 1));

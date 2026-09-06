@@ -78,6 +78,11 @@ Deno.test("The dot product of two vectors", () => {
   assert_eq(dot(a, vector(-2, 1)), 0);
 });
 
+Deno.test("magnitude and dot look at x and y only", () => {
+  assert_eq(magnitude(point(3, 4)), 5);
+  assert_eq(dot(point(1, 2), point(2, 3)), 8);
+});
+
 Deno.test("The cross product of two vectors is a number", () => {
   const a = vector(1, 0);
   const b = vector(0, 1);

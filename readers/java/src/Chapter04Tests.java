@@ -153,6 +153,11 @@ public final class Chapter04Tests {
             assertDoubleEq("dot(a, vector(-2, 1))", Tuple.dot(a, Tuple.vector(-2, 1)), 0);
         });
 
+        scenario("Tuples: magnitude and dot look at x and y only", () -> {
+            assertDoubleEq("magnitude(point(3, 4))", Tuple.point(3, 4).magnitude(), 5);
+            assertDoubleEq("dot(point(1, 2), point(2, 3))", Tuple.dot(Tuple.point(1, 2), Tuple.point(2, 3)), 8);
+        });
+
         scenario("Tuples: the cross product of two vectors is a number", () -> {
             Tuple a = Tuple.vector(1, 0);
             Tuple b = Tuple.vector(0, 1);
@@ -265,6 +270,14 @@ public final class Chapter04Tests {
             Matrix a = Matrix.matrix3(1, 2, 3, 2, 4, 6, 0, 0, 1);
             assertDoubleEq("determinant(A)", a.determinant(), 0);
             assertTrue("!is_invertible(A)", !a.isInvertible());
+        });
+
+        scenario("Matrices: invertibility is an exact test against zero", () -> {
+            Matrix s = Transforms.scaling(0.0001, 1);
+            assertTrue("is_invertible(scaling(0.0001, 1))", s.isInvertible());
+            assertDoubleEq("determinant(scaling(0.0001, 1))", s.determinant(), 0.0001);
+            assertTupleEq("inverse(scaling(0.0001, 1)) * point(0.0001, 3)",
+                    s.inverse().multiply(Tuple.point(0.0001, 3)), Tuple.point(1, 3));
         });
 
         scenario("Matrices: calculating the inverse of a matrix", () -> {
@@ -489,6 +502,12 @@ public final class Chapter04Tests {
             assertDoubleEq("ink(cov)", cov.ink(), 1);
         });
 
+        scenario("Shapes: a union of nothing is inside nowhere", () -> {
+            Shape s = new Union(List.of());
+            assertTrue("!inside(s, 0, 0)", !s.inside(0, 0));
+            assertDoubleEq("ink(rasterize(s, 4, 4))", Rasterizer.rasterize(s, 4, 4).ink(), 0);
+        });
+
         scenario("Shapes: a union is inside when any of its parts is", () -> {
             Shape s = new Union(List.of(new Circle(2, 2, 1), new Rectangle(5, 0, 7, 4)));
             assertTrue("inside(s, 2, 2)", s.inside(2, 2));
@@ -671,6 +690,20 @@ public final class Chapter04Tests {
             assertTupleEq("f[1]", f.get(1), Tuple.point(84.5702, 102.5202));
             assertTupleEq("f[5]", f.get(5), Tuple.point(65.142, 120.1708));
             assertTupleEq("f[9]", f.get(9), Tuple.point(19.9291, 134.4817));
+        });
+
+        scenario("Plate 4: side_by_side puts the first canvas on the left", () -> {
+            Canvas a = new Canvas(2, 3);
+            Canvas b = new Canvas(4, 3);
+            a.fill(new Color(1, 0, 0));
+            b.fill(new Color(0, 0, 1));
+            Canvas c = Figures.sideBySide(a, b);
+            assertEquals("c.width", c.width, 6);
+            assertEquals("c.height", c.height, 3);
+            assertTupleColorEq(c, 0, 0, new Color(1, 0, 0));
+            assertTupleColorEq(c, 1, 2, new Color(1, 0, 0));
+            assertTupleColorEq(c, 2, 0, new Color(0, 0, 1));
+            assertTupleColorEq(c, 5, 2, new Color(0, 0, 1));
         });
 
         scenario("Plate 4: the fan, both orders", () -> {

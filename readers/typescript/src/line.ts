@@ -51,7 +51,8 @@ export function plot(
 ): void {
   if (weight === 0) return;
   if (x < 0 || x >= c.width || y < 0 || y >= c.height) return;
-  write_pixel(c, x, y, mix(pixel_at(c, x, y), col, weight));
+  // Always in light, whatever the global switch says.
+  write_pixel(c, x, y, mix(pixel_at(c, x, y), col, weight, true));
 }
 
 /**

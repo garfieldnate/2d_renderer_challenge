@@ -2,6 +2,7 @@
 import { canvas, pixel_at } from "../src/canvas.ts";
 import { color } from "../src/color.ts";
 import { line_wu } from "../src/line.ts";
+import { set_linear_blending } from "../src/mix.ts";
 import { canvas_to_p6, max_channel_difference } from "../src/ppm.ts";
 import {
   assert_color,
@@ -24,6 +25,18 @@ Deno.test("A half step lights two pixels equally", () => {
   assert_color(pixel_at(c, 2, 2), color(0, 0, 0));
   assert_color(pixel_at(c, 4, 2), color(1, 1, 1));
   assert_eq(total_ink(c), 5);
+});
+
+Deno.test("The weights are applied in light, whatever the switch says", () => {
+  set_linear_blending(false);
+  try {
+    const c = canvas(10, 10);
+    line_wu(c, 0, 0, 4, 2, WHITE);
+    assert_color(pixel_at(c, 1, 0), gray(0.5));
+    assert_color(pixel_at(c, 1, 1), gray(0.5));
+  } finally {
+    set_linear_blending(true);
+  }
 });
 
 Deno.test("A diagonal has uniform weights", () => {

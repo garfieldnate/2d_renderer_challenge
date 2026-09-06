@@ -13,8 +13,10 @@ import {
   set_coverage,
 } from "./coverage.ts";
 import { point, type Tuple } from "./tuple.ts";
-import { type Matrix3, multiply, rotation, transform_points, translation } from "./matrix.ts";
+import { type Matrix3, multiply, rotation, scaling, transform_points, translation } from "./matrix.ts";
 import type { Shape } from "./shape.ts";
+import { bounds, close, filled, line_to, move_to, type Path, path, rasterize_within } from "./path.ts";
+import { fill_path_aliased, transform_path } from "./sweep.ts";
 
 const WHITE = color(1, 1, 1);
 const BLACK = color(0, 0, 0);
@@ -273,4 +275,90 @@ export function f_both_orders(): Canvas {
 
 export function plate_04(): Canvas {
   return magnify(f_both_orders(), 2);
+}
+
+// ---- chapter 5 -----------------------------------------------------------
+
+const STAR_PAPER = color(0.02, 0.02, 0.025);
+const STAR_INK = color(0.9, 0.55, 0.1);
+
+/**
+ * Five points on a circle of radius 70 about (80.5, 80.5), the first
+ * straight up, visited every second one so the pen crosses itself.
+ */
+export function star(): Path {
+  const p = path();
+  for (let k = 0; k <= 4; k++) {
+    const a = ((-90 + 144 * k) * Math.PI) / 180;
+    const q = point(80.5 + 70 * Math.cos(a), 80.5 + 70 * Math.sin(a));
+    if (k === 0) move_to(p, q);
+    else line_to(p, q);
+  }
+  close(p);
+  return p;
+}
+
+function star_panel(rule: "nonzero" | "evenodd", method: "centers" | "coverage"): Canvas {
+  const c = canvas(160, 160);
+  fill(c, STAR_PAPER);
+  const s = filled(star(), rule);
+  const cov = method === "centers"
+    ? rasterize_centers(s, 160, 160)
+    : rasterize_within(s, bounds(star()), 160, 160);
+  paint_through(c, cov, STAR_INK);
+  return c;
+}
+
+export function star_centers(): Canvas {
+  return side_by_side(star_panel("nonzero", "centers"), star_panel("evenodd", "centers"));
+}
+
+export function star_coverage(): Canvas {
+  return side_by_side(star_panel("nonzero", "coverage"), star_panel("evenodd", "coverage"));
+}
+
+export function plate_05(): Canvas {
+  const top = star_centers();
+  const bottom = star_coverage();
+  const both = canvas(320, 320);
+  for (let y = 0; y <= 159; y++) {
+    for (let x = 0; x <= 319; x++) {
+      write_pixel(both, x, y, pixel_at(top, x, y));
+      write_pixel(both, x, y + 160, pixel_at(bottom, x, y));
+    }
+  }
+  return magnify(both, 2);
+}
+
+// ---- chapter 6 -----------------------------------------------------------
+
+/** The chapter 5 star, moved to the origin and shrunk to radius 1. */
+export function unit_star(): Path {
+  return transform_path(star(), multiply(scaling(1 / 70, 1 / 70), translation(-80.5, -80.5)));
+}
+
+const SPIRAL_PAPER = color(0.02, 0.02, 0.025);
+const SPIRAL_INKS = [color(0.9, 0.55, 0.1), color(0.2, 0.55, 0.85), color(0.85, 0.25, 0.3)];
+
+/** Twenty-four unit stars along a spiral, each bigger and turned further, filled by the sweep. */
+export function spiral(): Canvas {
+  const c = canvas(320, 320);
+  fill(c, SPIRAL_PAPER);
+  const u = unit_star();
+  for (let k = 0; k <= 23; k++) {
+    const a = (k * 25 * Math.PI) / 180;
+    const r = 20 + 5 * k;
+    const s = 6 + 1.25 * k;
+    const m = multiply(
+      multiply(translation(160.5 + r * Math.cos(a), 160.5 + r * Math.sin(a)), rotation(a)),
+      scaling(s, s),
+    );
+    const cov = fill_path_aliased(transform_path(u, m), "nonzero", 320, 320);
+    paint_through(c, cov, SPIRAL_INKS[k % 3]);
+  }
+  return c;
+}
+
+export function plate_06(): Canvas {
+  return magnify(spiral(), 2);
 }

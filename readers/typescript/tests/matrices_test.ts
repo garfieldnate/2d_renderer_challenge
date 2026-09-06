@@ -105,6 +105,12 @@ Deno.test("Testing a non-invertible matrix for invertibility", () => {
   assert_true(is_invertible(A) === false, "is_invertible(A)");
 });
 
+Deno.test("Invertibility is an exact test against zero", () => {
+  assert_true(is_invertible(scaling(0.0001, 1)) === true, "is_invertible(scaling(0.0001, 1))");
+  assert_eq(determinant(scaling(0.0001, 1)), 0.0001);
+  assert_tuple(multiply_tuple(inverse(scaling(0.0001, 1)), point(0.0001, 3)), point(1, 3));
+});
+
 Deno.test("Calculating the inverse of a matrix", () => {
   const A = matrix3(3, 0, 2, 2, 0, -2, 0, 1, 1);
   const B = inverse(A);

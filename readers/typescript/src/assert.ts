@@ -190,3 +190,24 @@ export function assert_matrix_ne(A: Matrix3, B: Matrix3, eps = EPS): void {
     throw new Error(`expected ${show_matrix(A)} != ${show_matrix(B)}`);
   }
 }
+
+/** Chapter 5: bounds(p) is (min x, min y, max x, max y), same tolerance as a tuple. */
+export interface BoundsLike {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+function show_bounds(b: BoundsLike): string {
+  return `(${b.minX}, ${b.minY}, ${b.maxX}, ${b.maxY})`;
+}
+
+export function assert_bounds(a: BoundsLike, b: BoundsLike, eps = EPS): void {
+  if (
+    !eq(a.minX, b.minX, eps) || !eq(a.minY, b.minY, eps) ||
+    !eq(a.maxX, b.maxX, eps) || !eq(a.maxY, b.maxY, eps)
+  ) {
+    throw new Error(`expected ${show_bounds(b)}, got ${show_bounds(a)}`);
+  }
+}

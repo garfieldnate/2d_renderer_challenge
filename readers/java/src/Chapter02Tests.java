@@ -336,12 +336,14 @@ public final class Chapter02Tests {
             assertColorEq("pixel_at(c, 1, 0)", c.pixelAt(1, 0), new Color(1, 0, 0));
         });
 
-        scenario("Paint: the arithmetic is on light", () -> {
+        scenario("Paint: the arithmetic is on light, whatever the switch says", () -> {
+            Mixer.linearBlending = false;
             Canvas c = new Canvas(1, 1);
             CoverageBuffer cov = new CoverageBuffer(1, 1);
             cov.setCoverage(0, 0, 0.5);
             Painter.paintThrough(c, cov, new Color(1, 1, 1));
             String ppm = Ppm.canvasToPpm(c);
+            assertColorEq("pixel_at(c, 0, 0)", c.pixelAt(0, 0), new Color(0.5, 0.5, 0.5));
             assertTrue("ppm_pixel(ppm, 0, 0) = (188, 188, 188)",
                     Arrays.equals(Ppm.ppmPixel(ppm, 0, 0), new int[] {188, 188, 188}));
         });
