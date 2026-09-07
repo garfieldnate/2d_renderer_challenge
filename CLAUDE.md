@@ -124,6 +124,28 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   `fill_path_aliased` must equal `rasterize_centers(filled(p, rule))` exactly, and the scenarios
   say so via `max_coverage_difference`. Never pin the length of the star's edge table: two of
   its vertices differ in the last bit of y.
+- Chapter 7 analytic fill: an `accumulator(w, h)` holds two numbers per cell, `area` and `cover`.
+  `add_cell` folds a deposit left of the buffer onto column 0 as pure cover and drops one right of
+  it. `accumulate_row`'s area is the midpoint rule (`height · (1 − x_at_midpoint)`), which is exact
+  for a straight edge. `accumulate(a, b)` carries a positive height heading up the canvas so the
+  left-to-right running sum in `resolve` equals chapter 5's `winding_at` exactly. `apply_rule` is
+  `min(1, |w|)` for nonzero and a triangle wave for even-odd. `fill_path(p, rule, w, h)` replaces
+  `fill_path_aliased` from here on. The proof it's exact: for a simple polygon
+  `ink(fill_path(p)) = polygon_area(p)` (the shoelace area), which the 8×8 supersampler can't match.
+  It agrees with the supersampler exactly only on grid-aligned shapes; elsewhere the analytic one is
+  the truth. Trap: exact only under a box filter and for a shape considered alone — the shared-edge
+  seam is chapter 9's, not a bug here.
+- Chapter 8 curves: `quadratic`/`cubic` hold control points. `point_at`/`split_at` are de Casteljau;
+  `derivative` is the tangent; `curve_bounds` is tight via derivative roots and is named
+  `curve_bounds` (not `bounds`) so it doesn't shadow chapter 5's path `bounds`. `flatten(c, tol)`
+  subdivides at `0.5` until `flatness` (max control-point distance to the chord) ≤ tol, and must be
+  done AFTER the device transform (`transform_curve` then flatten). The path type is unchanged:
+  curves reach the fill through `flatten_into_path`, which `line_to`s the flattened points. SVG
+  `arc(x1,y1,rx,ry,phi,large,sweep,x2,y2)` is the endpoint→center conversion with radius correction
+  (grow both radii together), `phi` in radians (SVG's attribute is degrees; convert at the chapter 20
+  parser), returns `none` for coincident endpoints or a zero radius; `arc_point(a, t)` walks it. The
+  two flags pick one of four arcs. The runner learned `none`/None comparison and the
+  `accumulate`/`accumulate_row`/`add_cell` mutation steps.
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and
   `Then X is the following matrix:`. The runner understands exactly those two table steps.
 

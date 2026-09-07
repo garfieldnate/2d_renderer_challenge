@@ -1,0 +1,765 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 8 · Curves — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 8 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-07.html">← 7</a> · <a href="#plate">Plate&nbsp;8</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Eight</p>
+    <h1>Curves</h1>
+    <p class="hook">Chapter 5's <code>circle_path</code> was a fib. It's a twelve-sided polygon
+      wearing a circle's name, and up close it has corners. Every smooth thing you'll ever want to
+      draw — a letter, a logo, the tiger's back — is curved, and so far the renderer can't say the
+      word. This chapter adds the one curve that graphics actually uses, the Bézier, and then does
+      the only thing the rasterizer will accept: turns it back into straight lines, but adaptively,
+      so the corners land where the curve actually bends and nowhere else. The fill from chapter 7
+      never learns what a curve is. It doesn't have to.</p>
+  </header>
+
+  <p>Here's the arrangement the whole chapter turns on, so it isn't a surprise later. The rasterizer
+    you spent two chapters on eats polygons. It's fast and it's exact and you're not going to replace
+    it. So a curve's job is not to be drawn — it's to be <em>flattened</em>, chopped into a polyline
+    close enough to the real thing that no one can see the difference, and handed to the fill as an
+    ordinary path. That's why chapter 7 could get away with only knowing about line segments: by the
+    time anything reaches it, every curve in the book is already a run of tiny straight lines. The
+    art is in chopping well — few segments where the curve is nearly straight, many where it turns
+    hard — and in doing the chopping at the right moment, which turns out to be after the shape has
+    been scaled to its final size, not before.</p>
+
+  <h2><span class="sec">§ 8.1</span> A curve is its control points</h2>
+
+  <p>A Bézier curve is defined by a handful of points and a rule for blending them. A
+    <em>quadratic</em> has three control points; a <em>cubic</em> has four. The curve starts at the
+    first point and ends at the last, and the ones in between pull it in their direction without
+    ever being touched — the curve leans toward them but passes through only its two ends. Those
+    interior points are exactly the handles you drag in a pen tool. Three points and four points are
+    the only two cases the book needs, and everything below works for both.</p>
+
+  <figure>
+    <canvas id="fig81" role="img" aria-label="A cubic Bezier curve drawn as a smooth arc, with its four control points marked and connected by a dashed control polygon. The curve passes through the first and last points and bulges toward the two middle ones without reaching them"></canvas>
+    <figcaption><span class="fig">Figure 8.1</span> A cubic and its four control points. The dashed control polygon is the scaffolding; the curve touches only its ends and leans toward the two handles in the middle.</figcaption>
+  </figure>
+
+  <p>To find a point on the curve, blend the control points. The clean way to do it is de
+    Casteljau's construction: interpolate between each neighbouring pair of control points by the
+    fraction <code>t</code>, which gives one fewer point; do it again on those; keep going until one
+    point is left, and that's the point on the curve. <code>point_at(c, t)</code> is that
+    construction. It's a few lines, it never needs a power of <code>t</code>, and it's numerically
+    kinder than expanding the polynomial. A quadratic reaches its middle at
+    <code>point_at(q, 0.5)</code>; a symmetric arch peaks lower than its handles, which the tight
+    bounds in §8.2 will make precise.</p>
+
+  <figure>
+    <canvas id="fig82" role="img" aria-label="The de Casteljau construction on a cubic at t equals one half. The four control points are joined by segments; the midpoints of those three segments are joined by two more; the midpoint of those is joined by one; and its midpoint is the point on the curve, marked on the curve itself"></canvas>
+    <figcaption><span class="fig">Figure 8.2</span> De Casteljau at <code>t = 0.5</code>. Interpolate along the control polygon, then along the result, then again, and the last point sits on the curve. Do it at every <code>t</code> and you've drawn the curve.</figcaption>
+  </figure>
+
+  <p>That same construction, kept rather than thrown away, splits a curve in two.
+    <code>split_at(c, t)</code> hands back two curves of the same degree: the piece from 0 to
+    <code>t</code> and the piece from <code>t</code> to 1, whose control points are the left and
+    right edges of the de Casteljau pyramid. Split a curve and evaluate the halves and you retrace
+    the original exactly — the left half at parameter 1 is the original at <code>t</code>, the right
+    half at 0 is the same point, and everything in between lines up after rescaling. That's not a
+    coincidence to test around; it's the property the whole flattening algorithm leans on, so pin
+    it. And <code>derivative(c, t)</code> gives the tangent vector, which points backward when the
+    curve is heading back the way it came — a fact strokes will need in chapter 13, tested here so
+    it's not a surprise then.</p>
+
+  <div class="test" data-feature="chapter08-curves.feature">
+    <p class="label">features/chapter08-curves.feature</p>
+<pre><code><span class="kw">Feature</span>: A curve is its control points
+  quadratic(p0, p1, p2) and cubic(p0, p1, p2, p3) hold a Bezier curve as its
+  control points. point_at(c, t) is the point on the curve at parameter t,
+  found by de Casteljau's repeated interpolation. split_at(c, t) breaks the
+  curve into the two curves that together retrace it, the piece before t and
+  the piece after. derivative(c, t) is the tangent vector there.
+  transform_curve(c, m) takes every control point through a matrix.
+
+  <span class="kw">Scenario</span>: A quadratic evaluated along its length
+    <span class="kw">Given</span> q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
+    <span class="kw">Then</span>  point_at(q, 0) = point(0, 0)
+    <span class="kw">And</span>   point_at(q, 1) = point(4, 0)
+    <span class="kw">And</span>   point_at(q, 0.5) = point(2, 2)
+    <span class="kw">And</span>   point_at(q, 0.25) = point(1, 1.5)
+
+  <span class="kw">Scenario</span>: A cubic evaluated at its middle
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">Then</span>  point_at(c, 0.5) = point(2, 3)
+    <span class="kw">And</span>   point_at(c, 0.25) = point(0.625, 2.25)
+
+  <span class="kw">Scenario</span>: The derivative is the tangent, and it can point backward
+    <span class="kw">Given</span> q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
+    <span class="kw">Then</span>  derivative(q, 0) = vector(4, 8)
+    <span class="kw">And</span>   derivative(q, 0.5) = vector(4, 0)
+    <span class="kw">And</span>   derivative(q, 1) = vector(4, -8)
+
+  <span class="kw">Scenario</span>: Splitting and rejoining reproduces the curve
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">When</span>  left ← split_at(c, 0.25)[0]
+    <span class="kw">And</span>   right ← split_at(c, 0.25)[1]
+    <span class="kw">Then</span>  point_at(left, 1) = point_at(c, 0.25)
+    <span class="kw">And</span>   point_at(right, 0) = point_at(c, 0.25)
+    <span class="kw">And</span>   point_at(left, 0.4) = point_at(c, 0.1)
+    <span class="kw">And</span>   point_at(right, 0.4) = point_at(c, 0.55)
+    <span class="kw">And</span>   point_at(right, 1) = point(4, 0)
+
+  <span class="kw">Scenario</span>: A curve taken through a matrix
+    <span class="kw">Given</span> q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
+    <span class="kw">When</span>  t ← transform_curve(q, translation(10, 20))
+    <span class="kw">Then</span>  point_at(t, 0) = point(10, 20)
+    <span class="kw">And</span>   point_at(t, 0.5) = point(12, 22)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 8.2</span> Tight bounds</h2>
+
+  <p>Filling wants a bounding box, so it can skip the rows and columns a shape doesn't touch. The
+    lazy box is the one around the control points, and it's correct but loose: since the curve never
+    reaches its interior handles, that box has slack on every side that a handle sticks out. The arch
+    <code>cubic((0,0), (0,4), (4,4), (4,0))</code> has handles at height 4 but the curve tops out at
+    3, so a quarter of the lazy box is empty. Usually loose is fine. When the box drives how finely
+    you subdivide, or feeds a spatial index later, loose costs real time, so the book computes the
+    tight one.</p>
+
+  <p><code>curve_bounds(c)</code> is exact. A curve turns around in <code>x</code> or <code>y</code>
+    only where that component of its derivative is zero, so solve the derivative for its roots — a
+    quadratic's derivative is linear and has at most one root per axis, a cubic's is quadratic and
+    has at most two — keep the roots between 0 and 1, evaluate the curve there and at both ends, and
+    take the smallest and largest. That's the tight box, and the root finding is the same small
+    algebra a dozen later things will want. The scenarios pin a cubic that curls up well inside its
+    handles, the arch that peaks at 3, and a quadratic whose single turning point sets its height.</p>
+
+  <figure>
+    <canvas id="fig83" role="img" aria-label="A cubic curve with two boxes around it. A larger dashed box touches the four control points. A smaller solid box hugs the curve itself, touching it at the top, bottom, left and right where the curve turns around. The gap between the two boxes is shaded to show the slack"></canvas>
+    <figcaption><span class="fig">Figure 8.3</span> Two boxes. The dashed one holds the control points; the solid one holds the curve. The curve turns back before it reaches its handles, so the tight box is smaller, and it's the one worth computing.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter08-bounds.feature">
+    <p class="label">features/chapter08-bounds.feature</p>
+<pre><code><span class="kw">Feature</span>: Tight bounds
+  curve_bounds(c) is the smallest axis-aligned box that holds the curve
+  itself, as (min x, min y, max x, max y). It is not the box around the
+  control points, which is usually too big: a Bezier stays inside its control
+  points, so the curve turns back before it reaches them. The tight box is
+  found by evaluating the curve at its ends and at every parameter where it
+  turns around in x or y, which is where a component of the derivative is zero.
+
+  <span class="kw">Scenario</span>: The curve stays well inside its control points
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(1, 3), point(3, -2), point(4, 1))
+    <span class="kw">Then</span>  curve_bounds(c) = (0, 0, 4, 1)
+
+  <span class="kw">Scenario</span>: An arch peaks below its control points
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">Then</span>  curve_bounds(c) = (0, 0, 4, 3)
+
+  <span class="kw">Scenario</span>: A quadratic's bounds come from its one turning point
+    <span class="kw">Given</span> q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
+    <span class="kw">Then</span>  curve_bounds(q) = (0, 0, 4, 2)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 8.3</span> Flattening</h2>
+
+  <p>Now the step that lets the fill do its job: turn the curve into a polyline. The measure of how
+    badly a straight line would fake a curve is <code>flatness(c)</code> — the greatest distance of
+    an interior control point from the straight chord between the curve's ends. A curve whose handles
+    sit right on that chord is already a line and has flatness 0. The bigger the flatness, the worse
+    a single segment would be, and the fix is to cut the curve in half with <code>split_at</code> and
+    ask each half. Halves of a gentle curve are flat almost at once; halves near a tight bend stay
+    curved and get cut again. Recurse until every piece is flatter than the tolerance, and collect
+    the endpoints.</p>
+
+  <p><code>flatten(c, tolerance)</code> does exactly that and returns the list of points, first to
+    last, both ends always included. A straight cubic comes back as its two endpoints and nothing
+    else. A hard-bending one comes back with points bunched at the bend and sparse on the straights,
+    which is the whole point of doing it adaptively rather than chopping into a fixed number of
+    equal steps. As the tolerance shrinks the polyline gets longer and its length climbs toward the
+    curve's true arc length — a satisfying thing to watch, and the test that proves flattening
+    converges rather than merely terminating.</p>
+
+  <figure>
+    <canvas id="fig84" role="img" aria-label="A curve with a gentle top and a sharp bend at the bottom, flattened into a polyline. The polyline's vertices are marked with dots, sparse along the gentle part and crowded together around the sharp bend, showing that subdivision follows the curvature"></canvas>
+    <figcaption><span class="fig">Figure 8.4</span> Adaptive flattening. The dots are the polyline's vertices: far apart where the curve is nearly straight, crowded where it bends hard. Same tolerance everywhere; the curve decides where the work goes.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter08-flatten.feature">
+    <p class="label">features/chapter08-flatten.feature</p>
+<pre><code><span class="kw">Feature</span>: Flattening
+  flatness(c) is how far the curve strays from the straight chord between its
+  ends, the greatest distance of an interior control point from that chord.
+  flatten(c, tolerance) returns a polyline within tolerance of the curve, as a
+  list of points from start to end, by subdividing wherever a piece is not yet
+  flat enough. A straight run needs two points; a sharp bend needs many, and
+  as the tolerance shrinks the polyline's length climbs toward the true arc
+  length. polyline_length and flatten_length measure it.
+
+  <span class="kw">Scenario</span>: Flatness is the reach of the control points from the chord
+    <span class="kw">Given</span> q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
+    <span class="kw">Then</span>  flatness(q) = 4
+    <span class="kw">And</span>   flatness(cubic(point(0, 0), point(1, 1), point(2, 2), point(3, 3))) = 0
+
+  <span class="kw">Scenario</span>: A straight curve flattens to its two endpoints
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(1, 1), point(2, 2), point(3, 3))
+    <span class="kw">When</span>  pts ← flatten(c, 0.01)
+    <span class="kw">Then</span>  length(pts) = 2
+    <span class="kw">And</span>   pts[0] = point(0, 0)
+    <span class="kw">And</span>   pts[1] = point(3, 3)
+
+  <span class="kw">Scenario</span>: Flattening always keeps both ends
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">When</span>  pts ← flatten(c, 2.0)
+    <span class="kw">Then</span>  pts[0] = point(0, 0)
+    <span class="kw">And</span>   pts[length(pts) - 1] = point(4, 0)
+
+  <span class="kw">Scenario</span>: A tighter tolerance uses more points
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">Then</span>  length(flatten(c, 2.0)) = 3
+    <span class="kw">And</span>   length(flatten(c, 0.1)) = 9
+
+  <span class="kw">Scenario</span>: The flattened length converges to the arc length
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">Then</span>  flatten_length(c, 2.0) = 7.2111 ± 0.001
+    <span class="kw">And</span>   flatten_length(c, 0.1) = 7.9509 ± 0.001
+    <span class="kw">And</span>   flatten_length(c, 0.001) = 7.9992 ± 0.001</code></pre>
+  </div>
+
+  <p>One thing about <em>when</em> to flatten, because it's the mistake everyone makes once. The
+    tolerance is a distance in pixels — a quarter of a pixel is plenty — and pixels only exist after
+    the shape has been scaled to its final size on the canvas. Flatten a curve at unit size, then
+    scale the polyline up by fifty, and you scale the error up by fifty too: the facets that were
+    invisible become a coarse dodecagon. So flatten <em>after</em> the transform, not before. Because
+    a Bézier is affine, <code>transform_curve</code> then <code>flatten</code> gives the same curve
+    as flatten then transform — but the tolerance is now measured in device pixels, where it belongs,
+    and the big shape gets the extra segments it needs. That's why the flowers at the end are all
+    equally smooth no matter their size, and it's the reason <code>vector-effect</code> exists in
+    SVG.</p>
+
+  <figure>
+    <canvas id="fig85" role="img" aria-label="The same teardrop shape filled twice. On the left it is flattened at a coarse tolerance and its outline is visibly faceted with flat straight edges. On the right it is flattened finely and the outline is smooth"></canvas>
+    <figcaption><span class="fig">Figure 8.5</span> One teardrop, two tolerances. Coarse on the left: you can count the facets. Fine on the right: the fill from chapter 7 gives it a clean soft edge. Same curve, same code, one number changed.</figcaption>
+  </figure>
+
+  <h2><span class="sec">§ 8.4</span> The elliptical arc</h2>
+
+  <p>Béziers are most of what you need, but SVG paths also carry an <em>elliptical arc</em>, the
+    <code>A</code> command, and it's specified in a way that is genuinely miserable to unpick. You
+    give it the point to end at, two radii, a rotation for the ellipse, and two one-bit flags — and
+    from that it has to recover which ellipse you meant and which piece of it to travel. There are
+    four arcs that fit any two points and a pair of radii: two ellipses, mirror images, and on each
+    the short way round or the long way. The flags <code>large_arc</code> and <code>sweep</code> pick
+    one of the four. None of this is hard mathematics, but every step has a sign that's easy to get
+    backward, and the spec hides them in an appendix. The book works it in full so you don't have to.</p>
+
+  <p><code>arc(...)</code> takes SVG's endpoint form and returns the center form you can actually
+    walk: a center, the radii, the rotation, a start angle and a swept angle.
+    <code>arc_point(a, t)</code> then walks it from <code>t = 0</code> at the start to
+    <code>t = 1</code> at the end. The test that nails the four-way choice is to fix the endpoints and
+    radii and flip the two flags through all four combinations: same two points, four different arcs,
+    four different midpoints. With a circle of radius 5 between <code>(0, 0)</code> and
+    <code>(6, 0)</code>, the four midpoints land at <code>(3, ±1)</code> for the short arcs and
+    <code>(3, ±9)</code> for the long ones, and every one of the four still passes through both
+    endpoints.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>Two more things in that conversion will bite, and both have a scenario because otherwise you'll
+      blame the wrong code. First, the radii can be too small: if you ask for a radius-5 arc between
+      points 12 apart, no such circle exists, and the spec's rule is to grow both radii by the same
+      factor until the ellipse barely reaches — not to error, not to clamp one radius, but to scale
+      them together. Skip it and you take the square root of a negative number and get a NaN arc that
+      paints nothing or everything. Second, the rotation is in <em>radians</em> here to match the rest
+      of the book, but SVG's <code>A</code> command writes it in <em>degrees</em> — convert at the
+      parser in chapter 20, not here, and write a comment where you do, because a stray factor of
+      <code>π/180</code> in an arc is invisible until the ellipse is subtly the wrong shape. The arc
+      is the one place in the book where the spec is the adversary; the scenarios are your proof
+      you've read it correctly.</p>
+  </div>
+
+  <figure>
+    <canvas id="fig86" role="img" aria-label="Two points joined by four different circular arcs of the same radius. Two short arcs bulge slightly to either side, and two long arcs sweep the long way around on either side, each labeled with its pair of flag values"></canvas>
+    <figcaption><span class="fig">Figure 8.6</span> Four arcs, two points, one radius. The two flags choose among them: <code>large_arc</code> picks the long way or the short, <code>sweep</code> picks the side. All four meet the endpoints; only the flags say which you meant.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter08-arc.feature">
+    <p class="label">features/chapter08-arc.feature</p>
+<pre><code><span class="kw">Feature</span>: The SVG elliptical arc
+  arc(x1, y1, rx, ry, phi, large_arc, sweep, x2, y2) turns SVG's endpoint form
+  of an elliptical arc into a center form you can walk: a center, radii, the
+  x-axis rotation phi in radians, a start angle and a swept angle.
+  arc_point(a, t) is the point at t from 0 to 1 along it. The two flag bits
+  pick which of four arcs joins the endpoints. Radii too small to reach are
+  grown until they do, and corrected is set. Coincident endpoints or a
+  zero radius describe no arc at all.
+
+  <span class="kw">Scenario</span>: The two flags choose among four arcs between the same endpoints
+    <span class="kw">Given</span> a ← arc(0, 0, 5, 5, 0, 0, 0, 6, 0)
+    <span class="kw">Then</span>  arc_point(a, 0.5) = point(3, 1)
+    <span class="kw">And</span>   arc_point(arc(0, 0, 5, 5, 0, 0, 1, 6, 0), 0.5) = point(3, -1)
+    <span class="kw">And</span>   arc_point(arc(0, 0, 5, 5, 0, 1, 0, 6, 0), 0.5) = point(3, 9)
+    <span class="kw">And</span>   arc_point(arc(0, 0, 5, 5, 0, 1, 1, 6, 0), 0.5) = point(3, -9)
+
+  <span class="kw">Scenario</span>: Every one of the four still meets both endpoints
+    <span class="kw">Given</span> a ← arc(0, 0, 5, 5, 0, 1, 0, 6, 0)
+    <span class="kw">Then</span>  arc_point(a, 0) = point(0, 0)
+    <span class="kw">And</span>   arc_point(a, 1) = point(6, 0)
+
+  <span class="kw">Scenario</span>: Radii too small to reach are grown until they do
+    <span class="kw">Given</span> a ← arc(0, 0, 0.5, 0.5, 0, 0, 1, 2, 0)
+    <span class="kw">Then</span>  a.corrected = true
+    <span class="kw">And</span>   a.rx = 1.0
+    <span class="kw">And</span>   a.ry = 1.0
+    <span class="kw">And</span>   arc_point(a, 0) = point(0, 0)
+    <span class="kw">And</span>   arc_point(a, 1) = point(2, 0)
+    <span class="kw">And</span>   arc_point(a, 0.5) = point(1, -1)
+
+  <span class="kw">Scenario</span>: A rotated ellipse still lands on its endpoints
+    <span class="kw">Given</span> a ← arc(1, 1, 4, 2, π / 6, 0, 1, 7, 4)
+    <span class="kw">Then</span>  a.corrected = false
+    <span class="kw">And</span>   arc_point(a, 0) = point(1, 1)
+    <span class="kw">And</span>   arc_point(a, 1) = point(7, 4)
+    <span class="kw">And</span>   arc_point(a, 0.5) = point(4.268029, 1.595108)
+
+  <span class="kw">Scenario</span>: A degenerate arc is no arc
+    <span class="kw">Then</span>  arc(0, 0, 1, 1, 0, 0, 1, 0, 0) = none
+    <span class="kw">And</span>   arc(0, 0, 0, 1, 0, 0, 1, 2, 0) = none</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>The pen tool's two handles on an anchor are the interior control points of the curves meeting
+      there, and the smooth-versus-corner toggle is whether the incoming and outgoing handles are
+      forced collinear. Illustrator's <em>Object → Path → Flatten</em> is this section's function with
+      the tolerance on a slider — run it and the curves become the polyline you'd have handed the fill.</p>
+  </aside>
+
+  <h2><span class="sec">§ 8.5</span> Putting it together</h2>
+
+  <p>Something that was a lie one chapter ago. A flower, its petals actual curves. One petal is two
+    cubics, tip to base and back, bulging out to the sides; a ring of them around a center is a
+    flower; and three flowers at three sizes go on the page. The trick from §8.3 is the whole show:
+    each petal is transformed to its place and size <em>first</em>, then flattened in that device
+    space at one shared tolerance, so the big flower gets more segments than the small one and all
+    three come out equally smooth. The center of each is punched out by filling a circle in the paper
+    colour, the same take-away move the sunburst used.</p>
+
+<pre><code>flower_at(p, m, n, tolerance):        <span class="cm">// add n petals around the origin, placed by m</span>
+  right, left ← petal()               <span class="cm">// two cubics, a petal about one unit tall</span>
+  <span class="kw">for</span> k <span class="kw">in</span> 0..n-1:
+    spin ← m * rotation(2π · k / n)
+    flatten_into_path(p, transform_curve(right, spin), tolerance)   <span class="cm">// flatten in device space</span>
+    flatten_into_path(p, transform_curve(left,  spin), tolerance)
+    close(p)
+
+flower():
+  c ← canvas(360, 360);  fill(c, PAPER)
+  <span class="kw">for</span> (cx, cy, s, n, rot), i <span class="kw">in</span> the three spots:
+    m ← translation(cx, cy) * scaling(s, s) * rotation(rot)
+    petals ← path();  flower_at(petals, m, n, 0.2)
+    paint_through(c, fill_path(petals, "nonzero", 360, 360), INKS[i mod 3])
+    disc ← circle_path(cx, cy, s · 0.3, 64)
+    paint_through(c, fill_path(disc, "nonzero", 360, 360), PAPER)   <span class="cm">// punch the middle</span>
+  <span class="kw">return</span> c
+
+plate_08():
+  <span class="kw">return</span> magnify(flower(), 2)</code></pre>
+
+  <p>The scenarios pin one petal pixel and one punched-out center of each flower, then diff the whole
+    image against the reference — and the teardrop render gets pinned too, the coarse half against the
+    fine, which is the flattening lesson in one picture. <code>flatten_into_path</code> is the small
+    glue that appends a flattened curve to a path with <code>line_to</code>, so a curve becomes an
+    ordinary polygon the fill already knows how to eat.</p>
+
+  <div class="test" data-feature="chapter08-plate.feature">
+    <p class="label">features/chapter08-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 8
+  The renders of chapter 8. drops() fills the same teardrop twice, flattened
+  coarse on the left and fine on the right, so the facets show. flower() sets
+  three flowers of curved petals at three sizes, every petal flattened in
+  device space at one tolerance so the big flower is as smooth as the small
+  one, with a disc punched out of each center. plate_08() is the flowers,
+  magnified.
+
+  <span class="kw">Scenario</span>: The teardrop, coarse against fine
+    <span class="kw">Given</span> c ← drops()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-08/drops.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 480
+    <span class="kw">And</span>   c.height = 240
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The flowers
+    <span class="kw">Given</span> c ← flower()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-08/flower.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 360
+    <span class="kw">And</span>   c.height = 360
+    <span class="kw">And</span>   ppm_pixel(p6, 200, 105) = (124, 196, 237) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 200, 145) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 108, 212) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 108, 250) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 286, 214) = (237, 137, 149) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 8
+    <span class="kw">Given</span> c ← plate_08()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-08/plate-08.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 720
+    <span class="kw">And</span>   c.height = 720
+    <span class="kw">And</span>   ppm_pixel(p6, 400, 210) = (124, 196, 237) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 216, 424) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 572, 428) = (237, 137, 149) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 20, 20) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate8" role="img" aria-label="Three flowers of rounded petals in orange, blue and red on near-black paper, at three different sizes, each with a punched-out dark disc at its center. Every petal is a smooth curve, and the large flower is exactly as smooth as the small ones"></canvas>
+    <figcaption><span class="fig">Plate 8</span> Three flowers, every petal a pair of cubics, each flattened at its final size. The big one has more segments than the small ones and you can't tell — which is the point. The renderer draws curves now, one polyline at a time.</figcaption>
+  </figure>
+
+  <p>The path can hold curves, the curves know how to become lines, and the lines were always going
+    to be filled exactly. That closes the core engine: from here a shape is whatever you can describe
+    with moves, lines, curves and arcs, and the renderer will fill it, antialiased, at any size. What
+    it can't yet do is care what <em>colour</em> goes through the coverage, or what happens where two
+    filled shapes overlap — the seam chapter 7 warned about. That's chapter 9, and it's where the
+    book stops being about coverage and starts being about paint.</p>
+
+  <nav class="endnav">
+    <a href="chapter-07.html">← 7 · Analytic Antialiasing</a>
+    <span>Chapter 8 · Curves</span>
+    <span>Next: 9 · Compositing (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+function toByte(light) {
+  var v = light < 0 ? 0 : light > 1 ? 1 : light;
+  return Math.floor(Plate.l2s(v) * 255 + 0.5);
+}
+function lerp3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+function blit(ctx, pixels, pw, ph, scale, ox, oy) {
+  var img = ctx.createImageData(pw, ph);
+  for (var i = 0; i < pw * ph; i++) {
+    img.data[i * 4] = pixels[i][0]; img.data[i * 4 + 1] = pixels[i][1];
+    img.data[i * 4 + 2] = pixels[i][2]; img.data[i * 4 + 3] = 255;
+  }
+  var off = Plate.offcan(pw, ph);
+  off.getContext('2d').putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, ox, oy, pw * scale, ph * scale);
+}
+var PAPER = [0.02, 0.02, 0.025], INKS = [[0.9, 0.55, 0.1], [0.2, 0.55, 0.85], [0.85, 0.25, 0.3]];
+function Buf(w, h) { this.w = w; this.h = h; this.p = []; for (var i = 0; i < w * h; i++) this.p.push(PAPER.slice()); }
+Buf.prototype.paint = function (cov, col) {
+  for (var i = 0; i < this.w * this.h; i++) { var k = cov[i]; if (k > 0) this.p[i] = lerp3(this.p[i], col, k > 1 ? 1 : k); }
+};
+Buf.prototype.bytes = function () { return this.p.map(function (c) { return c.map(toByte); }); };
+
+/* points, matrices and paths, as the earlier chapters define them */
+function point(x, y) { return [x, y, 1]; }
+function sub(a, b) { return [a[0] - b[0], a[1] - b[1]]; }
+function mul(a, b) {
+  if (b.length === 3) return [a[0] * b[0] + a[1] * b[1] + a[2] * b[2], a[3] * b[0] + a[4] * b[1] + a[5] * b[2], a[6] * b[0] + a[7] * b[1] + a[8] * b[2]];
+  var out = [];
+  for (var r = 0; r < 3; r++) for (var c = 0; c < 3; c++) out.push(a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]);
+  return out;
+}
+function translation(x, y) { return [1, 0, x, 0, 1, y, 0, 0, 1]; }
+function scaling(x, y) { return [x, 0, 0, 0, y, 0, 0, 0, 1]; }
+function rotation(r) { var c = Math.cos(r), s = Math.sin(r); return [c, -s, 0, s, c, 0, 0, 0, 1]; }
+function path() { return { subpaths: [] }; }
+function moveTo(p, q) { p.subpaths.push({ points: [q], closed: false }); }
+function lineTo(p, q) {
+  if (!p.subpaths.length) return moveTo(p, q);
+  var cur = p.subpaths[p.subpaths.length - 1];
+  if (cur.closed) { moveTo(p, cur.points[0]); cur = p.subpaths[p.subpaths.length - 1]; }
+  cur.points.push(q);
+}
+function close(p) { if (p.subpaths.length) p.subpaths[p.subpaths.length - 1].closed = true; }
+function edges(p) {
+  var out = [];
+  p.subpaths.forEach(function (sp) {
+    var n = sp.points.length; if (n < 2) return;
+    for (var i = 0; i < n; i++) out.push([sp.points[i], sp.points[(i + 1) % n]]);
+  });
+  return out;
+}
+function transformPath(p, m) {
+  return { subpaths: p.subpaths.map(function (sp) { return { points: sp.points.map(function (q) { return mul(m, q); }), closed: sp.closed }; }) };
+}
+function circlePath(cx, cy, r, n) {
+  var p = path();
+  for (var k = 0; k < n; k++) {
+    var a = 2 * Math.PI * k / n, q = point(cx + r * Math.cos(a), cy + r * Math.sin(a));
+    if (k === 0) moveTo(p, q); else lineTo(p, q);
+  }
+  close(p);
+  return p;
+}
+
+/* chapter 7's analytic fill */
+function accumulator(w, h) { return { w: w, h: h, area: new Array(w * h).fill(0), cover: new Array(w * h).fill(0) }; }
+function addCell(acc, x, row, area, cover) {
+  if (x < 0) { x = 0; area = cover; }
+  if (x >= acc.w) return;
+  var i = row * acc.w + x; acc.area[i] += area; acc.cover[i] += cover;
+}
+function accumulateRow(acc, row, x0, x1, height) {
+  var xa = Math.min(x0, x1), xb = Math.max(x0, x1), ca = Math.floor(xa), cb = Math.floor(xb);
+  if (ca === cb) { var xm = (xa + xb) / 2 - ca; addCell(acc, ca, row, height * (1 - xm), height); return; }
+  var dx = xb - xa;
+  for (var c = ca; c <= cb; c++) {
+    var lo = Math.max(xa, c), hi = Math.min(xb, c + 1), share = height * (hi - lo) / dx, m = (lo + hi) / 2 - c;
+    addCell(acc, c, row, share * (1 - m), share);
+  }
+}
+function accumulate(acc, a, b) {
+  if (a[1] === b[1]) return;
+  var sign = a[1] > b[1] ? 1 : -1, top = a[1] > b[1] ? b : a, bottom = a[1] > b[1] ? a : b;
+  var slope = (bottom[0] - top[0]) / (bottom[1] - top[1]);
+  var first = Math.max(Math.floor(top[1]), 0), last = Math.min(Math.ceil(bottom[1]) - 1, acc.h - 1);
+  for (var row = first; row <= last; row++) {
+    var y0 = Math.max(top[1], row), y1 = Math.min(bottom[1], row + 1);
+    accumulateRow(acc, row, top[0] + (y0 - top[1]) * slope, top[0] + (y1 - top[1]) * slope, sign * (y1 - y0));
+  }
+}
+function applyRule(w, rule) {
+  if (rule === 'nonzero') return Math.min(1, Math.abs(w));
+  var t = Math.abs(w) % 2; return t <= 1 ? t : 2 - t;
+}
+function resolve(acc, rule) {
+  var cov = new Array(acc.w * acc.h).fill(0);
+  for (var row = 0; row < acc.h; row++) {
+    var running = 0;
+    for (var x = 0; x < acc.w; x++) { var i = row * acc.w + x; cov[i] = applyRule(running + acc.area[i], rule); running += acc.cover[i]; }
+  }
+  return cov;
+}
+function fillPath(p, rule, w, h) {
+  var acc = accumulator(w, h);
+  edges(p).forEach(function (e) { accumulate(acc, e[0], e[1]); });
+  return resolve(acc, rule);
+}
+
+/* chapter 8: curves */
+function curve(points) { return { points: points }; }
+function quadratic(p0, p1, p2) { return curve([p0, p1, p2]); }
+function cubic(p0, p1, p2, p3) { return curve([p0, p1, p2, p3]); }
+function lerpPoint(a, b, t) { return point(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t); }
+function deCasteljau(points, t) {
+  var left = [points[0]], right = [points[points.length - 1]], pts = points.slice();
+  while (pts.length > 1) {
+    var next = [];
+    for (var i = 0; i < pts.length - 1; i++) next.push(lerpPoint(pts[i], pts[i + 1], t));
+    pts = next; left.push(pts[0]); right.push(pts[pts.length - 1]);
+  }
+  return { p: pts[0], left: left, right: right.reverse() };
+}
+function pointAt(c, t) { return deCasteljau(c.points, t).p; }
+function splitAt(c, t) { var d = deCasteljau(c.points, t); return [curve(d.left), curve(d.right)]; }
+function transformCurve(c, m) { return curve(c.points.map(function (p) { return mul(m, p); })); }
+function flatness(c) {
+  var a = c.points[0], b = c.points[c.points.length - 1], dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy), worst = 0;
+  for (var i = 1; i < c.points.length - 1; i++) {
+    var p = c.points[i], d = len === 0 ? Math.hypot(p[0] - a[0], p[1] - a[1]) : Math.abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / len;
+    worst = Math.max(worst, d);
+  }
+  return worst;
+}
+function flatten(c, tol) { var out = [c.points[0]]; flattenInto(c, tol, out); return out; }
+function flattenInto(c, tol, out) {
+  if (flatness(c) <= tol) out.push(c.points[c.points.length - 1]);
+  else { var h = splitAt(c, 0.5); flattenInto(h[0], tol, out); flattenInto(h[1], tol, out); }
+}
+function flattenIntoPath(p, c, tol) {
+  var pts = flatten(c, tol);
+  if (!p.subpaths.length || p.subpaths[p.subpaths.length - 1].closed) { moveTo(p, pts[0]); pts = pts.slice(1); }
+  else { var cur = p.subpaths[p.subpaths.length - 1].points.slice(-1)[0]; if (cur[0] === pts[0][0] && cur[1] === pts[0][1]) pts = pts.slice(1); }
+  pts.forEach(function (q) { lineTo(p, q); });
+}
+
+/* chapter 8: the SVG arc */
+function angleBetween(ux, uy, vx, vy) {
+  var dot = ux * vx + uy * vy, len = Math.hypot(ux, uy) * Math.hypot(vx, vy);
+  var a = Math.acos(Math.max(-1, Math.min(1, dot / len)));
+  return (ux * vy - uy * vx) >= 0 ? a : -a;
+}
+function arc(x1, y1, rx, ry, phi, large, sweep, x2, y2) {
+  if ((x1 === x2 && y1 === y2) || rx === 0 || ry === 0) return null;
+  rx = Math.abs(rx); ry = Math.abs(ry);
+  var cphi = Math.cos(phi), sphi = Math.sin(phi), dx = (x1 - x2) / 2, dy = (y1 - y2) / 2;
+  var x1p = cphi * dx + sphi * dy, y1p = -sphi * dx + cphi * dy, corrected = false;
+  var lam = x1p * x1p / (rx * rx) + y1p * y1p / (ry * ry);
+  if (lam > 1) { var s = Math.sqrt(lam); rx *= s; ry *= s; corrected = true; }
+  var num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p, den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+  var co = Math.sqrt(Math.max(0, num / den)); if (large === sweep) co = -co;
+  var cxp = co * rx * y1p / ry, cyp = -co * ry * x1p / rx;
+  var cx = cphi * cxp - sphi * cyp + (x1 + x2) / 2, cy = sphi * cxp + cphi * cyp + (y1 + y2) / 2;
+  var theta1 = angleBetween(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
+  var delta = angleBetween((x1p - cxp) / rx, (y1p - cyp) / ry, (-x1p - cxp) / rx, (-y1p - cyp) / ry);
+  if (!sweep && delta > 0) delta -= 2 * Math.PI; else if (sweep && delta < 0) delta += 2 * Math.PI;
+  return { cx: cx, cy: cy, rx: rx, ry: ry, phi: phi, theta1: theta1, delta: delta, corrected: corrected };
+}
+function arcPoint(a, t) {
+  var theta = a.theta1 + a.delta * t, cphi = Math.cos(a.phi), sphi = Math.sin(a.phi);
+  var ex = a.rx * Math.cos(theta), ey = a.ry * Math.sin(theta);
+  return point(a.cx + cphi * ex - sphi * ey, a.cy + sphi * ex + cphi * ey);
+}
+
+/* the renders */
+function teardrop() {
+  return [cubic(point(30.5, 12), point(58, 16), point(46, 52), point(30.5, 52)),
+          cubic(point(30.5, 52), point(15, 52), point(3, 16), point(30.5, 12))];
+}
+function drops() {
+  var left = new Buf(60, 60), right = new Buf(60, 60), td = teardrop();
+  var coarse = path(); flattenIntoPath(coarse, td[0], 4.0); flattenIntoPath(coarse, td[1], 4.0); close(coarse);
+  var fine = path(); flattenIntoPath(fine, td[0], 0.1); flattenIntoPath(fine, td[1], 0.1); close(fine);
+  left.paint(fillPath(coarse, 'nonzero', 60, 60), INKS[2]);
+  right.paint(fillPath(fine, 'nonzero', 60, 60), INKS[2]);
+  return { left: left, right: right };
+}
+function petal() {
+  return [cubic(point(0, 0), point(0.55, -0.35), point(0.4, -0.92), point(0, -1)),
+          cubic(point(0, -1), point(-0.4, -0.92), point(-0.55, -0.35), point(0, 0))];
+}
+function flowerAt(p, m, n, tol) {
+  var pt = petal();
+  for (var k = 0; k < n; k++) {
+    var spin = mul(m, rotation(2 * Math.PI * k / n));
+    flattenIntoPath(p, transformCurve(pt[0], spin), tol);
+    flattenIntoPath(p, transformCurve(pt[1], spin), tol);
+    close(p);
+  }
+}
+function flower() {
+  var b = new Buf(360, 360);
+  var spots = [[108, 250, 44, 8, 0.0], [200, 145, 74, 8, 0.39], [286, 252, 54, 7, 0.8]];
+  spots.forEach(function (spot, i) {
+    var m = mul(mul(translation(spot[0], spot[1]), scaling(spot[2], spot[2])), rotation(spot[4]));
+    var petals = path(); flowerAt(petals, m, spot[3], 0.2);
+    b.paint(fillPath(petals, 'nonzero', 360, 360), INKS[i % 3]);
+    b.paint(fillPath(circlePath(spot[0], spot[1], spot[2] * 0.3, 64), 'nonzero', 360, 360), PAPER);
+  });
+  return b;
+}
+
+/* ---------- schematic helpers ---------- */
+function dot(ctx, x, y, col, r) { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r || 3.5, 0, Math.PI * 2); ctx.fill(); }
+function polyline(ctx, pts, col, wid, dash) {
+  ctx.strokeStyle = col; ctx.lineWidth = wid; ctx.setLineDash(dash || []);
+  ctx.beginPath(); pts.forEach(function (p, i) { i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); }); ctx.stroke(); ctx.setLineDash([]);
+}
+function drawCurve(ctx, c, X, Y, col, wid) {
+  var pts = flatten(c, 0.002).map(function (p) { return [X(p[0]), Y(p[1])]; });
+  polyline(ctx, pts, col, wid);
+}
+
+/* ---------- Figure 8.1 — a cubic and its control polygon ---------- */
+Plate.add('fig81', 0.5, function (ctx, w, h, p) {
+  var X = function (v) { return 20 + v * (w - 40) / 10; }, Y = function (v) { return h - 16 - v * (h - 40) / 8; };
+  var c = cubic(point(0.5, 0.5), point(2, 7.5), point(8, 7.5), point(9.5, 1.5));
+  polyline(ctx, c.points.map(function (q) { return [X(q[0]), Y(q[1])]; }), Plate.rgba(p.ink3, 0.9), 1.2, [5, 4]);
+  drawCurve(ctx, c, X, Y, p.ink, 2.5);
+  c.points.forEach(function (q, i) { dot(ctx, X(q[0]), Y(q[1]), i === 0 || i === 3 ? p.ink : p.cyan, 4); });
+  Plate.label(ctx, 'p0', X(0.5) - 4, Y(0.5) + 14, p.ink, 11, 'right');
+  Plate.label(ctx, 'p3', X(9.5) + 6, Y(1.5) + 4, p.ink, 11);
+  Plate.label(ctx, 'p1', X(2), Y(7.5) - 8, p.cyan, 11, 'center');
+  Plate.label(ctx, 'p2', X(8), Y(7.5) - 8, p.cyan, 11, 'center');
+});
+
+/* ---------- Figure 8.2 — de Casteljau at t = 0.5 ---------- */
+Plate.add('fig82', 0.5, function (ctx, w, h, p) {
+  var X = function (v) { return 20 + v * (w - 40) / 10; }, Y = function (v) { return h - 16 - v * (h - 40) / 8; };
+  var c = cubic(point(0.5, 0.5), point(2, 7.5), point(8, 7.5), point(9.5, 1.5)), t = 0.5;
+  drawCurve(ctx, c, X, Y, Plate.rgba(p.ink, 0.35), 2);
+  var lvl = c.points.slice(), tint = [p.ink3, p.cyan, p.magenta];
+  for (var d = 0; d < 3; d++) {
+    polyline(ctx, lvl.map(function (q) { return [X(q[0]), Y(q[1])]; }), Plate.rgba(tint[d], 0.9), d === 0 ? 1.2 : 1.6);
+    lvl.forEach(function (q) { dot(ctx, X(q[0]), Y(q[1]), tint[d], d === 0 ? 3 : 3.5); });
+    var nxt = []; for (var i = 0; i < lvl.length - 1; i++) nxt.push(lerpPoint(lvl[i], lvl[i + 1], t)); lvl = nxt;
+  }
+  dot(ctx, X(lvl[0][0]), Y(lvl[0][1]), p.ink, 5);
+  Plate.label(ctx, 'point_at(c, 0.5)', X(lvl[0][0]) + 8, Y(lvl[0][1]) + 4, p.ink, 11);
+});
+
+/* ---------- Figure 8.3 — tight bounds vs control box ---------- */
+Plate.add('fig83', 0.52, function (ctx, w, h, p) {
+  var X = function (v) { return 24 + v * (w - 48) / 5; }, Y = function (v) { return h - 20 - v * (h - 44) / 4; };
+  var c = cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0));
+  var xs = c.points.map(function (q) { return q[0]; }), ys = c.points.map(function (q) { return q[1]; });
+  var lb = [Math.min.apply(0, xs), Math.min.apply(0, ys), Math.max.apply(0, xs), Math.max.apply(0, ys)];
+  var flatv = flatten(c, 0.002), fx = flatv.map(function (q) { return q[0]; }), fy = flatv.map(function (q) { return q[1]; });
+  var tb = [Math.min.apply(0, fx), Math.min.apply(0, fy), Math.max.apply(0, fx), Math.max.apply(0, fy)];
+  ctx.fillStyle = Plate.rgba(p.ink3, 0.14); ctx.fillRect(X(lb[0]), Y(lb[3]), X(lb[2]) - X(lb[0]), Y(lb[1]) - Y(lb[3]));
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.9); ctx.lineWidth = 1.2; ctx.setLineDash([5, 4]);
+  ctx.strokeRect(X(lb[0]), Y(lb[3]), X(lb[2]) - X(lb[0]), Y(lb[1]) - Y(lb[3])); ctx.setLineDash([]);
+  polyline(ctx, c.points.map(function (q) { return [X(q[0]), Y(q[1])]; }), Plate.rgba(p.ink3, 0.6), 1, [3, 3]);
+  drawCurve(ctx, c, X, Y, p.ink, 2.5);
+  ctx.strokeStyle = p.cyan; ctx.lineWidth = 2;
+  ctx.strokeRect(X(tb[0]), Y(tb[3]), X(tb[2]) - X(tb[0]), Y(tb[1]) - Y(tb[3]));
+  c.points.forEach(function (q) { dot(ctx, X(q[0]), Y(q[1]), p.ink3, 3); });
+  Plate.label(ctx, 'control box', X(lb[0]) + 4, Y(lb[3]) - 5, p.ink3, 10);
+  Plate.label(ctx, 'tight', X(tb[2]) - 4, Y(tb[3]) - 5, p.cyan, 10, 'right');
+});
+
+/* ---------- Figure 8.4 — adaptive flattening ---------- */
+Plate.add('fig84', 0.5, function (ctx, w, h, p) {
+  var X = function (v) { return 24 + v * (w - 48) / 10; }, Y = function (v) { return 16 + v * (h - 36) / 8; };
+  var c = cubic(point(1, 0.5), point(9.5, 1), point(9.5, 7.5), point(4.5, 7.5));
+  drawCurve(ctx, c, X, Y, Plate.rgba(p.ink, 0.4), 2);
+  var pts = flatten(c, 0.35);
+  polyline(ctx, pts.map(function (q) { return [X(q[0]), Y(q[1])]; }), p.magenta, 1.6);
+  pts.forEach(function (q) { dot(ctx, X(q[0]), Y(q[1]), p.magenta, 3.5); });
+  Plate.label(ctx, pts.length + ' points, crowded at the bend', 24, h - 8, p.ink2, 10);
+});
+
+/* ---------- Figure 8.5 — the teardrop, coarse vs fine ---------- */
+Plate.add('fig85', 0.5, function (ctx, w, h, p) {
+  var d = drops();
+  var scale = Math.max(1, Math.floor(Math.min((w - 12) / 120, h / 60))), pad = (w - 120 * scale) / 2, oy = (h - 60 * scale) / 2;
+  blit(ctx, d.left.bytes(), 60, 60, scale, pad, oy);
+  blit(ctx, d.right.bytes(), 60, 60, scale, pad + 60 * scale, oy);
+});
+
+/* ---------- Figure 8.6 — four arcs ---------- */
+Plate.add('fig86', 0.5, function (ctx, w, h, p) {
+  var cx = w / 2, sc = Math.min((w - 60) / 12, (h - 40) / 20), cy = h / 2;
+  var X = function (v) { return cx + (v - 3) * sc; }, Y = function (v) { return cy - v * sc; };
+  var combos = [[0, 0, p.cyan], [0, 1, p.cyan], [1, 0, p.magenta], [1, 1, p.magenta]];
+  combos.forEach(function (cb) {
+    var a = arc(0, 0, 5, 5, 0, cb[0], cb[1], 6, 0), pts = [];
+    for (var i = 0; i <= 48; i++) { var q = arcPoint(a, i / 48); pts.push([X(q[0]), Y(q[1])]); }
+    polyline(ctx, pts, Plate.rgba(cb[2], cb[0] ? 0.85 : 0.7), cb[0] ? 1.4 : 2.2, cb[0] ? [5, 4] : []);
+  });
+  dot(ctx, X(0), Y(0), p.ink, 4); dot(ctx, X(6), Y(0), p.ink, 4);
+  Plate.label(ctx, 'solid: short (large_arc 0)   dashed: long (large_arc 1)', 12, h - 8, p.ink2, 10);
+  Plate.label(ctx, 'cyan sweep 0 / 1 above,  magenta the long pair', 12, 14, p.ink2, 10);
+});
+
+/* ---------- Plate 8 — the flowers, pixel for pixel ---------- */
+Plate.add('plate8', 1, function (ctx, w, h, p) {
+  var b = flower();
+  var scale = Math.max(1, Math.floor(Math.min(w / 360, h / 360))), ox = (w - 360 * scale) / 2;
+  blit(ctx, b.bytes(), 360, 360, scale, ox, 0);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, Buf, point, mul, translation, scaling, rotation, path, moveTo, lineTo, close, edges, transformPath, circlePath, fillPath, curve, quadratic, cubic, deCasteljau, pointAt, splitAt, transformCurve, flatness, flatten, flattenIntoPath, arc, arcPoint, petal, flowerAt, flower].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>

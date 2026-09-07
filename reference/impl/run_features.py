@@ -41,7 +41,7 @@ def make_env():
     env["read_file"] = read_file
     env["round"] = lambda v: int(math.floor(v + 0.5))
     env["length"] = len
-    env["true"], env["false"] = True, False
+    env["true"], env["false"], env["none"] = True, False, None
     env["sqrt"] = math.sqrt
     env["π"] = math.pi
     return env
@@ -60,6 +60,8 @@ def evaluate(expr, env):
 
 
 def approx_equal(a, b, eps):
+    if a is None or b is None:
+        return a is b
     if hasattr(a, "approx"):          # Color, and chapter 4's Tuple and Matrix3
         return a.approx(b, eps)
     if hasattr(b, "approx"):
