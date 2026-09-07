@@ -1,0 +1,934 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 7 · Analytic Antialiasing — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 7 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-06.html">← 6</a> · <a href="#plate">Plate&nbsp;7</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Seven</p>
+    <h1>Analytic Antialiasing</h1>
+    <p class="hook">Chapter 6's fill asks one question per pixel: is your center inside? For a fat
+      shape that's the right question and the answer is a clean staircase. For a thin one it's a
+      disaster. A needle a third of a pixel wide passes between the centers and lights nothing;
+      shift it over and it lights a single hard dot. The picture on the left is twelve of them, and
+      it's more gap than needle. This chapter answers a better question — <em>how much</em> of each
+      pixel is inside — and it answers it exactly, in one pass, with two numbers per cell and no
+      sampling anywhere. It's the rasterizer inside every font engine you've ever read text
+      through, and it's about a page of code.</p>
+  </header>
+
+  <figure>
+    <canvas id="fig70" role="img" aria-label="Twelve thin triangular needles radiating from a center. On the left, filled by chapter 6's center test, they break into disconnected dots and dashes and the tips vanish. On the right, filled analytically, they are smooth continuous slivers that fade to nothing at the tip"></canvas>
+    <figcaption><span class="fig">Figure 7.1</span> The same twelve needles. Left: chapter 6's center test, which lights a pixel only if a needle covers its middle, so the slivers come apart and the tips disappear. Right: this chapter, where a pixel a tenth covered comes out a tenth lit.</figcaption>
+  </figure>
+
+  <p>The staircase in chapter 6 wasn't a bug. A pixel is either inside or it isn't, the center test
+    decides which, and for a shape many pixels wide the wrong calls all sit in a one-pixel band
+    along the edge where nobody's looking closely. Thin shapes are where nobody can look anywhere
+    else: the whole shape <em>is</em> the edge. Type is thin. So are the tiger's whiskers, and every
+    hairline in every chart. The fix everyone reaches for first is chapter 2's supersampler — ask
+    sixty-four times per pixel instead of once — and it works, and it's the reference this chapter
+    checks against, and it's slow and still only approximate. There's a better way, and it's not a
+    refinement of sampling. It stops sampling.</p>
+
+  <p>Here's the whole idea in one sentence. Coverage is an area, area is an integral, and the
+    integral of a polygon can be computed edge by edge instead of point by point. Walk each edge
+    once. As it passes through a cell, it splits that cell into a piece on its left and a piece on
+    its right, and you record how much area it put on the left and how much height it carries to
+    everything further right. Do that for every edge, then sweep each row of cells from left to
+    right adding up what came before. What falls out is the exact covered fraction of every pixel,
+    and because it's exact, the total lit area of a filled polygon comes out equal to the polygon's
+    real area, to the last decimal. The supersampler can't say that. This chapter can.</p>
+
+  <h2><span class="sec">§ 7.1</span> Two numbers per cell</h2>
+
+  <p>Chapter 2's buffer stored one number per pixel: its coverage. This chapter builds coverage up
+    out of edge crossings, and to do that it needs a scratch buffer that holds two numbers per
+    cell while the edges are being deposited. Call them <em>area</em> and <em>cover</em>. Area is
+    what the cell itself has accumulated: the signed area an edge left inside this one cell. Cover
+    is the signed height that this cell hands to every cell on its right — because an edge that
+    passes up through a cell doesn't only affect that cell, it changes whether everything to the
+    right of it is inside or outside. The <code>accumulator</code> is a grid of those pairs, all
+    zero, and <code>area_at</code> and <code>cover_at</code> read them back.</p>
+
+  <figure>
+    <canvas id="fig71" role="img" aria-label="A magnified grid of pixel cells with a single slanted edge running up through it from lower right to upper left. In each cell the edge crosses, the region to its left is shaded to show the area that cell accumulated, and a rightward arrow labeled cover shows the height carried into the cells further right on the same row"></canvas>
+    <figcaption><span class="fig">Figure 7.2</span> One edge, deposited. In each cell it crosses it leaves an <em>area</em> (the shaded piece on its left) and a <em>cover</em> (the arrow, the height it carries to the right). Sweeping a row and adding the covers turns both into coverage.</figcaption>
+  </figure>
+
+  <p><code>add_cell(acc, x, row, area, cover)</code> is the one primitive that writes to the buffer,
+    and it adds rather than overwrites, because two edges of the same shape can cross the same cell
+    and both have a say. Two of its cases are about the edge of the buffer, and they're the kind of
+    thing that's invisible until a shape hangs off the side of the canvas and you get a stripe of
+    garbage down column zero. A deposit meant for a cell <em>left</em> of the buffer doesn't
+    vanish: everything in that row is to the right of it, so it folds onto column 0 and counts as
+    pure cover — the whole height carries in. A deposit <em>right</em> of the buffer really does
+    vanish, because there's nothing to its right to carry into. State both now and the clipping in
+    §7.3 comes out right without a special case.</p>
+
+  <div class="test" data-feature="chapter07-cells.feature">
+    <p class="label">features/chapter07-cells.feature</p>
+<pre><code><span class="kw">Feature</span>: Two numbers per cell
+  The accumulator holds two numbers per cell, not one. accumulator(w, h) is a
+  grid of them, all zero. area_at(acc, x, y) is what the cell itself has
+  collected; cover_at(acc, x, y) is what it carries to every cell on its
+  right. add_cell(acc, x, row, area, cover) deposits into one cell. A deposit
+  left of the buffer folds onto column 0, where it becomes all cover; a
+  deposit right of the buffer is dropped, because nothing is to its right.
+
+  <span class="kw">Scenario</span>: A fresh accumulator is all zeros
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">Then</span>  acc.width = 4
+    <span class="kw">And</span>   acc.height = 3
+    <span class="kw">And</span>   area_at(acc, 1, 0) = 0
+    <span class="kw">And</span>   cover_at(acc, 3, 2) = 0
+
+  <span class="kw">Scenario</span>: add_cell deposits an area and a cover
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  add_cell(acc, 1, 0, 0.3, 0.7)
+    <span class="kw">Then</span>  area_at(acc, 1, 0) = 0.3
+    <span class="kw">And</span>   cover_at(acc, 1, 0) = 0.7
+    <span class="kw">And</span>   area_at(acc, 0, 0) = 0
+    <span class="kw">And</span>   cover_at(acc, 2, 0) = 0
+
+  <span class="kw">Scenario</span>: add_cell accumulates rather than overwrites
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  add_cell(acc, 2, 1, 0.25, 0.5)
+    <span class="kw">And</span>   add_cell(acc, 2, 1, 0.25, 0.5)
+    <span class="kw">Then</span>  area_at(acc, 2, 1) = 0.5
+    <span class="kw">And</span>   cover_at(acc, 2, 1) = 1.0
+
+  <span class="kw">Scenario</span>: A deposit left of the buffer folds onto column 0 as cover
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  add_cell(acc, -2, 0, 0.3, 0.7)
+    <span class="kw">Then</span>  area_at(acc, 0, 0) = 0.7
+    <span class="kw">And</span>   cover_at(acc, 0, 0) = 0.7
+
+  <span class="kw">Scenario</span>: A deposit right of the buffer is dropped
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  add_cell(acc, 9, 0, 0.3, 0.7)
+    <span class="kw">Then</span>  area_at(acc, 3, 0) = 0
+    <span class="kw">And</span>   cover_at(acc, 3, 0) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 7.2</span> One edge, one row</h2>
+
+  <p>Now the geometry, at the smallest scale: a straight edge crossing a single row of cells.
+    Clip the edge to the row's top and bottom and you get a little segment running from some
+    <code>x0</code> at the top to some <code>x1</code> at the bottom, spanning a signed height —
+    call it the piece. <code>accumulate_row(acc, row, x0, x1, height)</code> deposits it. If the
+    piece stays inside one cell, that cell gets the whole height as its cover, and its area is the
+    height weighted by how far the piece sits from the cell's right edge — a piece hugging the left
+    of the cell shadows almost the entire cell, so its area is almost the full height; a piece
+    hugging the right shadows almost nothing.</p>
+
+  <figure>
+    <canvas id="fig72" role="img" aria-label="A single pixel cell with a straight edge crossing it from a point near the top edge down to a point near the bottom edge. The region to the left of the edge inside the cell is shaded as a trapezoid. A dashed horizontal line marks the vertical midpoint, and the edge's x at that midpoint is labeled, with a note that the shaded area equals the height times one minus that midpoint x"></canvas>
+    <figcaption><span class="fig">Figure 7.3</span> Why the area is exact. The shaded piece is a trapezoid, and a trapezoid's area is its height times the width at its middle. So the cell's area is <code>height × (1 − x&nbsp;at&nbsp;the&nbsp;midpoint)</code>, with no approximation — this is where "analytic" earns its name.</figcaption>
+  </figure>
+
+  <p>That weighting is the whole trick, and it's worth seeing why it's exact rather than close. The
+    shaded region on the left of the edge is a trapezoid, and the area of a trapezoid is its height
+    times its width at the halfway line. The edge is straight, so its <code>x</code> at the vertical
+    midpoint of the piece is the average of <code>x0</code> and <code>x1</code>, and the width to
+    the left of it is one minus that. No sampling, no subdivision, no error term — a single
+    multiply gives the true area under a straight edge. That's the sense in which this rasterizer is
+    exact where the supersampler is a good guess.</p>
+
+  <p>When the piece spans more than one cell, cut it at the cell boundaries and hand each cell its
+    slice: the height is shared out in proportion to the width the piece has in that cell, and each
+    slice uses the same midpoint rule inside its own cell. The scenarios below pin a piece that
+    stays in one cell, a slanted one that leans its area left, a wide one split three ways, and a
+    piece carrying a negative height — because an edge coming back down the shape deposits the same
+    shape of numbers with the sign flipped, and §7.4 leans on that.</p>
+
+  <div class="test" data-feature="chapter07-row.feature">
+    <p class="label">features/chapter07-row.feature</p>
+<pre><code><span class="kw">Feature</span>: One edge in one row
+  accumulate_row(acc, row, x0, x1, height) deposits the piece of an edge that
+  lies in a single row, running from x0 to x1 across it and carrying a signed
+  height. The height is shared among the cells the piece crosses in proportion
+  to the width it has in each, and each cell's area is its share weighted by
+  how far to the left of the cell the piece sits.
+
+  <span class="kw">Scenario</span>: A piece that stays in one cell
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate_row(acc, 0, 1.5, 1.5, 1.0)
+    <span class="kw">Then</span>  area_at(acc, 1, 0) = 0.5
+    <span class="kw">And</span>   cover_at(acc, 1, 0) = 1.0
+
+  <span class="kw">Scenario</span>: A slanted piece in one cell leans its area toward the left
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate_row(acc, 0, 1.0, 1.5, 1.0)
+    <span class="kw">Then</span>  area_at(acc, 1, 0) = 0.75
+    <span class="kw">And</span>   cover_at(acc, 1, 0) = 1.0
+
+  <span class="kw">Scenario</span>: A piece that spans several cells shares its height by width
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate_row(acc, 2, 0.0, 3.0, 1.0)
+    <span class="kw">Then</span>  area_at(acc, 0, 2) = 0.1667 ± 0.0001
+    <span class="kw">And</span>   area_at(acc, 1, 2) = 0.1667 ± 0.0001
+    <span class="kw">And</span>   area_at(acc, 2, 2) = 0.1667 ± 0.0001
+    <span class="kw">And</span>   cover_at(acc, 0, 2) = 0.3333 ± 0.0001
+    <span class="kw">And</span>   cover_at(acc, 1, 2) = 0.3333 ± 0.0001
+    <span class="kw">And</span>   cover_at(acc, 2, 2) = 0.3333 ± 0.0001
+
+  <span class="kw">Scenario</span>: A negative height deposits negative numbers
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate_row(acc, 0, 1.5, 1.5, -1.0)
+    <span class="kw">Then</span>  area_at(acc, 1, 0) = -0.5
+    <span class="kw">And</span>   cover_at(acc, 1, 0) = -1.0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 7.3</span> Walking the edge down its rows</h2>
+
+  <p>An edge usually crosses more than one row, so <code>accumulate(acc, a, b)</code> walks it
+    down, clipping it to each row it touches and handing the piece to <code>accumulate_row</code>.
+    The sign is the point of the whole thing. An edge heading <em>up</em> the canvas carries a
+    positive height; heading down, negative. Deposit a shape's edges that way and the left-to-right
+    running sum in the next section comes out as chapter 5's winding number, cell for cell,
+    fractional at the edges and whole in the middle. The direction convention is chapter 5's, and
+    the fill takes the absolute value in the end, so a shape drawn clockwise or counter-clockwise
+    fills the same — the sign only has to be consistent within a shape, and this makes it so.</p>
+
+  <p>Three degenerate cases live in this function, and each is a real bug in an implementation that
+    skips it. A <em>horizontal</em> edge has zero height and deposits nothing — same as chapter 6's
+    dropped horizontal, for the same reason, and a bonus reason: its slope would divide by zero.
+    An edge that runs <em>off the top or bottom</em> of the buffer contributes only the rows it
+    genuinely crosses; clipping the row range to the buffer is what keeps a tall shape from walking
+    off the end of the array. And an edge entirely <em>left</em> of the buffer covers the whole
+    of every row it spans, through the column-0 folding from §7.1, while one entirely
+    <em>right</em> deposits nothing. Those last two are why a shape three times the size of the
+    canvas still fills the canvas solid instead of striping it.</p>
+
+  <div class="test" data-feature="chapter07-walk.feature">
+    <p class="label">features/chapter07-walk.feature</p>
+<pre><code><span class="kw">Feature</span>: Walking an edge down the rows
+  accumulate(acc, a, b) deposits a whole edge: it clips the edge to each row it
+  crosses and hands each piece to accumulate_row. Heading up the canvas
+  (decreasing y) carries a positive height, heading down a negative one, so the
+  running sum in the next section is chapter 5's winding number. A horizontal
+  edge deposits nothing. An edge above or below the buffer contributes only the
+  rows it actually crosses; an edge left of the buffer covers everything to its
+  right; an edge right of it deposits nothing.
+
+  <span class="kw">Scenario</span>: An edge going up the canvas carries a positive height
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate(acc, point(1.5, 3), point(1.5, 0))
+    <span class="kw">Then</span>  area_at(acc, 1, 0) = 0.5
+    <span class="kw">And</span>   cover_at(acc, 1, 0) = 1.0
+    <span class="kw">And</span>   area_at(acc, 1, 1) = 0.5
+    <span class="kw">And</span>   cover_at(acc, 1, 2) = 1.0
+
+  <span class="kw">Scenario</span>: The same edge going down carries a negative height
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate(acc, point(1.5, 0), point(1.5, 3))
+    <span class="kw">Then</span>  area_at(acc, 1, 0) = -0.5
+    <span class="kw">And</span>   cover_at(acc, 1, 1) = -1.0
+
+  <span class="kw">Scenario</span>: A partial-height edge deposits only its height
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate(acc, point(1.5, 0.75), point(1.5, 0.25))
+    <span class="kw">Then</span>  area_at(acc, 1, 0) = 0.25
+    <span class="kw">And</span>   cover_at(acc, 1, 0) = 0.5
+    <span class="kw">And</span>   cover_at(acc, 1, 1) = 0
+
+  <span class="kw">Scenario</span>: An edge that crosses several rows is clipped to each
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate(acc, point(1.5, 2.5), point(1.5, 0.5))
+    <span class="kw">Then</span>  cover_at(acc, 1, 0) = 0.5
+    <span class="kw">And</span>   cover_at(acc, 1, 1) = 1.0
+    <span class="kw">And</span>   cover_at(acc, 1, 2) = 0.5
+
+  <span class="kw">Scenario</span>: An edge reaching above and below the buffer fills every row it can
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate(acc, point(1.5, 5), point(1.5, -2))
+    <span class="kw">Then</span>  cover_at(acc, 1, 0) = 1.0
+    <span class="kw">And</span>   cover_at(acc, 1, 1) = 1.0
+    <span class="kw">And</span>   cover_at(acc, 1, 2) = 1.0
+
+  <span class="kw">Scenario</span>: A horizontal edge deposits nothing
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate(acc, point(0, 1), point(3, 1))
+    <span class="kw">Then</span>  area_at(acc, 1, 1) = 0
+    <span class="kw">And</span>   cover_at(acc, 1, 1) = 0
+
+  <span class="kw">Scenario</span>: An edge entirely left of the buffer covers every cell to its right
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate(acc, point(-3, 3), point(-3, 0))
+    <span class="kw">Then</span>  area_at(acc, 0, 0) = 1.0
+    <span class="kw">And</span>   cover_at(acc, 0, 0) = 1.0
+    <span class="kw">And</span>   area_at(acc, 1, 0) = 0
+
+  <span class="kw">Scenario</span>: An edge entirely right of the buffer deposits nothing
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate(acc, point(10, 3), point(10, 0))
+    <span class="kw">Then</span>  area_at(acc, 3, 0) = 0
+    <span class="kw">And</span>   cover_at(acc, 3, 0) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 7.4</span> The running sum</h2>
+
+  <p>Every edge is in the buffer now, each cell holding its own area and the cover it passes right.
+    <code>resolve(acc, rule)</code> turns that into coverage in one sweep per row. Start at the left
+    with a running total of zero. At each cell, the winding number there is the running total so far
+    — the cover of everything to its left — plus this cell's own area. Then fold this cell's cover
+    into the running total and step right. One addition per cell, one row at a time, and the
+    prefix sum reconstructs the exact winding at every pixel from the sparse marks the edges left.</p>
+
+  <figure>
+    <canvas id="fig73" role="img" aria-label="One row of cells. The top strip shows each cell's deposited area and cover as small numbers. Below, a running total accumulates left to right through the cells, and the bottom strip shows the resulting coverage bar, rising from zero to full across the left edge and dropping back to zero across the right edge of a square"></canvas>
+    <figcaption><span class="fig">Figure 7.4</span> One row resolved. The left edge of a square deposited area and cover at column 1, the right edge deposited their negatives at column 5. Sweeping left to right, the running total climbs to 1 across the interior and back to 0 past the right edge; the half-covered end cells read exactly 0.5.</figcaption>
+  </figure>
+
+  <p>The winding number can land anywhere now, not only on whole numbers, so the fill rule has to
+    cope with fractions. <code>apply_rule</code> does it. For <code>"nonzero"</code>, coverage is
+    the winding's absolute value capped at 1: a cell half-swept by one edge reads 0.5, a cell swept
+    fully once or twice reads 1. For <code>"evenodd"</code>, it's a triangle wave — the absolute
+    winding folded back and forth between 0 and 1, so a fractional winding of 1.25 reads 0.75 and a
+    winding of 2 reads 0, which is the even-odd hole appearing exactly at the doubly-wound region.
+    Both rules agree with chapter 5 on whole windings and interpolate sensibly between them, which
+    is all a soft edge needs.</p>
+
+  <div class="test" data-feature="chapter07-resolve.feature">
+    <p class="label">features/chapter07-resolve.feature</p>
+<pre><code><span class="kw">Feature</span>: The running sum
+  resolve(acc, rule) sweeps each row left to right: a cell's winding number is
+  the cover of every cell to its left plus its own area, and apply_rule turns
+  that number, which may be fractional, into coverage. For "nonzero" that is
+  min(1, |w|); for "evenodd" it is the triangle wave that folds |w| into the
+  range 0 to 1, so an even winding is empty and an odd one is full.
+
+  <span class="kw">Scenario</span>: apply_rule turns a winding number into coverage
+    <span class="kw">Then</span>  apply_rule(0, "nonzero") = 0
+    <span class="kw">And</span>   apply_rule(1, "nonzero") = 1
+    <span class="kw">And</span>   apply_rule(0.25, "nonzero") = 0.25
+    <span class="kw">And</span>   apply_rule(-0.25, "nonzero") = 0.25
+    <span class="kw">And</span>   apply_rule(1.5, "nonzero") = 1
+    <span class="kw">And</span>   apply_rule(2, "nonzero") = 1
+    <span class="kw">And</span>   apply_rule(0.25, "evenodd") = 0.25
+    <span class="kw">And</span>   apply_rule(0.75, "evenodd") = 0.75
+    <span class="kw">And</span>   apply_rule(1.25, "evenodd") = 0.75
+    <span class="kw">And</span>   apply_rule(1.5, "evenodd") = 0.5
+    <span class="kw">And</span>   apply_rule(2, "evenodd") = 0
+    <span class="kw">And</span>   apply_rule(3.25, "evenodd") = 0.75
+    <span class="kw">And</span>   apply_rule(-1.5, "evenodd") = 0.5
+
+  <span class="kw">Scenario</span>: resolve turns one deposited edge into a half-covered column
+    <span class="kw">Given</span> acc ← accumulator(4, 3)
+    <span class="kw">When</span>  accumulate(acc, point(1.5, 3), point(1.5, 0))
+    <span class="kw">And</span>   cov ← resolve(acc, "nonzero")
+    <span class="kw">Then</span>  coverage_at(cov, 0, 0) = 0
+    <span class="kw">And</span>   coverage_at(cov, 1, 0) = 0.5
+    <span class="kw">And</span>   coverage_at(cov, 2, 0) = 1.0
+    <span class="kw">And</span>   coverage_at(cov, 3, 0) = 1.0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 7.5</span> The fill, and how you know it's right</h2>
+
+  <p>Assembling it is anticlimactic, which is the nicest thing you can say about a rasterizer.
+    <code>fill_path(p, rule, w, h)</code> makes an accumulator, deposits every edge of the path
+    with <code>accumulate</code>, and calls <code>resolve</code>. That's the fill from here to the
+    end of the book. It replaces chapter 6's <code>fill_path_aliased</code> wholesale — the sweep
+    was a fine renderer and a good way to understand spans, but this one gives back the soft edges
+    that one threw away, at about the same speed. Chapter 6's fill stays in the drawer as the
+    honest jagged reference and as a thing to diff against.</p>
+
+<pre><code>fill_path(p, rule, w, h):
+  acc ← accumulator(w, h)
+  <span class="kw">for</span> (a, b) <span class="kw">in</span> edges(p):
+    accumulate(acc, a, b)
+  <span class="kw">return</span> resolve(acc, rule)</code></pre>
+
+  <p>How do you know a soft edge is <em>correct</em> and not merely soft? A blurry wrong answer is
+    still wrong, and it's harder to spot than a jagged one. The test that settles it is beautiful:
+    for a simple polygon, the total ink of the fill — every pixel's coverage summed — equals the
+    polygon's exact area. Coverage is area shared out among pixels, so if the rasterizer is exact,
+    the shares add back to the whole. A rectangle from <code>x = 1.5</code> to <code>4.75</code> and
+    <code>y = 2</code> to <code>5</code> has area <code>3.25 × 3 = 9.75</code>, and the fill's ink
+    is <code>9.75</code>, not <code>9.7</code>-something. A twelve-sided polygon standing in for a
+    circle has ink equal to its shoelace area to six decimals; chapter 2's supersampler gets the
+    same shape visibly right but its ink is off in the third decimal, because sixty-four samples
+    can't resolve a slanted edge exactly and this can. <code>polygon_area(p)</code> is the shoelace
+    formula, in the reference so the scenarios can hold the two against each other.</p>
+
+  <div class="note">
+    <h4>Reading these tests</h4>
+    <p>The exact-scalar tier is doing real work here. A cell reads <code>0.5</code> or
+      <code>0.75</code> to the full tolerance because a straight edge's area is a rational number,
+      not a sampled estimate — so these are pinned as equalities, not with <code>±</code>. The star,
+      whose corners come from <code>sin</code> and <code>cos</code>, carries a small
+      <code>±</code> the way chapter 5's star crossings did. And the payoff renders are diffed
+      against a reference image at <code>max_channel_difference ≤ 1</code>, one byte, the golden-image
+      tier from chapter 1.</p>
+  </div>
+
+  <p>The rest of the scenarios pin the corners. Where a shape's edges land on the sample grid — an
+    axis-aligned rectangle, that particular triangle — the fill and chapter 2's supersampler agree
+    to the bit, so <code>max_coverage_difference</code> between them is exactly 0, and you get to
+    check the exact renderer against the slow trusted one and watch them match. Where they part, on
+    a slanted edge, they part because the supersampler is quantizing to sixty-fourths and the fill
+    isn't; the fill and chapter 6's aliased sweep agree on every fully-covered and fully-empty pixel
+    and disagree only in the soft band, where the aliased one says 1 and the exact one says 0.75.
+    A doubled square reads solid under nonzero and hollow under even-odd, the winding-2 test from
+    chapter 5 now carried by fractional coverage. And the star, both rules, comes out with the
+    same holes chapter 5 argued about, now with edges you'd be happy to ship.</p>
+
+  <div class="test" data-feature="chapter07-fill.feature">
+    <p class="label">features/chapter07-fill.feature</p>
+<pre><code><span class="kw">Feature</span>: The fill
+  fill_path(p, rule, w, h) deposits every edge of the path into an accumulator
+  and resolves it. It is the fill from chapter 7 on. For a simple polygon its
+  total ink is the polygon's exact area, because the coverage it computes is
+  exact, not sampled. Where a shape's edges land on the sample grid it agrees
+  with chapter 2's supersampler to the bit; everywhere else it agrees with the
+  truth, which the supersampler only approaches.
+
+  <span class="kw">Scenario</span>: A square whose edges sit on pixel centers
+    <span class="kw">Given</span> p ← polygon(point(1.5, 1.5), point(5.5, 1.5), point(5.5, 5.5), point(1.5, 5.5))
+    <span class="kw">When</span>  cov ← fill_path(p, "nonzero", 8, 8)
+    <span class="kw">Then</span>  coverage_at(cov, 1, 1) = 0.25
+    <span class="kw">And</span>   coverage_at(cov, 3, 1) = 0.5
+    <span class="kw">And</span>   coverage_at(cov, 1, 3) = 0.5
+    <span class="kw">And</span>   coverage_at(cov, 3, 3) = 1.0
+    <span class="kw">And</span>   coverage_at(cov, 0, 0) = 0
+    <span class="kw">And</span>   ink(cov) = 16.0
+    <span class="kw">And</span>   ink(cov) = polygon_area(p)
+
+  <span class="kw">Scenario</span>: The ink of a filled polygon is its exact area
+    <span class="kw">Given</span> r ← polygon(point(1.5, 2), point(4.75, 2), point(4.75, 5), point(1.5, 5))
+    <span class="kw">And</span>   t ← polygon(point(0, 0), point(10, 0), point(5, 10))
+    <span class="kw">When</span>  cr ← fill_path(r, "nonzero", 8, 8)
+    <span class="kw">And</span>   ct ← fill_path(t, "nonzero", 20, 20)
+    <span class="kw">Then</span>  ink(cr) = 9.75
+    <span class="kw">And</span>   ink(cr) = polygon_area(r)
+    <span class="kw">And</span>   coverage_at(cr, 1, 3) = 0.5
+    <span class="kw">And</span>   coverage_at(cr, 2, 3) = 1.0
+    <span class="kw">And</span>   coverage_at(cr, 4, 3) = 0.75
+    <span class="kw">And</span>   ink(ct) = 50.0
+    <span class="kw">And</span>   ink(ct) = polygon_area(t)
+
+  <span class="kw">Scenario</span>: A polygon circle's ink is its exact area, where the supersampler misses
+    <span class="kw">Given</span> p ← circle_path(10.3, 9.7, 7, 12)
+    <span class="kw">When</span>  cov ← fill_path(p, "nonzero", 20, 20)
+    <span class="kw">Then</span>  ink(cov) = polygon_area(p)
+    <span class="kw">And</span>   ink(cov) = 147.0 ± 0.0001
+
+  <span class="kw">Scenario</span>: A scaled shape's ink scales with its area
+    <span class="kw">Given</span> t ← transform_path(polygon(point(0, 0), point(10, 0), point(5, 10)), scaling(2, 3))
+    <span class="kw">When</span>  cov ← fill_path(t, "nonzero", 40, 40)
+    <span class="kw">Then</span>  ink(cov) = 300.0
+    <span class="kw">And</span>   ink(cov) = polygon_area(t)
+
+  <span class="kw">Scenario</span>: On a grid-aligned shape the fill and the supersampler agree exactly
+    <span class="kw">Given</span> r ← polygon(point(1.5, 2), point(4.75, 2), point(4.75, 5), point(1.5, 5))
+    <span class="kw">And</span>   t ← polygon(point(0, 0), point(10, 0), point(5, 10))
+    <span class="kw">Then</span>  max_coverage_difference(fill_path(r, "nonzero", 8, 8), rasterize(filled(r, "nonzero"), 8, 8)) = 0
+    <span class="kw">And</span>   max_coverage_difference(fill_path(t, "nonzero", 20, 20), rasterize(filled(t, "nonzero"), 20, 20)) = 0
+
+  <span class="kw">Scenario</span>: The fill replaces chapter 6's, agreeing on solid pixels and improving the edge
+    <span class="kw">Given</span> r ← polygon(point(1.5, 2), point(4.75, 2), point(4.75, 5), point(1.5, 5))
+    <span class="kw">When</span>  exact ← fill_path(r, "nonzero", 8, 8)
+    <span class="kw">And</span>   aliased ← fill_path_aliased(r, "nonzero", 8, 8)
+    <span class="kw">Then</span>  coverage_at(exact, 2, 3) = 1.0
+    <span class="kw">And</span>   coverage_at(aliased, 2, 3) = 1.0
+    <span class="kw">And</span>   coverage_at(exact, 6, 3) = 0
+    <span class="kw">And</span>   coverage_at(aliased, 6, 3) = 0
+    <span class="kw">And</span>   coverage_at(exact, 4, 3) = 0.75
+    <span class="kw">And</span>   coverage_at(aliased, 4, 3) = 1.0
+
+  <span class="kw">Scenario</span>: A doubled square is solid under nonzero and a hole under even-odd
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(1.5, 1.5))
+    <span class="kw">And</span>   line_to(p, point(5.5, 1.5))
+    <span class="kw">And</span>   line_to(p, point(5.5, 5.5))
+    <span class="kw">And</span>   line_to(p, point(1.5, 5.5))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">And</span>   move_to(p, point(1.5, 1.5))
+    <span class="kw">And</span>   line_to(p, point(5.5, 1.5))
+    <span class="kw">And</span>   line_to(p, point(5.5, 5.5))
+    <span class="kw">And</span>   line_to(p, point(1.5, 5.5))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">And</span>   nz ← fill_path(p, "nonzero", 8, 8)
+    <span class="kw">And</span>   eo ← fill_path(p, "evenodd", 8, 8)
+    <span class="kw">Then</span>  coverage_at(nz, 3, 3) = 1.0
+    <span class="kw">And</span>   coverage_at(eo, 3, 3) = 0
+
+  <span class="kw">Scenario</span>: The star, both rules, filled exactly
+    <span class="kw">Given</span> p ← star()
+    <span class="kw">When</span>  nz ← fill_path(p, "nonzero", 160, 160)
+    <span class="kw">And</span>   eo ← fill_path(p, "evenodd", 160, 160)
+    <span class="kw">Then</span>  coverage_at(nz, 80, 80) = 1.0
+    <span class="kw">And</span>   coverage_at(eo, 80, 80) = 0
+    <span class="kw">And</span>   ink(nz) = 5500.7654 ± 0.01
+    <span class="kw">And</span>   ink(eo) = 3801.1615 ± 0.01
+    <span class="kw">And</span>   coverage_at(nz, 44, 80) = 0.9456 ± 0.001
+    <span class="kw">And</span>   coverage_at(nz, 43, 80) = 0.3556 ± 0.001
+
+  <span class="kw">Scenario</span>: A polygon larger than the buffer fills it solid
+    <span class="kw">Given</span> p ← polygon(point(-5, -5), point(30, -5), point(30, 30), point(-5, 30))
+    <span class="kw">When</span>  cov ← fill_path(p, "nonzero", 8, 8)
+    <span class="kw">Then</span>  ink(cov) = 64.0
+
+  <span class="kw">Scenario</span>: An empty path fills nothing
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  cov ← fill_path(p, "nonzero", 8, 8)
+    <span class="kw">Then</span>  ink(cov) = 0</code></pre>
+  </div>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>The coverage this chapter computes is exact — but exact under a <em>box</em> filter, and exact
+      for one shape <em>considered alone</em>. Both caveats are free until chapter 9, and then
+      neither is. Box filter: the fill weights every part of a pixel equally, which is what "area"
+      means, and it's what almost everyone ships; a fancier filter would weight the middle of the
+      pixel more, and this method can't do that without giving up its speed. Considered alone: two
+      shapes that share an edge each compute their own honest coverage of the boundary pixels, and
+      if you then add the two coverages you count that shared edge twice and get a bright seam down
+      the join. Every renderer on earth has this seam and almost none of them mention it. It's not a
+      bug in this chapter — the coverage is right for each shape — it's what happens when you forget
+      that coverage was only ever the answer to a question about one shape. Chapter 9 is where you
+      learn to composite through coverage instead of adding it, and the seam is the first thing it
+      fixes.</p>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>Photoshop's type layers carry an anti-aliasing menu — <em>None, Sharp, Crisp, Strong,
+      Smooth</em>. None is chapter 6. The other four are different filters laid over exactly the
+      coverage this chapter computes, trading a little blur for a little edge contrast. The math
+      underneath every one of them is the pass you wrote here.</p>
+  </aside>
+
+  <h2><span class="sec">§ 7.6</span> Putting it together</h2>
+
+  <p>Time to make something the last chapter couldn't. Chapter 6's spiral of stars, rerun through
+    <code>fill_path</code>, is the same picture with the staircases sanded off — a fair before-and-after,
+    and a one-line change. But the payoff wants thin things, because thin things are where this
+    chapter wins by a mile. So: a sunburst. Seventy-two rays from the center, each a sliver a couple
+    of degrees wide, in three inks; punch a disc out of the middle by painting the paper colour
+    back through a filled circle; and drop a five-pointed star into the hole, cut with the even-odd
+    rule so its pentagram shows. Every one of those slivers is a needle from Figure 7.1, and every
+    one comes out clean.</p>
+
+<pre><code>sunburst():
+  c ← canvas(480, 480)
+  fill(c, PAPER)
+  <span class="kw">for</span> i <span class="kw">in</span> 0..2:                                <span class="cm">// three inks, every third ray</span>
+    paint_through(c, fill_path(rays(i), "nonzero", 480, 480), INKS[i])
+  disc ← circle_path(240, 240, 78, 180)
+  paint_through(c, fill_path(disc, "nonzero", 480, 480), PAPER)   <span class="cm">// paper punches the hole</span>
+  m ← translation(240, 240) * scaling(64, 64)
+  paint_through(c, fill_path(transform_path(unit_star(), m), "evenodd", 480, 480), PALE)
+  <span class="kw">return</span> c
+
+plate_07():
+  <span class="kw">return</span> sunburst()</code></pre>
+
+  <p>The rays, the disc and the star are each a path filled to a coverage buffer and painted through
+    with one colour, exactly as chapter 2 set up: coverage says where, the colour says what, and the
+    paper-coloured disc is the same operation used to take paint away instead of add it. The
+    scenarios pin one pixel of each ink out at the rim, a pale pixel on a star arm, the paper hole at
+    the dead centre where the pentagram opens, and a corner of bare paper — then diff the whole
+    480-by-480 image against the reference. The needle render and the smooth spiral get pinned the
+    same way, and the needle one carries the number that started the chapter: chapter 6's fill lights
+    268 pixels' worth of ink, this chapter's lights the needles' true area, and the difference is
+    every tip that used to fall through the grid.</p>
+
+  <div class="test" data-feature="chapter07-plate.feature">
+    <p class="label">features/chapter07-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 7
+  The renders of chapter 7. needles() sets the same twelve thin triangles by
+  chapter 6's aliased fill on the left and this chapter's exact fill on the
+  right. soft_square() fills a small square whose edges land on pixel centers.
+  star_exact() fills chapter 5's star both ways. spiral_smooth() is chapter
+  6's spiral of stars, now smooth. sunburst() is the payoff, and plate_07()
+  is it.
+
+  <span class="kw">Scenario</span>: The needles, aliased against exact
+    <span class="kw">Given</span> c ← needles()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-07/needles.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 480
+    <span class="kw">And</span>   c.height = 240
+    <span class="kw">And</span>   ink(fill_path_aliased(needle_path(), "nonzero", 60, 60)) = 268.0
+    <span class="kw">And</span>   ink(fill_path(needle_path(), "nonzero", 60, 60)) = polygon_area(needle_path())
+    <span class="kw">And</span>   ppm_pixel(p6, 120, 120) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 360, 120) = (94, 78, 51) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The soft square
+    <span class="kw">Given</span> c ← soft_square()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-07/soft-square.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 192
+    <span class="kw">And</span>   c.height = 192
+    <span class="kw">And</span>   ppm_pixel(p6, 96, 96) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 36, 36) = (134, 109, 59) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 12, 12) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The star, exact, both rules
+    <span class="kw">Given</span> c ← star_exact()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-07/star-exact.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 160
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 80) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 80) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The spiral, smooth
+    <span class="kw">Given</span> c ← spiral_smooth()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-07/spiral-smooth.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 320
+    <span class="kw">And</span>   ppm_pixel(p6, 180, 160) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 160) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 7
+    <span class="kw">Given</span> c ← plate_07()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-07/plate-07.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 480
+    <span class="kw">And</span>   c.height = 480
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 60) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 440, 240) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 439, 257) = (124, 196, 237) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 436, 274) = (237, 137, 149) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 229, 210) = (246, 243, 234) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 240) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 20, 20) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate7" role="img" aria-label="A sunburst of seventy-two thin rays in orange, blue and red radiating from a dark central disc on near-black paper, every ray a smooth clean sliver with soft edges. In the center, a pale five-pointed star with the even-odd rule, so its pentagram outline shows as a hole"></canvas>
+    <figcaption><span class="fig">Plate 7</span> Seventy-two rays, a punched disc and an even-odd star, all filled analytically. Look at the ray edges, then go back and look at Plate 6. This is the same renderer the tiger's whiskers will need, and the same one behind every letter on this page.</figcaption>
+  </figure>
+
+  <p>Every ray in that burst is thinner at its root than a pixel, and none of them break. That's the
+    chapter. From here on, coverage is soft and it's exact, which means the next question isn't "where
+    is the shape" — you can answer that to the last decimal now — but "what colour goes through the
+    coverage, and what happens where two of them meet." That's the seam from the trap, and it's
+    chapter 9. First, though, chapter 8 teaches the shapes to curve, because so far every path has
+    been straight lines, and the tiger is not made of straight lines.</p>
+
+  <nav class="endnav">
+    <a href="chapter-06.html">← 6 · Filling a Polygon</a>
+    <span>Chapter 7 · Analytic Antialiasing</span>
+    <span>Next: 8 · Curves (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+function toByte(light) {
+  var v = light < 0 ? 0 : light > 1 ? 1 : light;
+  return Math.floor(Plate.l2s(v) * 255 + 0.5);
+}
+function lerp3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+function blit(ctx, pixels, pw, ph, scale, ox, oy) {
+  var img = ctx.createImageData(pw, ph);
+  for (var i = 0; i < pw * ph; i++) {
+    img.data[i * 4] = pixels[i][0]; img.data[i * 4 + 1] = pixels[i][1];
+    img.data[i * 4 + 2] = pixels[i][2]; img.data[i * 4 + 3] = 255;
+  }
+  var off = Plate.offcan(pw, ph);
+  off.getContext('2d').putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, ox, oy, pw * scale, ph * scale);
+}
+var PAPER = [0.02, 0.02, 0.025], INKS = [[0.9, 0.55, 0.1], [0.2, 0.55, 0.85], [0.85, 0.25, 0.3]], PALE = [0.92, 0.9, 0.82];
+function Buf(w, h) { this.w = w; this.h = h; this.p = []; for (var i = 0; i < w * h; i++) this.p.push(PAPER.slice()); }
+Buf.prototype.paint = function (cov, col) {
+  for (var i = 0; i < this.w * this.h; i++) { var k = cov[i]; if (k > 0) this.p[i] = lerp3(this.p[i], col, k > 1 ? 1 : k); }
+};
+Buf.prototype.bytes = function () { return this.p.map(function (c) { return c.map(toByte); }); };
+
+/* points, matrices and paths, as the earlier chapters define them */
+function point(x, y) { return [x, y, 1]; }
+function mul(a, b) {
+  if (b.length === 3) return [a[0] * b[0] + a[1] * b[1] + a[2] * b[2], a[3] * b[0] + a[4] * b[1] + a[5] * b[2], a[6] * b[0] + a[7] * b[1] + a[8] * b[2]];
+  var out = [];
+  for (var r = 0; r < 3; r++) for (var c = 0; c < 3; c++) out.push(a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]);
+  return out;
+}
+function translation(x, y) { return [1, 0, x, 0, 1, y, 0, 0, 1]; }
+function scaling(x, y) { return [x, 0, 0, 0, y, 0, 0, 0, 1]; }
+function rotation(r) { var c = Math.cos(r), s = Math.sin(r); return [c, -s, 0, s, c, 0, 0, 0, 1]; }
+function path() { return { subpaths: [] }; }
+function moveTo(p, q) { p.subpaths.push({ points: [q], closed: false }); }
+function lineTo(p, q) {
+  if (!p.subpaths.length) return moveTo(p, q);
+  var cur = p.subpaths[p.subpaths.length - 1];
+  if (cur.closed) { moveTo(p, cur.points[0]); cur = p.subpaths[p.subpaths.length - 1]; }
+  cur.points.push(q);
+}
+function close(p) { if (p.subpaths.length) p.subpaths[p.subpaths.length - 1].closed = true; }
+function edges(p) {
+  var out = [];
+  p.subpaths.forEach(function (sp) {
+    var n = sp.points.length; if (n < 2) return;
+    for (var i = 0; i < n; i++) out.push([sp.points[i], sp.points[(i + 1) % n]]);
+  });
+  return out;
+}
+function transformPath(p, m) {
+  return { subpaths: p.subpaths.map(function (sp) { return { points: sp.points.map(function (q) { return mul(m, q); }), closed: sp.closed }; }) };
+}
+function star() {
+  var p = path();
+  for (var k = 0; k < 5; k++) {
+    var a = (-90 + 144 * k) * Math.PI / 180, q = point(80.5 + 70 * Math.cos(a), 80.5 + 70 * Math.sin(a));
+    if (k === 0) moveTo(p, q); else lineTo(p, q);
+  }
+  close(p);
+  return p;
+}
+function circlePath(cx, cy, r, n) {
+  var p = path();
+  for (var k = 0; k < n; k++) {
+    var a = 2 * Math.PI * k / n, q = point(cx + r * Math.cos(a), cy + r * Math.sin(a));
+    if (k === 0) moveTo(p, q); else lineTo(p, q);
+  }
+  close(p);
+  return p;
+}
+function unitStar() { return transformPath(star(), mul(scaling(1 / 70, 1 / 70), translation(-80.5, -80.5))); }
+
+/* chapter 6's aliased sweep, kept so Figure 7.1 can show the before */
+function edgeTable(p) {
+  var out = [];
+  edges(p).forEach(function (e) {
+    var a = e[0], b = e[1];
+    if (a[1] === b[1]) return;
+    var top = a[1] < b[1] ? a : b, bottom = a[1] < b[1] ? b : a;
+    out.push({ yTop: top[1], yBottom: bottom[1], xTop: top[0], slope: (bottom[0] - top[0]) / (bottom[1] - top[1]), direction: a[1] < b[1] ? 1 : -1 });
+  });
+  out.sort(function (u, v) { return u.yTop - v.yTop || u.xTop - v.xTop; });
+  return out;
+}
+function xAt(e, y) { return e.xTop + (y - e.yTop) * e.slope; }
+function spansFromCrossings(xs, rule) {
+  var out = [], w = 0, start = null;
+  xs.forEach(function (c) {
+    w += c[1];
+    var inside = rule === 'nonzero' ? w !== 0 : (w % 2 !== 0);
+    if (inside && start === null) start = c[0];
+    else if (!inside && start !== null) { out.push([start, c[0]]); start = null; }
+  });
+  return out;
+}
+function fillPathAliased(p, rule, w, h) {
+  var cov = new Array(w * h).fill(0), table = edgeTable(p), active = [], next = 0;
+  for (var row = 0; row < h; row++) {
+    var y = row + 0.5;
+    while (next < table.length && table[next].yTop <= y) active.push(table[next++]);
+    active = active.filter(function (e) { return e.yBottom > y; });
+    var xs = active.map(function (e) { return [xAt(e, y), e.direction]; }).sort(function (u, v) { return u[0] - v[0]; });
+    spansFromCrossings(xs, rule).forEach(function (s) {
+      var first = Math.max(Math.ceil(s[0] - 0.5), 0), last = Math.min(Math.ceil(s[1] - 0.5) - 1, w - 1);
+      for (var x = first; x <= last; x++) cov[row * w + x] = 1;
+    });
+  }
+  return cov;
+}
+
+/* chapter 7, exactly as the chapter defines it */
+function accumulator(w, h) { return { w: w, h: h, area: new Array(w * h).fill(0), cover: new Array(w * h).fill(0) }; }
+function addCell(acc, x, row, area, cover) {
+  if (x < 0) { x = 0; area = cover; }
+  if (x >= acc.w) return;
+  var i = row * acc.w + x; acc.area[i] += area; acc.cover[i] += cover;
+}
+function accumulateRow(acc, row, x0, x1, height) {
+  var xa = Math.min(x0, x1), xb = Math.max(x0, x1), ca = Math.floor(xa), cb = Math.floor(xb);
+  if (ca === cb) { var xm = (xa + xb) / 2 - ca; addCell(acc, ca, row, height * (1 - xm), height); return; }
+  var dx = xb - xa;
+  for (var c = ca; c <= cb; c++) {
+    var lo = Math.max(xa, c), hi = Math.min(xb, c + 1), share = height * (hi - lo) / dx, m = (lo + hi) / 2 - c;
+    addCell(acc, c, row, share * (1 - m), share);
+  }
+}
+function accumulate(acc, a, b) {
+  if (a[1] === b[1]) return;
+  var sign = a[1] > b[1] ? 1 : -1, top = a[1] > b[1] ? b : a, bottom = a[1] > b[1] ? a : b;
+  var slope = (bottom[0] - top[0]) / (bottom[1] - top[1]);
+  var first = Math.max(Math.floor(top[1]), 0), last = Math.min(Math.ceil(bottom[1]) - 1, acc.h - 1);
+  for (var row = first; row <= last; row++) {
+    var y0 = Math.max(top[1], row), y1 = Math.min(bottom[1], row + 1);
+    accumulateRow(acc, row, top[0] + (y0 - top[1]) * slope, top[0] + (y1 - top[1]) * slope, sign * (y1 - y0));
+  }
+}
+function applyRule(w, rule) {
+  if (rule === 'nonzero') return Math.min(1, Math.abs(w));
+  var t = Math.abs(w) % 2; return t <= 1 ? t : 2 - t;
+}
+function resolve(acc, rule) {
+  var cov = new Array(acc.w * acc.h).fill(0);
+  for (var row = 0; row < acc.h; row++) {
+    var running = 0;
+    for (var x = 0; x < acc.w; x++) {
+      var i = row * acc.w + x; cov[i] = applyRule(running + acc.area[i], rule); running += acc.cover[i];
+    }
+  }
+  return cov;
+}
+function fillPath(p, rule, w, h) {
+  var acc = accumulator(w, h);
+  edges(p).forEach(function (e) { accumulate(acc, e[0], e[1]); });
+  return resolve(acc, rule);
+}
+
+/* the renders */
+function needlePath() {
+  var p = path();
+  for (var k = 0; k < 12; k++) {
+    var a = (30 * k + 7) * Math.PI / 180, half = 1.6 * Math.PI / 180;
+    moveTo(p, point(30.5, 30.5));
+    lineTo(p, point(30.5 + 29 * Math.cos(a - half), 30.5 + 29 * Math.sin(a - half)));
+    lineTo(p, point(30.5 + 29 * Math.cos(a + half), 30.5 + 29 * Math.sin(a + half)));
+    close(p);
+  }
+  return p;
+}
+function rays(i) {
+  var p = path();
+  for (var k = i; k < 72; k += 3) {
+    var a = 5 * k * Math.PI / 180, half = 1.4 * Math.PI / 180;
+    moveTo(p, point(240, 240));
+    lineTo(p, point(240 + 232 * Math.cos(a - half), 240 + 232 * Math.sin(a - half)));
+    lineTo(p, point(240 + 232 * Math.cos(a + half), 240 + 232 * Math.sin(a + half)));
+    close(p);
+  }
+  return p;
+}
+function sunburst() {
+  var b = new Buf(480, 480);
+  for (var i = 0; i < 3; i++) b.paint(fillPath(rays(i), 'nonzero', 480, 480), INKS[i]);
+  b.paint(fillPath(circlePath(240, 240, 78, 180), 'nonzero', 480, 480), PAPER);
+  var m = mul(translation(240, 240), scaling(64, 64));
+  b.paint(fillPath(transformPath(unitStar(), m), 'evenodd', 480, 480), PALE);
+  return b;
+}
+
+/* ---------- Figure 7.1 — needles: aliased against exact ---------- */
+Plate.add('fig70', 0.5, function (ctx, w, h, p) {
+  var np = needlePath();
+  var left = new Buf(60, 60), right = new Buf(60, 60);
+  left.paint(fillPathAliased(np, 'nonzero', 60, 60), INKS[0]);
+  right.paint(fillPath(np, 'nonzero', 60, 60), INKS[0]);
+  var scale = Math.max(1, Math.floor(Math.min((w - 12) / 120, h / 60))), pad = (w - 120 * scale) / 2;
+  blit(ctx, left.bytes(), 60, 60, scale, pad, (h - 60 * scale) / 2);
+  blit(ctx, right.bytes(), 60, 60, scale, pad + 60 * scale, (h - 60 * scale) / 2);
+});
+
+function grid(ctx, p, ox, oy, cols, rows, cs) {
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.5); ctx.lineWidth = 1;
+  for (var i = 0; i <= cols; i++) { ctx.beginPath(); ctx.moveTo(ox + i * cs, oy); ctx.lineTo(ox + i * cs, oy + rows * cs); ctx.stroke(); }
+  for (var j = 0; j <= rows; j++) { ctx.beginPath(); ctx.moveTo(ox, oy + j * cs); ctx.lineTo(ox + cols * cs, oy + j * cs); ctx.stroke(); }
+}
+function arrow(ctx, x0, y0, x1, y1, col, width) {
+  var a = Math.atan2(y1 - y0, x1 - x0), L = 6;
+  ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = width || 1.5;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 - L * Math.cos(a - 0.4), y1 - L * Math.sin(a - 0.4));
+  ctx.lineTo(x1 - L * Math.cos(a + 0.4), y1 - L * Math.sin(a + 0.4)); ctx.closePath(); ctx.fill();
+}
+
+/* ---------- Figure 7.2 — one edge deposited into the cells ---------- */
+Plate.add('fig71', 0.52, function (ctx, w, h, p) {
+  var cols = 5, cs = Math.floor((w - 24) / cols), rows = Math.floor((h - 24) / cs), ox = 12, oy = 12;
+  var X = function (v) { return ox + v * cs; }, Y = function (v) { return oy + v * cs; };
+  var a = point(3.7, 0.2), b = point(1.3, rows - 0.2), slope = (b[0] - a[0]) / (b[1] - a[1]);
+  var xat = function (yy) { return a[0] + (yy - a[1]) * slope; };
+  /* shade the area to the left of the edge inside each crossed cell, and arrow the cover to the right */
+  for (var row = 0; row < rows; row++) {
+    var y0 = row, y1 = row + 1, xl = xat(y0), xr = xat(y1), lo = Math.min(xl, xr), hi = Math.max(xl, xr), c = Math.floor(lo);
+    if (c < 0 || c >= cols) continue;
+    ctx.fillStyle = Plate.rgba(p.cyan, 0.28);
+    ctx.beginPath(); ctx.moveTo(X(c), Y(y0)); ctx.lineTo(X(xl), Y(y0)); ctx.lineTo(X(xr), Y(y1)); ctx.lineTo(X(c), Y(y1)); ctx.closePath(); ctx.fill();
+    arrow(ctx, X(c) + cs * 0.55, Y(row + 0.5), X(cols) - 4, Y(row + 0.5), Plate.rgba(p.magenta, 0.8), 1.5);
+  }
+  grid(ctx, p, ox, oy, cols, rows, cs);
+  ctx.strokeStyle = p.ink; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(X(a[0]), Y(a[1])); ctx.lineTo(X(b[0]), Y(b[1])); ctx.stroke();
+  arrow(ctx, X(xat(1.4)), Y(1.4), X(xat(0.4)), Y(0.4), p.ink, 2.5);
+  Plate.label(ctx, 'area', X(1.3) - 4, Y(rows - 0.5), p.cyan, 11, 'right');
+  Plate.label(ctx, 'cover →', X(cols) - 4, Y(0.5) - 6, p.magenta, 11, 'right');
+  Plate.label(ctx, 'edge heading up: +1', ox, oy + rows * cs + 16, p.ink2, 11);
+});
+
+/* ---------- Figure 7.3 — the midpoint rule in one cell ---------- */
+Plate.add('fig72', 0.6, function (ctx, w, h, p) {
+  var s = Math.min(w - 40, h - 44), ox = (w - s) / 2, oy = 16;
+  var X = function (v) { return ox + v * s; }, Y = function (v) { return oy + v * s; };
+  var xtop = 0.72, xbot = 0.34, xmid = (xtop + xbot) / 2;
+  ctx.fillStyle = Plate.rgba(p.cyan, 0.26);
+  ctx.beginPath(); ctx.moveTo(X(0), Y(0)); ctx.lineTo(X(xtop), Y(0)); ctx.lineTo(X(xbot), Y(1)); ctx.lineTo(X(0), Y(1)); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.6); ctx.lineWidth = 1; ctx.strokeRect(X(0), Y(0), s, s);
+  ctx.strokeStyle = p.ink; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(X(xtop), Y(0)); ctx.lineTo(X(xbot), Y(1)); ctx.stroke();
+  ctx.setLineDash([4, 4]); ctx.strokeStyle = Plate.rgba(p.magenta, 0.9); ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(X(0), Y(0.5)); ctx.lineTo(X(1), Y(0.5)); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = p.magenta; ctx.beginPath(); ctx.arc(X(xmid), Y(0.5), 3.5, 0, Math.PI * 2); ctx.fill();
+  Plate.label(ctx, 'x at the middle', X(xmid) + 8, Y(0.5) - 6, p.magenta, 11);
+  Plate.label(ctx, 'area = height × (1 − x at the middle)', ox, oy + s + 20, p.ink2, 11);
+  Plate.label(ctx, 'x0', X(xtop), Y(0) - 5, p.ink, 11, 'center');
+  Plate.label(ctx, 'x1', X(xbot), Y(1) + 14, p.ink, 11, 'center');
+});
+
+/* ---------- Figure 7.4 — one row resolved ---------- */
+Plate.add('fig73', 0.42, function (ctx, w, h, p) {
+  var cells = [0, 0.5, 1, 1, 1, 0.5, 0, 0], cols = cells.length;
+  var area = [0, 0.5, 0, 0, 0, -0.5, 0, 0], cover = [0, 1, 0, 0, 0, -1, 0, 0];
+  var cs = Math.floor((w - 24) / cols), ox = 12, top = 14, barTop = top + cs + 26;
+  var X = function (v) { return ox + v * cs; };
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.5); ctx.lineWidth = 1;
+  for (var i = 0; i <= cols; i++) { ctx.beginPath(); ctx.moveTo(X(i), top); ctx.lineTo(X(i), top + cs); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(X(0), top); ctx.lineTo(X(cols), top); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(X(0), top + cs); ctx.lineTo(X(cols), top + cs); ctx.stroke();
+  for (var c = 0; c < cols; c++) {
+    if (area[c]) Plate.label(ctx, 'a ' + area[c], X(c + 0.5), top + cs * 0.42, p.cyan, 10, 'center');
+    if (cover[c]) Plate.label(ctx, 'c ' + cover[c], X(c + 0.5), top + cs * 0.75, p.magenta, 10, 'center');
+  }
+  Plate.label(ctx, 'deposited: area (cyan), cover (magenta)', ox, top - 3, p.ink2, 10);
+  var maxbar = 34;
+  for (var c2 = 0; c2 < cols; c2++) {
+    var k = cells[c2];
+    ctx.fillStyle = Plate.rgba(p.magenta, 0.18 + 0.5 * k);
+    ctx.fillRect(X(c2) + 1, barTop + (maxbar - maxbar * k), cs - 2, maxbar * k + 0.5);
+    Plate.label(ctx, k.toString(), X(c2 + 0.5), barTop + maxbar + 15, k ? p.ink : p.ink3, 10, 'center');
+  }
+  ctx.strokeStyle = Plate.rgba(p.ink3, 0.5); ctx.strokeRect(X(0), barTop, cols * cs, maxbar);
+  Plate.label(ctx, 'running sum → coverage', ox, barTop - 4, p.ink2, 10);
+});
+
+/* ---------- Plate 7 — the sunburst, pixel for pixel ---------- */
+Plate.add('plate7', 1, function (ctx, w, h, p) {
+  var b = sunburst();
+  var scale = Math.max(1, Math.floor(Math.min(w / 480, h / 480))), ox = (w - 480 * scale) / 2;
+  blit(ctx, b.bytes(), 480, 480, scale, ox, 0);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, Buf, point, mul, translation, scaling, rotation, path, moveTo, lineTo, close, edges, transformPath, star, circlePath, unitStar, accumulator, addCell, accumulateRow, accumulate, applyRule, resolve, fillPath, needlePath, rays, sunburst].concat(Plate.helpers).map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>
