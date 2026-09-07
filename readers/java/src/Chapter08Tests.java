@@ -174,6 +174,14 @@ public final class Chapter08Tests {
             assertEquals("length(flatten(c, 0.1))", Curves.flatten(c, 0.1).size(), 9);
         });
 
+        scenario("Flatten: a curve scaled up needs more points, so flatten after the transform", () -> {
+            Curve c = Curve.cubic(Tuple.point(0, 0), Tuple.point(0, 4), Tuple.point(4, 4), Tuple.point(4, 0));
+            assertEquals("length(flatten(c, 0.1))", Curves.flatten(c, 0.1).size(), 9);
+            Curve scaled = Curves.transformCurve(c, Transforms.scaling(10, 10));
+            assertEquals("length(flatten(transform_curve(c, scaling(10, 10)), 0.1))",
+                    Curves.flatten(scaled, 0.1).size(), 33);
+        });
+
         scenario("Flatten: the flattened length converges to the arc length", () -> {
             Curve c = Curve.cubic(Tuple.point(0, 0), Tuple.point(0, 4), Tuple.point(4, 4), Tuple.point(4, 0));
             assertDoubleEq("flatten_length(c, 2.0)", Curves.flattenLength(c, 2.0), 7.2111, 0.001);
@@ -209,6 +217,15 @@ public final class Chapter08Tests {
             assertTupleEq("arc_point(a, 0)", Arc.arcPoint(a, 0), Tuple.point(0, 0));
             assertTupleEq("arc_point(a, 1)", Arc.arcPoint(a, 1), Tuple.point(2, 0));
             assertTupleEq("arc_point(a, 0.5)", Arc.arcPoint(a, 0.5), Tuple.point(1, -1));
+        });
+
+        scenario("Arc: a half circle is the boundary the acos clamp guards", () -> {
+            Arc a = Arc.arc(0, 0, 2.5, 2.5, 0, false, false, 3, 4);
+            assertTupleEq("arc_point(a, 0)", Arc.arcPoint(a, 0), Tuple.point(0, 0));
+            assertTupleEq("arc_point(a, 1)", Arc.arcPoint(a, 1), Tuple.point(3, 4));
+            assertTupleEq("arc_point(a, 0.5)", Arc.arcPoint(a, 0.5), Tuple.point(-0.5, 3.5));
+            Arc b = Arc.arc(0, 0, 2.5, 2.5, 0, false, true, 3, 4);
+            assertTupleEq("arc_point(arc(...false,true...), 0.5)", Arc.arcPoint(b, 0.5), Tuple.point(3.5, 0.5));
         });
 
         scenario("Arc: a rotated ellipse still lands on its endpoints", () -> {

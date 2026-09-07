@@ -227,3 +227,16 @@ via the spiral re-render, then the needle/sunburst reconstruction), about
 50 minutes on chapter 8 (curves/bounds/flatten/arc all went in cleanly on
 the first pass; the rest of the time was the flower/petal reconstruction),
 and the remainder on mutation testing, README, and this file.
+
+---
+
+## Catch-up (author-run, after the geometry fixes)
+
+The five render scenarios above failed only because chapters 7 and 8 hadn't printed the
+bespoke render geometry. After that pseudocode was added to the chapters, a catch-up pass
+reconciled this reader's renders using the printed definitions alone: all eight renders now
+diff 0 against the reference, and the two scenarios this reader was missing (the half-circle
+arc and the flatten-after-transform point count) were translated and pass. The printed
+geometry was sufficient; two minor residual notes: `rays(i)` has no angular offset (ray 0
+points east, not up, unlike the spiral's convention), and `needle_path`/`rays` share one
+wedge shape printed as two blocks rather than a named helper.

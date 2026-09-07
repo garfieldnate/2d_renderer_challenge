@@ -123,12 +123,14 @@ this with a small epsilon (`VERTICAL_EPSILON`); it's what chapter 6's
 spiral, re-filled exactly, turned up immediately.
 
 `Figures` adds `needlePath()`, `needles()`, `softSquare()`, `starExact()`,
-`spiralSmooth()`, `sunburst()`, and `plate07()`. The chapter gives no
-pseudocode or numeric parameters for `needle_path()`/`needles()`'s twelve
-needles or the sunburst's individual rays (unlike every render in chapters
-1-6), so their exact geometry here is this reader's own reconstruction --
-see FEEDBACK.md for what that means for the `needles` and `plate-07`
-renders specifically.
+`spiralSmooth()`, `sunburst()`, and `plate07()`. §7.6 now prints
+`needle_path()` and `rays(i)` in full, and both match the chapter's
+pseudocode exactly: every wedge (a needle or a ray) is `add_wedge(p, cx, cy,
+r, angleDeg, halfDeg)`, a triangle from the center to two points at radius
+`r` on the angles `angleDeg - halfDeg` and `angleDeg + halfDeg` -- not a
+perpendicular offset from a single radial endpoint, which was this reader's
+earlier (wrong) guess. See FEEDBACK.md's Catch-up section for what that
+guess got wrong and by how much.
 
 ## Chapter 8
 
@@ -159,11 +161,10 @@ they're too small to reach, `corrected` set; `null` for coincident
 endpoints or a zero radius -- Java's "none"). `Arc.arcPoint(a, t)` walks it.
 
 `Figures` adds `flower()` and `plate08()` from the chapter's own
-`flower_at`/`flower`/`plate_08` pseudocode, plus `drops()`. As with chapter
-7's needles and rays, the chapter gives no pseudocode for `petal()` (the two
-cubics that make up one petal) or for the three flowers' exact centers,
-sizes and petal counts, or for the teardrop shape in `drops()` -- this
-reader picked reasonable numbers and confirmed every *specified* pixel
-probe in `chapter08-plate.feature` against them, but the full-image diffs
-for `drops`, `flower` and `plate-08` don't match the reference bytes. See
-FEEDBACK.md.
+`flower_at`/`flower`/`plate_08` pseudocode, plus `drops()`. §8.3 and §8.5
+now print `petal()`'s two cubics, the three flowers' exact spots (center,
+scale, petal count, turn), and `teardrop()`'s two cubics, and all three
+match the chapter's pseudocode exactly (the teardrop is its own shape in a
+60 by 60 box, not the petal reused at a different scale). `drops()`,
+`flower()` and `plate08()` all diff 0 against the reference bytes now. See
+FEEDBACK.md's Catch-up section for what the earlier guesses got wrong.

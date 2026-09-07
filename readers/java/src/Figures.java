@@ -419,26 +419,28 @@ public final class Figures {
     private static final Color PALE = new Color(0.92, 0.90, 0.82);
 
     /**
-     * §7.6: a twelfth of a fan of needles -- twelve thin wedges from a
-     * common center, meeting at a point, thin enough that most of them
-     * would fall through chapter 6's center test. Figure 7.1's picture.
+     * §7.6: a wedge from (cx, cy) out to radius r, spanning angleDeg minus
+     * halfDeg to angleDeg plus halfDeg -- the shared shape behind every
+     * needle and every ray of the sunburst.
      */
-    public static Path needlePath() {
-        return needleFan(30, 30, 16.5, 1.4, 12, 0);
+    private static void addWedge(Path p, double cx, double cy, double r, double angleDeg, double halfDeg) {
+        double a0 = Math.toRadians(angleDeg - halfDeg);
+        double a1 = Math.toRadians(angleDeg + halfDeg);
+        p.moveTo(Tuple.point(cx, cy));
+        p.lineTo(Tuple.point(cx + r * Math.cos(a0), cy + r * Math.sin(a0)));
+        p.lineTo(Tuple.point(cx + r * Math.cos(a1), cy + r * Math.sin(a1)));
+        p.close();
     }
 
-    private static Path needleFan(double cx, double cy, double r, double halfWidth, int n, double startDeg) {
+    /**
+     * §7.6: twelve thin triangles from the center of a 60 by 60 canvas to
+     * its rim, thin enough that most of them would fall through chapter
+     * 6's center test. Figure 7.1's picture.
+     */
+    public static Path needlePath() {
         Path p = new Path();
-        for (int k = 0; k < n; k++) {
-            double a = Math.toRadians(startDeg + k * (360.0 / n));
-            double dx = Math.cos(a);
-            double dy = Math.sin(a);
-            double px = -dy;
-            double py = dx;
-            p.moveTo(Tuple.point(cx, cy));
-            p.lineTo(Tuple.point(cx + r * dx + halfWidth * px, cy + r * dy + halfWidth * py));
-            p.lineTo(Tuple.point(cx + r * dx - halfWidth * px, cy + r * dy - halfWidth * py));
-            p.close();
+        for (int k = 0; k <= 11; k++) {
+            addWedge(p, 30.5, 30.5, 29, 30 * k + 7, 1.6);
         }
         return p;
     }
@@ -502,25 +504,14 @@ public final class Figures {
     }
 
     /**
-     * §7.6: every third ray of the sunburst -- seventy-two wedges, a couple
-     * of degrees wide, from the center out past the disc, k in i, i + 3,
-     * i + 6, ..., each ray k at angle -90 + 5k degrees so k = 0 points
-     * straight up.
+     * §7.6: every third ray of the sunburst -- the rays that wear ink i,
+     * seventy-two wedges in all, each a couple of degrees wide, k in i,
+     * i + 3, i + 6, ... while k &lt; 72, ray k at angle 5k degrees.
      */
     private static Path rays(int i) {
         Path p = new Path();
-        double cx = 240;
-        double cy = 240;
-        double r = 225;
-        double halfAngleDeg = 1.0;
         for (int k = i; k < 72; k += 3) {
-            double a = Math.toRadians(-90 + 5.0 * k);
-            double a0 = Math.toRadians(-90 + 5.0 * k - halfAngleDeg);
-            double a1 = Math.toRadians(-90 + 5.0 * k + halfAngleDeg);
-            p.moveTo(Tuple.point(cx, cy));
-            p.lineTo(Tuple.point(cx + r * Math.cos(a0), cy + r * Math.sin(a0)));
-            p.lineTo(Tuple.point(cx + r * Math.cos(a1), cy + r * Math.sin(a1)));
-            p.close();
+            addWedge(p, 240, 240, 232, 5.0 * k, 1.4);
         }
         return p;
     }
@@ -556,8 +547,8 @@ public final class Figures {
     private static Curve[] petal() {
         Tuple base = Tuple.point(0, 0);
         Tuple tip = Tuple.point(0, -1);
-        Curve right = Curve.cubic(base, Tuple.point(0.55, -0.15), Tuple.point(0.55, -0.85), tip);
-        Curve left = Curve.cubic(tip, Tuple.point(-0.55, -0.85), Tuple.point(-0.55, -0.15), base);
+        Curve right = Curve.cubic(base, Tuple.point(0.55, -0.35), Tuple.point(0.4, -0.92), tip);
+        Curve left = Curve.cubic(tip, Tuple.point(-0.4, -0.92), Tuple.point(-0.55, -0.35), base);
         return new Curve[] {right, left};
     }
 
@@ -578,9 +569,9 @@ public final class Figures {
 
     /** The three flowers' spots: center x, center y, scale, petal count, rotation. */
     private static final double[][] FLOWER_SPOTS = {
-        {108, 250, 62, 6, 0.3},
-        {200, 145, 68, 7, -0.2},
-        {282, 258, 66, 5, 0.9},
+        {108, 250, 44, 8, 0.0},
+        {200, 145, 74, 8, 0.39},
+        {286, 252, 54, 7, 0.8},
     };
 
     /** §8.5: three flowers of curved petals at three sizes, a disc punched out of each center. */
@@ -608,25 +599,34 @@ public final class Figures {
         return Magnify.magnify(flower(), 2);
     }
 
-    /** §8.3: one teardrop -- reusing the petal's two cubics, flattened at one shared tolerance. */
-    private static Path teardrop(Matrix m, double tolerance) {
-        Path p = new Path();
-        Curve[] pet = petal();
-        Curves.flattenIntoPath(p, Curves.transformCurve(pet[0], m), tolerance);
-        Curves.flattenIntoPath(p, Curves.transformCurve(pet[1], m), tolerance);
-        p.close();
-        return p;
+    /**
+     * §8.3: the teardrop -- two cubics in a 60 by 60 box, a round top and a
+     * pointed bottom.
+     */
+    private static Curve[] teardrop() {
+        Curve right = Curve.cubic(
+                Tuple.point(30.5, 12), Tuple.point(58, 16), Tuple.point(46, 52), Tuple.point(30.5, 52));
+        Curve left = Curve.cubic(
+                Tuple.point(30.5, 52), Tuple.point(15, 52), Tuple.point(3, 16), Tuple.point(30.5, 12));
+        return new Curve[] {right, left};
     }
 
-    /** §8.3: the same teardrop, flattened coarse on the left and fine on the right. */
+    /** §8.3: the teardrop, flattened coarse (tolerance 4) on the left and fine (tolerance 0.1) on the right. */
     public static Canvas drops() {
-        Matrix m = Transforms.translation(120, 145).multiply(Transforms.scaling(95, 95));
-        Canvas left = new Canvas(240, 240);
+        Curve[] td = teardrop();
+        Canvas left = new Canvas(60, 60);
         left.fill(PAPER);
-        Painter.paintThrough(left, Fill.fillPath(teardrop(m, 8.0), "nonzero", 240, 240), INK);
-        Canvas right = new Canvas(240, 240);
+        Canvas right = new Canvas(60, 60);
         right.fill(PAPER);
-        Painter.paintThrough(right, Fill.fillPath(teardrop(m, 0.05), "nonzero", 240, 240), INK);
-        return sideBySide(left, right);
+        double[] tolerances = {4.0, 0.1};
+        Canvas[] panels = {left, right};
+        for (int i = 0; i < 2; i++) {
+            Path q = new Path();
+            Curves.flattenIntoPath(q, td[0], tolerances[i]);
+            Curves.flattenIntoPath(q, td[1], tolerances[i]);
+            q.close();
+            Painter.paintThrough(panels[i], Fill.fillPath(q, "nonzero", 60, 60), SPIRAL_INKS[2]);
+        }
+        return Magnify.magnify(sideBySide(left, right), 4);
     }
 }
