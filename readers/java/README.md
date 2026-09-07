@@ -1,6 +1,6 @@
 # The 2D Renderer Challenge — Java
 
-Chapters 1-6, hand-rolled test runner, no JUnit, no network.
+Chapters 1-8, hand-rolled test runner, no JUnit, no network.
 
 ## Compile, test, render
 
@@ -14,15 +14,19 @@ java -cp classes Chapter03Tests
 java -cp classes Chapter04Tests
 java -cp classes Chapter05Tests
 java -cp classes Chapter06Tests
+java -cp classes Chapter07Tests
+java -cp classes Chapter08Tests
 ```
 
 Each run prints one `PASS`/`FAIL` line per scenario, a pass/fail total, and
-then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-6 as
+then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-8 as
 P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/plate-02.ppm`, `out/fan-bresenham.ppm`, `out/fan-wu.ppm`,
 `out/fan-coverage.ppm`, `out/plate-03.ppm`, `out/fan-both-orders.ppm`,
 `out/plate-04.ppm`, `out/star-centers.ppm`, `out/star-coverage.ppm`,
-`out/plate-05.ppm`, `out/spiral.ppm`, `out/plate-06.ppm`.
+`out/plate-05.ppm`, `out/spiral.ppm`, `out/plate-06.ppm`, `out/needles.ppm`,
+`out/soft-square.ppm`, `out/star-exact.ppm`, `out/spiral-smooth.ppm`,
+`out/plate-07.ppm`, `out/drops.ppm`, `out/flower.ppm`, `out/plate-08.ppm`.
 
 ## Chapter 3
 
@@ -93,3 +97,73 @@ h)`. `CoverageBuffer.maxCoverageDifference(a, b)` is chapter 1's
 closed flags and all, leaving the original untouched.
 
 `Figures` adds `unitStar()`, `spiral()`, and `plate06()`.
+
+## Chapter 7
+
+Analytic antialiasing: `Accumulator(w, h)` (the book's `accumulator(w, h)`),
+two numbers per cell -- `areaAt(x, y)`, `coverAt(x, y)`, `addCell(x, row,
+area, cover)` (a deposit left of the buffer folds onto column 0 as pure
+cover; one right of it is dropped). `Fill.accumulateRow(acc, row, x0, x1,
+height)` deposits one edge's piece of one row, splitting it at cell
+boundaries and weighting each slice's area by how far left of its cell the
+piece's midpoint sits. `Fill.accumulate(acc, a, b)` walks a whole edge down
+the rows it crosses (heading up the canvas is a positive height, down is
+negative; horizontal is dropped). `Fill.applyRule(winding, rule)` and
+`Fill.resolve(acc, rule)` turn the accumulator into a `CoverageBuffer` by one
+left-to-right running sum per row. `Fill.fillPath(p, rule, w, h)` is the
+fill from here on, replacing chapter 6's `fillPathAliased`.
+`Fill.polygonArea(p)` is the shoelace formula, unsigned.
+
+Watch out for near-vertical edges that aren't bit-identical in x at both
+ends (a rotation by exactly pi/2 doesn't produce a clean 0): treating
+`x0 == x1` by exact equality sends such an edge through the general
+multi-cell branch, where `height * segWidth / dx` divides by a dx of a few
+`1e-14` and the area blows up by a dozen orders of magnitude. `Fill` guards
+this with a small epsilon (`VERTICAL_EPSILON`); it's what chapter 6's
+spiral, re-filled exactly, turned up immediately.
+
+`Figures` adds `needlePath()`, `needles()`, `softSquare()`, `starExact()`,
+`spiralSmooth()`, `sunburst()`, and `plate07()`. The chapter gives no
+pseudocode or numeric parameters for `needle_path()`/`needles()`'s twelve
+needles or the sunburst's individual rays (unlike every render in chapters
+1-6), so their exact geometry here is this reader's own reconstruction --
+see FEEDBACK.md for what that means for the `needles` and `plate-07`
+renders specifically.
+
+## Chapter 8
+
+Curves: `Curve.quadratic(p0, p1, p2)` / `Curve.cubic(p0, p1, p2, p3)` hold a
+Bezier's control points. `Curves.pointAt(c, t)` is de Casteljau's
+construction; `Curves.splitAt(c, t)` keeps the pyramid's two edges as two
+new curves; `Curves.derivative(c, t)` is n times de Casteljau on the
+control points' successive differences; `Curves.transformCurve(c, m)` takes
+every control point through `m`.
+
+`Curves.curveBounds(c)` is the tight box: the derivative is itself a lower
+degree Bezier, so its zero (linear for a quadratic's derivative, the
+quadratic formula for a cubic's) is solved directly per axis rather than by
+search, and the curve is evaluated at those roots (kept within `[0, 1]`)
+and at both ends.
+
+`Curves.flatness(c)` is the farthest an interior control point strays from
+the chord between the ends; `Curves.flatten(c, tolerance)` recursively
+`splitAt(0.5)` until every piece is flat enough and returns the endpoints,
+first to last. `Curves.polylineLength`/`Curves.flattenLength` measure it.
+`Curves.flattenIntoPath(p, c, tolerance)` appends a flattened curve to a
+path with `lineTo` -- `Path`'s own rule for no current point, or a line_to
+right after a close, does the rest.
+
+The SVG elliptical arc: `Arc.arc(x1, y1, rx, ry, phi, largeArc, sweep, x2,
+y2)` is the W3C endpoint-to-center conversion (radii grown together when
+they're too small to reach, `corrected` set; `null` for coincident
+endpoints or a zero radius -- Java's "none"). `Arc.arcPoint(a, t)` walks it.
+
+`Figures` adds `flower()` and `plate08()` from the chapter's own
+`flower_at`/`flower`/`plate_08` pseudocode, plus `drops()`. As with chapter
+7's needles and rays, the chapter gives no pseudocode for `petal()` (the two
+cubics that make up one petal) or for the three flowers' exact centers,
+sizes and petal counts, or for the teardrop shape in `drops()` -- this
+reader picked reasonable numbers and confirmed every *specified* pixel
+probe in `chapter08-plate.feature` against them, but the full-image diffs
+for `drops`, `flower` and `plate-08` don't match the reference bytes. See
+FEEDBACK.md.

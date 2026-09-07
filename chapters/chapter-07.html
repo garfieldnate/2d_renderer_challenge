@@ -74,7 +74,10 @@
     thing that's invisible until a shape hangs off the side of the canvas and you get a stripe of
     garbage down column zero. A deposit meant for a cell <em>left</em> of the buffer doesn't
     vanish: everything in that row is to the right of it, so it folds onto column 0 and counts as
-    pure cover — the whole height carries in. A deposit <em>right</em> of the buffer really does
+    pure cover. Column 0 is entirely to the piece's right, so its area is the whole cover: the
+    incoming <em>area</em> argument is thrown away and replaced by the cover, not added to it — the
+    scenario deposits <code>(0.3, 0.7)</code> off the left and reads <code>0.7</code> back, not
+    <code>0.3</code> and not <code>1.0</code>. A deposit <em>right</em> of the buffer really does
     vanish, because there's nothing to its right to carry into. State both now and the clipping in
     §7.3 comes out right without a special case.</p>
 
@@ -199,9 +202,13 @@
     The sign is the point of the whole thing. An edge heading <em>up</em> the canvas carries a
     positive height; heading down, negative. Deposit a shape's edges that way and the left-to-right
     running sum in the next section comes out as chapter 5's winding number, cell for cell,
-    fractional at the edges and whole in the middle. The direction convention is chapter 5's, and
-    the fill takes the absolute value in the end, so a shape drawn clockwise or counter-clockwise
-    fills the same — the sign only has to be consistent within a shape, and this makes it so.</p>
+    fractional at the edges and whole in the middle. Watch one detail if you go looking: this is the
+    reverse of the per-edge sign chapter 6 gave an edge in its <code>direction</code> field, because
+    chapter 6 counted crossings from the point's right and this accumulates cover from its left. The
+    two meet at the same total, which is why the running sum matches <code>winding_at</code> and not
+    chapter 6's span walk. And since the fill takes the absolute value in the end, a shape drawn
+    clockwise or counter-clockwise fills the same — the sign only has to be consistent within a
+    shape, and this makes it so.</p>
 
   <p>Three degenerate cases live in this function, and each is a real bug in an implementation that
     skips it. A <em>horizontal</em> edge has zero height and deposits nothing — same as chapter 6's
@@ -523,9 +530,18 @@
     rule so its pentagram shows. Every one of those slivers is a needle from Figure 7.1, and every
     one comes out clean.</p>
 
-<pre><code>sunburst():
-  c ← canvas(480, 480)
-  fill(c, PAPER)
+<pre><code>rays(i):                              <span class="cm">// the rays that wear ink i: every third of 72, each a thin triangle</span>
+  p ← path()
+  <span class="kw">for</span> k <span class="kw">in</span> i, i+3, i+6, … <span class="kw">while</span> k &lt; 72:
+    a ← 5k degrees;  half ← 1.4 degrees
+    move_to(p, point(240, 240))
+    line_to(p, point(240 + 232·cos(a − half), 240 + 232·sin(a − half)))
+    line_to(p, point(240 + 232·cos(a + half), 240 + 232·sin(a + half)))
+    close(p)
+  <span class="kw">return</span> p
+
+sunburst():
+  c ← canvas(480, 480);  fill(c, PAPER)
   <span class="kw">for</span> i <span class="kw">in</span> 0..2:                                <span class="cm">// three inks, every third ray</span>
     paint_through(c, fill_path(rays(i), "nonzero", 480, 480), INKS[i])
   disc ← circle_path(240, 240, 78, 180)
@@ -535,7 +551,10 @@
   <span class="kw">return</span> c
 
 plate_07():
-  <span class="kw">return</span> sunburst()</code></pre>
+  <span class="kw">return</span> sunburst()
+
+<span class="cm">// inks: INKS = [color(0.9, 0.55, 0.1), color(0.2, 0.55, 0.85), color(0.85, 0.25, 0.3)]</span>
+<span class="cm">// PAPER = color(0.02, 0.02, 0.025),  PALE = color(0.92, 0.9, 0.82)</span></code></pre>
 
   <p>The rays, the disc and the star are each a path filled to a coverage buffer and painted through
     with one colour, exactly as chapter 2 set up: coverage says where, the colour says what, and the
@@ -546,6 +565,38 @@ plate_07():
     same way, and the needle one carries the number that started the chapter: chapter 6's fill lights
     268 pixels' worth of ink, this chapter's lights the needles' true area, and the difference is
     every tip that used to fall through the grid.</p>
+
+  <p>The four smaller renders the scenarios pin are all compositions of shapes you already have, so
+    here they are in full — the needles opener from the top of the chapter, the soft square from
+    §7.5, chapter 5's star filled exactly, and chapter 6's spiral rerun through <code>fill_path</code>:</p>
+
+<pre><code>needle_path():                        <span class="cm">// twelve thin triangles from the center of a 60×60 canvas to its rim</span>
+  p ← path()
+  <span class="kw">for</span> k <span class="kw">in</span> 0..11:
+    a ← (30k + 7) degrees;  half ← 1.6 degrees
+    move_to(p, point(30.5, 30.5))
+    line_to(p, point(30.5 + 29·cos(a − half), 30.5 + 29·sin(a − half)))
+    line_to(p, point(30.5 + 29·cos(a + half), 30.5 + 29·sin(a + half)))
+    close(p)
+  <span class="kw">return</span> p
+
+needles():                            <span class="cm">// chapter 6's fill on the left, this chapter's on the right, ×4</span>
+  left, right ← two 60×60 canvases filled PAPER
+  paint_through(left,  fill_path_aliased(needle_path(), "nonzero", 60, 60), INK)   <span class="cm">// INK = INKS[0]</span>
+  paint_through(right, fill_path(needle_path(),         "nonzero", 60, 60), INK)
+  <span class="kw">return</span> magnify(side_by_side(left, right), 4)
+
+soft_square():                        <span class="cm">// a square whose edges sit on pixel centers, ×24</span>
+  c ← canvas(8, 8);  fill(c, PAPER)
+  sq ← polygon(point(1.5, 1.5), point(5.5, 1.5), point(5.5, 5.5), point(1.5, 5.5))
+  paint_through(c, fill_path(sq, "nonzero", 8, 8), INK)
+  <span class="kw">return</span> magnify(c, 24)
+
+star_exact():                         <span class="cm">// chapter 5's star, nonzero on the left, even-odd on the right</span>
+  <span class="kw">for</span> rule <span class="kw">in</span> "nonzero", "evenodd":  fill a 160×160 PAPER canvas, paint fill_path(star(), rule, 160, 160) in INK
+  <span class="kw">return</span> side_by_side(the two panels)
+
+spiral_smooth():                      <span class="cm">// chapter 6's spiral(), fill_path in place of fill_path_aliased</span></code></pre>
 
   <div class="test" data-feature="chapter07-plate.feature">
     <p class="label">features/chapter07-plate.feature</p>

@@ -28,6 +28,13 @@ Feature: The SVG elliptical arc
     And   arc_point(a, 1) = point(2, 0)
     And   arc_point(a, 0.5) = point(1, -1)
 
+  Scenario: A half circle is the boundary the acos clamp guards
+    Given a ← arc(0, 0, 2.5, 2.5, 0, 0, 0, 3, 4)
+    Then  arc_point(a, 0) = point(0, 0)
+    And   arc_point(a, 1) = point(3, 4)
+    And   arc_point(a, 0.5) = point(-0.5, 3.5)
+    And   arc_point(arc(0, 0, 2.5, 2.5, 0, 0, 1, 3, 4), 0.5) = point(3.5, 0.5)
+
   Scenario: A rotated ellipse still lands on its endpoints
     Given a ← arc(1, 1, 4, 2, π / 6, 0, 1, 7, 4)
     Then  a.corrected = false

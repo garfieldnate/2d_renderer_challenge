@@ -30,6 +30,11 @@ Feature: Flattening
     Then  length(flatten(c, 2.0)) = 3
     And   length(flatten(c, 0.1)) = 9
 
+  Scenario: A curve scaled up needs more points, so flatten after the transform
+    Given c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    Then  length(flatten(c, 0.1)) = 9
+    And   length(flatten(transform_curve(c, scaling(10, 10)), 0.1)) = 33
+
   Scenario: The flattened length converges to the arc length
     Given c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
     Then  flatten_length(c, 2.0) = 7.2111 ± 0.001

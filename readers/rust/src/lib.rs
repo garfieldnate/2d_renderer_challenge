@@ -2036,3 +2036,749 @@ pub fn spiral() -> Canvas {
 pub fn plate_06() -> Canvas {
     magnify(&spiral(), 2)
 }
+
+// =======================================================================
+// Chapter 7: Analytic Antialiasing
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 7.1 Two numbers per cell
+// ---------------------------------------------------------------------
+
+/// A grid of two numbers per cell: `area`, what the cell itself has
+/// collected, and `cover`, the signed height it carries to every cell on
+/// its right. Starts all zero.
+#[derive(Debug, Clone)]
+pub struct Accumulator {
+    pub width: usize,
+    pub height: usize,
+    area: Vec<f64>,
+    cover: Vec<f64>,
+}
+
+pub fn accumulator(width: usize, height: usize) -> Accumulator {
+    Accumulator { width, height, area: vec![0.0; width * height], cover: vec![0.0; width * height] }
+}
+
+/// Reads outside the buffer are 0, same convention as `coverage_at`.
+pub fn area_at(acc: &Accumulator, x: i64, y: i64) -> f64 {
+    if x < 0 || y < 0 {
+        return 0.0;
+    }
+    let (x, y) = (x as usize, y as usize);
+    if x >= acc.width || y >= acc.height {
+        return 0.0;
+    }
+    acc.area[y * acc.width + x]
+}
+
+pub fn cover_at(acc: &Accumulator, x: i64, y: i64) -> f64 {
+    if x < 0 || y < 0 {
+        return 0.0;
+    }
+    let (x, y) = (x as usize, y as usize);
+    if x >= acc.width || y >= acc.height {
+        return 0.0;
+    }
+    acc.cover[y * acc.width + x]
+}
+
+/// Deposits one cell's worth of area and cover, adding rather than
+/// overwriting so two edges of the same shape can both have a say. A
+/// deposit left of the buffer folds onto column 0 as pure cover -- the
+/// whole height carries in, because everything in the row is to its
+/// right. A deposit right of the buffer is dropped: there's nothing to
+/// its right to carry into.
+pub fn add_cell(acc: &mut Accumulator, x: i64, row: i64, area: f64, cover: f64) {
+    let (mut x, mut area) = (x, area);
+    if x < 0 {
+        x = 0;
+        area = cover;
+    }
+    if x >= acc.width as i64 {
+        return;
+    }
+    let idx = row as usize * acc.width + x as usize;
+    acc.area[idx] += area;
+    acc.cover[idx] += cover;
+}
+
+// ---------------------------------------------------------------------
+// § 7.2 One edge, one row
+// ---------------------------------------------------------------------
+
+/// Deposits the piece of an edge that lies in a single row, running from
+/// `x0` to `x1` across it and carrying a signed `height`. If the piece
+/// stays inside one cell, that cell gets the whole height as cover, and
+/// an area weighted by how far the piece sits from the cell's right edge
+/// -- the exact trapezoid rule from the chapter. A piece spanning several
+/// cells shares the height by the width it has in each, using the same
+/// midpoint rule inside its own cell.
+pub fn accumulate_row(acc: &mut Accumulator, row: i64, x0: f64, x1: f64, height: f64) {
+    let xa = x0.min(x1);
+    let xb = x0.max(x1);
+    let ca = xa.floor() as i64;
+    let cb = xb.floor() as i64;
+    if ca == cb {
+        let xm = (xa + xb) / 2.0 - ca as f64;
+        add_cell(acc, ca, row, height * (1.0 - xm), height);
+        return;
+    }
+    let dx = xb - xa;
+    for c in ca..=cb {
+        let lo = xa.max(c as f64);
+        let hi = xb.min(c as f64 + 1.0);
+        let share = height * (hi - lo) / dx;
+        let m = (lo + hi) / 2.0 - c as f64;
+        add_cell(acc, c, row, share * (1.0 - m), share);
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 7.3 Walking the edge down its rows
+// ---------------------------------------------------------------------
+
+/// Deposits a whole edge: clips it to each row it crosses and hands each
+/// piece to `accumulate_row`. Heading up the canvas (decreasing y)
+/// carries a positive height, heading down a negative one -- chapter 5's
+/// winding sign. A horizontal edge deposits nothing (it would also
+/// divide by zero). The row range is clipped to the buffer, so an edge
+/// above or below it contributes only the rows it actually crosses; an
+/// edge entirely left of the buffer still covers every row it spans
+/// (through the column-0 folding in `add_cell`), and one entirely right
+/// deposits nothing.
+pub fn accumulate(acc: &mut Accumulator, a: Tuple, b: Tuple) {
+    if a.y == b.y {
+        return;
+    }
+    let sign = if a.y > b.y { 1.0 } else { -1.0 };
+    let (top, bottom) = if a.y > b.y { (b, a) } else { (a, b) };
+    let slope = (bottom.x - top.x) / (bottom.y - top.y);
+    let first = (top.y.floor() as i64).max(0);
+    let last = (bottom.y.ceil() as i64 - 1).min(acc.height as i64 - 1);
+    let mut row = first;
+    while row <= last {
+        let y0 = top.y.max(row as f64);
+        let y1 = bottom.y.min(row as f64 + 1.0);
+        accumulate_row(
+            acc,
+            row,
+            top.x + (y0 - top.y) * slope,
+            top.x + (y1 - top.y) * slope,
+            sign * (y1 - y0),
+        );
+        row += 1;
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 7.4 The running sum
+// ---------------------------------------------------------------------
+
+/// Turns a (possibly fractional) winding number into coverage. For
+/// "nonzero" that's the winding's absolute value capped at 1. For
+/// "evenodd" it's the triangle wave that folds the absolute winding back
+/// and forth between 0 and 1, so an even winding reads empty and an odd
+/// one full.
+pub fn apply_rule(w: f64, rule: &str) -> f64 {
+    match parse_rule(rule) {
+        Rule::NonZero => w.abs().min(1.0),
+        Rule::EvenOdd => {
+            let t = w.abs() % 2.0;
+            if t <= 1.0 {
+                t
+            } else {
+                2.0 - t
+            }
+        }
+    }
+}
+
+/// Sweeps every row left to right: a cell's winding number is the cover
+/// of every cell to its left plus its own area, and `apply_rule` turns
+/// that (possibly fractional) number into coverage. One addition per
+/// cell.
+pub fn resolve(acc: &Accumulator, rule: &str) -> CoverageBuffer {
+    let mut cov = coverage_buffer(acc.width, acc.height);
+    for row in 0..acc.height as i64 {
+        let mut running = 0.0;
+        for x in 0..acc.width as i64 {
+            let idx = row as usize * acc.width + x as usize;
+            let value = apply_rule(running + acc.area[idx], rule);
+            set_coverage(&mut cov, x, row, value);
+            running += acc.cover[idx];
+        }
+    }
+    cov
+}
+
+// ---------------------------------------------------------------------
+// § 7.5 The fill, and how you know it's right
+// ---------------------------------------------------------------------
+
+/// Deposits every edge of `p` into a fresh accumulator and resolves it:
+/// the fill from here to the end of the book, replacing chapter 6's
+/// `fill_path_aliased`.
+pub fn fill_path(p: &Path, rule: &str, width: usize, height: usize) -> CoverageBuffer {
+    let mut acc = accumulator(width, height);
+    for (a, b) in edges(p) {
+        accumulate(&mut acc, a, b);
+    }
+    resolve(&acc, rule)
+}
+
+/// The shoelace formula: twice the signed area is the sum, over every
+/// edge, of `a.x * b.y - b.x * a.y`. Every scenario that uses this walks
+/// a single simple polygon (or several same-oriented, non-overlapping
+/// ones, as `needle_path` does), so the sign only has to be consistent
+/// within the path -- the absolute value at the end is the area.
+pub fn polygon_area(p: &Path) -> f64 {
+    let mut area = 0.0;
+    for (a, b) in edges(p) {
+        area += a.x * b.y - b.x * a.y;
+    }
+    (area / 2.0).abs()
+}
+
+// ---------------------------------------------------------------------
+// § 7.6 Putting it together
+// ---------------------------------------------------------------------
+
+const SUNBURST_PAPER: Color = Color { red: 0.02, green: 0.02, blue: 0.025 };
+const SUNBURST_INKS: [Color; 3] = [
+    Color { red: 0.9, green: 0.55, blue: 0.1 },
+    Color { red: 0.2, green: 0.55, blue: 0.85 },
+    Color { red: 0.85, green: 0.25, blue: 0.3 },
+];
+const SUNBURST_PALE: Color = Color { red: 0.92, green: 0.9, blue: 0.82 };
+
+/// Twelve thin triangular needles fanned out from (30.5, 30.5), each a
+/// couple of degrees wide and 29 pixels long -- Figure 7.1's subject and
+/// the render whose ink chapter 6's aliased fill gets so wrong.
+pub fn needle_path() -> Path {
+    let mut p = path();
+    for k in 0..12 {
+        let a = (30.0 * k as f64 + 7.0) * std::f64::consts::PI / 180.0;
+        let half = 1.6 * std::f64::consts::PI / 180.0;
+        move_to(&mut p, point(30.5, 30.5));
+        line_to(&mut p, point(30.5 + 29.0 * (a - half).cos(), 30.5 + 29.0 * (a - half).sin()));
+        line_to(&mut p, point(30.5 + 29.0 * (a + half).cos(), 30.5 + 29.0 * (a + half).sin()));
+        close(&mut p);
+    }
+    p
+}
+
+/// Every third one of seventy-two thin rays from the center of a
+/// 480x480 canvas, starting at ray `i` (0, 1 or 2) -- the sunburst's
+/// three interleaved sets of spokes, one per ink.
+pub fn rays(i: usize) -> Path {
+    let mut p = path();
+    let mut k = i;
+    while k < 72 {
+        let a = 5.0 * k as f64 * std::f64::consts::PI / 180.0;
+        let half = 1.4 * std::f64::consts::PI / 180.0;
+        move_to(&mut p, point(240.0, 240.0));
+        line_to(&mut p, point(240.0 + 232.0 * (a - half).cos(), 240.0 + 232.0 * (a - half).sin()));
+        line_to(&mut p, point(240.0 + 232.0 * (a + half).cos(), 240.0 + 232.0 * (a + half).sin()));
+        close(&mut p);
+        k += 3;
+    }
+    p
+}
+
+/// The needles, chapter 6's aliased fill on the left, this chapter's
+/// exact fill on the right, each panel painted from a fresh 60x60
+/// coverage buffer and magnified 4x.
+pub fn needles() -> Canvas {
+    let np = needle_path();
+    let mut left = canvas(60, 60);
+    fill(&mut left, SUNBURST_PAPER);
+    paint_through(&mut left, &fill_path_aliased(&np, "nonzero", 60, 60), SUNBURST_INKS[0]);
+    let mut right = canvas(60, 60);
+    fill(&mut right, SUNBURST_PAPER);
+    paint_through(&mut right, &fill_path(&np, "nonzero", 60, 60), SUNBURST_INKS[0]);
+    magnify(&side_by_side(&left, &right), 4)
+}
+
+/// A small square whose edges land on pixel centers, filled exactly on
+/// an 8x8 buffer and magnified 24x so the soft edge is visible.
+pub fn soft_square() -> Canvas {
+    let mut c = canvas(8, 8);
+    fill(&mut c, SUNBURST_PAPER);
+    let sq = polygon(&[point(1.5, 1.5), point(5.5, 1.5), point(5.5, 5.5), point(1.5, 5.5)]);
+    let cov = fill_path(&sq, "nonzero", 8, 8);
+    paint_through(&mut c, &cov, SUNBURST_INKS[0]);
+    magnify(&c, 24)
+}
+
+/// Chapter 5's star, filled exactly, nonzero on the left and even-odd on
+/// the right, each on a 160x160 panel.
+pub fn star_exact() -> Canvas {
+    let mut nz = canvas(160, 160);
+    fill(&mut nz, SUNBURST_PAPER);
+    paint_through(&mut nz, &fill_path(&star(), "nonzero", 160, 160), SUNBURST_INKS[0]);
+    let mut eo = canvas(160, 160);
+    fill(&mut eo, SUNBURST_PAPER);
+    paint_through(&mut eo, &fill_path(&star(), "evenodd", 160, 160), SUNBURST_INKS[0]);
+    side_by_side(&nz, &eo)
+}
+
+/// Chapter 6's spiral of stars, filled by this chapter's exact fill
+/// instead of the aliased sweep -- the same picture with the staircases
+/// sanded off.
+pub fn spiral_smooth() -> Canvas {
+    let mut c = canvas(320, 320);
+    fill(&mut c, SUNBURST_PAPER);
+    for k in 0..24 {
+        let a = k as f64 * 25.0 * std::f64::consts::PI / 180.0;
+        let r = 20.0 + 5.0 * k as f64;
+        let scale = 6.0 + 1.25 * k as f64;
+        let m = translation(160.5 + r * a.cos(), 160.5 + r * a.sin())
+            * rotation(a)
+            * scaling(scale, scale);
+        let p = transform_path(&unit_star(), m);
+        let cov = fill_path(&p, "nonzero", 320, 320);
+        paint_through(&mut c, &cov, SUNBURST_INKS[(k % 3) as usize]);
+    }
+    c
+}
+
+/// Seventy-two rays in three inks, a paper-colored disc punched out of
+/// the middle, and a pale even-odd star dropped into the hole so its
+/// pentagram shows.
+pub fn sunburst() -> Canvas {
+    let mut c = canvas(480, 480);
+    fill(&mut c, SUNBURST_PAPER);
+    for i in 0..3 {
+        let cov = fill_path(&rays(i), "nonzero", 480, 480);
+        paint_through(&mut c, &cov, SUNBURST_INKS[i]);
+    }
+    let disc = circle_path(240.0, 240.0, 78.0, 180);
+    let cov = fill_path(&disc, "nonzero", 480, 480);
+    paint_through(&mut c, &cov, SUNBURST_PAPER);
+    let m = translation(240.0, 240.0) * scaling(64.0, 64.0);
+    let star_p = transform_path(&unit_star(), m);
+    let cov = fill_path(&star_p, "evenodd", 480, 480);
+    paint_through(&mut c, &cov, SUNBURST_PALE);
+    c
+}
+
+/// Plate 7: the sunburst.
+pub fn plate_07() -> Canvas {
+    sunburst()
+}
+
+// =======================================================================
+// Chapter 8: Curves
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 8.1 A curve is its control points
+// ---------------------------------------------------------------------
+
+/// A Bezier curve, quadratic (3 points) or cubic (4), held as its control
+/// points in order: it starts at the first, ends at the last, and leans
+/// toward the ones in between without touching them.
+#[derive(Debug, Clone)]
+pub struct Curve {
+    pub points: Vec<Tuple>,
+}
+
+pub fn quadratic(p0: Tuple, p1: Tuple, p2: Tuple) -> Curve {
+    Curve { points: vec![p0, p1, p2] }
+}
+
+pub fn cubic(p0: Tuple, p1: Tuple, p2: Tuple, p3: Tuple) -> Curve {
+    Curve { points: vec![p0, p1, p2, p3] }
+}
+
+fn lerp_tuple(a: Tuple, b: Tuple, t: f64) -> Tuple {
+    a + (b - a) * t
+}
+
+/// De Casteljau's construction: repeatedly interpolate neighbouring
+/// pairs by `t` until one point is left. Returns that point, along with
+/// the left and right edges of the pyramid -- the control points of the
+/// two halves `split_at` needs.
+fn de_casteljau(points: &[Tuple], t: f64) -> (Tuple, Vec<Tuple>, Vec<Tuple>) {
+    let mut left = vec![points[0]];
+    let mut right = vec![points[points.len() - 1]];
+    let mut pts = points.to_vec();
+    while pts.len() > 1 {
+        let mut next = Vec::with_capacity(pts.len() - 1);
+        for i in 0..pts.len() - 1 {
+            next.push(lerp_tuple(pts[i], pts[i + 1], t));
+        }
+        pts = next;
+        left.push(pts[0]);
+        right.push(*pts.last().unwrap());
+    }
+    right.reverse();
+    (pts[0], left, right)
+}
+
+/// The point on the curve at parameter `t`, by de Casteljau's
+/// construction.
+pub fn point_at(c: &Curve, t: f64) -> Tuple {
+    de_casteljau(&c.points, t).0
+}
+
+/// Splits the curve at `t` into the piece from 0 to `t` and the piece
+/// from `t` to 1, each the same degree as the original -- the left and
+/// right edges of the de Casteljau pyramid.
+pub fn split_at(c: &Curve, t: f64) -> (Curve, Curve) {
+    let (_, left, right) = de_casteljau(&c.points, t);
+    (Curve { points: left }, Curve { points: right })
+}
+
+/// The tangent vector at `t`: the curve's own derivative, which is a
+/// Bezier curve one degree lower whose control points are the original
+/// ones' differences, scaled by the degree. Points backward when the
+/// curve is heading back the way it came.
+pub fn derivative(c: &Curve, t: f64) -> Tuple {
+    let n = (c.points.len() - 1) as f64;
+    let deriv: Vec<Tuple> =
+        c.points.windows(2).map(|w| (w[1] - w[0]) * n).collect();
+    de_casteljau(&deriv, t).0
+}
+
+/// Takes every control point through `m`.
+pub fn transform_curve(c: &Curve, m: Matrix3) -> Curve {
+    Curve { points: c.points.iter().map(|&p| m * p).collect() }
+}
+
+// ---------------------------------------------------------------------
+// § 8.2 Tight bounds
+// ---------------------------------------------------------------------
+
+/// The roots in the open interval (0, 1) of a Bezier curve (in one
+/// dimension) of degree 1 or 2, given its control-point values -- the
+/// only two degrees a derivative in this book ever has (a quadratic's
+/// derivative is linear, a cubic's is quadratic).
+fn roots_in_unit_interval(values: &[f64]) -> Vec<f64> {
+    match values.len() {
+        2 => {
+            let (d0, d1) = (values[0], values[1]);
+            let denom = d0 - d1;
+            if denom.abs() > 1e-12 {
+                let t = d0 / denom;
+                if t > 0.0 && t < 1.0 {
+                    return vec![t];
+                }
+            }
+            vec![]
+        }
+        3 => {
+            let (d0, d1, d2) = (values[0], values[1], values[2]);
+            let a = d0 - 2.0 * d1 + d2;
+            let b = 2.0 * (d1 - d0);
+            let c = d0;
+            if a.abs() > 1e-12 {
+                let disc = b * b - 4.0 * a * c;
+                if disc < 0.0 {
+                    return vec![];
+                }
+                let sq = disc.sqrt();
+                [(-b + sq) / (2.0 * a), (-b - sq) / (2.0 * a)]
+                    .into_iter()
+                    .filter(|&t| t > 0.0 && t < 1.0)
+                    .collect()
+            } else if b.abs() > 1e-12 {
+                let t = -c / b;
+                if t > 0.0 && t < 1.0 {
+                    vec![t]
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            }
+        }
+        _ => vec![],
+    }
+}
+
+/// The smallest axis-aligned box that holds the curve itself, not the
+/// (usually looser) box around its control points: evaluate the curve at
+/// both ends and at every parameter where a component of the derivative
+/// is zero, and take the smallest and largest x and y.
+pub fn curve_bounds(c: &Curve) -> (f64, f64, f64, f64) {
+    let n = (c.points.len() - 1) as f64;
+    let dxs: Vec<f64> = c.points.windows(2).map(|w| (w[1].x - w[0].x) * n).collect();
+    let dys: Vec<f64> = c.points.windows(2).map(|w| (w[1].y - w[0].y) * n).collect();
+    let mut ts = vec![0.0, 1.0];
+    ts.extend(roots_in_unit_interval(&dxs));
+    ts.extend(roots_in_unit_interval(&dys));
+
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for t in ts {
+        let p = point_at(c, t);
+        min_x = min_x.min(p.x);
+        max_x = max_x.max(p.x);
+        min_y = min_y.min(p.y);
+        max_y = max_y.max(p.y);
+    }
+    (min_x, min_y, max_x, max_y)
+}
+
+// ---------------------------------------------------------------------
+// § 8.3 Flattening
+// ---------------------------------------------------------------------
+
+/// How far the curve strays from the straight chord between its ends:
+/// the greatest distance of an interior control point from that chord.
+/// Zero means the curve is already a line.
+pub fn flatness(c: &Curve) -> f64 {
+    let a = c.points[0];
+    let b = *c.points.last().unwrap();
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len = (dx * dx + dy * dy).sqrt();
+    let mut worst = 0.0;
+    for p in &c.points[1..c.points.len() - 1] {
+        let d = if len == 0.0 {
+            ((p.x - a.x).powi(2) + (p.y - a.y).powi(2)).sqrt()
+        } else {
+            ((p.x - a.x) * dy - (p.y - a.y) * dx).abs() / len
+        };
+        worst = f64::max(worst, d);
+    }
+    worst
+}
+
+fn flatten_into(c: &Curve, tolerance: f64, out: &mut Vec<Tuple>) {
+    if flatness(c) <= tolerance {
+        out.push(*c.points.last().unwrap());
+    } else {
+        let (left, right) = split_at(c, 0.5);
+        flatten_into(&left, tolerance, out);
+        flatten_into(&right, tolerance, out);
+    }
+}
+
+/// Turns the curve into a polyline within `tolerance` of it: recurses,
+/// splitting in half wherever a piece isn't yet flat enough, and returns
+/// the endpoints it collects, first to last, both ends always included.
+pub fn flatten(c: &Curve, tolerance: f64) -> Vec<Tuple> {
+    let mut out = vec![c.points[0]];
+    flatten_into(c, tolerance, &mut out);
+    out
+}
+
+/// The length of a polyline: the sum of the distances between
+/// consecutive points.
+pub fn polyline_length(points: &[Tuple]) -> f64 {
+    points.windows(2).map(|w| magnitude(w[1] - w[0])).sum()
+}
+
+/// `flatten(c, tolerance)`'s length -- climbs toward the curve's true arc
+/// length as the tolerance shrinks.
+pub fn flatten_length(c: &Curve, tolerance: f64) -> f64 {
+    polyline_length(&flatten(c, tolerance))
+}
+
+/// Appends a flattened curve to a path with `line_to`, skipping the
+/// curve's own first point when it's already where the pen is (either
+/// because a previous curve just ended there, or because this is the
+/// first thing added to a fresh subpath after a close).
+pub fn flatten_into_path(p: &mut Path, c: &Curve, tolerance: f64) {
+    let mut pts = flatten(c, tolerance);
+    let start_fresh = match subpaths(p).last() {
+        None => true,
+        Some(last) => last.closed,
+    };
+    if start_fresh {
+        move_to(p, pts[0]);
+        pts.remove(0);
+    } else {
+        let cur = *subpaths(p).last().unwrap().points.last().unwrap();
+        if cur.x == pts[0].x && cur.y == pts[0].y {
+            pts.remove(0);
+        }
+    }
+    for q in pts {
+        line_to(p, q);
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 8.4 The elliptical arc
+// ---------------------------------------------------------------------
+
+/// An SVG elliptical arc in center form: the center, radii, the
+/// x-axis rotation `phi` (radians), a start angle `theta1` and a swept
+/// angle `delta`, both radians. `corrected` says whether the radii had to
+/// be grown to reach between the endpoints.
+#[derive(Debug, Clone, Copy)]
+pub struct Arc {
+    pub cx: f64,
+    pub cy: f64,
+    pub rx: f64,
+    pub ry: f64,
+    pub phi: f64,
+    pub theta1: f64,
+    pub delta: f64,
+    pub corrected: bool,
+}
+
+/// The signed angle from `(ux, uy)` to `(vx, vy)`, in `(-pi, pi]`.
+fn angle_between(ux: f64, uy: f64, vx: f64, vy: f64) -> f64 {
+    let dot = ux * vx + uy * vy;
+    let len = (ux * ux + uy * uy).sqrt() * (vx * vx + vy * vy).sqrt();
+    let a = (dot / len).clamp(-1.0, 1.0).acos();
+    if ux * vy - uy * vx >= 0.0 {
+        a
+    } else {
+        -a
+    }
+}
+
+/// Turns SVG's endpoint form of an elliptical arc into the center form
+/// `arc_point` can walk, following the spec's own construction. `None`
+/// for a degenerate arc: coincident endpoints, or either radius zero.
+/// Radii too small to reach between the endpoints are grown together
+/// (never clamped individually) until they just do, and `corrected` is
+/// set so a caller can tell.
+pub fn arc(x1: f64, y1: f64, rx: f64, ry: f64, phi: f64, large_arc: bool, sweep: bool, x2: f64, y2: f64) -> Option<Arc> {
+    if (x1 == x2 && y1 == y2) || rx == 0.0 || ry == 0.0 {
+        return None;
+    }
+    let (mut rx, mut ry) = (rx.abs(), ry.abs());
+    let (cphi, sphi) = (phi.cos(), phi.sin());
+    let (dx, dy) = ((x1 - x2) / 2.0, (y1 - y2) / 2.0);
+    let x1p = cphi * dx + sphi * dy;
+    let y1p = -sphi * dx + cphi * dy;
+    let mut corrected = false;
+
+    let lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+    if lambda > 1.0 {
+        let s = lambda.sqrt();
+        rx *= s;
+        ry *= s;
+        corrected = true;
+    }
+
+    let num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
+    let den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+    let mut co = (num / den).max(0.0).sqrt();
+    if large_arc == sweep {
+        co = -co;
+    }
+    let cxp = co * rx * y1p / ry;
+    let cyp = -co * ry * x1p / rx;
+    let cx = cphi * cxp - sphi * cyp + (x1 + x2) / 2.0;
+    let cy = sphi * cxp + cphi * cyp + (y1 + y2) / 2.0;
+
+    let theta1 = angle_between(1.0, 0.0, (x1p - cxp) / rx, (y1p - cyp) / ry);
+    let mut delta = angle_between(
+        (x1p - cxp) / rx,
+        (y1p - cyp) / ry,
+        (-x1p - cxp) / rx,
+        (-y1p - cyp) / ry,
+    );
+    if !sweep && delta > 0.0 {
+        delta -= 2.0 * std::f64::consts::PI;
+    } else if sweep && delta < 0.0 {
+        delta += 2.0 * std::f64::consts::PI;
+    }
+
+    Some(Arc { cx, cy, rx, ry, phi, theta1, delta, corrected })
+}
+
+/// The point at `t` (0 to 1) along the arc.
+pub fn arc_point(a: &Arc, t: f64) -> Tuple {
+    let theta = a.theta1 + a.delta * t;
+    let (cphi, sphi) = (a.phi.cos(), a.phi.sin());
+    let ex = a.rx * theta.cos();
+    let ey = a.ry * theta.sin();
+    point(a.cx + cphi * ex - sphi * ey, a.cy + sphi * ex + cphi * ey)
+}
+
+// ---------------------------------------------------------------------
+// § 8.5 Putting it together
+// ---------------------------------------------------------------------
+
+/// A teardrop: two cubics, tip to base and back.
+fn teardrop() -> (Curve, Curve) {
+    (
+        cubic(point(30.5, 12.0), point(58.0, 16.0), point(46.0, 52.0), point(30.5, 52.0)),
+        cubic(point(30.5, 52.0), point(15.0, 52.0), point(3.0, 16.0), point(30.5, 12.0)),
+    )
+}
+
+/// The same teardrop filled twice: flattened coarse on the left, fine on
+/// the right, so the facets show. Two 60x60 panels, side by side, at
+/// their own scale (no magnification -- the point is the facets, not the
+/// pixels).
+pub fn drops() -> Canvas {
+    let (t0, t1) = teardrop();
+    let mut left = canvas(60, 60);
+    fill(&mut left, SUNBURST_PAPER);
+    let mut coarse = path();
+    flatten_into_path(&mut coarse, &t0, 4.0);
+    flatten_into_path(&mut coarse, &t1, 4.0);
+    close(&mut coarse);
+    paint_through(&mut left, &fill_path(&coarse, "nonzero", 60, 60), SUNBURST_INKS[2]);
+
+    let mut right = canvas(60, 60);
+    fill(&mut right, SUNBURST_PAPER);
+    let mut fine = path();
+    flatten_into_path(&mut fine, &t0, 0.1);
+    flatten_into_path(&mut fine, &t1, 0.1);
+    close(&mut fine);
+    paint_through(&mut right, &fill_path(&fine, "nonzero", 60, 60), SUNBURST_INKS[2]);
+
+    magnify(&side_by_side(&left, &right), 4)
+}
+
+/// A petal about one unit tall, tip at the top: two cubics, out to one
+/// side and back.
+fn petal() -> (Curve, Curve) {
+    (
+        cubic(point(0.0, 0.0), point(0.55, -0.35), point(0.4, -0.92), point(0.0, -1.0)),
+        cubic(point(0.0, -1.0), point(-0.4, -0.92), point(-0.55, -0.35), point(0.0, 0.0)),
+    )
+}
+
+/// Adds `n` petals around the origin, placed and sized by `m`, to `p`:
+/// each petal is transformed to its final place first, then flattened in
+/// that device space at one shared tolerance, so a bigger flower gets
+/// more segments than a small one and both come out equally smooth.
+pub fn flower_at(p: &mut Path, m: Matrix3, n: usize, tolerance: f64) {
+    let (right, left) = petal();
+    for k in 0..n {
+        let spin = m * rotation(2.0 * std::f64::consts::PI * k as f64 / n as f64);
+        flatten_into_path(p, &transform_curve(&right, spin), tolerance);
+        flatten_into_path(p, &transform_curve(&left, spin), tolerance);
+        close(p);
+    }
+}
+
+/// Three flowers of curved petals at three sizes, a disc punched out of
+/// each center, on a 360x360 canvas.
+pub fn flower() -> Canvas {
+    let mut c = canvas(360, 360);
+    fill(&mut c, SUNBURST_PAPER);
+    let spots: [(f64, f64, f64, usize, f64); 3] = [
+        (108.0, 250.0, 44.0, 8, 0.0),
+        (200.0, 145.0, 74.0, 8, 0.39),
+        (286.0, 252.0, 54.0, 7, 0.8),
+    ];
+    for (i, &(cx, cy, s, n, rot)) in spots.iter().enumerate() {
+        let m = translation(cx, cy) * scaling(s, s) * rotation(rot);
+        let mut petals = path();
+        flower_at(&mut petals, m, n, 0.2);
+        paint_through(&mut c, &fill_path(&petals, "nonzero", 360, 360), SUNBURST_INKS[i % 3]);
+        let disc = circle_path(cx, cy, s * 0.3, 64);
+        paint_through(&mut c, &fill_path(&disc, "nonzero", 360, 360), SUNBURST_PAPER);
+    }
+    c
+}
+
+/// Plate 8: the flowers, magnified by 2.
+pub fn plate_08() -> Canvas {
+    magnify(&flower(), 2)
+}

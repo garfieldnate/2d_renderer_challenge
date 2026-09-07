@@ -2035,3 +2035,615 @@ def plate_06():
     """The final plate for chapter 6: the spiral, magnified by 2."""
     return magnify(spiral(), 2)
 
+
+# ============================================================================
+# Chapter 7: Analytic Antialiasing
+# ============================================================================
+
+class Accumulator:
+    """A grid of (area, cover) pairs, one per cell, all zero to start."""
+
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+        self.area = [0.0] * (width * height)
+        self.cover = [0.0] * (width * height)
+
+    def __repr__(self):
+        return f"Accumulator({self.width}, {self.height})"
+
+
+def accumulator(w, h):
+    """Create a fresh accumulator, all zero."""
+    return Accumulator(w, h)
+
+
+def area_at(acc, x, y):
+    """The area a cell has itself collected."""
+    if 0 <= x < acc.width and 0 <= y < acc.height:
+        return acc.area[y * acc.width + x]
+    return 0.0
+
+
+def cover_at(acc, x, y):
+    """The cover a cell carries to every cell on its right."""
+    if 0 <= x < acc.width and 0 <= y < acc.height:
+        return acc.cover[y * acc.width + x]
+    return 0.0
+
+
+def add_cell(acc, x, row, area, cover):
+    """Deposit an area and a cover into one cell, adding to what's there.
+    A deposit left of the buffer folds onto column 0 as pure cover (the
+    whole height carries in, since everything in the row is to its right);
+    a deposit right of the buffer is dropped."""
+    if row < 0 or row >= acc.height:
+        return
+    if x < 0:
+        x = 0
+        area = cover
+    if x >= acc.width:
+        return
+    i = row * acc.width + x
+    acc.area[i] += area
+    acc.cover[i] += cover
+
+
+def accumulate_row(acc, row, x0, x1, height):
+    """Deposit the piece of an edge lying in a single row, from x0 to x1,
+    carrying a signed height. The height is shared among the cells the
+    piece crosses in proportion to the width it has in each; each cell's
+    area is its share weighted by how far to the left of the cell the
+    piece's midpoint sits (the trapezoid rule)."""
+    xa, xb = (x0, x1) if x0 <= x1 else (x1, x0)
+    ca = math.floor(xa)
+    cb = math.floor(xb)
+    if ca == cb:
+        xm = (xa + xb) / 2 - ca
+        add_cell(acc, ca, row, height * (1 - xm), height)
+        return
+    dx = xb - xa
+    for c in range(ca, cb + 1):
+        lo = max(xa, c)
+        hi = min(xb, c + 1)
+        share = height * (hi - lo) / dx
+        m = (lo + hi) / 2 - c
+        add_cell(acc, c, row, share * (1 - m), share)
+
+
+def accumulate(acc, a, b):
+    """Deposit a whole edge: clip it to each row it crosses and hand each
+    piece to accumulate_row. Heading up the canvas (a.y > b.y) carries a
+    positive height, heading down a negative one. A horizontal edge
+    deposits nothing."""
+    if a.y == b.y:
+        return
+    sign = 1.0 if a.y > b.y else -1.0
+    top, bottom = (b, a) if a.y > b.y else (a, b)
+    slope = (bottom.x - top.x) / (bottom.y - top.y)
+    first = max(math.floor(top.y), 0)
+    last = min(math.ceil(bottom.y) - 1, acc.height - 1)
+    for row in range(first, last + 1):
+        y0 = max(top.y, row)
+        y1 = min(bottom.y, row + 1)
+        if y1 <= y0:
+            continue
+        x0 = top.x + (y0 - top.y) * slope
+        x1 = top.x + (y1 - top.y) * slope
+        accumulate_row(acc, row, x0, x1, sign * (y1 - y0))
+
+
+def apply_rule(w, rule):
+    """Turn a (possibly fractional) winding number into coverage: for
+    "nonzero", min(1, |w|); for "evenodd", the triangle wave that folds
+    |w| back and forth between 0 and 1."""
+    if rule == "nonzero":
+        return min(1.0, abs(w))
+    t = abs(w) % 2.0
+    return t if t <= 1.0 else 2.0 - t
+
+
+def resolve(acc, rule):
+    """Sweep each row left to right: a cell's winding number is the cover
+    of every cell to its left plus its own area, and apply_rule turns that
+    into coverage."""
+    cov = CoverageBuffer(acc.width, acc.height)
+    for row in range(acc.height):
+        running = 0.0
+        base = row * acc.width
+        for x in range(acc.width):
+            i = base + x
+            cov.coverage[row][x] = apply_rule(running + acc.area[i], rule)
+            running += acc.cover[i]
+    return cov
+
+
+def fill_path(p, rule, w, h):
+    """The fill from chapter 7 on: deposit every edge of the path into an
+    accumulator and resolve it."""
+    acc = accumulator(w, h)
+    for e in edges(p):
+        accumulate(acc, e.a, e.b)
+    return resolve(acc, rule)
+
+
+def polygon_area(p):
+    """The shoelace formula over every edge of every subpath, unsigned."""
+    total = 0.0
+    for e in edges(p):
+        total += e.a.x * e.b.y - e.b.x * e.a.y
+    return abs(total) / 2.0
+
+
+# Chapter 7 renders
+
+PAPER = color(0.02, 0.02, 0.025)
+INKS = [color(0.9, 0.55, 0.1), color(0.2, 0.55, 0.85), color(0.85, 0.25, 0.3)]
+PALE = color(0.92, 0.9, 0.82)
+
+
+def needle_path():
+    """Twelve thin triangles radiating from a shared apex."""
+    p = path()
+    for k in range(12):
+        a = math.radians(30 * k + 7)
+        half = math.radians(1.6)
+        move_to(p, point(30.5, 30.5))
+        line_to(p, point(30.5 + 29 * math.cos(a - half), 30.5 + 29 * math.sin(a - half)))
+        line_to(p, point(30.5 + 29 * math.cos(a + half), 30.5 + 29 * math.sin(a + half)))
+        close(p)
+    return p
+
+
+def needles():
+    """The same twelve needles, chapter 6's aliased fill on the left and
+    this chapter's exact fill on the right, each magnified by 4."""
+    np_ = needle_path()
+    left = canvas(60, 60)
+    fill(left, PAPER)
+    paint_through(left, fill_path_aliased(np_, "nonzero", 60, 60), INKS[0])
+    right = canvas(60, 60)
+    fill(right, PAPER)
+    paint_through(right, fill_path(np_, "nonzero", 60, 60), INKS[0])
+    return side_by_side(magnify(left, 4), magnify(right, 4))
+
+
+def soft_square():
+    """A small square whose edges land on pixel centers, magnified by 24."""
+    c = canvas(8, 8)
+    fill(c, PAPER)
+    p = polygon(point(1.5, 1.5), point(5.5, 1.5), point(5.5, 5.5), point(1.5, 5.5))
+    paint_through(c, fill_path(p, "nonzero", 8, 8), INKS[0])
+    return magnify(c, 24)
+
+
+def star_panel_exact(rule):
+    """One panel of the exact star: the chapter 5 star filled under rule
+    by this chapter's analytic fill."""
+    c = canvas(160, 160)
+    fill(c, PAPER)
+    paint_through(c, fill_path(star(), rule, 160, 160), INKS[0])
+    return c
+
+
+def star_exact():
+    """Chapter 5's star filled both ways, exactly, side by side."""
+    return side_by_side(star_panel_exact("nonzero"), star_panel_exact("evenodd"))
+
+
+def spiral_smooth():
+    """Chapter 6's spiral of stars, now filled by the analytic fill."""
+    c = canvas(320, 320)
+    fill(c, PAPER)
+    for k in range(24):
+        a = math.radians(k * 25)
+        r = 20 + 5 * k
+        m = (translation(160.5 + r * math.cos(a), 160.5 + r * math.sin(a)) *
+             rotation(a) *
+             scaling(6 + 1.25 * k, 6 + 1.25 * k))
+        cov = fill_path(transform_path(unit_star(), m), "nonzero", 320, 320)
+        paint_through(c, cov, INKS[k % 3])
+    return c
+
+
+def rays(i):
+    """Every third of the sunburst's 72 rays, starting at i."""
+    p = path()
+    k = i
+    while k < 72:
+        a = math.radians(5 * k)
+        half = math.radians(1.4)
+        move_to(p, point(240, 240))
+        line_to(p, point(240 + 232 * math.cos(a - half), 240 + 232 * math.sin(a - half)))
+        line_to(p, point(240 + 232 * math.cos(a + half), 240 + 232 * math.sin(a + half)))
+        close(p)
+        k += 3
+    return p
+
+
+def sunburst():
+    """Seventy-two rays, a punched disc and an even-odd star, all filled
+    analytically."""
+    c = canvas(480, 480)
+    fill(c, PAPER)
+    for i in range(3):
+        cov = fill_path(rays(i), "nonzero", 480, 480)
+        paint_through(c, cov, INKS[i])
+    disc = circle_path(240, 240, 78, 180)
+    cov = fill_path(disc, "nonzero", 480, 480)
+    paint_through(c, cov, PAPER)
+    m = translation(240, 240) * scaling(64, 64)
+    cov = fill_path(transform_path(unit_star(), m), "evenodd", 480, 480)
+    paint_through(c, cov, PALE)
+    return c
+
+
+def plate_07():
+    """The final plate for chapter 7: the sunburst."""
+    return sunburst()
+
+
+# ============================================================================
+# Chapter 8: Curves
+# ============================================================================
+
+class Curve:
+    """A Bezier curve, held as its control points: three for a quadratic,
+    four for a cubic."""
+
+    def __init__(self, points):
+        self.points = list(points)
+
+    def __repr__(self):
+        return f"Curve({self.points})"
+
+
+def quadratic(p0, p1, p2):
+    """A quadratic Bezier curve from its three control points."""
+    return Curve([p0, p1, p2])
+
+
+def cubic(p0, p1, p2, p3):
+    """A cubic Bezier curve from its four control points."""
+    return Curve([p0, p1, p2, p3])
+
+
+def _lerp_xy(a, b, t):
+    """Linear interpolation between two (x, y) pairs."""
+    ax, ay = a
+    bx, by = b
+    return (ax + (bx - ax) * t, ay + (by - ay) * t)
+
+
+def _de_casteljau(points_xy, t):
+    """De Casteljau's construction on a list of (x, y) pairs: repeatedly
+    interpolate neighbouring pairs by t until one point is left. Returns
+    that point along with the left edge and right edge of the pyramid
+    (the control points of the two curves split_at produces)."""
+    pts = list(points_xy)
+    left = [pts[0]]
+    right = [pts[-1]]
+    while len(pts) > 1:
+        pts = [_lerp_xy(pts[i], pts[i + 1], t) for i in range(len(pts) - 1)]
+        left.append(pts[0])
+        right.append(pts[-1])
+    right.reverse()
+    return pts[0], left, right
+
+
+def point_at(c, t):
+    """The point on the curve at parameter t, by de Casteljau's
+    construction."""
+    xy = [(p.x, p.y) for p in c.points]
+    (x, y), _left, _right = _de_casteljau(xy, t)
+    return point(x, y)
+
+
+def split_at(c, t):
+    """Split a curve in two at t: the piece from 0 to t and the piece from
+    t to 1, whose control points are the left and right edges of the de
+    Casteljau pyramid."""
+    xy = [(p.x, p.y) for p in c.points]
+    _p, left, right = _de_casteljau(xy, t)
+    left_pts = [point(x, y) for x, y in left]
+    right_pts = [point(x, y) for x, y in right]
+    return (Curve(left_pts), Curve(right_pts))
+
+
+def derivative(c, t):
+    """The tangent vector at parameter t: the curve's hodograph (its
+    derivative, itself a Bezier one degree lower) evaluated at t."""
+    n = len(c.points) - 1
+    diffs = [(n * (c.points[i + 1].x - c.points[i].x),
+              n * (c.points[i + 1].y - c.points[i].y)) for i in range(n)]
+    (dx, dy), _left, _right = _de_casteljau(diffs, t)
+    return vector(dx, dy)
+
+
+def transform_curve(c, m):
+    """A new curve with every control point taken through m."""
+    if not isinstance(m, Matrix3):
+        raise TypeError("transform_curve requires a Matrix3")
+    return Curve([m * p for p in c.points])
+
+
+def _axis_roots(coeffs, axis):
+    """Roots in (0, 1) of one axis-component of the curve's derivative,
+    given as polynomial coefficients low-to-high degree."""
+    roots = []
+    if len(coeffs) == 2:
+        a, b = coeffs
+        if b != 0:
+            t = -a / b
+            if 0 < t < 1:
+                roots.append(t)
+    elif len(coeffs) == 3:
+        a, b, cc = coeffs
+        if abs(cc) < 1e-12:
+            if b != 0:
+                t = -a / b
+                if 0 < t < 1:
+                    roots.append(t)
+        else:
+            disc = b * b - 4 * cc * a
+            if disc >= 0:
+                sq = math.sqrt(disc)
+                for t in ((-b + sq) / (2 * cc), (-b - sq) / (2 * cc)):
+                    if 0 < t < 1:
+                        roots.append(t)
+    return roots
+
+
+def curve_bounds(c):
+    """The smallest axis-aligned box that holds the curve itself, as
+    (min x, min y, max x, max y): the curve's endpoints plus every
+    parameter where a component of the derivative is zero."""
+    n = len(c.points) - 1
+    pts = c.points
+    ts = {0.0, 1.0}
+    if n == 2:
+        p0, p1, p2 = pts
+        for axis in ('x', 'y'):
+            v0, v1, v2 = getattr(p0, axis), getattr(p1, axis), getattr(p2, axis)
+            a = 2 * (v1 - v0)
+            b = 2 * (v2 - 2 * v1 + v0)
+            ts.update(_axis_roots((a, b), axis))
+    elif n == 3:
+        p0, p1, p2, p3 = pts
+        for axis in ('x', 'y'):
+            v0, v1, v2, v3 = (getattr(p0, axis), getattr(p1, axis),
+                               getattr(p2, axis), getattr(p3, axis))
+            d0, d1, d2 = v1 - v0, v2 - v1, v3 - v2
+            a = 3 * d0
+            b = 6 * (d1 - d0)
+            cc = 3 * (d0 - 2 * d1 + d2)
+            ts.update(_axis_roots((a, b, cc), axis))
+    else:
+        raise ValueError("curve_bounds only supports quadratic and cubic curves")
+    xs = []
+    ys = []
+    for t in ts:
+        pt = point_at(c, t)
+        xs.append(pt.x)
+        ys.append(pt.y)
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def flatness(c):
+    """How far the curve strays from the straight chord between its ends:
+    the greatest distance of an interior control point from that chord."""
+    a = c.points[0]
+    b = c.points[-1]
+    dx = b.x - a.x
+    dy = b.y - a.y
+    length = math.hypot(dx, dy)
+    worst = 0.0
+    for p in c.points[1:-1]:
+        if length == 0:
+            d = math.hypot(p.x - a.x, p.y - a.y)
+        else:
+            d = abs((p.x - a.x) * dy - (p.y - a.y) * dx) / length
+        worst = max(worst, d)
+    return worst
+
+
+def _flatten_into(c, tolerance, out):
+    if flatness(c) <= tolerance:
+        out.append(c.points[-1])
+    else:
+        left, right = split_at(c, 0.5)
+        _flatten_into(left, tolerance, out)
+        _flatten_into(right, tolerance, out)
+
+
+def flatten(c, tolerance):
+    """A polyline within tolerance of the curve, as a list of points from
+    start to end, by subdividing wherever a piece isn't yet flat enough."""
+    out = [c.points[0]]
+    _flatten_into(c, tolerance, out)
+    return out
+
+
+def polyline_length(pts):
+    """The total length of a polyline given as a list of points."""
+    total = 0.0
+    for i in range(len(pts) - 1):
+        a, b = pts[i], pts[i + 1]
+        total += math.hypot(b.x - a.x, b.y - a.y)
+    return total
+
+
+def flatten_length(c, tolerance):
+    """The length of the curve's flattened polyline at this tolerance."""
+    return polyline_length(flatten(c, tolerance))
+
+
+def flatten_into_path(p, c, tolerance):
+    """Append a flattened curve to a path with line_to, so a curve becomes
+    an ordinary run of line segments. Starts a new subpath if the path is
+    empty or its last subpath is closed; otherwise continues from wherever
+    the pen already is."""
+    pts = flatten(c, tolerance)
+    if not p.subpaths or p.subpaths[-1].closed:
+        move_to(p, pts[0])
+        pts = pts[1:]
+    else:
+        cur = p.subpaths[-1].points[-1]
+        if cur.x == pts[0].x and cur.y == pts[0].y:
+            pts = pts[1:]
+    for q in pts:
+        line_to(p, q)
+
+
+# Chapter 8: the SVG elliptical arc
+
+def _angle_between(ux, uy, vx, vy):
+    """The signed angle from vector (ux, uy) to vector (vx, vy)."""
+    dot_ = ux * vx + uy * vy
+    length = math.hypot(ux, uy) * math.hypot(vx, vy)
+    a = math.acos(max(-1.0, min(1.0, dot_ / length)))
+    return a if (ux * vy - uy * vx) >= 0 else -a
+
+
+class Arc:
+    """An elliptical arc in center form: a center, radii, the x-axis
+    rotation phi (radians), a start angle theta1 and a swept angle delta.
+    corrected says whether the radii had to be grown to reach."""
+
+    def __init__(self, cx, cy, rx, ry, phi, theta1, delta, corrected):
+        self.cx = cx
+        self.cy = cy
+        self.rx = rx
+        self.ry = ry
+        self.phi = phi
+        self.theta1 = theta1
+        self.delta = delta
+        self.corrected = corrected
+
+    def __repr__(self):
+        return (f"Arc(cx={self.cx}, cy={self.cy}, rx={self.rx}, ry={self.ry}, "
+                f"phi={self.phi}, theta1={self.theta1}, delta={self.delta}, "
+                f"corrected={self.corrected})")
+
+
+def arc(x1, y1, rx, ry, phi, large_arc, sweep, x2, y2):
+    """SVG's endpoint form of an elliptical arc, turned into center form.
+    Coincident endpoints or a zero radius describe no arc at all (None).
+    Radii too small to reach the endpoints are grown together until they
+    do, and corrected is set."""
+    if (x1 == x2 and y1 == y2) or rx == 0 or ry == 0:
+        return None
+    rx = abs(rx)
+    ry = abs(ry)
+    cphi = math.cos(phi)
+    sphi = math.sin(phi)
+    dx = (x1 - x2) / 2
+    dy = (y1 - y2) / 2
+    x1p = cphi * dx + sphi * dy
+    y1p = -sphi * dx + cphi * dy
+    corrected = False
+    lam = x1p * x1p / (rx * rx) + y1p * y1p / (ry * ry)
+    if lam > 1:
+        s = math.sqrt(lam)
+        rx *= s
+        ry *= s
+        corrected = True
+    num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p
+    den = rx * rx * y1p * y1p + ry * ry * x1p * x1p
+    co = math.sqrt(max(0.0, num / den))
+    if large_arc == sweep:
+        co = -co
+    cxp = co * rx * y1p / ry
+    cyp = -co * ry * x1p / rx
+    cx = cphi * cxp - sphi * cyp + (x1 + x2) / 2
+    cy = sphi * cxp + cphi * cyp + (y1 + y2) / 2
+    theta1 = _angle_between(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry)
+    delta = _angle_between((x1p - cxp) / rx, (y1p - cyp) / ry,
+                            (-x1p - cxp) / rx, (-y1p - cyp) / ry)
+    if not sweep and delta > 0:
+        delta -= 2 * math.pi
+    elif sweep and delta < 0:
+        delta += 2 * math.pi
+    return Arc(cx, cy, rx, ry, phi, theta1, delta, corrected)
+
+
+def arc_point(a, t):
+    """The point at t (0 to 1) along the arc."""
+    theta = a.theta1 + a.delta * t
+    cphi = math.cos(a.phi)
+    sphi = math.sin(a.phi)
+    ex = a.rx * math.cos(theta)
+    ey = a.ry * math.sin(theta)
+    return point(a.cx + cphi * ex - sphi * ey, a.cy + sphi * ex + cphi * ey)
+
+
+# Chapter 8 renders
+
+def teardrop():
+    """A teardrop as two cubics, tip to base and back."""
+    return [
+        cubic(point(30.5, 12), point(58, 16), point(46, 52), point(30.5, 52)),
+        cubic(point(30.5, 52), point(15, 52), point(3, 16), point(30.5, 12)),
+    ]
+
+
+def drops():
+    """The same teardrop, flattened coarse on the left and fine on the
+    right, each magnified by 4."""
+    td = teardrop()
+    coarse = path()
+    flatten_into_path(coarse, td[0], 4.0)
+    flatten_into_path(coarse, td[1], 4.0)
+    close(coarse)
+    fine = path()
+    flatten_into_path(fine, td[0], 0.1)
+    flatten_into_path(fine, td[1], 0.1)
+    close(fine)
+    left = canvas(60, 60)
+    fill(left, PAPER)
+    paint_through(left, fill_path(coarse, "nonzero", 60, 60), INKS[2])
+    right = canvas(60, 60)
+    fill(right, PAPER)
+    paint_through(right, fill_path(fine, "nonzero", 60, 60), INKS[2])
+    return side_by_side(magnify(left, 4), magnify(right, 4))
+
+
+def petal():
+    """One flower petal, about one unit tall, as two cubics."""
+    return [
+        cubic(point(0, 0), point(0.55, -0.35), point(0.4, -0.92), point(0, -1)),
+        cubic(point(0, -1), point(-0.4, -0.92), point(-0.55, -0.35), point(0, 0)),
+    ]
+
+
+def flower_at(p, m, n, tolerance):
+    """Add n petals around the origin, placed by m, flattening each in
+    device space (after the transform) at the given tolerance."""
+    right_half, left_half = petal()
+    for k in range(n):
+        spin = m * rotation(2 * math.pi * k / n)
+        flatten_into_path(p, transform_curve(right_half, spin), tolerance)
+        flatten_into_path(p, transform_curve(left_half, spin), tolerance)
+        close(p)
+
+
+def flower():
+    """Three flowers of curved petals at three sizes, each punched out at
+    the center."""
+    c = canvas(360, 360)
+    fill(c, PAPER)
+    spots = [(108, 250, 44, 8, 0.0), (200, 145, 74, 8, 0.39), (286, 252, 54, 7, 0.8)]
+    for i, (cx, cy, s, n, rot) in enumerate(spots):
+        m = translation(cx, cy) * scaling(s, s) * rotation(rot)
+        petals = path()
+        flower_at(petals, m, n, 0.2)
+        paint_through(c, fill_path(petals, "nonzero", 360, 360), INKS[i % 3])
+        disc = circle_path(cx, cy, s * 0.3, 64)
+        paint_through(c, fill_path(disc, "nonzero", 360, 360), PAPER)
+    return c
+
+
+def plate_08():
+    """The final plate for chapter 8: the flowers, magnified by 2."""
+    return magnify(flower(), 2)
+

@@ -7,10 +7,10 @@ use std::fs;
 use std::path::Path;
 
 use renderer::{
-    canvas_to_p6, canvas_to_ppm, clamp_pair, disc_centers, disc_coverage, fan_bresenham,
-    fan_both_orders, fan_coverage, fan_wu, gray_match, painted_twice, plate_01, plate_02,
-    plate_03, plate_04, plate_05, plate_06, quarter_match, ramp, spiral, star_centers,
-    star_coverage,
+    canvas_to_p6, canvas_to_ppm, clamp_pair, disc_centers, disc_coverage, drops, fan_bresenham,
+    fan_both_orders, fan_coverage, fan_wu, flower, gray_match, needles, painted_twice, plate_01,
+    plate_02, plate_03, plate_04, plate_05, plate_06, plate_07, plate_08, quarter_match, ramp,
+    soft_square, spiral, spiral_smooth, star_centers, star_coverage, star_exact,
 };
 
 fn write_p3(dir: &Path, name: &str, ppm: String) {
@@ -57,5 +57,17 @@ fn main() {
     write_p6(out, "spiral.ppm", canvas_to_p6(&spiral()));
     write_p6(out, "plate-06.ppm", canvas_to_p6(&plate_06()));
 
-    println!("wrote 20 renders to out/");
+    // Chapter 7: analytic antialiasing.
+    write_p6(out, "needles.ppm", canvas_to_p6(&needles()));
+    write_p6(out, "soft-square.ppm", canvas_to_p6(&soft_square()));
+    write_p6(out, "star-exact.ppm", canvas_to_p6(&star_exact()));
+    write_p6(out, "spiral-smooth.ppm", canvas_to_p6(&spiral_smooth()));
+    write_p6(out, "plate-07.ppm", canvas_to_p6(&plate_07()));
+
+    // Chapter 8: curves.
+    write_p6(out, "drops.ppm", canvas_to_p6(&drops()));
+    write_p6(out, "flower.ppm", canvas_to_p6(&flower()));
+    write_p6(out, "plate-08.ppm", canvas_to_p6(&plate_08()));
+
+    println!("wrote 28 renders to out/");
 }

@@ -410,4 +410,223 @@ public final class Figures {
     public static Canvas plate06() {
         return Magnify.magnify(spiral(), 2);
     }
+
+    // ---- chapter 7: analytic antialiasing ---------------------------------
+
+    private static final Color[] SPIRAL_INKS = {
+        new Color(0.9, 0.55, 0.1), new Color(0.2, 0.55, 0.85), new Color(0.85, 0.25, 0.3)
+    };
+    private static final Color PALE = new Color(0.92, 0.90, 0.82);
+
+    /**
+     * §7.6: a twelfth of a fan of needles -- twelve thin wedges from a
+     * common center, meeting at a point, thin enough that most of them
+     * would fall through chapter 6's center test. Figure 7.1's picture.
+     */
+    public static Path needlePath() {
+        return needleFan(30, 30, 16.5, 1.4, 12, 0);
+    }
+
+    private static Path needleFan(double cx, double cy, double r, double halfWidth, int n, double startDeg) {
+        Path p = new Path();
+        for (int k = 0; k < n; k++) {
+            double a = Math.toRadians(startDeg + k * (360.0 / n));
+            double dx = Math.cos(a);
+            double dy = Math.sin(a);
+            double px = -dy;
+            double py = dx;
+            p.moveTo(Tuple.point(cx, cy));
+            p.lineTo(Tuple.point(cx + r * dx + halfWidth * px, cy + r * dy + halfWidth * py));
+            p.lineTo(Tuple.point(cx + r * dx - halfWidth * px, cy + r * dy - halfWidth * py));
+            p.close();
+        }
+        return p;
+    }
+
+    /**
+     * §7.6: the needles, chapter 6's aliased fill on the left and this
+     * chapter's exact fill on the right, each a 60 by 60 canvas magnified
+     * by 4.
+     */
+    public static Canvas needles() {
+        Path p = needlePath();
+        Canvas left = new Canvas(60, 60);
+        left.fill(PAPER);
+        Painter.paintThrough(left, Sweep.fillPathAliased(p, "nonzero", 60, 60), INK);
+        Canvas right = new Canvas(60, 60);
+        right.fill(PAPER);
+        Painter.paintThrough(right, Fill.fillPath(p, "nonzero", 60, 60), INK);
+        return sideBySide(Magnify.magnify(left, 4), Magnify.magnify(right, 4));
+    }
+
+    /**
+     * §7.5: a small square whose edges sit on pixel centers, filled
+     * exactly, on an 8 by 8 canvas magnified by 24.
+     */
+    public static Canvas softSquare() {
+        Canvas c = new Canvas(8, 8);
+        c.fill(PAPER);
+        Path square = Paths.polygon(
+                Tuple.point(1.5, 1.5), Tuple.point(5.5, 1.5), Tuple.point(5.5, 5.5), Tuple.point(1.5, 5.5));
+        Painter.paintThrough(c, Fill.fillPath(square, "nonzero", 8, 8), INK);
+        return Magnify.magnify(c, 24);
+    }
+
+    /** §7.5: chapter 5's star, filled exactly under both rules, side by side. */
+    public static Canvas starExact() {
+        return sideBySide(starExactPanel("nonzero"), starExactPanel("evenodd"));
+    }
+
+    private static Canvas starExactPanel(String rule) {
+        Canvas c = new Canvas(160, 160);
+        c.fill(PAPER);
+        Painter.paintThrough(c, Fill.fillPath(star(), rule, 160, 160), INK);
+        return c;
+    }
+
+    /** §7.6: chapter 6's spiral of stars, filled exactly instead of by the sweep. */
+    public static Canvas spiralSmooth() {
+        Canvas c = new Canvas(320, 320);
+        c.fill(PAPER);
+        Path unit = unitStar();
+        for (int k = 0; k <= 23; k++) {
+            double a = Math.toRadians(k * 25);
+            double r = 20 + 5 * k;
+            Matrix m = Transforms.translation(160.5 + r * Math.cos(a), 160.5 + r * Math.sin(a))
+                    .multiply(Transforms.rotation(a))
+                    .multiply(Transforms.scaling(6 + 1.25 * k, 6 + 1.25 * k));
+            CoverageBuffer cov = Fill.fillPath(Paths.transformPath(unit, m), "nonzero", 320, 320);
+            Painter.paintThrough(c, cov, SPIRAL_INKS[k % 3]);
+        }
+        return c;
+    }
+
+    /**
+     * §7.6: every third ray of the sunburst -- seventy-two wedges, a couple
+     * of degrees wide, from the center out past the disc, k in i, i + 3,
+     * i + 6, ..., each ray k at angle -90 + 5k degrees so k = 0 points
+     * straight up.
+     */
+    private static Path rays(int i) {
+        Path p = new Path();
+        double cx = 240;
+        double cy = 240;
+        double r = 225;
+        double halfAngleDeg = 1.0;
+        for (int k = i; k < 72; k += 3) {
+            double a = Math.toRadians(-90 + 5.0 * k);
+            double a0 = Math.toRadians(-90 + 5.0 * k - halfAngleDeg);
+            double a1 = Math.toRadians(-90 + 5.0 * k + halfAngleDeg);
+            p.moveTo(Tuple.point(cx, cy));
+            p.lineTo(Tuple.point(cx + r * Math.cos(a0), cy + r * Math.sin(a0)));
+            p.lineTo(Tuple.point(cx + r * Math.cos(a1), cy + r * Math.sin(a1)));
+            p.close();
+        }
+        return p;
+    }
+
+    /** §7.6: the payoff -- a sunburst, a punched disc and an even-odd star, all filled exactly. */
+    public static Canvas sunburst() {
+        Canvas c = new Canvas(480, 480);
+        c.fill(PAPER);
+        for (int i = 0; i <= 2; i++) {
+            Painter.paintThrough(c, Fill.fillPath(rays(i), "nonzero", 480, 480), SPIRAL_INKS[i]);
+        }
+        Path disc = Paths.circlePath(240, 240, 78, 180);
+        Painter.paintThrough(c, Fill.fillPath(disc, "nonzero", 480, 480), PAPER);
+        Matrix m = Transforms.translation(240, 240).multiply(Transforms.scaling(64, 64));
+        Painter.paintThrough(c,
+                Fill.fillPath(Paths.transformPath(unitStar(), m), "evenodd", 480, 480), PALE);
+        return c;
+    }
+
+    /** §7.6: sunburst(). */
+    public static Canvas plate07() {
+        return sunburst();
+    }
+
+    // ---- chapter 8: curves --------------------------------------------------
+
+    /**
+     * §8.5: one petal -- two cubics, tip to base and back, bulging out to
+     * the sides, about one unit tall, base at the origin. Index 0 is the
+     * "right" curve, base to tip bulging toward +x; index 1 is "left", tip
+     * back to base bulging toward -x.
+     */
+    private static Curve[] petal() {
+        Tuple base = Tuple.point(0, 0);
+        Tuple tip = Tuple.point(0, -1);
+        Curve right = Curve.cubic(base, Tuple.point(0.55, -0.15), Tuple.point(0.55, -0.85), tip);
+        Curve left = Curve.cubic(tip, Tuple.point(-0.55, -0.85), Tuple.point(-0.55, -0.15), base);
+        return new Curve[] {right, left};
+    }
+
+    /**
+     * §8.5: flower_at(p, m, n, tolerance) -- n petals around the origin,
+     * placed by m, each flattened in device space (after the transform) at
+     * one shared tolerance.
+     */
+    private static void flowerAt(Path p, Matrix m, int n, double tolerance) {
+        Curve[] pet = petal();
+        for (int k = 0; k < n; k++) {
+            Matrix spin = m.multiply(Transforms.rotation(2 * Math.PI * k / n));
+            Curves.flattenIntoPath(p, Curves.transformCurve(pet[0], spin), tolerance);
+            Curves.flattenIntoPath(p, Curves.transformCurve(pet[1], spin), tolerance);
+            p.close();
+        }
+    }
+
+    /** The three flowers' spots: center x, center y, scale, petal count, rotation. */
+    private static final double[][] FLOWER_SPOTS = {
+        {108, 250, 62, 6, 0.3},
+        {200, 145, 68, 7, -0.2},
+        {282, 258, 66, 5, 0.9},
+    };
+
+    /** §8.5: three flowers of curved petals at three sizes, a disc punched out of each center. */
+    public static Canvas flower() {
+        Canvas c = new Canvas(360, 360);
+        c.fill(PAPER);
+        for (int i = 0; i < FLOWER_SPOTS.length; i++) {
+            double cx = FLOWER_SPOTS[i][0];
+            double cy = FLOWER_SPOTS[i][1];
+            double s = FLOWER_SPOTS[i][2];
+            int n = (int) FLOWER_SPOTS[i][3];
+            double rot = FLOWER_SPOTS[i][4];
+            Matrix m = Transforms.translation(cx, cy).multiply(Transforms.scaling(s, s)).multiply(Transforms.rotation(rot));
+            Path petals = new Path();
+            flowerAt(petals, m, n, 0.2);
+            Painter.paintThrough(c, Fill.fillPath(petals, "nonzero", 360, 360), SPIRAL_INKS[i % 3]);
+            Path disc = Paths.circlePath(cx, cy, s * 0.3, 64);
+            Painter.paintThrough(c, Fill.fillPath(disc, "nonzero", 360, 360), PAPER);
+        }
+        return c;
+    }
+
+    /** §8.5: flower(), magnified by 2. */
+    public static Canvas plate08() {
+        return Magnify.magnify(flower(), 2);
+    }
+
+    /** §8.3: one teardrop -- reusing the petal's two cubics, flattened at one shared tolerance. */
+    private static Path teardrop(Matrix m, double tolerance) {
+        Path p = new Path();
+        Curve[] pet = petal();
+        Curves.flattenIntoPath(p, Curves.transformCurve(pet[0], m), tolerance);
+        Curves.flattenIntoPath(p, Curves.transformCurve(pet[1], m), tolerance);
+        p.close();
+        return p;
+    }
+
+    /** §8.3: the same teardrop, flattened coarse on the left and fine on the right. */
+    public static Canvas drops() {
+        Matrix m = Transforms.translation(120, 145).multiply(Transforms.scaling(95, 95));
+        Canvas left = new Canvas(240, 240);
+        left.fill(PAPER);
+        Painter.paintThrough(left, Fill.fillPath(teardrop(m, 8.0), "nonzero", 240, 240), INK);
+        Canvas right = new Canvas(240, 240);
+        right.fill(PAPER);
+        Painter.paintThrough(right, Fill.fillPath(teardrop(m, 0.05), "nonzero", 240, 240), INK);
+        return sideBySide(left, right);
+    }
 }
