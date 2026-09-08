@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 10 · Paint Servers and Gradients — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 10 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-09.html">← 9</a> · <a href="#plate">Plate&nbsp;10</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Ten</p>
+    <h1>Paint Servers and Gradients</h1>
+    <p class="hook">A shape has always been one flat colour. That's about to look very limited. The
+      move this chapter makes is small to say and large in what it unlocks: stop thinking of paint as
+      a colour and start thinking of it as a <em>function</em> — give it a point on the canvas, it
+      hands back a colour. A solid fill is the constant function. A gradient is a function that turns
+      the point into a number and looks it up. And once paint is a function of position, gradients,
+      patterns and, in the next chapter, whole images stop being three features and become one.</p>
+  </header>
+
+  <p>Here's the reframing, concretely. Chapter 2's <code>paint_through</code> took a coverage buffer
+    and a single colour and blended that one colour everywhere the coverage was nonzero. Replace the
+    colour with a <code>Paint</code> — anything answering <code>paint_at(paint, x, y)</code> — and
+    sample it afresh at every pixel. Nothing else changes. A solid paint ignores the point and
+    returns its colour, so it behaves exactly as before. A gradient paint does the interesting part:
+    it projects the point down to a single number between 0 and 1, and reads a colour off a table.
+    Everything in this chapter is a different way of computing that one number.</p>
+
+  <h2><span class="sec">§ 10.1</span> The stop table</h2>
+
+  <p>The table first, since all three gradients share it. A gradient is a list of <em>stops</em>,
+    each an offset in <code>[0, 1]</code> and a colour, sorted by offset.
+    <code>sample_stops(stops, t)</code> is the colour at parameter <code>t</code>: below the first
+    stop you get the first colour, above the last you get the last, and between two stops a straight
+    blend, in linear light, weighted by where <code>t</code> falls between their offsets. With more
+    than a couple of stops a binary search finds the bracketing pair. Interpolating in linear light
+    is the book's convention from chapter 1; browsers blend gradient stops in the encoded space
+    instead, so a midpoint that reads as an even grey here looks lighter there. Same stops, different
+    lane, and the book has been in this lane the whole time.</p>
+
+  <figure>
+    <canvas id="fig101" role="img" aria-label="A horizontal bar showing a gradient interpolated across four colour stops, with tick marks at each stop offset and the colour at each stop labeled, and a smooth blend filling the space between them"></canvas>
+    <figcaption><span class="fig">Figure 10.1</span> Four stops and the ramp between them. Each tick is a stop; between two ticks the colour is a straight blend in linear light, by how far along you are. Every gradient in the chapter is this table, addressed by a different number.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter10-stops.feature">
+    <p class="label">features/chapter10-stops.feature</p>
+<pre><code><span class="kw">Feature</span>: The stop table
+  A gradient is a table of colour stops, each an offset in [0, 1] and a colour.
+  sample_stops(stops, t) is the colour at parameter t: the first colour below
+  the first stop, the last colour above the last stop, and a straight blend in
+  linear light between the two stops that bracket t, found by binary search.
+
+  <span class="kw">Scenario</span>: A stop offset returns its own colour
+    <span class="kw">Given</span> s ← [stop(0, color(0, 0, 0)), stop(0.5, color(1, 0, 0)), stop(1, color(1, 1, 1))]
+    <span class="kw">Then</span>  sample_stops(s, 0) = color(0, 0, 0)
+    <span class="kw">And</span>   sample_stops(s, 0.5) = color(1, 0, 0)
+    <span class="kw">And</span>   sample_stops(s, 1) = color(1, 1, 1)
+
+  <span class="kw">Scenario</span>: Between two stops is a straight blend
+    <span class="kw">Given</span> s ← [stop(0, color(0, 0, 0)), stop(0.5, color(1, 0, 0)), stop(1, color(1, 1, 1))]
+    <span class="kw">Then</span>  sample_stops(s, 0.25) = color(0.5, 0, 0)
+    <span class="kw">And</span>   sample_stops(s, 0.75) = color(1, 0.5, 0.5)
+
+  <span class="kw">Scenario</span>: Outside the ends clamps to the end colours
+    <span class="kw">Given</span> s ← [stop(0, color(0, 0, 0)), stop(0.5, color(1, 0, 0)), stop(1, color(1, 1, 1))]
+    <span class="kw">Then</span>  sample_stops(s, -0.3) = color(0, 0, 0)
+    <span class="kw">And</span>   sample_stops(s, 1.5) = color(1, 1, 1)
+
+  <span class="kw">Scenario</span>: Uneven stops still blend by their own spacing
+    <span class="kw">Given</span> s ← [stop(0, color(0, 0, 0)), stop(0.8, color(1, 0, 0)), stop(1, color(0, 0, 1))]
+    <span class="kw">Then</span>  sample_stops(s, 0.4) = color(0.5, 0, 0)
+    <span class="kw">And</span>   sample_stops(s, 0.9) = color(0.5, 0, 0.5)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 10.2</span> Extend modes</h2>
+
+  <p>The parameter a gradient computes won't always land in <code>[0, 1]</code> — a point can sit
+    before the start of a linear axis or well past its end. <code>extend(t, mode)</code> decides what
+    happens out there. <em>Pad</em> clamps to the ends, so the gradient holds its first and last
+    colours forever. <em>Repeat</em> wraps, tiling the ramp over and over. <em>Reflect</em> bounces,
+    mirroring the ramp every unit so it meets itself without a seam. Three lines, and they're the
+    difference between a gradient that fills a shape and one that tiles a background.</p>
+
+  <figure>
+    <canvas id="fig102" role="img" aria-label="Three horizontal strips of the same two-colour gradient whose axis covers only the middle third. The top strip pads, holding solid colour to either side; the middle repeats, tiling the ramp; the bottom reflects, mirroring the ramp back and forth"></canvas>
+    <figcaption><span class="fig">Figure 10.2</span> One short gradient, three extend modes. Its axis is only the middle third of each strip, so the modes have room to show: pad holds the ends, repeat tiles, reflect mirrors.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter10-extend.feature">
+    <p class="label">features/chapter10-extend.feature</p>
+<pre><code><span class="kw">Feature</span>: Extend modes
+  extend(t, mode) folds a parameter that fell outside [0, 1] back in. "pad"
+  clamps it to the ends, "repeat" wraps it around, and "reflect" bounces it
+  back and forth so the gradient mirrors every unit.
+
+  <span class="kw">Scenario Outline</span>: The three modes fold a parameter back in
+    <span class="kw">Then</span>  extend(&lt;t&gt;, "pad") = &lt;pad&gt;
+    <span class="kw">And</span>   extend(&lt;t&gt;, "repeat") = &lt;repeat&gt;
+    <span class="kw">And</span>   extend(&lt;t&gt;, "reflect") = &lt;reflect&gt;
+
+    <span class="kw">Examples</span>:
+      | t     | pad | repeat | reflect |
+      | 0.3   | 0.3 | 0.3    | 0.3     |
+      | -0.25 | 0   | 0.75   | 0.25    |
+      | 1     | 1   | 0      | 1       |
+      | 1.25  | 1   | 0.25   | 0.75    |
+      | 1.75  | 1   | 0.75   | 0.25    |
+      | 2.25  | 1   | 0.25   | 0.25    |</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 10.3</span> The three gradients</h2>
+
+  <p>Now the three ways to turn a point into a parameter. A <em>linear</em> gradient has an axis, two
+    points <code>p0</code> and <code>p1</code>. The parameter of a point is how far along that axis it
+    projects, as a fraction of the axis length — a dot product over the squared length. On the axis,
+    the parameter is exactly the fraction of the way from <code>p0</code> to <code>p1</code>, and
+    perpendicular to the axis it doesn't change, which is why a linear gradient comes out in stripes
+    square to its axis. That's the whole of <code>linear_t</code>.</p>
+
+  <p>A <em>radial</em> gradient is where it gets fun. The general form is two circles — a start circle
+    at <code>t = 0</code> and an end circle at <code>t = 1</code> — and the parameter of a point is the
+    <code>t</code> of the interpolated circle that passes through it. Interpolate the centres and the
+    radii, write "the point is on that circle", and you get a quadratic in <code>t</code>; solve it and
+    take the larger root whose radius isn't negative. When the two circles are concentric it's the
+    plain radial everyone knows, parameter equal to distance over radius. Set the start radius to zero
+    and offset its centre and you get SVG's <em>focal</em> gradient, the highlight that sits off to one
+    side of a sphere.</p>
+
+<pre><code>radial_t(point):                       <span class="cm">// t of the interpolated circle through the point</span>
+  cd ← c1 − c0;  dr ← r1 − r0;  pd ← point − c0
+  a ← cd·cd − dr²
+  b ← −2 · (pd·cd + r0·dr)
+  c ← pd·pd − r0²
+  solve a·t² + b·t + c = 0
+  <span class="kw">return</span> the largest root t with r0 + t·dr ≥ 0, or none if there is none</code></pre>
+
+  <p>A <em>conic</em> gradient, last, sweeps the parameter around a centre: the angle from the centre
+    to the point, divided by a full turn, wrapping once around. It's the one gradient that's periodic
+    by nature, and it's how you draw a colour wheel or a pie chart in one paint.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>The focal gradient hides a nasty case. When the focal point — the start circle, radius zero —
+      sits <em>outside</em> the end circle, there's a whole region of the plane that no circle in the
+      family reaches. Draw a ray from the focal point through such a pixel and it never crosses the end
+      circle, so the quadratic has no root with a valid radius, and <code>radial_t</code> returns
+      <code>none</code>. A naive implementation takes that <code>none</code>, or the NaN it got instead,
+      and paints black: a hard black wedge fanning out from the focal point across half the shape. The
+      spec's fix is to say those unreachable pixels take the last stop's colour, as if the gradient ran out — which is what <code>paint_at</code> does with a <code>none</code>. It's not
+      beautiful, but it's a colour from the gradient rather than a black hole, and the scenario pins a
+      point in the cone to prove it. If your focal gradient grows a dark spike, this is the line.</p>
+  </div>
+
+  <div class="test" data-feature="chapter10-gradients.feature">
+    <p class="label">features/chapter10-gradients.feature</p>
+<pre><code><span class="kw">Feature</span>: The three gradients
+  Each gradient turns a device point into a parameter, then looks it up in the
+  stop table. linear_t projects the point onto the axis. radial_t solves a
+  quadratic for the circle the point lies on, between a start circle and an end
+  circle; a focal gradient is the start radius set to zero, and points no
+  circle reaches come back as none. conic_t is the angle around a center.
+
+  <span class="kw">Scenario</span>: A linear gradient's parameter is the distance along its axis
+    <span class="kw">Given</span> g ← linear_gradient(point(10, 10), point(110, 10), [], "pad")
+    <span class="kw">Then</span>  linear_t(g, 10, 10) = 0
+    <span class="kw">And</span>   linear_t(g, 35, 10) = 0.25
+    <span class="kw">And</span>   linear_t(g, 60, 10) = 0.5
+    <span class="kw">And</span>   linear_t(g, 110, 10) = 1
+
+  <span class="kw">Scenario</span>: Distance across the axis does not change the parameter
+    <span class="kw">Given</span> g ← linear_gradient(point(10, 10), point(110, 10), [], "pad")
+    <span class="kw">Then</span>  linear_t(g, 60, 10) = 0.5
+    <span class="kw">And</span>   linear_t(g, 60, 50) = 0.5
+
+  <span class="kw">Scenario</span>: A linear gradient's colour along the axis is the parameter itself
+    <span class="kw">Given</span> g ← linear_gradient(point(0, 0), point(100, 0), [stop(0, color(0, 0, 0)), stop(1, color(1, 1, 1))], "pad")
+    <span class="kw">Then</span>  paint_at(g, 25, 0) = color(0.25, 0.25, 0.25)
+    <span class="kw">And</span>   paint_at(g, 50, 0) = color(0.5, 0.5, 0.5)
+
+  <span class="kw">Scenario</span>: A concentric radial gradient's parameter is distance over radius
+    <span class="kw">Given</span> g ← radial_gradient(point(50, 50), 0, point(50, 50), 40, [], "pad")
+    <span class="kw">Then</span>  radial_t(g, 50, 50) = 0
+    <span class="kw">And</span>   radial_t(g, 70, 50) = 0.5
+    <span class="kw">And</span>   radial_t(g, 90, 50) = 1
+
+  <span class="kw">Scenario</span>: A focal gradient runs from the focal point to the end circle
+    <span class="kw">Given</span> g ← radial_gradient(point(35, 50), 0, point(50, 50), 40, [], "pad")
+    <span class="kw">Then</span>  radial_t(g, 35, 50) = 0
+    <span class="kw">And</span>   radial_t(g, 90, 50) = 1
+
+  <span class="kw">Scenario</span>: A conic gradient sweeps the angle around its center
+    <span class="kw">Given</span> g ← conic_gradient(point(50, 50), -π / 2, [], "pad")
+    <span class="kw">Then</span>  conic_t(g, 50, 10) = 0
+    <span class="kw">And</span>   conic_t(g, 90, 50) = 0.25
+    <span class="kw">And</span>   conic_t(g, 50, 90) = 0.5
+    <span class="kw">And</span>   conic_t(g, 10, 50) = 0.75</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 10.4</span> Painting with a paint</h2>
+
+  <p><code>paint_fill(c, cov, paint)</code> is <code>paint_through</code> with the colour replaced by
+    a function: for every covered pixel it samples <code>paint_at</code> at the pixel's centre and
+    blends that colour in through the coverage, in linear light. Hand it a solid paint and it is
+    <code>paint_through</code> exactly, byte for byte — which the scenario checks, because a
+    generalization that changed the old behaviour would be a regression, not a generalization. Hand
+    it a gradient and every pixel gets its own colour. That single substitution is the entire chapter;
+    everything before it was working out what <code>paint_at</code> should return.</p>
+
+  <div class="note">
+    <h4>Sampling once per pixel</h4>
+    <p>The paint is sampled at the pixel centre, one colour for the whole pixel, so a gradient that
+      changes fast across a pixel is point-sampled and can alias the way a hard edge did in chapter 2.
+      In practice gradients change slowly and it never shows; when it does, the fix is the same
+      supersampling chapter 2 used, or the analytic coverage from chapter 7 with the paint sampled at
+      the covered area's centroid. The book samples once and moves on.</p>
+  </div>
+
+  <h2><span class="sec">§ 10.5</span> Eight bits isn't enough</h2>
+
+  <p>Paint a slow, dark gradient and look closely: it comes out in stripes. Not because the maths is
+    stepped — the light values are a smooth ramp — but because the output is eight bits per channel,
+    and a stretch of the ramp that spans less than one code value all rounds to the same byte. The
+    eye is very good at finding those edges. The cure is <em>ordered dithering</em>: before rounding
+    each pixel down to a byte, nudge it by a threshold that depends on its position, taken from a
+    small repeating matrix. A pixel whose true value sits <code>0.3</code> of the way between two bytes
+    rounds up in <code>30%</code> of the positions in the tile and down in the rest, so a flat band
+    becomes a fine stipple of the two neighbouring bytes and the eye blends it back to the value in
+    between. The matrix is the 4×4 Bayer matrix, and the whole trick is one addition before the floor.</p>
+
+  <figure>
+    <canvas id="fig103" role="img" aria-label="A slow dark horizontal gradient shown twice, one above the other. The top has visible vertical bands where the ramp rounds to eight-bit values; the bottom, dithered, replaces the bands with a fine stipple and reads as smooth"></canvas>
+    <figcaption><span class="fig">Figure 10.3</span> The same dark ramp, plain on top and ordered-dithered below. The bands on top are eight-bit rounding; the stipple below is the same bytes, rearranged so their average is right. Squint and the lower one is smooth.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter10-dither.feature">
+    <p class="label">features/chapter10-dither.feature</p>
+<pre><code><span class="kw">Feature</span>: Ordered dithering
+  Eight bits per channel can't hold a slow ramp: whole stretches round to the
+  same byte and the ramp shows visible steps. Ordered dithering nudges each
+  pixel by a threshold from a 4x4 Bayer matrix before rounding down, so a flat
+  value that sits between two bytes is split across both in a fine pattern
+  instead of snapping to one. dither_threshold(x, y) is that nudge in [0, 1);
+  to_byte_dithered and canvas_to_p6_dithered apply it.
+
+  <span class="kw">Scenario</span>: The Bayer matrix and its thresholds
+    <span class="kw">Given</span> b ← BAYER4
+    <span class="kw">Then</span>  b[0][0] = 0
+    <span class="kw">And</span>   b[0][1] = 8
+    <span class="kw">And</span>   b[1][0] = 12
+    <span class="kw">And</span>   dither_threshold(0, 0) = 0
+    <span class="kw">And</span>   dither_threshold(1, 0) = 0.5
+    <span class="kw">And</span>   dither_threshold(0, 1) = 0.75
+
+  <span class="kw">Scenario</span>: One light value dithers to the two bytes around it
+    <span class="kw">Then</span>  to_byte_dithered(0.5, 0, 0) = 187
+    <span class="kw">And</span>   to_byte_dithered(0.5, 1, 0) = 188
+    <span class="kw">And</span>   to_byte(0.5) = 188
+
+  <span class="kw">Scenario</span>: A flat patch is one byte plain but two dithered
+    <span class="kw">Given</span> c ← canvas(16, 16)
+    <span class="kw">When</span>  fill(c, color(0.5, 0.5, 0.5))
+    <span class="kw">Then</span>  distinct_values(canvas_to_p6(c)) = 1
+    <span class="kw">And</span>   distinct_values(canvas_to_p6_dithered(c)) = 2</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>The gradient tool's stop editor — the little bar with colour stops you drag — is this chapter's
+      stop table, and the <em>Linear / Radial / Angle</em> menu beside it is <code>linear_t</code>,
+      <code>radial_t</code> and <code>conic_t</code>. Illustrator's gradient annotator, the bar drawn
+      over the shape, is the axis <code>p0</code> to <code>p1</code>.</p>
+  </aside>
+
+  <h2><span class="sec">§ 10.6</span> Putting it together</h2>
+
+  <p>The plate is one stop table — a sunset, five colours dark to pale — addressed three ways: a
+    linear ramp across the diagonal, a focal radial with its highlight up and to the left, and a
+    conic sweep. Nothing about the stops changed between the three panels. Only the function from
+    point to parameter did. That's the chapter in one picture: paint is a function, and a gradient is
+    that function wearing three different hats.</p>
+
+<pre><code>three_gradients():
+  stops ← the sunset table                              <span class="cm">// shared by all three</span>
+  lin ← linear_gradient(point(10, 10), point(140, 140), stops, "pad")
+  rad ← radial_gradient(point(55, 55), 0, point(75, 75), 85, stops, "pad")   <span class="cm">// focal</span>
+  con ← conic_gradient(point(75, 75), −π/2, stops, "pad")
+  <span class="kw">for</span> paint <span class="kw">in</span> lin, rad, con:
+    panel ← a 150×150 canvas;  paint_fill(panel, full coverage, paint)
+    place panel left to right
+  <span class="kw">return</span> the row
+
+plate_10():
+  <span class="kw">return</span> three_gradients()</code></pre>
+
+  <div class="test" data-feature="chapter10-plate.feature">
+    <p class="label">features/chapter10-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 10
+  paint_fill(c, cov, paint) samples a paint at each covered pixel's center and
+  blends it in through the coverage; with a solid paint it is exactly chapter
+  2's paint_through. three_gradients() paints a linear, a focal radial and a
+  conic gradient from one stop table; plate_10() is it. extend_strip() shows a
+  gradient under the three extend modes. A focal gradient whose focal point
+  can't reach a pixel returns the last stop there, not black.
+
+  <span class="kw">Scenario</span>: A solid paint fills exactly like paint_through
+    <span class="kw">Given</span> box ← polygon(point(1, 1), point(6, 1), point(6, 6), point(1, 6))
+    <span class="kw">And</span>   cov ← fill_path(box, "nonzero", 8, 8)
+    <span class="kw">And</span>   a ← canvas(8, 8)
+    <span class="kw">And</span>   b ← canvas(8, 8)
+    <span class="kw">When</span>  fill(a, color(0.02, 0.02, 0.025))
+    <span class="kw">And</span>   fill(b, color(0.02, 0.02, 0.025))
+    <span class="kw">And</span>   paint_fill(a, cov, solid(color(0.9, 0.5, 0.2)))
+    <span class="kw">And</span>   paint_through(b, cov, color(0.9, 0.5, 0.2))
+    <span class="kw">Then</span>  pixel_at(a, 3, 3) = pixel_at(b, 3, 3)
+    <span class="kw">And</span>   pixel_at(a, 1, 1) = pixel_at(b, 1, 1)
+
+  <span class="kw">Scenario</span>: An unreachable focal pixel takes the last stop, not black
+    <span class="kw">Given</span> g ← radial_gradient(point(100, 50), 0, point(50, 50), 20, [stop(0, color(0, 0, 0)), stop(1, color(1, 1, 1))], "pad")
+    <span class="kw">Then</span>  radial_t(g, 110, 50) = none
+    <span class="kw">And</span>   paint_at(g, 110, 50) = color(1, 1, 1)
+
+  <span class="kw">Scenario</span>: The three gradients
+    <span class="kw">Given</span> c ← three_gradients()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-10/three-gradients.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 458
+    <span class="kw">And</span>   c.height = 150
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (68, 40, 108) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 140, 140) = (255, 249, 225) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 209, 55) = (71, 41, 109) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 383, 20) = (65, 39, 108) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 438, 75) = (196, 95, 130) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The extend strip
+    <span class="kw">Given</span> c ← extend_strip()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-10/extend-modes.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 360
+    <span class="kw">And</span>   c.height = 180
+    <span class="kw">And</span>   ppm_pixel(p6, 20, 30) = (89, 108, 188) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 340, 30) = (255, 218, 89) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 10
+    <span class="kw">Given</span> c ← plate_10()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-10/plate-10.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 458
+    <span class="kw">And</span>   c.height = 150
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate10" role="img" aria-label="Three panels side by side on dark paper, all from one sunset stop table dark purple through red and orange to pale cream: a linear gradient running diagonally, a radial gradient with an offset focal highlight, and a conic gradient sweeping around a center"></canvas>
+    <figcaption><span class="fig">Plate 10</span> Linear, radial with an offset focus, and conic. One stop table, three scalar fields. The paint is a function of position now, and the next chapter feeds it the one function it can't compute from a formula: a photograph.</figcaption>
+  </figure>
+
+  <p>Paint is a function of position, and you have three families of it plus the solid you started
+    with. Chapter 11 adds the fourth and strangest: an image, a paint whose value at a point is looked
+    up from stored pixels rather than evaluated, which drags in the whole question of what colour sits
+    between two pixels. After that, in chapter 12, clipping and groups — and there the coverage buffer
+    from chapter 2 finally pays off its last dividend.</p>
+
+  <nav class="endnav">
+    <a href="chapter-09.html">← 9 · Compositing</a>
+    <span>Chapter 10 · Paint Servers and Gradients</span>
+    <span>Next: 11 · Images and Resampling (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+function toByte(light){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255+0.5);}
+var BAYER4=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];
+function toByteDithered(light,x,y){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255 + BAYER4[y%4][x%4]/16);}
+function blit(ctx,pixels,pw,ph,scale,ox,oy){var img=ctx.createImageData(pw,ph); for(var i=0;i<pw*ph;i++){img.data[i*4]=pixels[i][0];img.data[i*4+1]=pixels[i][1];img.data[i*4+2]=pixels[i][2];img.data[i*4+3]=255;} var off=Plate.offcan(pw,ph); off.getContext('2d').putImageData(img,0,0); ctx.imageSmoothingEnabled=false; ctx.drawImage(off,ox,oy,pw*scale,ph*scale);}
+
+/* colours are linear-light triples; mix is a straight lerp */
+function mix3(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+function sampleStops(stops,t){ if(t<=stops[0][0])return stops[0][1]; if(t>=stops[stops.length-1][0])return stops[stops.length-1][1];
+  var lo=0,hi=stops.length-1; while(hi-lo>1){var mid=(lo+hi)>>1; if(stops[mid][0]<=t)lo=mid; else hi=mid;} return mix3(stops[lo][1],stops[hi][1],(t-stops[lo][0])/(stops[hi][0]-stops[lo][0])); }
+function extend(t,mode){ if(mode==='pad')return t<0?0:t>1?1:t; if(mode==='repeat')return t-Math.floor(t); var u=Math.abs(t)%2; return u<=1?u:2-u; }
+function linearT(g,x,y){var dx=g.p1[0]-g.p0[0],dy=g.p1[1]-g.p0[1]; return ((x-g.p0[0])*dx+(y-g.p0[1])*dy)/(dx*dx+dy*dy);}
+function radialT(g,x,y){var cdx=g.c1[0]-g.c0[0],cdy=g.c1[1]-g.c0[1],dr=g.r1-g.r0,pdx=x-g.c0[0],pdy=y-g.c0[1];
+  var a=cdx*cdx+cdy*cdy-dr*dr, b=-2*(pdx*cdx+pdy*cdy+g.r0*dr), c=pdx*pdx+pdy*pdy-g.r0*g.r0;
+  if(Math.abs(a)<1e-9){ if(Math.abs(b)<1e-12)return null; var t0=-c/b; return g.r0+t0*dr>=0?t0:null; }
+  var disc=b*b-4*a*c; if(disc<0)return null; var s=Math.sqrt(disc);
+  var roots=[(-b+s)/(2*a),(-b-s)/(2*a)]; for(var k=0;k<2;k++){ if(g.r0+roots[k]*dr>=0)return roots[k]; } return null; }
+function conicT(g,x,y){var a=Math.atan2(y-g.center[1],x-g.center[0])-g.angle0, t=a/(2*Math.PI); return t-Math.floor(t);}
+function paintAt(g,x,y){ if(g.kind==='solid')return g.color;
+  if(g.kind==='linear')return sampleStops(g.stops,extend(linearT(g,x,y),g.extend));
+  if(g.kind==='radial'){var t=radialT(g,x,y); return t===null?sampleStops(g.stops,1):sampleStops(g.stops,extend(t,g.extend));}
+  return sampleStops(g.stops,extend(conicT(g,x,y),g.extend)); }
+
+var PAPER=[0.02,0.02,0.025];
+var SUNSET=[[0.0,[0.05,0.02,0.15]],[0.35,[0.75,0.15,0.25]],[0.7,[0.98,0.6,0.15]],[1.0,[1.0,0.95,0.75]]];
+function panelBytes(g,W,H){var out=[]; for(var y=0;y<H;y++)for(var x=0;x<W;x++){var c=paintAt(g,x+0.5,y+0.5); out.push([toByte(c[0]),toByte(c[1]),toByte(c[2])]);} return out;}
+function threeGradients(){
+  var P=150, gap=4, W=P*3+8, H=P;
+  var buf=[]; for(var i=0;i<W*H;i++)buf.push([toByte(PAPER[0]),toByte(PAPER[1]),toByte(PAPER[2])]);
+  var gs=[{kind:'linear',p0:[10,10],p1:[140,140],stops:SUNSET,extend:'pad'},
+          {kind:'radial',c0:[55,55],r0:0,c1:[75,75],r1:85,stops:SUNSET,extend:'pad'},
+          {kind:'conic',center:[75,75],angle0:-Math.PI/2,stops:SUNSET,extend:'pad'}];
+  gs.forEach(function(g,i){var pb=panelBytes(g,P,P),ox=i*(P+gap); for(var y=0;y<P;y++)for(var x=0;x<P;x++)buf[y*W+ox+x]=pb[y*P+x];});
+  return {bytes:buf,w:W,h:H};
+}
+
+/* ---------- Figure 10.1 — the stop table ---------- */
+Plate.add('fig101', 0.3, function (ctx, w, h, p) {
+  var m=20, bw=w-2*m, bh=40, y=14;
+  for(var i=0;i<bw;i++){var c=sampleStops(SUNSET,i/(bw-1)); ctx.fillStyle=Plate.rgbs([Plate.l2s(c[0])*255,Plate.l2s(c[1])*255,Plate.l2s(c[2])*255]); ctx.fillRect(m+i,y,1,bh);}
+  ctx.strokeStyle=p.rule; ctx.strokeRect(m,y,bw,bh);
+  SUNSET.forEach(function(s){var x=m+s[0]*bw; ctx.strokeStyle=p.ink; ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(x,y-4); ctx.lineTo(x,y+bh+4); ctx.stroke(); Plate.label(ctx, s[0].toFixed(2), x, y+bh+18, p.ink2, 10, 'center');});
+});
+
+/* ---------- Figure 10.2 — extend modes ---------- */
+Plate.add('fig102', 0.5, function (ctx, w, h, p) {
+  var W=180,H=90, stops=[[0,[0.1,0.15,0.5]],[1,[1.0,0.7,0.1]]], modes=['pad','repeat','reflect'], bytes=[];
+  for(var i=0;i<W*H;i++)bytes.push([0,0,0]);
+  modes.forEach(function(mode,r){var g={kind:'linear',p0:[60,0],p1:[100,0],stops:stops,extend:mode}; for(var y=r*30;y<r*30+30;y++)for(var x=0;x<W;x++){var c=paintAt(g,x+0.5,y+0.5); bytes[y*W+x]=[toByte(c[0]),toByte(c[1]),toByte(c[2])];}});
+  var scale=Math.max(1,Math.floor(Math.min((w-20)/W,(h-20)/H)));
+  blit(ctx,bytes,W,H,scale,(w-W*scale)/2,(h-H*scale)/2);
+  ['pad','repeat','reflect'].forEach(function(t,r){Plate.label(ctx,t,(w-W*scale)/2+4,(h-H*scale)/2+r*30*scale+16,'#fff',11);});
+});
+
+/* ---------- Figure 10.3 — banding vs dither ---------- */
+Plate.add('fig103', 0.45, function (ctx, w, h, p) {
+  var W=200,H=70, stops=[[0,[0,0,0]],[1,[0.06,0.06,0.07]]], g={kind:'linear',p0:[0,0],p1:[W,0],stops:stops,extend:'pad'}, bytes=[];
+  for(var y=0;y<H;y++)for(var x=0;x<W;x++){var c=paintAt(g,x+0.5,y+0.5); if(y<H/2-1)bytes.push([toByte(c[0]),toByte(c[1]),toByte(c[2])]); else if(y>H/2)bytes.push([toByteDithered(c[0],x,y),toByteDithered(c[1],x,y),toByteDithered(c[2],x,y)]); else bytes.push([toByte(PAPER[0]),toByte(PAPER[1]),toByte(PAPER[2])]);}
+  var scale=Math.max(1,Math.floor(Math.min((w-16)/W,(h-28)/H)));
+  blit(ctx,bytes,W,H,scale,(w-W*scale)/2,(h-H*scale)/2);
+  Plate.label(ctx,'plain',(w-W*scale)/2+4,(h-H*scale)/2+14,'#bbb',10);
+  Plate.label(ctx,'dithered',(w-W*scale)/2+4,(h-H*scale)/2+H*scale-6,'#bbb',10);
+});
+
+/* ---------- Plate 10 — three gradients, pixel for pixel ---------- */
+Plate.add('plate10', 0.328, function (ctx, w, h, p) {
+  var g=threeGradients(), scale=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));
+  if(scale<1)scale=1; var dw=g.w*scale; if(dw>w){scale=w/g.w;} blit(ctx,g.bytes,g.w,g.h,scale,(w-g.w*scale)/2,0);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, toByteDithered, blit, mix3, sampleStops, extend, linearT, radialT, conicT, paintAt, panelBytes, threeGradients].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>

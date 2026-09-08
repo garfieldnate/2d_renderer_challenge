@@ -159,6 +159,19 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   curve `flatten` in the runner's flat namespace. The canvas stays opaque RGB; chapters 1-8 are
   untouched. Trap: conflation — two abutting opaque shapes composite to 0.75 along the shared edge,
   not 1.0, a seam every renderer has.
+- Chapter 10 paint: a `Paint` answers `paint_at(paint, x, y)`. `solid(c)` ignores the point; the
+  gradients turn it into a parameter and read `sample_stops(stops, t)` (a `stop` is `(offset,
+  color)`, binary search, interpolate in linear light). `extend(t, mode)` is pad/repeat/reflect.
+  `linear_t` projects onto the axis; `radial_t` solves the two-circle quadratic and returns `none`
+  for points no circle reaches (a focal gradient's cone); `conic_t` is the angle. `paint_fill(c,
+  cov, paint)` samples per pixel center and is byte-identical to `paint_through` for a solid.
+  Ordered dither: `BAYER4`, `dither_threshold`, `to_byte_dithered`, `canvas_to_p6_dithered` — a
+  flat value splits across the two bytes around it. Trap: a focal point outside the end circle makes
+  `radial_t` return `none`, and `paint_at` returns the last stop there (not black). NOTE: the plan's
+  suggested test "r0 = r1 reduces to a linear gradient" is false for the standard two-circle form
+  (that case is a genuine quadratic); pinned the true reductions instead — concentric is distance
+  over radius, focal runs focal→end-circle. Interpolation and dither are in linear light (browsers
+  differ), consistent with chapter 1.
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and
   `Then X is the following matrix:`. The runner understands exactly those two table steps.
 
