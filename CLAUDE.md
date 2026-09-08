@@ -186,6 +186,16 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   `KINDS`); chapter 11 registers "image" into it. Minification: `downsample` (2×2 box average, which
   preserves the whole-image average), `mip_chain`, `mip_level_for(scale)`. Trap: the half-pixel
   offset. All sampling/averaging is premultiplied, in linear light.
+- Chapter 12 clipping/masks/groups: a clip is a coverage buffer; `multiply_coverage(a, b)` applies
+  one (commutes, so nesting is order-free; `full_clip` is a no-op). `clip_rect`/`clip_path` are
+  fills that produce a clip. A soft mask is the same multiply with fractional values (`soft_mask` is
+  a radial falloff). Groups reuse chapter 9's `layer`: `push_group` (a transparent layer),
+  `paint_into(l, cov, col, alpha)` (a child, src-over), `scale_opacity(l, o)` (× every premultiplied
+  channel), `pop_group_with_opacity(group, base, o)` (scale then composite). A group at opacity 1 is
+  pixel-identical to drawing its children directly; below 1 it differs from per-child opacity at
+  overlaps, because the group flattens before the opacity applies — that is Plate 12. Trap: a group
+  buffer should be sized to its bounding box, not the canvas (the book keeps canvas-sized for
+  readability, but says so). Runner learned the `set_layer_pixel` mutation step.
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and
   `Then X is the following matrix:`. The runner understands exactly those two table steps.
 

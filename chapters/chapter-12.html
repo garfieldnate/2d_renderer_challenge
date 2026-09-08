@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 12 · Clipping, Masks and Groups — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 12 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-11.html">← 11</a> · <a href="#plate">Plate&nbsp;12</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Twelve</p>
+    <h1>Clipping, Masks and Groups</h1>
+    <p class="hook">Two things are left before the machine is whole: deciding <em>where</em> paint is
+      allowed to land, and combining whole stacks of it as one. The first is clipping, and it comes
+      with a small gift — it needs almost no new code, because the thing a clip is made of is the
+      coverage buffer you built in chapter 2. A clip is a shape's coverage; clipping is multiplying two
+      coverage buffers together; and nesting clips is multiplying more of them, which composes for
+      free. The second is groups, and it hides a genuine subtlety that every designer has hit without
+      knowing its name: turning a group's opacity down is not the same as turning each thing inside it
+      down, and the difference is exactly the overlaps.</p>
+  </header>
+
+  <p>This is the chapter where chapter 2's one design decision pays its last dividend. Making coverage
+    a first-class value — a buffer you can hold, not a thing hidden inside the fill — meant that a
+    clip, a mask, and the alpha of a rendered layer are all the same kind of object, and combining any
+    of them is arithmetic on buffers. Nothing here is a new algorithm. It's four small operations on
+    things you already have, and a bounding box you have to remember to compute.</p>
+
+  <h2><span class="sec">§ 12.1</span> A clip is a coverage buffer</h2>
+
+  <p>To clip a fill to a region, you want its paint only where the region is. You already produce, for
+    every fill, a coverage buffer that's the fraction of each pixel the shape covers. A clip is the
+    same thing — a coverage buffer for the clip region — and to apply it you multiply the two, cell by
+    cell. <code>multiply_coverage(a, b)</code> is the whole operation. Where the clip is 1 the fill
+    passes untouched; where the clip is 0 it's erased; and the antialiased edge of the clip softens the
+    fill's edge for free, because it's a number between 0 and 1 like any other. <code>clip_rect</code>
+    and <code>clip_path</code> are only fills that produce a clip, and there was never a difference
+    between a clip and a shape.</p>
+
+  <figure>
+    <canvas id="fig121" role="img" aria-label="Two overlapping shapes, a rectangle and a circle, drawn as coverage regions, and to their right the intersection where both are present, which is their coverage buffers multiplied together"></canvas>
+    <figcaption><span class="fig">Figure 12.1</span> Clipping is intersection, and intersection is multiplication. A shape's coverage times a clip's coverage is the coverage that survives both. Because it's a product, a second clip is a third factor, and clips nest in any order.</figcaption>
+  </figure>
+
+  <p>Two properties fall straight out of multiplication, and they're the tests. <code>full_clip</code>
+    is coverage 1 everywhere, so multiplying by it changes nothing: clipping to the whole canvas is a
+    no-op, which sounds trivial until a bug makes it not one. And multiplication commutes, so nesting a
+    circle clip inside a rectangle clip gives the identical result to nesting them the other way. A
+    clip stack is a running product, and the order you pushed the clips never matters.</p>
+
+  <div class="test" data-feature="chapter12-clip.feature">
+    <p class="label">features/chapter12-clip.feature</p>
+<pre><code><span class="kw">Feature</span>: A clip is a coverage buffer
+  Clipping needs no new machinery. A clip is a coverage buffer, and clipping
+  one coverage by another is multiply_coverage, cell by cell. clip_rect and
+  clip_path build clips as ordinary fills. full_clip is coverage 1 everywhere,
+  so clipping to the whole canvas is a no-op; and because multiplication
+  commutes, nesting clips in either order gives the same result.
+
+  <span class="kw">Scenario</span>: Multiplying two coverage buffers, cell by cell
+    <span class="kw">Given</span> a ← coverage_buffer(2, 1)
+    <span class="kw">And</span>   b ← coverage_buffer(2, 1)
+    <span class="kw">When</span>  set_coverage(a, 0, 0, 0.5)
+    <span class="kw">And</span>   set_coverage(a, 1, 0, 1.0)
+    <span class="kw">And</span>   set_coverage(b, 0, 0, 0.5)
+    <span class="kw">And</span>   set_coverage(b, 1, 0, 0.25)
+    <span class="kw">When</span>  m ← multiply_coverage(a, b)
+    <span class="kw">Then</span>  coverage_at(m, 0, 0) = 0.25
+    <span class="kw">And</span>   coverage_at(m, 1, 0) = 0.25
+
+  <span class="kw">Scenario</span>: Clipping to the whole canvas changes nothing
+    <span class="kw">Given</span> cov ← fill_path(circle_path(6, 6, 4, 32), "nonzero", 12, 12)
+    <span class="kw">And</span>   full ← full_clip(12, 12)
+    <span class="kw">Then</span>  max_coverage_difference(multiply_coverage(cov, full), cov) = 0
+
+  <span class="kw">Scenario</span>: Nested clips commute
+    <span class="kw">Given</span> r ← clip_rect(2, 2, 8, 8, 12, 12)
+    <span class="kw">And</span>   c ← clip_path(circle_path(6, 6, 4, 32), "nonzero", 12, 12)
+    <span class="kw">Then</span>  max_coverage_difference(multiply_coverage(r, c), multiply_coverage(c, r)) = 0
+
+  <span class="kw">Scenario</span>: A clip zeroes the coverage outside it
+    <span class="kw">Given</span> shape ← fill_path(polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10)), "nonzero", 12, 12)
+    <span class="kw">And</span>   clip ← clip_rect(2, 2, 6, 6, 12, 12)
+    <span class="kw">When</span>  clipped ← multiply_coverage(shape, clip)
+    <span class="kw">Then</span>  coverage_at(clipped, 4, 4) = 1.0
+    <span class="kw">And</span>   coverage_at(clipped, 8, 8) = 0.0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 12.2</span> Soft masks</h2>
+
+  <p>Once a clip is a coverage buffer, a <em>soft</em> clip is free: fill it with values between 0 and
+    1 instead of only 0 and 1, and the same multiplication fades the shape instead of cutting it.
+    That's a mask. <code>soft_mask</code> here is a radial falloff — 1 at its centre, dropping to 0 at
+    a radius — and multiplying a shape by it dissolves the shape's edge into the background, the
+    vignette every photo app ships. The mask can come from anywhere a coverage buffer can: a gradient's
+    alpha, an image's brightness, another shape's antialiased fill. The renderer doesn't care where the
+    numbers came from; it multiplies them in.</p>
+
+  <div class="test" data-feature="chapter12-mask.feature">
+    <p class="label">features/chapter12-mask.feature</p>
+<pre><code><span class="kw">Feature</span>: Soft masks
+  A soft mask is a clip whose values are between 0 and 1 instead of only 0 or
+  1, and it multiplies in exactly the same way. soft_mask is a radial falloff,
+  coverage 1 at its center fading to 0 at radius r, so multiplying a shape by
+  it fades the shape out toward the edge instead of cutting it hard.
+
+  <span class="kw">Scenario</span>: A soft mask fades from its center to its edge
+    <span class="kw">Given</span> m ← soft_mask(6, 6, 5, 12, 12)
+    <span class="kw">Then</span>  coverage_at(m, 5, 5) = 0.8586 ± 0.0001
+    <span class="kw">And</span>   coverage_at(m, 1, 6) = 0.0945 ± 0.0001
+    <span class="kw">And</span>   coverage_at(m, 0, 0) = 0
+
+  <span class="kw">Scenario</span>: A shape multiplied by a soft mask keeps its interior and fades its rim
+    <span class="kw">Given</span> shape ← fill_path(polygon(point(0, 0), point(12, 0), point(12, 12), point(0, 12)), "nonzero", 12, 12)
+    <span class="kw">And</span>   m ← soft_mask(6, 6, 5, 12, 12)
+    <span class="kw">When</span>  masked ← multiply_coverage(shape, m)
+    <span class="kw">Then</span>  coverage_at(masked, 5, 5) = 0.8586 ± 0.0001
+    <span class="kw">And</span>   coverage_at(masked, 0, 0) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 12.3</span> Groups, and the opacity that isn't what you think</h2>
+
+  <p>The last operation is combining a stack of drawing as one thing. You draw the children into an
+    offscreen layer — <code>push_group</code> makes a fresh transparent one, chapter 9's premultiplied
+    buffer — then composite that whole layer back onto the canvas. On its own that's not interesting.
+    It becomes interesting when the group carries an <em>opacity</em>. Lowering a group's opacity should
+    fade the group as a single flattened object. Lowering each child's opacity fades them one at a
+    time. Those are different pictures, and the difference lives entirely in the overlaps.</p>
+
+  <p>Here's why, and it's worth doing slowly. Say two half-transparent shapes overlap. Draw them at
+    per-child opacity and the overlap gets composited twice — the second shape lays its half over the
+    already-half-covered first — so the overlap is darker and more saturated than either shape alone.
+    Now put them in a group at full opacity, so inside the group they're opaque and the top one wins the overlap, then drop the <em>group</em> to half: every pixel of the flattened group, overlap
+    and all, fades by the same half. The overlap now matches its surroundings. The group flattened
+    <em>before</em> the opacity applied, so the double-composite never happened.</p>
+
+<pre><code>pop_group_with_opacity(group, base, opacity):
+  faded ← scale_opacity(group, opacity)     <span class="cm">// every premultiplied channel × opacity</span>
+  <span class="kw">return</span> composite(src-over, faded, base)   <span class="cm">// the whole group, once</span>
+
+<span class="cm">// at opacity 1 this is pixel-identical to drawing the children straight onto base:</span>
+<span class="cm">// scaling by 1 does nothing, and compositing the group is compositing its children.</span></code></pre>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>A group buffer is a whole extra layer, and the lazy thing is to make it canvas-sized. Do that and
+      a page with fifty nested groups allocates fifty full-canvas buffers — on a large document, gigabytes,
+      for groups that each cover a postage stamp. The fix is unglamorous and mandatory: allocate the group
+      buffer to the bounding box of what it will hold, offset everything into that box, and composite it
+      back at its offset. Getting the bounds right, and propagating them up through nested groups and clips
+      so a parent knows how big its child came out, is half the real work of this chapter and none of the
+      fun. The book keeps its groups canvas-sized because its canvases are small and the code stays
+      readable; a production renderer cannot, and the bounding-box arithmetic is where clipping stops being
+      free.</p>
+  </div>
+
+  <div class="test" data-feature="chapter12-groups.feature">
+    <p class="label">features/chapter12-groups.feature</p>
+<pre><code><span class="kw">Feature</span>: Groups
+  A group is an offscreen layer you draw children into, then composite back at
+  one opacity. push_group starts it; paint_into draws a child; scale_opacity
+  lowers the whole layer's alpha; pop_group_with_opacity flattens the group and
+  composites it at an opacity. At opacity 1 a group is identical to drawing its
+  children straight onto the canvas — but below 1 it differs, because the group
+  is flattened before the opacity is applied, so overlaps inside it are already
+  resolved rather than composited twice.
+
+  <span class="kw">Scenario</span>: scale_opacity lowers a layer's premultiplied channels together
+    <span class="kw">Given</span> g ← layer(1, 1)
+    <span class="kw">When</span>  set_layer_pixel(g, 0, 0, opaque(color(1, 0, 0)))
+    <span class="kw">And</span>   h ← scale_opacity(g, 0.5)
+    <span class="kw">Then</span>  layer_pixel(h, 0, 0) = pixel(0.5, 0, 0, 0.5)
+
+  <span class="kw">Scenario</span>: A group at opacity 1 is drawing its children directly
+    <span class="kw">Given</span> a ← polygon(point(2, 2), point(12, 2), point(12, 12), point(2, 12))
+    <span class="kw">And</span>   b ← polygon(point(6, 6), point(16, 6), point(16, 16), point(6, 16))
+    <span class="kw">And</span>   ca ← fill_path(a, "nonzero", 20, 20)
+    <span class="kw">And</span>   cb ← fill_path(b, "nonzero", 20, 20)
+    <span class="kw">When</span>  direct ← paint_into(paint_into(layer(20, 20), ca, color(1, 0, 0), 1.0), cb, color(0, 0, 1), 1.0)
+    <span class="kw">And</span>   group ← paint_into(paint_into(push_group(20, 20), ca, color(1, 0, 0), 1.0), cb, color(0, 0, 1), 1.0)
+    <span class="kw">And</span>   grouped ← pop_group_with_opacity(group, layer(20, 20), 1.0)
+    <span class="kw">Then</span>  layer_pixel(grouped, 8, 8) = layer_pixel(direct, 8, 8)
+    <span class="kw">And</span>   layer_pixel(grouped, 3, 3) = layer_pixel(direct, 3, 3)
+    <span class="kw">And</span>   layer_pixel(grouped, 14, 14) = layer_pixel(direct, 14, 14)
+
+  <span class="kw">Scenario</span>: Below opacity 1 a group and per-child opacity part ways at overlaps
+    <span class="kw">Given</span> a ← polygon(point(2, 2), point(12, 2), point(12, 12), point(2, 12))
+    <span class="kw">And</span>   b ← polygon(point(6, 6), point(16, 6), point(16, 16), point(6, 16))
+    <span class="kw">And</span>   ca ← fill_path(a, "nonzero", 20, 20)
+    <span class="kw">And</span>   cb ← fill_path(b, "nonzero", 20, 20)
+    <span class="kw">When</span>  perchild ← paint_into(paint_into(layer(20, 20), ca, color(1, 0, 0), 0.5), cb, color(0, 0, 1), 0.5)
+    <span class="kw">And</span>   group ← paint_into(paint_into(push_group(20, 20), ca, color(1, 0, 0), 1.0), cb, color(0, 0, 1), 1.0)
+    <span class="kw">And</span>   grouped ← pop_group_with_opacity(group, layer(20, 20), 0.5)
+    <span class="kw">Then</span>  layer_pixel(grouped, 3, 3) = layer_pixel(perchild, 3, 3)
+    <span class="kw">And</span>   layer_pixel(grouped, 8, 8) ≠ layer_pixel(perchild, 8, 8)</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>Illustrator's <em>Object → Clipping Mask → Make</em>, Figma's <em>Clip content</em> checkbox on a
+      frame, and Photoshop's layer masks are §12.1 and §12.2. The plate's right-hand side is precisely
+      what happens when you select several layers, group them, and drag the group's opacity slider —
+      the reason that looks different from setting each layer to the same value.</p>
+  </aside>
+
+  <h2><span class="sec">§ 12.4</span> Putting it together</h2>
+
+  <p>The plate is the group-opacity surprise, side by side. Three overlapping circles in three inks. On
+    the left, each is painted onto the canvas at half opacity, and the overlaps go dark and muddy where
+    the paint stacks. On the right, the three are drawn opaque into a group and the whole group is
+    composited at half opacity, and the overlaps are the same clean strength as everywhere else. Same
+    circles, same 50%, one is applied per shape and the other to the flattened group.</p>
+
+<pre><code>per_child():                                  <span class="cm">// left: 50% per circle</span>
+  base ← opaque paper
+  <span class="kw">for</span> circle, colour <span class="kw">in</span> the three:
+    base ← paint_into(base, fill_path(circle), colour, 0.5)
+  <span class="kw">return</span> base
+
+group_opacity():                              <span class="cm">// right: opaque group, 50% once</span>
+  base  ← opaque paper
+  group ← push_group()
+  <span class="kw">for</span> circle, colour <span class="kw">in</span> the three:
+    group ← paint_into(group, fill_path(circle), colour, 1.0)
+  <span class="kw">return</span> pop_group_with_opacity(group, base, 0.5)</code></pre>
+
+  <div class="test" data-feature="chapter12-plate.feature">
+    <p class="label">features/chapter12-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 12
+  opacity_plate() draws three overlapping circles two ways: on the left each
+  circle is painted at half opacity in turn, so the overlaps composite twice
+  and darken; on the right the three are drawn opaque into a group and the whole
+  group is composited at half opacity, so the overlaps match the rest.
+  plate_12() is it magnified. clip_demo() clips a star to a circle and to a soft
+  radial mask.
+
+  <span class="kw">Scenario</span>: A single circle looks the same either way, but the overlap does not
+    <span class="kw">Given</span> c ← opacity_plate()
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 300
+    <span class="kw">And</span>   c.height = 150
+    <span class="kw">And</span>   ppm_pixel(p6, 40, 62) = (185, 145, 71) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 190, 62) = (185, 145, 71) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 75, 72) = (203, 156, 165) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 225, 72) = (176, 103, 112) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 5, 5) = (39, 39, 44) ± 1
+
+  <span class="kw">Scenario</span>: The opacity plate
+    <span class="kw">Given</span> c ← opacity_plate()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-12/opacity.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 12
+    <span class="kw">Given</span> c ← plate_12()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-12/plate-12.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 600
+    <span class="kw">And</span>   c.height = 300
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The clip demo, hard against soft
+    <span class="kw">Given</span> c ← clip_demo()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-12/clip-demo.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 300
+    <span class="kw">And</span>   c.height = 150
+    <span class="kw">And</span>   ppm_pixel(p6, 225, 45) = (197, 155, 74) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate12" role="img" aria-label="Three overlapping circles in orange, blue and red shown twice. On the left each circle is at fifty percent opacity and the overlaps are noticeably darker where they stack; on the right the group is drawn opaque then set to fifty percent, and the overlaps are the same strength as the rest"></canvas>
+    <figcaption><span class="fig">Plate 12</span> Left: each circle at 50%. Right: the group drawn opaque, then composited at 50%. The overlaps give the game away — dark where the paint stacked, even where the group faded as one.</figcaption>
+  </figure>
+
+  <p>Clipping was multiplication, masks were the same multiplication with softer numbers, and a group
+    was a layer composited once. All of it rode on the coverage buffer from chapter 2 and the compositing
+    from chapter 9. That closes Part III: coverage says where, paint says what colour, compositing says how
+    they combine, and clips and groups say where it's allowed and how it stacks. The renderer can now draw
+    any filled, gradient-painted, image-textured, clipped, grouped shape you can describe. What it still
+    can't do is draw a <em>line</em> with width — a stroke — and that turns out to be a fill of a shape you
+    have to construct, which is Part IV.</p>
+
+  <nav class="endnav">
+    <a href="chapter-11.html">← 11 · Images and Resampling</a>
+    <span>Chapter 12 · Clipping, Masks and Groups</span>
+    <span>Next: 13 · Stroking is Filling (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+function toByte(light){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255+0.5);}
+function blit(ctx,pixels,pw,ph,scale,ox,oy){var img=ctx.createImageData(pw,ph); for(var i=0;i<pw*ph;i++){img.data[i*4]=pixels[i][0];img.data[i*4+1]=pixels[i][1];img.data[i*4+2]=pixels[i][2];img.data[i*4+3]=255;} var off=Plate.offcan(pw,ph); off.getContext('2d').putImageData(img,0,0); ctx.imageSmoothingEnabled=false; ctx.drawImage(off,ox,oy,pw*scale,ph*scale);}
+
+/* paths and the chapter 7 fill */
+function point(x,y){return [x,y,1];}
+function path(){return {subpaths:[]};}
+function moveTo(p,q){p.subpaths.push({points:[q],closed:false});}
+function lineTo(p,q){if(!p.subpaths.length)return moveTo(p,q);var c=p.subpaths[p.subpaths.length-1];if(c.closed){moveTo(p,c.points[0]);c=p.subpaths[p.subpaths.length-1];}c.points.push(q);}
+function close(p){if(p.subpaths.length)p.subpaths[p.subpaths.length-1].closed=true;}
+function polygon(){var p=path(),a=arguments;moveTo(p,a[0]);for(var i=1;i<a.length;i++)lineTo(p,a[i]);close(p);return p;}
+function circlePath(cx,cy,r,n){var p=path();for(var k=0;k<n;k++){var a=2*Math.PI*k/n,q=point(cx+r*Math.cos(a),cy+r*Math.sin(a));k?lineTo(p,q):moveTo(p,q);}close(p);return p;}
+function edges(p){var out=[];p.subpaths.forEach(function(sp){var n=sp.points.length;if(n<2)return;for(var i=0;i<n;i++)out.push([sp.points[i],sp.points[(i+1)%n]]);});return out;}
+function fillPath(p,w,h){var acc={w:w,h:h,area:new Array(w*h).fill(0),cover:new Array(w*h).fill(0)};edges(p).forEach(function(e){var a=e[0],b=e[1];if(a[1]===b[1])return;var sign=a[1]>b[1]?1:-1,top=a[1]>b[1]?b:a,bot=a[1]>b[1]?a:b,slope=(bot[0]-top[0])/(bot[1]-top[1]);var first=Math.max(Math.floor(top[1]),0),last=Math.min(Math.ceil(bot[1])-1,h-1);for(var row=first;row<=last;row++){var y0=Math.max(top[1],row),y1=Math.min(bot[1],row+1),x0=top[0]+(y0-top[1])*slope,x1=top[0]+(y1-top[1])*slope;var xa=Math.min(x0,x1),xb=Math.max(x0,x1),ca=Math.floor(xa),cb=Math.floor(xb);function add(x,ar,co){if(x<0){x=0;ar=co;}if(x>=w)return;var i=row*w+x;acc.area[i]+=ar;acc.cover[i]+=co;}var hgt=sign*(y1-y0);if(ca===cb){var xm=(xa+xb)/2-ca;add(ca,hgt*(1-xm),hgt);}else{var dx=xb-xa;for(var c=ca;c<=cb;c++){var lo=Math.max(xa,c),hi=Math.min(xb,c+1),s=hgt*(hi-lo)/dx,m=(lo+hi)/2-c;add(c,s*(1-m),s);}}}});var cov=new Array(w*h).fill(0);for(var row=0;row<h;row++){var run=0;for(var x=0;x<w;x++){var i=row*w+x;cov[i]=Math.min(1,Math.abs(run+acc.area[i]));run+=acc.cover[i];}}return cov;}
+
+/* coverage arithmetic and masks */
+function multiplyCoverage(a,b){var o=new Array(a.length);for(var i=0;i<a.length;i++)o[i]=a[i]*b[i];return o;}
+function softMask(cx,cy,r,w,h){var o=new Array(w*h);for(var y=0;y<h;y++)for(var x=0;x<w;x++){var d=Math.hypot(x+0.5-cx,y+0.5-cy)/r,v=1-d;o[y*w+x]=v>0?v:0;}return o;}
+
+/* premultiplied pixels, layers, compositing (chapter 9) */
+function px(r,g,b,a){return {r:r,g:g,b:b,a:a};}
+function fromColor(c,a){return {r:c[0]*a,g:c[1]*a,b:c[2]*a,a:a};}
+function opaque(c){return fromColor(c,1);}
+function over(s,d){var t=1-s.a;return px(s.r+t*d.r,s.g+t*d.g,s.b+t*d.b,s.a+t*d.a);}
+function layer(w,h){var p=new Array(w*h);for(var i=0;i<w*h;i++)p[i]=px(0,0,0,0);return {w:w,h:h,p:p};}
+function paintInto(l,cov,col,alpha){var o=layer(l.w,l.h);for(var i=0;i<l.w*l.h;i++){var k=cov[i]*alpha,s=k>0?fromColor(col,k):px(0,0,0,0);o.p[i]=over(s,l.p[i]);}return o;}
+function scaleOpacity(l,op){var o=layer(l.w,l.h);for(var i=0;i<l.w*l.h;i++){var p=l.p[i];o.p[i]=px(p.r*op,p.g*op,p.b*op,p.a*op);}return o;}
+function popGroup(group,base,op){var f=scaleOpacity(group,op),o=layer(base.w,base.h);for(var i=0;i<base.w*base.h;i++)o.p[i]=over(f.p[i],base.p[i]);return o;}
+function layerBytes(l){var o=[];for(var i=0;i<l.w*l.h;i++)o.push([toByte(l.p[i].r),toByte(l.p[i].g),toByte(l.p[i].b)]);return o;}
+
+var PAPER=[0.02,0.02,0.025], INKS=[[0.95,0.55,0.1],[0.2,0.55,0.85],[0.85,0.25,0.3]], SIZE=150;
+function threeCircles(){var C=[[60,62],[90,62],[75,92]];return C.map(function(c,i){return [circlePath(c[0],c[1],34,64),INKS[i]];});}
+function perChild(){var base=layer(SIZE,SIZE);for(var i=0;i<SIZE*SIZE;i++)base.p[i]=opaque(PAPER);threeCircles().forEach(function(cc){base=paintInto(base,fillPath(cc[0],SIZE,SIZE),cc[1],0.5);});return base;}
+function groupOpacity(){var base=layer(SIZE,SIZE);for(var i=0;i<SIZE*SIZE;i++)base.p[i]=opaque(PAPER);var g=layer(SIZE,SIZE);threeCircles().forEach(function(cc){g=paintInto(g,fillPath(cc[0],SIZE,SIZE),cc[1],1.0);});return popGroup(g,base,0.5);}
+function sideBySide(a,b){var W=a.w+b.w,H=a.h,A=layerBytes(a),B=layerBytes(b),o=new Array(W*H);for(var y=0;y<H;y++){for(var x=0;x<a.w;x++)o[y*W+x]=A[y*a.w+x];for(var x2=0;x2<b.w;x2++)o[y*W+a.w+x2]=B[y*b.w+x2];}return {bytes:o,w:W,h:H};}
+function opacityPlate(){return sideBySide(perChild(),groupOpacity());}
+
+/* ---------- Figure 12.1 — clipping is intersection ---------- */
+Plate.add('fig121', 0.42, function (ctx, w, h, p) {
+  var S=90, rect=fillPath(polygon(point(15,25),point(60,25),point(60,70),point(15,70)),S,S), circ=fillPath(circlePath(58,52,28,64),S,S), inter=multiplyCoverage(rect,circ);
+  function draw(cov,ox,col){var b=[];for(var i=0;i<S*S;i++){var k=cov[i];b.push([toByte(PAPER[0]+(col[0]-PAPER[0])*k),toByte(PAPER[1]+(col[1]-PAPER[1])*k),toByte(PAPER[2]+(col[2]-PAPER[2])*k)]);}var sc=Math.max(1,Math.floor((h-16)/S));blit(ctx,b,S,S,sc,ox,(h-S*sc)/2);return sc;}
+  var sc=draw(rect,10,[0.5,0.55,0.6]); // draw both shapes overlaid on the left tile
+  var over=[];for(var i=0;i<S*S;i++){var kr=rect[i],kc=circ[i];var c=[PAPER[0],PAPER[1],PAPER[2]];c=[c[0]+(0.2-c[0])*kr*0.8,c[1]+(0.5-c[1])*kr*0.8,c[2]+(0.85-c[2])*kr*0.8];c=[c[0]+(0.95-c[0])*kc*0.6,c[1]+(0.5-c[1])*kc*0.6,c[2]+(0.1-c[2])*kc*0.6];over.push([toByte(c[0]),toByte(c[1]),toByte(c[2])]);}
+  blit(ctx,over,S,S,sc,10,(h-S*sc)/2);
+  Plate.label(ctx,'×',10+S*sc+8,h/2+4,p.ink,16);
+  draw(inter,10+S*sc+22,INKS[0]);
+  Plate.label(ctx,'=',10+2*S*sc+30,h/2+4,p.ink,16);
+});
+
+/* ---------- Plate 12 — per-child vs group ---------- */
+Plate.add('plate12', 0.5, function (ctx, w, h, p) {
+  var g=opacityPlate(), scale=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h))); if(g.w*scale>w)scale=w/g.w; blit(ctx,g.bytes,g.w,g.h,scale,(w-g.w*scale)/2,0);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, blit, point, path, moveTo, lineTo, close, polygon, circlePath, edges, fillPath, multiplyCoverage, softMask, px, fromColor, opaque, over, layer, paintInto, scaleOpacity, popGroup, layerBytes, threeCircles, perChild, groupOpacity, sideBySide, opacityPlate].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>
