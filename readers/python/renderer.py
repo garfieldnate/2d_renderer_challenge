@@ -3248,6 +3248,11 @@ def paint_at(paint, x, y):
     if isinstance(paint, ConicGradient):
         t = extend(conic_t(paint, x, y), paint.mode)
         return sample_stops(paint.stops, t)
+    if isinstance(paint, ImagePaint):
+        src = paint.inv * point(x, y)
+        sampler = _SAMPLERS[paint.filt]
+        p = sampler(paint.img, src.x, src.y, paint.extend)
+        return pixel_color(p)
     raise TypeError(f"unknown paint type: {paint!r}")
 
 
@@ -3382,3 +3387,425 @@ def canvas_to_p6_dithered(canvas):
             pixel_data.append(to_byte_dithered(c.green, x, y))
             pixel_data.append(to_byte_dithered(c.blue, x, y))
     return header_bytes + pixel_data
+
+
+# ============================================================================
+# Chapter 11: Images and Resampling
+# ============================================================================
+
+class Image:
+    """A grid of premultiplied linear-light pixels."""
+
+    def __init__(self, width, height, pixels):
+        self.width = width
+        self.height = height
+        self.pixels = pixels  # flat list, row-major: pixels[y * width + x]
+
+    def __repr__(self):
+        return f"Image({self.width}, {self.height})"
+
+
+def image(width, height, pixels):
+    """Create an image from a flat, row-major list of premultiplied pixels."""
+    return Image(width, height, list(pixels))
+
+
+def read_image(ppm_data):
+    """Read a PPM (P6) back into an image: decode each byte from sRGB to
+    linear light and store an opaque premultiplied pixel."""
+    if isinstance(ppm_data, str):
+        ppm_bytes = ppm_data.encode('latin-1')
+    else:
+        ppm_bytes = ppm_data
+
+    # Find the end of the header (3 newlines: after P6, dimensions, and 255)
+    count = 0
+    pos = 0
+    while count < 3 and pos < len(ppm_bytes):
+        if ppm_bytes[pos:pos + 1] == b'\n':
+            count += 1
+        pos += 1
+
+    header_str = ppm_bytes[:pos].decode('ascii')
+    lines = header_str.split('\n')
+    width, height = (int(v) for v in lines[1].split())
+
+    pixel_bytes = ppm_bytes[pos:]
+    pixels = []
+    for i in range(width * height):
+        r = decode(pixel_bytes[i * 3] / 255.0)
+        g = decode(pixel_bytes[i * 3 + 1] / 255.0)
+        b = decode(pixel_bytes[i * 3 + 2] / 255.0)
+        pixels.append(opaque(Color(r, g, b)))
+    return Image(width, height, pixels)
+
+
+def _wrap_index(i, n, extend):
+    """Fold an out-of-range texel index back in for the given extend mode."""
+    if 0 <= i < n:
+        return i
+    if extend == "clamp":
+        return 0 if i < 0 else n - 1
+    if extend == "repeat":
+        return i % n
+    # "reflect": bounce off both ends without a seam
+    p = 2 * n
+    i = i % p
+    return i if i < n else p - 1 - i
+
+
+def image_texel(img, ix, iy, extend="clamp"):
+    """The pixel at an integer texel, with an out-of-range index folded
+    back in by the extend mode."""
+    x = _wrap_index(ix, img.width, extend)
+    y = _wrap_index(iy, img.height, extend)
+    return img.pixels[y * img.width + x]
+
+
+def sample_nearest(img, sx, sy, extend="clamp"):
+    """The texel the point falls in -- blocky, but honest."""
+    return image_texel(img, math.floor(sx), math.floor(sy), extend)
+
+
+def sample_bilinear(img, sx, sy, extend="clamp"):
+    """Blend the four texels around the point by distance. Works in
+    texel-centre space: the source coordinate minus 0.5, so integer
+    values land on texel centres and the fractional part is the blend."""
+    gx, gy = sx - 0.5, sy - 0.5
+    x0, y0 = math.floor(gx), math.floor(gy)
+    fx, fy = gx - x0, gy - y0
+    top = lerp_pixel(image_texel(img, x0, y0, extend), image_texel(img, x0 + 1, y0, extend), fx)
+    bot = lerp_pixel(image_texel(img, x0, y0 + 1, extend), image_texel(img, x0 + 1, y0 + 1, extend), fx)
+    return lerp_pixel(top, bot, fy)
+
+
+def catmull(t):
+    """The four Catmull-Rom weights for a fractional offset t, summing
+    to one and passing through the samples at t = 0 and t = 1."""
+    t2 = t * t
+    t3 = t2 * t
+    return [
+        -0.5 * t3 + t2 - 0.5 * t,
+        1.5 * t3 - 2.5 * t2 + 1,
+        -1.5 * t3 + 2 * t2 + 0.5 * t,
+        0.5 * t3 - 0.5 * t2,
+    ]
+
+
+def sample_bicubic(img, sx, sy, extend="clamp"):
+    """Fit a curve through sixteen texels with Catmull-Rom weights,
+    again in texel-centre space."""
+    gx, gy = sx - 0.5, sy - 0.5
+    x0, y0 = math.floor(gx), math.floor(gy)
+    wx = catmull(gx - x0)
+    wy = catmull(gy - y0)
+    r = g = b = a = 0.0
+    for j in range(4):
+        for i in range(4):
+            p = image_texel(img, x0 - 1 + i, y0 - 1 + j, extend)
+            w = wx[i] * wy[j]
+            r += w * p.r
+            g += w * p.g
+            b += w * p.b
+            a += w * p.a
+    return Pixel(r, g, b, a)
+
+
+_SAMPLERS = {
+    "nearest": sample_nearest,
+    "bilinear": sample_bilinear,
+    "bicubic": sample_bicubic,
+}
+
+
+class ImagePaint:
+    """A paint that samples an image, placed on the canvas by a matrix."""
+
+    def __init__(self, img, m, filt, extend):
+        self.img = img
+        self.inv = inverse(m)
+        self.filt = filt
+        self.extend = extend
+
+
+def image_paint(img, m, filt, extend):
+    """A paint that, at a device point, walks backward through the
+    inverse of m to find where in the image to sample."""
+    return ImagePaint(img, m, filt, extend)
+
+
+def downsample(img):
+    """Halve an image, each new texel the box-average of the 2x2 block
+    above it, premultiplied channels alike."""
+    new_w = max(1, img.width // 2)
+    new_h = max(1, img.height // 2)
+    pixels = []
+    for y in range(new_h):
+        for x in range(new_w):
+            p00 = image_texel(img, 2 * x, 2 * y, "clamp")
+            p10 = image_texel(img, 2 * x + 1, 2 * y, "clamp")
+            p01 = image_texel(img, 2 * x, 2 * y + 1, "clamp")
+            p11 = image_texel(img, 2 * x + 1, 2 * y + 1, "clamp")
+            pixels.append(Pixel(
+                (p00.r + p10.r + p01.r + p11.r) / 4,
+                (p00.g + p10.g + p01.g + p11.g) / 4,
+                (p00.b + p10.b + p01.b + p11.b) / 4,
+                (p00.a + p10.a + p01.a + p11.a) / 4,
+            ))
+    return Image(new_w, new_h, pixels)
+
+
+def mip_chain(img):
+    """The whole mip pyramid: the image, then halved repeatedly down to
+    a single pixel."""
+    chain = [img]
+    cur = img
+    while not (cur.width == 1 and cur.height == 1):
+        cur = downsample(cur)
+        chain.append(cur)
+    return chain
+
+
+def mip_level_for(scale):
+    """The mip level whose texels are about the size of an output
+    pixel, from a minification scale factor (1.0 is no minification)."""
+    if scale <= 0:
+        return 0
+    level = math.floor(math.log2(1.0 / scale) + 1e-9)
+    return max(0, level)
+
+
+# --- Chapter 11 renders ---
+
+def sprite():
+    """An 8x8 sprite, built as a canvas and round-tripped through a PPM."""
+    orange = color(0.95, 0.55, 0.1)
+    blue = color(0.15, 0.45, 0.85)
+    white = color(0.95, 0.93, 0.85)
+    black = color(0.06, 0.06, 0.08)
+    grid = [
+        black, black, blue, blue, blue, blue, black, black,
+        black, blue, blue, blue, blue, blue, blue, black,
+        blue, blue, white, blue, blue, white, blue, blue,
+        blue, blue, white, blue, blue, white, blue, blue,
+        blue, blue, blue, blue, blue, blue, blue, blue,
+        orange, blue, blue, orange, orange, blue, blue, orange,
+        black, orange, orange, blue, blue, orange, orange, black,
+        black, black, orange, orange, orange, orange, black, black,
+    ]
+    c = canvas(8, 8)
+    for iy in range(8):
+        for ix in range(8):
+            write_pixel(c, ix, iy, grid[iy * 8 + ix])
+    return read_image(canvas_to_p6(c))
+
+
+def _paint_canvas(width, height, paint):
+    """Render a paint over a whole canvas, one sample per pixel centre."""
+    c = Canvas(width, height)
+    for y in range(height):
+        for x in range(width):
+            c.pixels[y][x] = paint_at(paint, x + 0.5, y + 0.5)
+    return c
+
+
+def two_filters():
+    """The 8x8 sprite, magnified 20x: nearest on the left, bilinear on
+    the right."""
+    s = sprite()
+    left = _paint_canvas(s.width * 20, s.height * 20, image_paint(s, scaling(20, 20), "nearest", "clamp"))
+    right = _paint_canvas(s.width * 20, s.height * 20, image_paint(s, scaling(20, 20), "bilinear", "clamp"))
+    return side_by_side(left, right)
+
+
+def plate_11():
+    """Chapter 11's plate: two filters, magnified."""
+    return two_filters()
+
+
+def three_filters():
+    """The 8x8 sprite, magnified 16x, under all three filters."""
+    s = sprite()
+    a = _paint_canvas(s.width * 16, s.height * 16, image_paint(s, scaling(16, 16), "nearest", "clamp"))
+    b = _paint_canvas(s.width * 16, s.height * 16, image_paint(s, scaling(16, 16), "bilinear", "clamp"))
+    c = _paint_canvas(s.width * 16, s.height * 16, image_paint(s, scaling(16, 16), "bicubic", "clamp"))
+    return side_by_side(side_by_side(a, b), c)
+
+
+# ============================================================================
+# Chapter 12: Clipping, Masks and Groups
+# ============================================================================
+
+def multiply_coverage(a, b):
+    """Clip one coverage buffer by another, cell by cell."""
+    width = min(a.width, b.width)
+    height = min(a.height, b.height)
+    result = CoverageBuffer(width, height)
+    for y in range(height):
+        for x in range(width):
+            result.coverage[y][x] = coverage_at(a, x, y) * coverage_at(b, x, y)
+    return result
+
+
+def full_clip(width, height):
+    """A clip that's coverage 1 everywhere -- clipping to it is a no-op."""
+    return _full_coverage(width, height)
+
+
+def clip_path(p, rule, width, height):
+    """A clip is only a fill: there was never a difference between a
+    clip and a shape."""
+    return fill_path(p, rule, width, height)
+
+
+def clip_rect(x0, y0, x1, y1, width, height):
+    """A rectangular clip, as a fill of a rectangle path."""
+    rect = polygon(point(x0, y0), point(x1, y0), point(x1, y1), point(x0, y1))
+    return clip_path(rect, "nonzero", width, height)
+
+
+def soft_mask(cx, cy, r, width, height):
+    """A radial falloff: coverage 1 at (cx, cy), fading linearly to 0
+    at radius r."""
+    cov = CoverageBuffer(width, height)
+    for y in range(height):
+        for x in range(width):
+            dx = (x + 0.5) - cx
+            dy = (y + 0.5) - cy
+            d = math.sqrt(dx * dx + dy * dy)
+            cov.coverage[y][x] = clamp(1 - d / r)
+    return cov
+
+
+def set_layer_pixel(lyr, x, y, p):
+    """Write a premultiplied pixel to a layer. Out-of-bounds writes are
+    ignored, the same rule as write_pixel."""
+    if 0 <= x < lyr.width and 0 <= y < lyr.height:
+        lyr.pixels[y][x] = p
+
+
+def layer_pixel(lyr, x, y):
+    """Read a premultiplied pixel from a layer."""
+    if 0 <= x < lyr.width and 0 <= y < lyr.height:
+        return lyr.pixels[y][x]
+    return CLEAR
+
+
+def push_group(width, height):
+    """Start a fresh, fully transparent offscreen layer."""
+    return layer(width, height)
+
+
+def paint_into(lyr, cov, color, opacity=1.0):
+    """Paint a colour into a layer through a coverage buffer, scaled by
+    an overall opacity, and return the layer."""
+    for y in range(min(lyr.height, cov.height)):
+        for x in range(min(lyr.width, cov.width)):
+            c = coverage_at(cov, x, y) * opacity
+            if c > 0:
+                src = from_color(color, c)
+                lyr.pixels[y][x] = over(src, lyr.pixels[y][x])
+    return lyr
+
+
+def scale_opacity(lyr, opacity):
+    """Scale every premultiplied channel of a layer by opacity,
+    returning a new layer."""
+    result = Layer(lyr.width, lyr.height)
+    for y in range(lyr.height):
+        for x in range(lyr.width):
+            p = lyr.pixels[y][x]
+            result.pixels[y][x] = Pixel(p.r * opacity, p.g * opacity, p.b * opacity, p.a * opacity)
+    return result
+
+
+def pop_group_with_opacity(group, base, opacity):
+    """Flatten a group at an opacity and composite it over a base layer,
+    once -- the group resolves its own overlaps before the opacity is
+    applied, unlike fading each child on its own."""
+    faded = scale_opacity(group, opacity)
+    return composite_layers("src-over", faded, base)
+
+
+# --- Chapter 12 renders ---
+
+_GROUP_PAPER = color(0.02, 0.02, 0.025)
+_GROUP_INKS = [color(0.95, 0.55, 0.1), color(0.2, 0.55, 0.85), color(0.85, 0.25, 0.3)]
+_GROUP_SIZE = 150
+
+
+def _three_circles():
+    """Three overlapping circles and their inks, for the opacity plate."""
+    centers = [(60, 62), (90, 62), (75, 92)]
+    return [(circle_path(cx, cy, 34, 64), ink) for (cx, cy), ink in zip(centers, _GROUP_INKS)]
+
+
+def per_child():
+    """Left panel: each circle painted at 50% opacity in turn, so the
+    overlaps composite twice and darken."""
+    base = layer(_GROUP_SIZE, _GROUP_SIZE)
+    for y in range(_GROUP_SIZE):
+        for x in range(_GROUP_SIZE):
+            base.pixels[y][x] = opaque(_GROUP_PAPER)
+    for shape, colour in _three_circles():
+        cov = fill_path(shape, "nonzero", _GROUP_SIZE, _GROUP_SIZE)
+        base = paint_into(base, cov, colour, 0.5)
+    return base
+
+
+def group_opacity():
+    """Right panel: the three circles drawn opaque into a group, the
+    whole group composited at 50% once."""
+    base = layer(_GROUP_SIZE, _GROUP_SIZE)
+    for y in range(_GROUP_SIZE):
+        for x in range(_GROUP_SIZE):
+            base.pixels[y][x] = opaque(_GROUP_PAPER)
+    group = push_group(_GROUP_SIZE, _GROUP_SIZE)
+    for shape, colour in _three_circles():
+        cov = fill_path(shape, "nonzero", _GROUP_SIZE, _GROUP_SIZE)
+        group = paint_into(group, cov, colour, 1.0)
+    return pop_group_with_opacity(group, base, 0.5)
+
+
+def _layer_to_canvas(lyr):
+    """A fully opaque layer, read straight into a canvas (no flattening
+    needed -- every pixel is already alpha 1)."""
+    c = Canvas(lyr.width, lyr.height)
+    for y in range(lyr.height):
+        for x in range(lyr.width):
+            c.pixels[y][x] = pixel_color(lyr.pixels[y][x])
+    return c
+
+
+def opacity_plate():
+    """Three overlapping circles, two ways: per-child opacity on the
+    left, group opacity on the right."""
+    return side_by_side(_layer_to_canvas(per_child()), _layer_to_canvas(group_opacity()))
+
+
+def plate_12():
+    """Chapter 12's plate: the opacity plate, magnified by 2."""
+    return magnify(opacity_plate(), 2)
+
+
+def clip_demo():
+    """A star clipped to a circle on the left, and to a soft radial
+    mask on the right -- the same shape, a hard edge against a soft one."""
+    size = _GROUP_SIZE
+    ink = color(0.95, 0.55, 0.1)
+    cx, cy = size / 2, size / 2
+    star_r, clip_r, mask_r = 60, 45, 70
+
+    star_shape = transform_path(unit_star(), translation(cx, cy) * scaling(star_r, star_r))
+    star_cov = fill_path(star_shape, "nonzero", size, size)
+
+    hard = multiply_coverage(star_cov, clip_path(circle_path(cx, cy, clip_r, 64), "nonzero", size, size))
+    soft = multiply_coverage(star_cov, soft_mask(cx, cy, mask_r, size, size))
+
+    left = Canvas(size, size)
+    fill(left, _GROUP_PAPER)
+    paint_through(left, hard, ink)
+    right = Canvas(size, size)
+    fill(right, _GROUP_PAPER)
+    paint_through(right, soft, ink)
+    return side_by_side(left, right)

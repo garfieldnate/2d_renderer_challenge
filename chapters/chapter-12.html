@@ -105,6 +105,17 @@
     alpha, an image's brightness, another shape's antialiased fill. The renderer doesn't care where the
     numbers came from; it multiplies them in.</p>
 
+  <figure>
+    <canvas id="fig122" role="img" aria-label="A five-pointed star shown twice. On the left it is clipped hard to a circle, so its points are cut off cleanly at the circle's edge. On the right it is multiplied by a soft radial mask, so it fades out toward its tips instead of being cut"></canvas>
+    <figcaption><span class="fig">Figure 12.2</span> One star, two clips. Left: multiplied by a circle's coverage, a hard clip that cuts the points off. Right: multiplied by a soft radial mask, which fades the star out toward its edge. Same operation, hard numbers versus soft ones.</figcaption>
+  </figure>
+
+  <p>Both halves are the same star — five points on a radius-60 circle about
+    <code>(75, 75)</code> — multiplied by a clip: on the left the coverage of
+    <code>circle_path(75, 75, 45, 64)</code>, on the right <code>soft_mask(75, 75, 70, …)</code>, the
+    radial falloff. The result is painted through with one ink. That's <code>clip_demo</code>, and the
+    only difference between the two panels is which coverage buffer the star was multiplied by.</p>
+
   <div class="test" data-feature="chapter12-mask.feature">
     <p class="label">features/chapter12-mask.feature</p>
 <pre><code><span class="kw">Feature</span>: Soft masks
@@ -336,6 +347,10 @@ function perChild(){var base=layer(SIZE,SIZE);for(var i=0;i<SIZE*SIZE;i++)base.p
 function groupOpacity(){var base=layer(SIZE,SIZE);for(var i=0;i<SIZE*SIZE;i++)base.p[i]=opaque(PAPER);var g=layer(SIZE,SIZE);threeCircles().forEach(function(cc){g=paintInto(g,fillPath(cc[0],SIZE,SIZE),cc[1],1.0);});return popGroup(g,base,0.5);}
 function sideBySide(a,b){var W=a.w+b.w,H=a.h,A=layerBytes(a),B=layerBytes(b),o=new Array(W*H);for(var y=0;y<H;y++){for(var x=0;x<a.w;x++)o[y*W+x]=A[y*a.w+x];for(var x2=0;x2<b.w;x2++)o[y*W+a.w+x2]=B[y*b.w+x2];}return {bytes:o,w:W,h:H};}
 function opacityPlate(){return sideBySide(perChild(),groupOpacity());}
+function starPath(){var pts=[];for(var k=0;k<5;k++){var a=(-90+144*k)*Math.PI/180;pts.push(point(75+60*Math.cos(a),75+60*Math.sin(a)));}return polygon.apply(null,pts);}
+function paintThroughBytes(cov){var o=[];for(var i=0;i<SIZE*SIZE;i++){var k=cov[i],c=[PAPER[0]+(INKS[0][0]-PAPER[0])*k,PAPER[1]+(INKS[0][1]-PAPER[1])*k,PAPER[2]+(INKS[0][2]-PAPER[2])*k];o.push([toByte(c[0]),toByte(c[1]),toByte(c[2])]);}return o;}
+function clipDemo(){var star=fillPath(starPath(),SIZE,SIZE),hard=multiplyCoverage(star,fillPath(circlePath(75,75,45,64),SIZE,SIZE)),soft=multiplyCoverage(star,softMask(75,75,70,SIZE,SIZE));
+  var L=paintThroughBytes(hard),R=paintThroughBytes(soft),W=2*SIZE,o=new Array(W*SIZE);for(var y=0;y<SIZE;y++){for(var x=0;x<SIZE;x++)o[y*W+x]=L[y*SIZE+x];for(var x2=0;x2<SIZE;x2++)o[y*W+SIZE+x2]=R[y*SIZE+x2];}return {bytes:o,w:W,h:SIZE};}
 
 /* ---------- Figure 12.1 — clipping is intersection ---------- */
 Plate.add('fig121', 0.42, function (ctx, w, h, p) {
@@ -350,12 +365,17 @@ Plate.add('fig121', 0.42, function (ctx, w, h, p) {
 });
 
 /* ---------- Plate 12 — per-child vs group ---------- */
+/* ---------- Figure 12.2 — a star clipped hard vs soft ---------- */
+Plate.add('fig122', 0.5, function (ctx, w, h, p) {
+  var g=clipDemo(), scale=Math.max(1,Math.floor(Math.min((w-16)/g.w,(h-16)/g.h))); blit(ctx,g.bytes,g.w,g.h,scale,(w-g.w*scale)/2,(h-g.h*scale)/2);
+});
+
 Plate.add('plate12', 0.5, function (ctx, w, h, p) {
   var g=opacityPlate(), scale=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h))); if(g.w*scale>w)scale=w/g.w; blit(ctx,g.bytes,g.w,g.h,scale,(w-g.w*scale)/2,0);
 });
 
 Plate.source(document.querySelector('#plate'), 'shared helpers',
-  [toByte, blit, point, path, moveTo, lineTo, close, polygon, circlePath, edges, fillPath, multiplyCoverage, softMask, px, fromColor, opaque, over, layer, paintInto, scaleOpacity, popGroup, layerBytes, threeCircles, perChild, groupOpacity, sideBySide, opacityPlate].map(function (f) { return f.toString(); }).join('\n\n'));
+  [toByte, blit, point, path, moveTo, lineTo, close, polygon, circlePath, edges, fillPath, multiplyCoverage, softMask, px, fromColor, opaque, over, layer, paintInto, scaleOpacity, popGroup, layerBytes, threeCircles, perChild, groupOpacity, sideBySide, opacityPlate, starPath, paintThroughBytes, clipDemo].map(function (f) { return f.toString(); }).join('\n\n'));
 </script>
 </body>
 </html>

@@ -3325,13 +3325,15 @@ pub fn extend(t: f64, mode: &str) -> f64 {
 
 /// Anything that turns a device point into a colour. A solid paint
 /// ignores the point; the three gradients project it down to a number
-/// and look that up in a stop table.
+/// and look that up in a stop table. Chapter 11 adds a fifth kind, an
+/// image sampled through the inverse of the matrix that places it.
 #[derive(Debug, Clone)]
 pub enum Paint {
     Solid(Color),
     Linear { p0: Tuple, p1: Tuple, stops: Vec<Stop>, extend: String },
     Radial { c0: Tuple, r0: f64, c1: Tuple, r1: f64, stops: Vec<Stop>, extend: String },
     Conic { center: Tuple, angle0: f64, stops: Vec<Stop>, extend: String },
+    Image { img: Image, inv: Matrix3, filter: String, extend: String },
 }
 
 /// A paint that ignores the point and always returns `c`.
@@ -3440,6 +3442,16 @@ pub fn paint_at(g: &Paint, x: f64, y: f64) -> Color {
             None => sample_stops(stops, 1.0),
         },
         Paint::Conic { stops, extend: ext, .. } => sample_stops(stops, extend(conic_t(g, x, y), ext)),
+        Paint::Image { img, inv, filter, extend: ext } => {
+            let src = *inv * point(x, y);
+            let p = match filter.as_str() {
+                "nearest" => nearest_at(img, src.x, src.y, ext),
+                "bilinear" => bilinear_at(img, src.x, src.y, ext),
+                "bicubic" => bicubic_at(img, src.x, src.y, ext),
+                other => panic!("unknown filter: {other}"),
+            };
+            pixel_color(p)
+        }
     }
 }
 
@@ -3583,4 +3595,512 @@ pub fn extend_strip() -> Canvas {
         }
     }
     magnify(&c, 2)
+}
+
+// =======================================================================
+// Chapter 11: Images and Resampling
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 11.1 An image is a grid of pixels
+// ---------------------------------------------------------------------
+
+/// A grid of premultiplied linear-light pixels -- chapter 9's
+/// representation, because every sampler below is a weighted average and
+/// only premultiplied colour averages correctly.
+#[derive(Debug, Clone)]
+pub struct Image {
+    pub width: usize,
+    pub height: usize,
+    pub px: Vec<Pixel>,
+}
+
+pub fn image(width: usize, height: usize, px: Vec<Pixel>) -> Image {
+    Image { width, height, px }
+}
+
+/// Chapter 1's PPM writer, run backwards: parses the header (P3 or P6,
+/// same as `ppm_pixel`), decodes each byte from sRGB back to linear
+/// light, and stores an opaque premultiplied pixel -- a photo saved in
+/// chapter 2 comes back in the space the renderer works in.
+pub fn read_image<T: AsRef<[u8]>>(ppm: T) -> Image {
+    let (width, height, values) = ppm_dims_and_values(ppm.as_ref());
+    let mut px = Vec::with_capacity(width * height);
+    for chunk in values.chunks(3) {
+        let r = decode(chunk[0] as f64 / 255.0);
+        let g = decode(chunk[1] as f64 / 255.0);
+        let b = decode(chunk[2] as f64 / 255.0);
+        px.push(opaque(color(r, g, b)));
+    }
+    Image { width, height, px }
+}
+
+/// Folds a texel index that fell outside `[0, n)` back in: `"clamp"`
+/// holds the edge, `"repeat"` wraps, `"reflect"` bounces so the tile
+/// meets itself without a seam. Same three modes as a gradient's extend,
+/// one dimension up.
+fn wrap_index(i: i64, n: i64, extend: &str) -> i64 {
+    if i >= 0 && i < n {
+        return i;
+    }
+    match extend {
+        "clamp" => {
+            if i < 0 {
+                0
+            } else {
+                n - 1
+            }
+        }
+        "repeat" => {
+            let m = i % n;
+            if m < 0 {
+                m + n
+            } else {
+                m
+            }
+        }
+        "reflect" => {
+            let p = 2 * n;
+            let i = ((i % p) + p) % p;
+            if i < n {
+                i
+            } else {
+                p - 1 - i
+            }
+        }
+        other => panic!("unknown extend mode: {other}"),
+    }
+}
+
+/// The pixel at integer texel `(ix, iy)`, with an index outside the image
+/// folded back in by `extend`.
+pub fn image_texel(img: &Image, ix: i64, iy: i64, extend: &str) -> Pixel {
+    let x = wrap_index(ix, img.width as i64, extend);
+    let y = wrap_index(iy, img.height as i64, extend);
+    img.px[y as usize * img.width + x as usize]
+}
+
+// ---------------------------------------------------------------------
+// § 11.2 Sampling, and the half-pixel offset
+// ---------------------------------------------------------------------
+
+/// Nearest takes the texel the point falls in -- no half-pixel offset,
+/// because there's no blending to get wrong: the answer is just
+/// `floor(sx), floor(sy)`.
+fn nearest_at(img: &Image, sx: f64, sy: f64, extend: &str) -> Pixel {
+    image_texel(img, sx.floor() as i64, sy.floor() as i64, extend)
+}
+
+pub fn sample_nearest(img: &Image, sx: f64, sy: f64) -> Pixel {
+    nearest_at(img, sx, sy, "clamp")
+}
+
+/// Bilinear blends the four texels around the point by distance. The
+/// trap: a texel's centre is at `tx + 0.5`, not `tx`, so the source
+/// coordinate is shifted back by half a pixel first -- texel-centre
+/// space -- and only then split into an integer texel and a fractional
+/// blend.
+fn bilinear_at(img: &Image, sx: f64, sy: f64, extend: &str) -> Pixel {
+    let gx = sx - 0.5;
+    let gy = sy - 0.5;
+    let x0 = gx.floor() as i64;
+    let y0 = gy.floor() as i64;
+    let fx = gx - x0 as f64;
+    let fy = gy - y0 as f64;
+    let top = lerp_pixel(image_texel(img, x0, y0, extend), image_texel(img, x0 + 1, y0, extend), fx);
+    let bot =
+        lerp_pixel(image_texel(img, x0, y0 + 1, extend), image_texel(img, x0 + 1, y0 + 1, extend), fx);
+    lerp_pixel(top, bot, fy)
+}
+
+pub fn sample_bilinear(img: &Image, sx: f64, sy: f64) -> Pixel {
+    bilinear_at(img, sx, sy, "clamp")
+}
+
+/// The Catmull-Rom weights for the four texels centred on a fractional
+/// position `t` in `[0, 1)`: they sum to one and, at `t = 0`, pick out
+/// the second texel exactly (weight 1, the rest 0) -- the curve passes
+/// through its samples.
+pub fn catmull(t: f64) -> [f64; 4] {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    [
+        -0.5 * t3 + t2 - 0.5 * t,
+        1.5 * t3 - 2.5 * t2 + 1.0,
+        -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+        0.5 * t3 - 0.5 * t2,
+    ]
+}
+
+/// Bicubic fits a little curve through sixteen texels with Catmull-Rom
+/// weights, sharper than bilinear -- same texel-centre shift as bilinear,
+/// then a weighted sum over a 4x4 neighbourhood instead of a 2x2 one.
+fn bicubic_at(img: &Image, sx: f64, sy: f64, extend: &str) -> Pixel {
+    let gx = sx - 0.5;
+    let gy = sy - 0.5;
+    let x0 = gx.floor() as i64;
+    let y0 = gy.floor() as i64;
+    let wx = catmull(gx - x0 as f64);
+    let wy = catmull(gy - y0 as f64);
+    let mut r = 0.0;
+    let mut g = 0.0;
+    let mut b = 0.0;
+    let mut a = 0.0;
+    for j in 0..4i64 {
+        for i in 0..4i64 {
+            let p = image_texel(img, x0 - 1 + i, y0 - 1 + j, extend);
+            let w = wx[i as usize] * wy[j as usize];
+            r += w * p.r;
+            g += w * p.g;
+            b += w * p.b;
+            a += w * p.a;
+        }
+    }
+    pixel(r, g, b, a)
+}
+
+pub fn sample_bicubic(img: &Image, sx: f64, sy: f64) -> Pixel {
+    bicubic_at(img, sx, sy, "clamp")
+}
+
+// ---------------------------------------------------------------------
+// § 11.3 The image as a paint, and which way you walk
+// ---------------------------------------------------------------------
+
+/// A paint that samples `img`, placed on the canvas by `m`: at device
+/// `(x, y)`, walk backward through the inverse of `m` to the point in the
+/// image to sample, so every output pixel is filled exactly once no
+/// matter how `m` magnifies or rotates.
+pub fn image_paint(img: Image, m: Matrix3, filter: &str, extend: &str) -> Paint {
+    Paint::Image { img, inv: inverse(m), filter: filter.to_string(), extend: extend.to_string() }
+}
+
+// ---------------------------------------------------------------------
+// § 11.4 Making it smaller is a different problem
+// ---------------------------------------------------------------------
+
+/// Halves the image: each output texel the box average of the 2x2 block
+/// above it. Premultiplied channels average alongside alpha, the same
+/// reason chapter 9 premultiplied in the first place.
+pub fn downsample(img: &Image) -> Image {
+    let nw = (img.width + 1) / 2;
+    let nh = (img.height + 1) / 2;
+    let mut px = Vec::with_capacity(nw * nh);
+    for oy in 0..nh as i64 {
+        for ox in 0..nw as i64 {
+            let a = image_texel(img, ox * 2, oy * 2, "clamp");
+            let b = image_texel(img, ox * 2 + 1, oy * 2, "clamp");
+            let c = image_texel(img, ox * 2, oy * 2 + 1, "clamp");
+            let d = image_texel(img, ox * 2 + 1, oy * 2 + 1, "clamp");
+            px.push(pixel(
+                (a.r + b.r + c.r + d.r) / 4.0,
+                (a.g + b.g + c.g + d.g) / 4.0,
+                (a.b + b.b + c.b + d.b) / 4.0,
+                (a.a + b.a + c.a + d.a) / 4.0,
+            ));
+        }
+    }
+    Image { width: nw, height: nh, px }
+}
+
+/// The mip pyramid: `img` itself, then `downsample` repeated down to a
+/// single pixel.
+pub fn mip_chain(img: &Image) -> Vec<Image> {
+    let mut chain = vec![img.clone()];
+    while chain.last().unwrap().width > 1 || chain.last().unwrap().height > 1 {
+        let next = downsample(chain.last().unwrap());
+        chain.push(next);
+    }
+    chain
+}
+
+/// The mip level whose texels are about the size of an output pixel: the
+/// number of halvings implied by how much `scale` shrinks the image. A
+/// scale of 1 or more -- no shrinking, or outright magnifying -- is level
+/// 0.
+pub fn mip_level_for(scale: f64) -> usize {
+    if scale >= 1.0 {
+        return 0;
+    }
+    (-scale.log2()).floor().max(0.0) as usize
+}
+
+// ---------------------------------------------------------------------
+// § 11.5 Putting it together
+// ---------------------------------------------------------------------
+
+/// The 8x8 sprite: four inks (black, blue, orange, white) laid out as a
+/// tiny fox-like face, built as a canvas, written to a PPM and read
+/// straight back so the round trip through chapter 1's encode/decode is
+/// real.
+pub fn sprite() -> Image {
+    let o = color(0.95, 0.55, 0.1);
+    let b = color(0.15, 0.45, 0.85);
+    let w = color(0.95, 0.93, 0.85);
+    let k = color(0.06, 0.06, 0.08);
+    let grid = [
+        k, k, b, b, b, b, k, k, //
+        k, b, b, b, b, b, b, k, //
+        b, b, w, b, b, w, b, b, //
+        b, b, w, b, b, w, b, b, //
+        b, b, b, b, b, b, b, b, //
+        o, b, b, o, o, b, b, o, //
+        k, o, o, b, b, o, o, k, //
+        k, k, o, o, o, o, k, k, //
+    ];
+    let mut c = canvas(8, 8);
+    for y in 0..8i64 {
+        for x in 0..8i64 {
+            write_pixel(&mut c, x, y, grid[(y * 8 + x) as usize]);
+        }
+    }
+    read_image(canvas_to_p6(&c))
+}
+
+/// `img`, magnified `k` times through `filter`, clamped at the edges.
+fn magnified(img: &Image, k: usize, filter: &str) -> Canvas {
+    let w = img.width * k;
+    let h = img.height * k;
+    let paint = image_paint(img.clone(), scaling(k as f64, k as f64), filter, "clamp");
+    let mut c = canvas(w, h);
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            let col = paint_at(&paint, x as f64 + 0.5, y as f64 + 0.5);
+            write_pixel(&mut c, x, y, col);
+        }
+    }
+    c
+}
+
+/// The sprite magnified 20x, nearest on the left and bilinear on the
+/// right.
+pub fn two_filters() -> Canvas {
+    let s = sprite();
+    side_by_side(&magnified(&s, 20, "nearest"), &magnified(&s, 20, "bilinear"))
+}
+
+/// Plate 11: `two_filters`, unmagnified further -- the picture is the
+/// point.
+pub fn plate_11() -> Canvas {
+    two_filters()
+}
+
+/// The sprite magnified 16x, nearest, bilinear and bicubic side by side.
+pub fn three_filters() -> Canvas {
+    let s = sprite();
+    side_by_side(&side_by_side(&magnified(&s, 16, "nearest"), &magnified(&s, 16, "bilinear")), &magnified(&s, 16, "bicubic"))
+}
+
+// =======================================================================
+// Chapter 12: Clipping, Masks and Groups
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 12.1 A clip is a coverage buffer
+// ---------------------------------------------------------------------
+
+/// Two coverage buffers, multiplied cell by cell: the whole of clipping.
+pub fn multiply_coverage(a: &CoverageBuffer, b: &CoverageBuffer) -> CoverageBuffer {
+    let width = a.width.min(b.width);
+    let height = a.height.min(b.height);
+    let mut out = coverage_buffer(width, height);
+    for y in 0..height as i64 {
+        for x in 0..width as i64 {
+            set_coverage(&mut out, x, y, coverage_at(a, x, y) * coverage_at(b, x, y));
+        }
+    }
+    out
+}
+
+/// Coverage 1 everywhere: clipping to this is a no-op, since multiplying
+/// by it changes nothing.
+pub fn full_clip(width: usize, height: usize) -> CoverageBuffer {
+    let mut cov = coverage_buffer(width, height);
+    for y in 0..height as i64 {
+        for x in 0..width as i64 {
+            set_coverage(&mut cov, x, y, 1.0);
+        }
+    }
+    cov
+}
+
+/// A rectangular clip, built as an ordinary fill of a four-cornered path.
+pub fn clip_rect(x0: f64, y0: f64, x1: f64, y1: f64, width: usize, height: usize) -> CoverageBuffer {
+    let r = polygon(&[point(x0, y0), point(x1, y0), point(x1, y1), point(x0, y1)]);
+    fill_path(&r, "nonzero", width, height)
+}
+
+/// A clip built from any path, the same fill that draws it.
+pub fn clip_path(p: &Path, rule: &str, width: usize, height: usize) -> CoverageBuffer {
+    fill_path(p, rule, width, height)
+}
+
+// ---------------------------------------------------------------------
+// § 12.2 Soft masks
+// ---------------------------------------------------------------------
+
+/// A radial falloff: coverage 1 at `(cx, cy)`, dropping off linearly with
+/// distance to 0 at radius `r`. Multiplying a shape by this fades its
+/// edge into the background instead of cutting it hard -- the same
+/// multiplication as a clip, with softer numbers.
+pub fn soft_mask(cx: f64, cy: f64, r: f64, width: usize, height: usize) -> CoverageBuffer {
+    let mut cov = coverage_buffer(width, height);
+    for y in 0..height as i64 {
+        for x in 0..width as i64 {
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
+            set_coverage(&mut cov, x, y, (1.0 - d / r).clamp(0.0, 1.0));
+        }
+    }
+    cov
+}
+
+// ---------------------------------------------------------------------
+// § 12.3 Groups, and the opacity that isn't what you think
+// ---------------------------------------------------------------------
+
+/// The pixel at `(x, y)` of a layer -- chapter 9's `Layer`, given the
+/// same kind of accessor `Canvas` has had since chapter 1.
+pub fn layer_pixel(l: &Layer, x: i64, y: i64) -> Pixel {
+    l.pixels[y as usize * l.width + x as usize]
+}
+
+/// Writes one pixel of a layer directly, for building small layers by
+/// hand in tests.
+pub fn set_layer_pixel(l: &mut Layer, x: i64, y: i64, p: Pixel) {
+    let idx = y as usize * l.width + x as usize;
+    l.pixels[idx] = p;
+}
+
+/// A fresh transparent layer to draw a group's children into -- chapter
+/// 9's premultiplied buffer, under this chapter's name for it.
+pub fn push_group(width: usize, height: usize) -> Layer {
+    layer(width, height)
+}
+
+/// Draws one child into `l` through its coverage and opacity, source-over
+/// the layer's existing content, and returns the result as a new layer --
+/// draw the whole stack of children this way and overlaps inside the
+/// group composite exactly the way they would straight onto the canvas.
+pub fn paint_into(l: &Layer, cov: &CoverageBuffer, col: Color, alpha: f64) -> Layer {
+    let mut out = layer(l.width, l.height);
+    for y in 0..l.height as i64 {
+        for x in 0..l.width as i64 {
+            let idx = y as usize * l.width + x as usize;
+            let k = coverage_at(cov, x, y) * alpha;
+            let src = if k > 0.0 { from_color(col, k) } else { CLEAR };
+            out.pixels[idx] = over(src, l.pixels[idx]);
+        }
+    }
+    out
+}
+
+/// Every premultiplied channel of `l`, scaled by `opacity` together --
+/// colour and alpha alike, so a fully transparent pixel stays fully
+/// transparent and an opaque one becomes exactly `opacity` opaque.
+pub fn scale_opacity(l: &Layer, opacity: f64) -> Layer {
+    let mut out = layer(l.width, l.height);
+    for i in 0..l.pixels.len() {
+        let p = l.pixels[i];
+        out.pixels[i] = pixel(p.r * opacity, p.g * opacity, p.b * opacity, p.a * opacity);
+    }
+    out
+}
+
+/// Flattens a group at one opacity: scale its whole premultiplied buffer
+/// by `opacity`, then composite that flattened result over `base` once.
+/// The group's own overlaps are already resolved before the opacity is
+/// applied, which is exactly why this differs from fading each child by
+/// the same amount -- at `opacity = 1` this is pixel-identical to
+/// drawing the children straight onto `base`.
+pub fn pop_group_with_opacity(group: &Layer, base: &Layer, opacity: f64) -> Layer {
+    let faded = scale_opacity(group, opacity);
+    composite_layers("src-over", &faded, base)
+}
+
+// ---------------------------------------------------------------------
+// § 12.4 Putting it together
+// ---------------------------------------------------------------------
+
+const PLATE12_PAPER: Color = Color { red: 0.02, green: 0.02, blue: 0.025 };
+
+/// Three overlapping circles and the ink each is painted in -- shared by
+/// `per_child` and `group_opacity` so both draw exactly the same shapes.
+fn three_circles() -> [(Path, Color); 3] {
+    [
+        (circle_path(60.0, 62.0, 34.0, 64), color(0.95, 0.55, 0.1)),
+        (circle_path(90.0, 62.0, 34.0, 64), color(0.2, 0.55, 0.85)),
+        (circle_path(75.0, 92.0, 34.0, 64), color(0.85, 0.25, 0.3)),
+    ]
+}
+
+fn opaque_paper(width: usize, height: usize) -> Layer {
+    let mut l = layer(width, height);
+    for p in l.pixels.iter_mut() {
+        *p = opaque(PLATE12_PAPER);
+    }
+    l
+}
+
+/// Left half of the plate: each circle painted at 50% opacity in turn, so
+/// the overlaps composite twice and go dark.
+pub fn per_child() -> Layer {
+    let mut base = opaque_paper(150, 150);
+    for (p, col) in three_circles() {
+        let cov = fill_path(&p, "nonzero", 150, 150);
+        base = paint_into(&base, &cov, col, 0.5);
+    }
+    base
+}
+
+/// Right half: the three circles drawn opaque into a group, then the
+/// whole group composited at 50% once -- the overlaps match the rest.
+pub fn group_opacity() -> Layer {
+    let base = opaque_paper(150, 150);
+    let mut group = push_group(150, 150);
+    for (p, col) in three_circles() {
+        let cov = fill_path(&p, "nonzero", 150, 150);
+        group = paint_into(&group, &cov, col, 1.0);
+    }
+    pop_group_with_opacity(&group, &base, 0.5)
+}
+
+/// Both layers here end up fully opaque, so which background
+/// `flatten_layer` composites against doesn't matter -- `over` against an
+/// opaque source ignores the destination entirely.
+fn layer_to_canvas(l: &Layer) -> Canvas {
+    flatten_layer(l, PLATE12_PAPER)
+}
+
+/// The plate: `per_child` and `group_opacity`, side by side.
+pub fn opacity_plate() -> Canvas {
+    side_by_side(&layer_to_canvas(&per_child()), &layer_to_canvas(&group_opacity()))
+}
+
+/// Plate 12: `opacity_plate`, magnified by 2.
+pub fn plate_12() -> Canvas {
+    magnify(&opacity_plate(), 2)
+}
+
+/// The clip demo: chapter 5's star, recentred on a 150x150 panel, clipped
+/// two ways -- a hard circle on the left, a soft radial mask on the
+/// right, both sharing the star's own centre.
+pub fn clip_demo() -> Canvas {
+    let ink = color(0.95, 0.55, 0.1);
+    let bg = color(0.02, 0.02, 0.025);
+    let star_shape = transform_path(&unit_star(), translation(75.0, 75.0) * scaling(60.0, 60.0));
+    let star_cov = fill_path(&star_shape, "nonzero", 150, 150);
+
+    let hard = multiply_coverage(&star_cov, &clip_path(&circle_path(75.0, 75.0, 45.0, 64), "nonzero", 150, 150));
+    let mut left = canvas(150, 150);
+    fill(&mut left, bg);
+    paint_through(&mut left, &hard, ink);
+
+    let soft = multiply_coverage(&star_cov, &soft_mask(75.0, 75.0, 70.0, 150, 150));
+    let mut right = canvas(150, 150);
+    fill(&mut right, bg);
+    paint_through(&mut right, &soft, ink);
+
+    side_by_side(&left, &right)
 }

@@ -1,6 +1,6 @@
 # The 2D Renderer Challenge — Java
 
-Chapters 1-10, hand-rolled test runner, no JUnit, no network.
+Chapters 1-12, hand-rolled test runner, no JUnit, no network.
 
 ## Compile, test, render
 
@@ -18,10 +18,12 @@ java -cp classes Chapter07Tests
 java -cp classes Chapter08Tests
 java -cp classes Chapter09Tests
 java -cp classes Chapter10Tests
+java -cp classes Chapter11Tests
+java -cp classes Chapter12Tests
 ```
 
 Each run prints one `PASS`/`FAIL` line per scenario, a pass/fail total, and
-then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-10 as
+then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-12 as
 P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/plate-02.ppm`, `out/fan-bresenham.ppm`, `out/fan-wu.ppm`,
 `out/fan-coverage.ppm`, `out/plate-03.ppm`, `out/fan-both-orders.ppm`,
@@ -31,7 +33,9 @@ P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/plate-07.ppm`, `out/drops.ppm`, `out/flower.ppm`, `out/plate-08.ppm`,
 `out/porter-duff.ppm`, `out/plate-09.ppm`, `out/blend-modes.ppm`,
 `out/seam.ppm`, `out/three-gradients.ppm`, `out/plate-10.ppm`,
-`out/extend-modes.ppm`.
+`out/extend-modes.ppm`, `out/two-filters.ppm`, `out/plate-11.ppm`,
+`out/three-filters.ppm`, `out/opacity.ppm`, `out/plate-12.ppm`,
+`out/clip-demo.ppm`.
 
 ## Chapter 3
 
@@ -243,3 +247,83 @@ every channel rounded through `toByteDithered` instead.
 `Figures` adds `threeGradients()`, `plate10()` (which is `threeGradients()`,
 per the chapter's own pseudocode), and `extendStrip()`. All three diff 0
 against the reference bytes.
+
+## Chapter 11
+
+Images: `Image` (`width`, `height`, plus a package-private `raw(ix, iy)`) is
+a plain grid of premultiplied `Pixel`s, opaque for every image this chapter
+builds. `Images.readImage(p6)` is chapter 1's PPM writer run backwards --
+parse the P6 header, decode each byte from sRGB to linear light, store an
+opaque premultiplied pixel. `Images.image(w, h, pixels)` builds one directly.
+`Images.imageTexel(img, ix, iy, extend)` (the three-argument overload
+defaults to `"clamp"`) is the pixel at an integer texel, an out-of-range
+index folded back in by `"clamp"`/`"repeat"`/`"reflect"`, the same three
+modes as a gradient's extend, one dimension up.
+
+Sampling: `Sampling.sampleNearest/sampleBilinear/sampleBicubic(img, sx, sy,
+extend)` (each also has a two-argument overload defaulting to `"clamp"`) all
+work in texel-centre space -- the source coordinate minus 0.5, per the
+chapter's trap -- though `sampleNearest` writes that as a plain `floor(sx)`
+because the subtraction and a round-to-nearest cancel out algebraically.
+`Sampling.catmull(t)` is the four Catmull-Rom weights `sampleBicubic` uses
+over its sixteen texels. `Sampling.sample(img, sx, sy, filter, extend)`
+dispatches by the filter's name, the way `Stops.extend` dispatches by mode.
+Every blend goes through `Pixel.lerpPixel`, so it's premultiplied throughout.
+
+`ImagePaint` implements chapter 10's `Paint`: `new ImagePaint(img, m, filter,
+extend)` walks a device point back through `m`'s inverse to find where in
+the image to sample -- the only way every output pixel is filled exactly
+once, instead of leaving gaps under magnification or overlaps under
+rotation.
+
+Minification: `Images.downsample(img)` is the box average of each 2x2 block,
+premultiplied channels alike; `Images.mipChain(img)` halves repeatedly down
+to a single pixel; `Images.mipLevelFor(scale)` is `floor(-log2(scale))`
+(with a tiny epsilon guarding an exact power of two from floating-point
+wobble), clamped to never go below level 0. These are exercised in isolation
+by their own scenarios; no render in this chapter minifies an image, so
+nothing wires a mip level into `ImagePaint` -- the chapter's own pseudocode
+for `image_paint` doesn't either.
+
+`Figures` adds `sprite()` (an 8-by-8 sprite built as a canvas, written to a
+PPM with `Ppm.canvasToP6` and read straight back with `Images.readImage`, so
+the round trip in the chapter's own words is real), `magnified(img, k,
+filter)`, `twoFilters()`, `plate11()` (which is `twoFilters()`), and
+`threeFilters()`. All three renders diff 0 against the reference bytes.
+
+## Chapter 12
+
+Clipping: `Clipping.multiplyCoverage(a, b)` is the whole operation, cell by
+cell. `Clipping.fullClip(w, h)` is coverage 1 everywhere. `Clipping.clipRect`
+and `Clipping.clipPath` are only fills that produce a clip -- `clipPath` is
+chapter 7's `Fill.fillPath` under a name that says what the caller means to
+do with the result, because there was never a difference between a clip and
+a shape.
+
+Soft masks: `Clipping.softMask(cx, cy, r, w, h)` is a radial falloff,
+coverage 1 at its centre dropping to 0 at radius `r` (clamped there), and it
+multiplies in exactly the way a hard clip does.
+
+Groups: `Groups.pushGroup(w, h)` starts a fresh transparent `Layer`.
+`Groups.paintInto(layer, cov, color, alpha)` draws one child through its
+coverage at a given opacity and returns a new layer, src-over the one handed
+in -- it does not mutate its argument. `Groups.scaleOpacity(layer, opacity)`
+lowers every premultiplied channel together, alpha included.
+`Groups.popGroupWithOpacity(group, base, opacity)` scales the whole
+flattened group by opacity once, then composites it over base -- at opacity
+1 this is pixel-identical to drawing the children straight onto base, and
+below 1 it differs at every overlap, because the group's overlaps were
+already resolved before the opacity applied instead of being composited
+twice.
+
+`Figures` adds `perChild()` and `groupOpacity()` (the plate's two halves,
+built from `threeCircles()`, three overlapping circles in three inks on a
+150 by 150 stage), `opacityPlate()` (the two side by side), `plate12()`
+(`opacityPlate()` magnified by 2), and `clipDemo()` (one pentagram -- reusing
+`unitStar()` from chapter 6, placed at centre (75, 75) with radius 60 --
+shown clipped hard to a circle of radius 45 on the left and multiplied by a
+soft mask of radius 70 on the right, both centred on the star). All four
+renders diff 0 against the reference bytes. **`clip_demo()`'s exact geometry
+is not given anywhere in the chapter** -- unlike every other named render in
+chapters 11 and 12, it has no printed pseudocode and no figure JS to copy;
+see FEEDBACK.md's Prose problems section for how it was found instead.

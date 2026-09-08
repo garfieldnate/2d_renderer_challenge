@@ -1,12 +1,12 @@
 # The 2D Renderer Challenge — Rust
 
-Chapters 1 (`The Canvas and the Color`) through 10 (`Paint Servers and
-Gradients`), stdlib only.
+Chapters 1 (`The Canvas and the Color`) through 12 (`Clipping, Masks and
+Groups`), stdlib only.
 
 ## Build, test, render
 
 ```
-cargo test --release   # every scenario in features/, chapters 1-10
+cargo test --release   # every scenario in features/, chapters 1-12
 cargo run --release --bin render_all   # writes all renders (P3 + P6) to out/
 ```
 
@@ -20,14 +20,15 @@ That's it — `cargo build` alone also works if you just want the library to com
   winding numbers, the classical scanline sweep, the analytic
   (accumulator-based) exact fill, Bezier curves and flattening, the SVG
   elliptical arc, premultiplied pixels, Porter-Duff compositing and the
-  sixteen blend modes, layers, paint servers (solid + three gradients),
-  ordered dithering, and the chapter's named figures/plates.
+  sixteen blend modes, layers, paint servers (solid, three gradients,
+  images), ordered dithering, resampling filters, mip pyramids, clips,
+  soft masks, groups, and the chapter's named figures/plates.
 - `src/bin/render_all.rs` — renders every figure/plate to `out/`.
 - `tests/*.rs` — one test file per `features/*.feature` file (Gherkin
   scenarios translated 1:1 into `#[test]` functions; outlines expanded per
   row).
-- `reference/chapter-0{1..9}/*.ppm` and `reference/chapter-10/*.ppm` —
-  the book's reference images, compared against with
+- `reference/chapter-0{1..9}/*.ppm` and `reference/chapter-{10,11,12}/*.ppm`
+  — the book's reference images, compared against with
   `max_channel_difference`.
 
 `--release` matters here: chapter 2's brute-force `coverage()` samples 64
@@ -174,3 +175,78 @@ focal gradient's unreachable cone painted black instead of the last
 stop. Every one of the eight was caught by at least one scenario — none
 survived. Details, including which scenario caught each, are in
 FEEDBACK.md.
+
+## Chapter 11 notes
+
+`Image` is `{ width, height, px: Vec<Pixel> }`, premultiplied linear
+light like chapter 9's `Layer`. `read_image` decodes every byte from sRGB
+and stores it opaque; `image_texel` folds an out-of-range index back in
+with `wrap_index` (`"clamp"`/`"repeat"`/`"reflect"`, one function shared
+by both axes). `sample_nearest` is a plain `floor` with no offset;
+`sample_bilinear`/`sample_bicubic` shift the source coordinate back by
+0.5 into texel-centre space first, then blend 4 or 16 neighbours
+(`catmull` gives the 4 Catmull-Rom weights, reused by both the horizontal
+and vertical pass of the bicubic sum). All three samplers are exposed at
+a fixed `"clamp"` extend for the scenarios that call them with only
+`(img, sx, sy)`; `image_paint` is the general form, taking its own
+`filter` and `extend`, and joins `Paint` as a fifth variant that stores
+`inverse(m)` up front the same way `transformed` does for a `Shape`.
+`downsample` box-averages a 2x2 block through `image_texel(..., "clamp")`
+so an odd edge just repeats its last texel; `mip_chain` halves down to
+1x1, `mip_level_for` is `floor(-log2(scale))` clamped at 0 for a scale of
+1 or more. `sprite()` builds its 8x8 grid as a `Canvas`, round-trips it
+through `canvas_to_p6`/`read_image` (the chapter's own point about the
+PPM writer running backwards), and `two_filters`/`three_filters`/
+`plate_11` all diff 0 against `reference/chapter-11/` — not merely
+within tolerance.
+
+## Chapter 12 notes
+
+Clipping needed no new rasterizer: `multiply_coverage` is a cell-by-cell
+product of two `CoverageBuffer`s, `full_clip` is all 1.0, and `clip_rect`/
+`clip_path` are `fill_path` under new names (a four-cornered `polygon`
+for the rectangle). `soft_mask` is one `sqrt` and a `clamp` — coverage
+`1 - distance/r`, floored at 0 — so a clip and a mask share the exact
+same multiplication, just with softer numbers. `layer_pixel`/
+`set_layer_pixel` give `Layer` the accessor `Canvas` already had.
+`push_group` is `layer` under this chapter's name; `paint_into` returns a
+*new* layer (`over(source, existing)` per pixel) rather than mutating in
+place, so nesting calls reads left to right the way the feature file
+writes it; `scale_opacity` multiplies every premultiplied channel,
+including alpha, by one number; `pop_group_with_opacity` is
+`scale_opacity` then one `composite_layers("src-over", ...)` — flatten
+first, fade second, which is the entire reason a group's opacity differs
+from fading each child. `clip_demo()` has no pseudocode or JS source in
+the chapter (like chapter 7's `soft_square`/`star_exact`): its geometry
+was reverse-engineered from the reference PPM alone — see FEEDBACK.md for
+how. It turned out to be chapter 5's star (`unit_star()` placed by
+`translation(75, 75) * scaling(60, 60)`) clipped by a circle of radius 45
+on the left and a `soft_mask` of radius 70 on the right, both centred on
+the star's own centre; `opacity_plate`/`plate_12`/`clip_demo` all diff 0
+against `reference/chapter-12/`.
+
+## Mutation testing (chapters 11-12)
+
+Six more deliberate bugs, tested and reverted: dropping the half-pixel
+offset in `bilinear_at` (caught by the identity-transform scenario),
+sampling through `m` instead of `inverse(m)` in `image_paint` (caught by
+both the translated-image and doubled-image scenarios), wrong Catmull-Rom
+weights with the linear term dropped (caught by the weights scenario
+directly, and by `three_filters` against its reference), `multiply_coverage`
+using `max` instead of a product (caught immediately — three of the four
+clip scenarios), a hard 0/1 step in `soft_mask` instead of the linear
+falloff (caught by both mask scenarios), and group opacity applied to
+each child instead of once at pop time (not caught by `groups.rs`, which
+exercises `paint_into`/`pop_group_with_opacity` directly and was
+untouched by this mutation, but caught hard by every `plate_12.rs`
+scenario once the render itself was mutated to make that mistake).
+
+One mutation did **not** get caught by anything: unpremultiplying before
+averaging in `downsample` (average straight color, then remultiply by the
+averaged alpha) survived every single test, chapters 1-12, because every
+`Image` scenario in this book — the 2x2 test fixture, the 8x8 sprite —
+uses fully opaque texels. With alpha exactly 1 everywhere, straight and
+premultiplied colour are numerically identical, so the bug that chapter 9
+went out of its way to explain (averaging straight drags a transparent
+pixel's stored colour into the result) has no data in chapter 11 where it
+could show up. See FEEDBACK.md.

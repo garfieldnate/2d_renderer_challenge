@@ -820,4 +820,168 @@ public final class Figures {
         }
         return Magnify.magnify(c, 2);
     }
+
+    // ---- chapter 11: images and resampling --------------------------------
+
+    private static final Color SPRITE_K = new Color(0.06, 0.06, 0.08);
+    private static final Color SPRITE_B = new Color(0.15, 0.45, 0.85);
+    private static final Color SPRITE_W = new Color(0.95, 0.93, 0.85);
+    private static final Color SPRITE_O = new Color(0.95, 0.55, 0.1);
+
+    /** §11.5: the 8-by-8 sprite -- built as a canvas, written to a PPM, and read straight back. */
+    public static Image sprite() {
+        Color[] palette = {SPRITE_K, SPRITE_B, SPRITE_W, SPRITE_O};
+        int[] grid = {
+            0, 0, 1, 1, 1, 1, 0, 0,
+            0, 1, 1, 1, 1, 1, 1, 0,
+            1, 1, 2, 1, 1, 2, 1, 1,
+            1, 1, 2, 1, 1, 2, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1,
+            3, 1, 1, 3, 3, 1, 1, 3,
+            0, 3, 3, 1, 1, 3, 3, 0,
+            0, 0, 3, 3, 3, 3, 0, 0,
+        };
+        Canvas c = new Canvas(8, 8);
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                c.writePixel(x, y, palette[grid[y * 8 + x]]);
+            }
+        }
+        return Images.readImage(Ppm.canvasToP6(c));
+    }
+
+    /**
+     * §11.5: the sprite scaled up k times through one filter, sampled at
+     * each output pixel's centre in image space -- (x + 0.5) / k, (y + 0.5)
+     * / k -- clamped at the edge.
+     */
+    public static Canvas magnified(Image img, int k, String filter) {
+        Canvas c = new Canvas(img.width * k, img.height * k);
+        for (int y = 0; y < c.height; y++) {
+            for (int x = 0; x < c.width; x++) {
+                double sx = (x + 0.5) / k;
+                double sy = (y + 0.5) / k;
+                Pixel p = Sampling.sample(img, sx, sy, filter, "clamp");
+                c.writePixel(x, y, p.pixelColor());
+            }
+        }
+        return c;
+    }
+
+    /** §11.5: the sprite magnified 20x, nearest on the left, bilinear on the right. */
+    public static Canvas twoFilters() {
+        Image s = sprite();
+        return sideBySide(magnified(s, 20, "nearest"), magnified(s, 20, "bilinear"));
+    }
+
+    /** §11.5: plate_11() is two_filters(). */
+    public static Canvas plate11() {
+        return twoFilters();
+    }
+
+    /** §11.5: the sprite magnified 16x, nearest, bilinear and bicubic, three across. */
+    public static Canvas threeFilters() {
+        Image s = sprite();
+        return sideBySide(
+                sideBySide(magnified(s, 16, "nearest"), magnified(s, 16, "bilinear")),
+                magnified(s, 16, "bicubic"));
+    }
+
+    // ---- chapter 12: clipping, masks and groups ----------------------------
+
+    private static final Color[] GROUP_INKS = {
+        new Color(0.95, 0.55, 0.1), new Color(0.2, 0.55, 0.85), new Color(0.85, 0.25, 0.3)
+    };
+
+    private record CircleInk(Path path, Color color) {}
+
+    /** §12.4: three overlapping circles in three inks, on a 150 by 150 stage. */
+    private static List<CircleInk> threeCircles() {
+        double[][] centers = {{60, 62}, {90, 62}, {75, 92}};
+        List<CircleInk> out = new ArrayList<>();
+        for (int i = 0; i < centers.length; i++) {
+            Path p = Paths.circlePath(centers[i][0], centers[i][1], 34, 64);
+            out.add(new CircleInk(p, GROUP_INKS[i]));
+        }
+        return out;
+    }
+
+    private static Canvas layerToCanvas(Layer l) {
+        Canvas c = new Canvas(l.width, l.height);
+        for (int y = 0; y < l.height; y++) {
+            for (int x = 0; x < l.width; x++) {
+                c.writePixel(x, y, l.pixelAt(x, y).pixelColor());
+            }
+        }
+        return c;
+    }
+
+    private static final int GROUP_SIZE = 150;
+
+    private static Layer opaquePaper(int w, int h) {
+        Layer l = new Layer(w, h);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                l.setPixel(x, y, Pixel.opaque(PAPER));
+            }
+        }
+        return l;
+    }
+
+    /** §12.3: each circle painted straight onto the canvas at 50% opacity -- the overlaps double-composite. */
+    public static Canvas perChild() {
+        Layer base = opaquePaper(GROUP_SIZE, GROUP_SIZE);
+        for (CircleInk ci : threeCircles()) {
+            CoverageBuffer cov = Fill.fillPath(ci.path(), "nonzero", GROUP_SIZE, GROUP_SIZE);
+            base = Groups.paintInto(base, cov, ci.color(), 0.5);
+        }
+        return layerToCanvas(base);
+    }
+
+    /** §12.3: the three circles drawn opaque into a group, the group composited once at 50%. */
+    public static Canvas groupOpacity() {
+        Layer base = opaquePaper(GROUP_SIZE, GROUP_SIZE);
+        Layer group = Groups.pushGroup(GROUP_SIZE, GROUP_SIZE);
+        for (CircleInk ci : threeCircles()) {
+            CoverageBuffer cov = Fill.fillPath(ci.path(), "nonzero", GROUP_SIZE, GROUP_SIZE);
+            group = Groups.paintInto(group, cov, ci.color(), 1.0);
+        }
+        return layerToCanvas(Groups.popGroupWithOpacity(group, base, 0.5));
+    }
+
+    /** §12.4: per_child() and group_opacity(), side by side. */
+    public static Canvas opacityPlate() {
+        return sideBySide(perChild(), groupOpacity());
+    }
+
+    /** §12.4: plate_12() is opacity_plate(), magnified by 2. */
+    public static Canvas plate12() {
+        return Magnify.magnify(opacityPlate(), 2);
+    }
+
+    /**
+     * §12.4: clip_demo() -- one pentagram, shown two ways on a 300 by 150
+     * stage: on the left, filled and clipped hard to a circle;
+     * on the right, the same fill multiplied by a soft radial mask, so its
+     * interior stays full strength and only its rim fades.
+     */
+    public static Canvas clipDemo() {
+        double cx = 75;
+        double cy = 75;
+        double r = 60;
+        Path star = Paths.transformPath(unitStar(), Transforms.translation(cx, cy).multiply(Transforms.scaling(r, r)));
+        CoverageBuffer starCoverage = Fill.fillPath(star, "nonzero", GROUP_SIZE, GROUP_SIZE);
+
+        Canvas left = new Canvas(GROUP_SIZE, GROUP_SIZE);
+        left.fill(PAPER);
+        CoverageBuffer circleClip = Clipping.clipPath(Paths.circlePath(cx, cy, 45, 64), "nonzero", GROUP_SIZE, GROUP_SIZE);
+        Painter.paintThrough(left, Clipping.multiplyCoverage(starCoverage, circleClip), GROUP_INKS[0]);
+
+        Canvas right = new Canvas(GROUP_SIZE, GROUP_SIZE);
+        right.fill(PAPER);
+        CoverageBuffer mask = Clipping.softMask(cx, cy, 70, GROUP_SIZE, GROUP_SIZE);
+        Painter.paintThrough(right, Clipping.multiplyCoverage(starCoverage, mask), GROUP_INKS[0]);
+
+        return sideBySide(left, right);
+    }
 }

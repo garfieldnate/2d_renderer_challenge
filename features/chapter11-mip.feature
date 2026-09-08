@@ -13,6 +13,12 @@ Feature: Minification and mip pyramids
     And   d.height = 1
     And   pixel_color(image_texel(d, 0, 0)) = color(0.5, 0.5, 0.5)
 
+  Scenario: Downsample averages premultiplied, so a transparent texel adds nothing
+    Given img ← image(2, 2, [opaque(color(1, 0, 0)), CLEAR, CLEAR, CLEAR])
+    When  d ← downsample(img)
+    Then  image_texel(d, 0, 0) = pixel(0.25, 0, 0, 0.25)
+    And   pixel_color(image_texel(d, 0, 0)) = color(1, 0, 0)
+
   Scenario: A mip chain halves down to a single pixel
     Given img ← image(2, 2, [opaque(color(1, 0, 0)), opaque(color(0, 1, 0)), opaque(color(0, 0, 1)), opaque(color(1, 1, 1))])
     When  chain ← mip_chain(img)
