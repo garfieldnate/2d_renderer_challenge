@@ -984,4 +984,78 @@ public final class Figures {
 
         return sideBySide(left, right);
     }
+
+    // ---------------------------------------------------------------------
+    // Chapter 13: stroking is filling.
+
+    private static final Color STROKE_GRAY = new Color(0.62, 0.62, 0.66);
+    private static final Color STROKE_MAGENTA = new Color(0.85, 0.2, 0.55);
+    private static final int STROKE_SIZE = 160;
+    private static final int CAP_HEIGHT = 80;
+
+    /** §13.1, §13.5: chevron() -- the open "V" the plate strokes three ways. */
+    public static Path chevron() {
+        Path p = new Path();
+        p.moveTo(Tuple.point(30, 40));
+        p.lineTo(Tuple.point(80, 120));
+        p.lineTo(Tuple.point(130, 40));
+        return p;
+    }
+
+    /**
+     * §13.5: one panel of the plate -- the chevron stroked with the given
+     * join, filled gray, with the generated outline traced over it in
+     * magenta (chapter 3's line_wu, integer endpoints, so the outline's
+     * coordinates are rounded).
+     */
+    private static Canvas strokePanel(String join) {
+        return tracedPanel(chevron(), 26, "butt", join, STROKE_SIZE, STROKE_SIZE);
+    }
+
+    private static Canvas tracedPanel(Path path, double width, String cap, String join, int w, int h) {
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Path outline = Stroke.strokeToPath(path, width, cap, join, 4.0);
+        CoverageBuffer cov = Fill.fillPath(outline, "nonzero", w, h);
+        Painter.paintThrough(c, cov, STROKE_GRAY);
+        for (Edge e : outline.edges()) {
+            Lines.lineWu(c, (int) Numbers.round(e.a().x), (int) Numbers.round(e.a().y),
+                    (int) Numbers.round(e.b().x), (int) Numbers.round(e.b().y), STROKE_MAGENTA);
+        }
+        return c;
+    }
+
+    private static Canvas threeAcross(Canvas a, Canvas b, Canvas c, int panelW, int panelH) {
+        Canvas out = new Canvas(3 * panelW, panelH);
+        for (int y = 0; y < panelH; y++) {
+            for (int x = 0; x < panelW; x++) {
+                out.writePixel(x, y, a.pixelAt(x, y));
+                out.writePixel(x + panelW, y, b.pixelAt(x, y));
+                out.writePixel(x + 2 * panelW, y, c.pixelAt(x, y));
+            }
+        }
+        return out;
+    }
+
+    /** §13.5: joins_plate() -- the chevron stroked miter, round, bevel, each outline traced in magenta. */
+    public static Canvas joinsPlate() {
+        return threeAcross(strokePanel("miter"), strokePanel("round"), strokePanel("bevel"),
+                STROKE_SIZE, STROKE_SIZE);
+    }
+
+    /** §13.5: plate_13() -- joins_plate(), magnified by 2. */
+    public static Canvas plate13() {
+        return Magnify.magnify(joinsPlate(), 2);
+    }
+
+    /** §13.4: caps_demo() -- one horizontal segment stroked with butt, round and square caps. */
+    public static Canvas capsDemo() {
+        Path seg = new Path();
+        seg.moveTo(Tuple.point(45, 40));
+        seg.lineTo(Tuple.point(115, 40));
+        Canvas butt = tracedPanel(seg, 30, "butt", "miter", STROKE_SIZE, CAP_HEIGHT);
+        Canvas round = tracedPanel(seg, 30, "round", "miter", STROKE_SIZE, CAP_HEIGHT);
+        Canvas square = tracedPanel(seg, 30, "square", "miter", STROKE_SIZE, CAP_HEIGHT);
+        return threeAcross(butt, round, square, STROKE_SIZE, CAP_HEIGHT);
+    }
 }

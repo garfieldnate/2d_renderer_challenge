@@ -1,12 +1,12 @@
 # The 2D Renderer Challenge — Rust
 
-Chapters 1 (`The Canvas and the Color`) through 12 (`Clipping, Masks and
-Groups`), stdlib only.
+Chapters 1 (`The Canvas and the Color`) through 13 (`Stroking is Filling`),
+stdlib only.
 
 ## Build, test, render
 
 ```
-cargo test --release   # every scenario in features/, chapters 1-12
+cargo test --release   # every scenario in features/, chapters 1-13
 cargo run --release --bin render_all   # writes all renders (P3 + P6) to out/
 ```
 
@@ -22,12 +22,13 @@ That's it — `cargo build` alone also works if you just want the library to com
   elliptical arc, premultiplied pixels, Porter-Duff compositing and the
   sixteen blend modes, layers, paint servers (solid, three gradients,
   images), ordered dithering, resampling filters, mip pyramids, clips,
-  soft masks, groups, and the chapter's named figures/plates.
+  soft masks, groups, `stroke_to_path` and its joins/caps/miter, and the
+  chapter's named figures/plates.
 - `src/bin/render_all.rs` — renders every figure/plate to `out/`.
 - `tests/*.rs` — one test file per `features/*.feature` file (Gherkin
   scenarios translated 1:1 into `#[test]` functions; outlines expanded per
   row).
-- `reference/chapter-0{1..9}/*.ppm` and `reference/chapter-{10,11,12}/*.ppm`
+- `reference/chapter-0{1..9}/*.ppm` and `reference/chapter-{10,11,12,13}/*.ppm`
   — the book's reference images, compared against with
   `max_channel_difference`.
 
@@ -250,3 +251,50 @@ premultiplied colour are numerically identical, so the bug that chapter 9
 went out of its way to explain (averaging straight drags a transparent
 pixel's stored colour into the result) has no data in chapter 11 where it
 could show up. See FEEDBACK.md.
+
+## Chapter 13 notes
+
+`stroke_to_path(path, width, cap, join, miter_limit)` turns any `Path`
+into a fillable outline: one rectangle per segment (`seg_rect`), one
+join wedge per interior vertex (`join_shape` — bevel a triangle, round
+an arc, miter the intersection of the two offset edges, falling back to
+a bevel past `miter_limit`), one cap shape per open end (`cap_shape` —
+`butt` emits nothing, `square` a rectangle extended by half the width,
+`round` a semicircle), all as closed subpaths of one `Path`. There's no
+new rasterizer — `fill_path(outline, "nonzero", w, h)` from chapter 7 is
+the whole story, and the overlaps on the inside of every turn, wound
+twice, disappear into the fill for free. Consecutive duplicate points
+are dropped first (`dedupe_points`) so a doubled point never becomes a
+zero-length segment's undefined direction; a subpath left with a single
+point becomes a disc (round cap), a square (square cap) or nothing
+(butt cap) instead of dividing by zero. `miter_length(d_in, d_out, h)` is
+`h / sin(theta / 2)`, `theta` the interior angle between the *reversed*
+incoming direction and the outgoing one — this matched both the standalone
+closed-form scenario and the chevron's actual miter tip distance exactly,
+confirming there's one formula, not two. `chevron()` is the plate's V:
+three points, `(30, 40)`, `(80, 120)`, `(130, 40)`, never closed.
+`joins_plate()`/`plate_13()`/`caps_demo()` all diff 0 against
+`reference/chapter-13/` — not merely within tolerance.
+
+## Mutation testing (chapter 13)
+
+Five deliberate bugs, tested and reverted: flipping which side of a turn
+is "outer" in `join_shape` (not caught by the join-style or miter-length
+unit scenarios, which only pin point *counts* — caught by the miter's
+own tip-position scenario, the round join's point count once the arc
+sweeps the wrong way round, and both plate reference diffs), a miter
+that never falls back to a bevel regardless of `miter_limit` (caught
+immediately by the miter-limit scenario), offsetting by the full width
+instead of half in `stroke_to_path` (caught immediately — every
+degenerate-case scenario, since even a single-point dot's bounds
+double), a round cap swept through the wrong semicircle (not caught by
+any unit scenario — nothing pins a cap's own geometry directly — caught
+by the caps render's reference diff), and skipping `dedupe_points`
+entirely (caught immediately: a zero-length segment's direction is
+`0/0`, and the duplicate-points scenario's subpath count and point
+values come out wrong once NaNs propagate). All five were caught by at
+least one scenario; none survived silently. The two that only the
+plate/caps renders caught (outer side, cap sweep direction) are the
+strongest argument in this project for pinning `max_channel_difference`
+on every render rather than trusting point-count scenarios alone — a
+join or cap's precise geometry is only checked end to end there.

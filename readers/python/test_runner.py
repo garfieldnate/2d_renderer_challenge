@@ -416,6 +416,13 @@ def evaluate_expression(expr_str, ctx):
             'opacity_plate': renderer.opacity_plate,
             'plate_12': renderer.plate_12,
             'clip_demo': renderer.clip_demo,
+            # Chapter 13
+            'stroke_to_path': renderer.stroke_to_path,
+            'miter_length': renderer.miter_length,
+            'chevron': renderer.chevron,
+            'joins_plate': renderer.joins_plate,
+            'plate_13': renderer.plate_13,
+            'caps_demo': renderer.caps_demo,
         }
         namespace.update(ctx.variables)
 

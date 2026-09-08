@@ -38,3 +38,18 @@ Feature: Stroking is filling
     Given o ← stroke_to_path(chevron(), 26, "butt", "miter", 4.0)
     Then  subpaths(o)[2].points[0] = point(80, 120)
     And   subpaths(o)[2].points[2] = point(80, 144.528) ± 0.01
+
+  Scenario: The join sits on the outer side of the turn
+    Given o ← stroke_to_path(chevron(), 26, "butt", "bevel", 4.0)
+    Then  subpaths(o)[2].points[0] = point(80, 120)
+    And   subpaths(o)[2].points[1] = point(68.976, 126.89) ± 0.01
+    And   subpaths(o)[2].points[2] = point(91.024, 126.89) ± 0.01
+
+  Scenario: A closed subpath strokes to segments and joins, with no caps
+    Given tri ← path()
+    When  move_to(tri, point(20, 20))
+    And   line_to(tri, point(80, 20))
+    And   line_to(tri, point(50, 70))
+    And   close(tri)
+    And   o ← stroke_to_path(tri, 8, "butt", "miter", 4.0)
+    Then  length(subpaths(o)) = 6

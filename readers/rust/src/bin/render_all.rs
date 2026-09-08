@@ -7,12 +7,13 @@ use std::fs;
 use std::path::Path;
 
 use renderer::{
-    blend_strip, canvas_to_p6, canvas_to_ppm, clamp_pair, clip_demo, disc_centers, disc_coverage,
-    drops, extend_strip, fan_bresenham, fan_both_orders, fan_coverage, fan_wu, flower, gray_match,
-    needles, opacity_plate, painted_twice, plate_01, plate_02, plate_03, plate_04, plate_05,
-    plate_06, plate_07, plate_08, plate_09, plate_10, plate_11, plate_12, porter_duff_table,
-    quarter_match, ramp, seam, soft_square, spiral, spiral_smooth, star_centers, star_coverage,
-    star_exact, three_filters, three_gradients, two_filters,
+    blend_strip, canvas_to_p6, canvas_to_ppm, caps_demo, clamp_pair, clip_demo, disc_centers,
+    disc_coverage, drops, extend_strip, fan_bresenham, fan_both_orders, fan_coverage, fan_wu,
+    flower, gray_match, joins_plate, needles, opacity_plate, painted_twice, plate_01, plate_02,
+    plate_03, plate_04, plate_05, plate_06, plate_07, plate_08, plate_09, plate_10, plate_11,
+    plate_12, plate_13, porter_duff_table, quarter_match, ramp, seam, soft_square, spiral,
+    spiral_smooth, star_centers, star_coverage, star_exact, three_filters, three_gradients,
+    two_filters,
 };
 
 fn write_p3(dir: &Path, name: &str, ppm: String) {
@@ -92,5 +93,10 @@ fn main() {
     write_p6(out, "clip-demo.ppm", canvas_to_p6(&clip_demo()));
     write_p6(out, "plate-12.ppm", canvas_to_p6(&plate_12()));
 
-    println!("wrote 41 renders to out/");
+    // Chapter 13: stroking is filling.
+    write_p6(out, "joins.ppm", canvas_to_p6(&joins_plate()));
+    write_p6(out, "caps.ppm", canvas_to_p6(&caps_demo()));
+    write_p6(out, "plate-13.ppm", canvas_to_p6(&plate_13()));
+
+    println!("wrote 44 renders to out/");
 }

@@ -27,6 +27,15 @@ Feature: The degenerate cases
     And   o ← stroke_to_path(p, 10, "butt", "miter", 4.0)
     Then  length(subpaths(o)) = 0
 
+  Scenario: A square cap extends a half-width past the end
+    Given seg ← path()
+    When  move_to(seg, point(45, 40))
+    And   line_to(seg, point(115, 40))
+    And   o ← stroke_to_path(seg, 30, "square", "miter", 4.0)
+    Then  length(subpaths(o)) = 3
+    And   subpaths(o)[2].points[1] = point(130, 55)
+    And   subpaths(o)[2].points[2] = point(130, 25)
+
   Scenario: A single point with a square cap is a square
     Given p ← path()
     When  move_to(p, point(20, 20))

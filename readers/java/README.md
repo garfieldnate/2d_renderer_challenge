@@ -1,6 +1,6 @@
 # The 2D Renderer Challenge — Java
 
-Chapters 1-12, hand-rolled test runner, no JUnit, no network.
+Chapters 1-13, hand-rolled test runner, no JUnit, no network.
 
 ## Compile, test, render
 
@@ -20,10 +20,11 @@ java -cp classes Chapter09Tests
 java -cp classes Chapter10Tests
 java -cp classes Chapter11Tests
 java -cp classes Chapter12Tests
+java -cp classes Chapter13Tests
 ```
 
 Each run prints one `PASS`/`FAIL` line per scenario, a pass/fail total, and
-then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-12 as
+then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-13 as
 P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/plate-02.ppm`, `out/fan-bresenham.ppm`, `out/fan-wu.ppm`,
 `out/fan-coverage.ppm`, `out/plate-03.ppm`, `out/fan-both-orders.ppm`,
@@ -35,7 +36,7 @@ P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/seam.ppm`, `out/three-gradients.ppm`, `out/plate-10.ppm`,
 `out/extend-modes.ppm`, `out/two-filters.ppm`, `out/plate-11.ppm`,
 `out/three-filters.ppm`, `out/opacity.ppm`, `out/plate-12.ppm`,
-`out/clip-demo.ppm`.
+`out/clip-demo.ppm`, `out/joins.ppm`, `out/plate-13.ppm`, `out/caps.ppm`.
 
 ## Chapter 3
 
@@ -327,3 +328,42 @@ renders diff 0 against the reference bytes. **`clip_demo()`'s exact geometry
 is not given anywhere in the chapter** -- unlike every other named render in
 chapters 11 and 12, it has no printed pseudocode and no figure JS to copy;
 see FEEDBACK.md's Prose problems section for how it was found instead.
+
+## Chapter 13
+
+Stroking is filling: `Stroke.strokeToPath(path, width, cap, join, miterLimit)`
+turns a stroked path into a plain, fillable outline -- one rectangle per
+segment (`segRect`, the ends offset by half the width along the segment's
+perpendicular), one join wedge per interior vertex (`joinShape`: `"bevel"` a
+triangle, `"round"` an arc about the vertex, `"miter"` the two outer edges
+extended to their intersection, falling back to a bevel past the miter
+limit), and one cap shape per open end (`capShape`: `"butt"` nothing,
+`"square"` a rectangle a half-width past the end, `"round"` a semicircle),
+all as subpaths of one output `Path`. There is no new rasterizer -- the
+result is handed straight to chapter 7's `Fill.fillPath(o, "nonzero", w,
+h)`, and every generated subpath is closed so `Path.edges()`'s
+always-closed convention (from chapter 5) does the right thing with it. The
+public `Stroke.miterLength(dIn, dOut, h)` is the closed form, `h / sin(theta
+/ 2)` with `theta` the interior turn angle (the angle between the reversed
+incoming direction and the outgoing one) -- independent of the stroker's own
+geometric construction of the same point, so the two can be (and are)
+checked against each other.
+
+The degenerate cases from §13.4: `Stroke` drops consecutive duplicate
+points before doing anything else (a doubled vertex never becomes a
+zero-length segment to divide by), and a subpath of a single point (after
+dedup) isn't rejected -- with a round cap it's a filled dot of radius `h`,
+with a square cap a square of the same half-width, with a butt cap nothing
+at all. A join whose turn is numerically zero (a straight run, or an exact
+180-degree reversal) emits no wedge, since there's no defined "outer side"
+either way.
+
+`Figures.chevron()` is the plate's open "V" (`(30, 40)` to `(80, 120)` to
+`(130, 40)`). `Figures.joinsPlate()` strokes it three ways (miter, round,
+bevel), each panel a gray nonzero fill of the generated outline with the
+outline itself traced over it in magenta via chapter 3's `Lines.lineWu`
+(rounding the outline's coordinates to integers first, per the chapter's own
+instruction). `Figures.plate13()` is `joinsPlate()` magnified by 2.
+`Figures.capsDemo()` strokes one horizontal segment three ways (butt, round,
+square) the same way. All three renders (`joins.ppm`, `plate-13.ppm`,
+`caps.ppm`) diff 0 against the reference bytes.

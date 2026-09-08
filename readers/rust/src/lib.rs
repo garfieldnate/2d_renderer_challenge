@@ -4104,3 +4104,315 @@ pub fn clip_demo() -> Canvas {
 
     side_by_side(&left, &right)
 }
+
+// =======================================================================
+// Chapter 13: Stroking is Filling
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 13.1-13.2 The pieces, and the stroker that assembles them
+// ---------------------------------------------------------------------
+
+/// The vector turned a quarter turn: `(x, y)` becomes `(-y, x)`.
+fn perp(v: Tuple) -> Tuple {
+    vector(-v.y, v.x)
+}
+
+/// How many steps an arc from `a0` to `a1` needs, one every eighth of a
+/// radian's sixteenth-turn (`pi/16`, 11.25 degrees), at least two.
+fn arc_steps(a0: f64, a1: f64) -> usize {
+    (((a1 - a0).abs() / (std::f64::consts::PI / 16.0)).ceil() as usize).max(2)
+}
+
+/// Appends `steps + 1` points of the arc centred on `c`, radius `r`, from
+/// angle `a0` to `a1` inclusive of both ends.
+fn arc_into(pts: &mut Vec<Tuple>, c: Tuple, a0: f64, a1: f64, r: f64, steps: usize) {
+    for k in 0..=steps {
+        let a = a0 + (a1 - a0) * k as f64 / steps as f64;
+        pts.push(point(c.x + r * a.cos(), c.y + r * a.sin()));
+    }
+}
+
+/// The rectangle of half-width `h` centred on the segment `a..b`: the
+/// ends offset by `h` along the segment's perpendicular, on both sides.
+fn seg_rect(a: Tuple, b: Tuple, h: f64) -> Vec<Tuple> {
+    let d = normalize(b - a);
+    let n = perp(d);
+    vec![a + n * h, b + n * h, b + n * -h, a + n * -h]
+}
+
+/// Where the line through `p1` along `d1` crosses the line through `p2`
+/// along `d2`, or `None` if the two directions are parallel.
+fn intersect_lines(p1: Tuple, d1: Tuple, p2: Tuple, d2: Tuple) -> Option<Tuple> {
+    let den = cross(d1, d2);
+    if den.abs() < 1e-12 {
+        return None;
+    }
+    let t = cross(p2 - p1, d2) / den;
+    Some(p1 + d1 * t)
+}
+
+/// `h / sin(theta / 2)`, where `theta` is the interior angle at a vertex
+/// between the segment arriving along `d_in` and the one leaving along
+/// `d_out` -- the distance a miter join's tip sits past the vertex. The
+/// interior angle is the one between the *reversed* incoming direction
+/// (vertex back to the previous point) and the outgoing one, so a
+/// straight-through vertex (`d_in == d_out`) scores 180 degrees and a
+/// dead-on reversal scores 0.
+pub fn miter_length(d_in: Tuple, d_out: Tuple, h: f64) -> f64 {
+    let neg_in = -d_in;
+    let sin_theta = cross(neg_in, d_out).abs();
+    let cos_theta = dot(neg_in, d_out);
+    let theta = sin_theta.atan2(cos_theta);
+    h / (theta / 2.0).sin()
+}
+
+/// The wedge that fills the outer gap at one interior vertex, or `None`
+/// when the path doesn't actually turn there (`d_in` and `d_out`
+/// parallel -- no gap to fill). `s` picks the outer side of the turn: the
+/// side the offset normals point away from the turn's own curvature.
+/// Bevel is the straight-across triangle; round is the arc between the
+/// two offset points; miter extends both offset edges to their
+/// intersection and falls back to bevel when that tip would land past
+/// `miter_limit` half-widths from the vertex.
+fn join_shape(v: Tuple, din: Tuple, dout: Tuple, h: f64, join: &str, miter_limit: f64) -> Option<Vec<Tuple>> {
+    let turn = cross(din, dout);
+    if turn.abs() < 1e-12 {
+        return None;
+    }
+    let s = if turn > 0.0 { -1.0 } else { 1.0 };
+    let nin = perp(din) * s;
+    let nout = perp(dout) * s;
+    let a = v + nin * h;
+    let b = v + nout * h;
+    match join {
+        "bevel" => Some(vec![v, a, b]),
+        "round" => {
+            let a0 = (a.y - v.y).atan2(a.x - v.x);
+            let mut a1 = (b.y - v.y).atan2(b.x - v.x);
+            if s > 0.0 && a1 < a0 {
+                a1 += 2.0 * std::f64::consts::PI;
+            }
+            if s < 0.0 && a1 > a0 {
+                a1 -= 2.0 * std::f64::consts::PI;
+            }
+            let mut pts = vec![v];
+            arc_into(&mut pts, v, a0, a1, h, arc_steps(a0, a1));
+            Some(pts)
+        }
+        _ => {
+            if let Some(m) = intersect_lines(a, din, b, dout) {
+                if magnitude(m - v) <= miter_limit * h {
+                    return Some(vec![v, a, m, b]);
+                }
+            }
+            Some(vec![v, a, b])
+        }
+    }
+}
+
+/// The shape that closes one open end of a stroke, or `None` for a butt
+/// cap (which closes nothing -- the segment rectangle's own flat end is
+/// the whole story). `dout` points away from the path, out of the end.
+fn cap_shape(p: Tuple, dout: Tuple, h: f64, cap: &str) -> Option<Vec<Tuple>> {
+    let n = perp(dout);
+    match cap {
+        "square" => {
+            let l = p + n * h;
+            let r = p + n * -h;
+            Some(vec![l, l + dout * h, r + dout * h, r])
+        }
+        "round" => {
+            let a0 = n.y.atan2(n.x);
+            let outw = dout.y.atan2(dout.x);
+            let two_pi = 2.0 * std::f64::consts::PI;
+            let mut d = ((outw - a0) % two_pi + two_pi) % two_pi;
+            if d > std::f64::consts::PI {
+                d -= two_pi;
+            }
+            let a1 = a0 + if d > 0.0 { std::f64::consts::PI } else { -std::f64::consts::PI };
+            let mut pts = Vec::new();
+            arc_into(&mut pts, p, a0, a1, h, arc_steps(a0, a1));
+            Some(pts)
+        }
+        _ => None,
+    }
+}
+
+/// Drops every point that's within `1e-9` of the one before it, so a
+/// doubled point from a sloppy export never becomes a zero-length
+/// segment. The first point always survives.
+fn dedupe_points(points: &[Tuple]) -> Vec<Tuple> {
+    let mut out = vec![points[0]];
+    for &pt in &points[1..] {
+        let last = *out.last().unwrap();
+        if magnitude(pt - last) > 1e-9 {
+            out.push(pt);
+        }
+    }
+    out
+}
+
+/// Appends a new closed subpath through `pts` to `out` (empty `pts`
+/// appends nothing): every piece a stroke emits -- rectangle, join,
+/// cap, dot -- fills as its own little closed shape, and nonzero winding
+/// merges the overlaps for free.
+fn push_closed_subpath(out: &mut Path, pts: &[Tuple]) {
+    if pts.is_empty() {
+        return;
+    }
+    move_to(out, pts[0]);
+    for &pt in &pts[1..] {
+        line_to(out, pt);
+    }
+    close(out);
+}
+
+/// Turns a stroked path into a fillable outline: one rectangle per
+/// segment, one join wedge per interior vertex, one cap shape per open
+/// end, all as subpaths of one path. There's no new rasterizer -- fill
+/// the result nonzero (chapter 7's `fill_path`) and the overlaps on the
+/// inside of every turn, wound twice, vanish into the fill.
+///
+/// Consecutive duplicate points are dropped before anything else, so a
+/// doubled point never divides by zero building a segment's direction. A
+/// subpath left with a single point is a dot: a filled disc of radius
+/// `h` for a round cap, a square of side `width` for a square cap, and
+/// nothing at all for a butt cap.
+pub fn stroke_to_path(p: &Path, width: f64, cap: &str, join: &str, miter_limit: f64) -> Path {
+    let h = width / 2.0;
+    let mut out = path();
+    for sp in subpaths(p) {
+        if sp.points.is_empty() {
+            continue;
+        }
+        let pts = dedupe_points(&sp.points);
+        if pts.len() < 2 {
+            let c = pts[0];
+            match cap {
+                "round" => {
+                    let mut d = Vec::new();
+                    arc_into(&mut d, c, 0.0, 2.0 * std::f64::consts::PI, h, 48);
+                    push_closed_subpath(&mut out, &d);
+                }
+                "square" => {
+                    let sq = [
+                        point(c.x - h, c.y - h),
+                        point(c.x + h, c.y - h),
+                        point(c.x + h, c.y + h),
+                        point(c.x - h, c.y + h),
+                    ];
+                    push_closed_subpath(&mut out, &sq);
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        let closed = sp.closed;
+        let n = pts.len();
+        let mut segs: Vec<(Tuple, Tuple)> = Vec::with_capacity(n);
+        for i in 0..n - 1 {
+            segs.push((pts[i], pts[i + 1]));
+        }
+        if closed {
+            segs.push((pts[n - 1], pts[0]));
+        }
+        for &(a, b) in &segs {
+            push_closed_subpath(&mut out, &seg_rect(a, b, h));
+        }
+
+        let dirs: Vec<Tuple> = segs.iter().map(|&(a, b)| normalize(b - a)).collect();
+        let nj = if closed { segs.len() } else { segs.len() - 1 };
+        for k in 0..nj {
+            let v = segs[(k + 1) % segs.len()].0;
+            let din = dirs[k];
+            let dout = dirs[(k + 1) % segs.len()];
+            if let Some(j) = join_shape(v, din, dout, h, join, miter_limit) {
+                push_closed_subpath(&mut out, &j);
+            }
+        }
+
+        if !closed {
+            if let Some(sc) = cap_shape(pts[0], -dirs[0], h, cap) {
+                push_closed_subpath(&mut out, &sc);
+            }
+            if let Some(ec) = cap_shape(pts[n - 1], dirs[dirs.len() - 1], h, cap) {
+                push_closed_subpath(&mut out, &ec);
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------
+// § 13.5 Putting it together
+// ---------------------------------------------------------------------
+
+const CH13_PAPER: Color = Color { red: 0.02, green: 0.02, blue: 0.025 };
+const CH13_GRAY: Color = Color { red: 0.62, green: 0.62, blue: 0.66 };
+const CH13_MAGENTA: Color = Color { red: 0.85, green: 0.2, blue: 0.55 };
+const CH13_SIZE: usize = 160;
+
+/// The plate's chevron: a V of three points, open (never closed).
+pub fn chevron() -> Path {
+    let mut p = path();
+    move_to(&mut p, point(30.0, 40.0));
+    line_to(&mut p, point(80.0, 120.0));
+    line_to(&mut p, point(130.0, 40.0));
+    p
+}
+
+/// A panel showing `outline`'s gray fill with its own edges traced over
+/// it in magenta (chapter 3's `line_wu`, which wants integer endpoints,
+/// so the outline's coordinates are rounded to the nearest pixel first).
+fn stroke_panel(width: usize, height: usize, outline: &Path) -> Canvas {
+    let mut c = canvas(width, height);
+    fill(&mut c, CH13_PAPER);
+    let cov = fill_path(outline, "nonzero", width, height);
+    paint_through(&mut c, &cov, CH13_GRAY);
+    for (a, b) in edges(outline) {
+        line_wu(&mut c, round(a.x), round(a.y), round(b.x), round(b.y), CH13_MAGENTA);
+    }
+    c
+}
+
+fn blit_panel(out: &mut Canvas, panel: &Canvas, x0: i64, y0: i64) {
+    for y in 0..panel.height as i64 {
+        for x in 0..panel.width as i64 {
+            write_pixel(out, x0 + x, y0 + y, pixel_at(panel, x, y));
+        }
+    }
+}
+
+/// A chevron stroked three ways -- miter, round, bevel -- each panel the
+/// generated outline in magenta over the gray fill of it.
+pub fn joins_plate() -> Canvas {
+    let mut out = canvas(3 * CH13_SIZE, CH13_SIZE);
+    for (i, join) in ["miter", "round", "bevel"].iter().enumerate() {
+        let outline = stroke_to_path(&chevron(), 26.0, "butt", join, 4.0);
+        let panel = stroke_panel(CH13_SIZE, CH13_SIZE, &outline);
+        blit_panel(&mut out, &panel, i as i64 * CH13_SIZE as i64, 0);
+    }
+    out
+}
+
+/// Plate 13: `joins_plate`, magnified by 2.
+pub fn plate_13() -> Canvas {
+    magnify(&joins_plate(), 2)
+}
+
+/// One horizontal segment stroked with butt, round and square caps.
+pub fn caps_demo() -> Canvas {
+    let mut seg = path();
+    move_to(&mut seg, point(45.0, 40.0));
+    line_to(&mut seg, point(115.0, 40.0));
+
+    let mut out = canvas(3 * CH13_SIZE, 80);
+    for (i, cap) in ["butt", "round", "square"].iter().enumerate() {
+        let outline = stroke_to_path(&seg, 30.0, cap, "miter", 4.0);
+        let panel = stroke_panel(CH13_SIZE, 80, &outline);
+        blit_panel(&mut out, &panel, i as i64 * CH13_SIZE as i64, 0);
+    }
+    out
+}

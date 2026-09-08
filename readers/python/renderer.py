@@ -3809,3 +3809,252 @@ def clip_demo():
     fill(right, _GROUP_PAPER)
     paint_through(right, soft, ink)
     return side_by_side(left, right)
+
+
+# --- Chapter 13: stroking is filling ---
+
+def _perp(v):
+    """The perpendicular of a vector, rotated 90 degrees."""
+    return vector(-v.y, v.x)
+
+
+def _add_scaled(p, v, s):
+    """A point offset from p by vector v scaled by s."""
+    return point(p.x + v.x * s, p.y + v.y * s)
+
+
+def _seg_intersect(p1, d1, p2, d2):
+    """Where the line through p1 in direction d1 crosses the line through
+    p2 in direction d2, or None when the directions are parallel."""
+    den = cross(d1, d2)
+    if abs(den) < 1e-12:
+        return None
+    t = cross(p2 - p1, d2) / den
+    return _add_scaled(p1, d1, t)
+
+
+def _arc_points(c, a0, a1, r, steps):
+    """Sample points along an arc of radius r centred at c, from angle a0
+    to a1 inclusive of both ends."""
+    pts = []
+    for k in range(steps + 1):
+        a = a0 + (a1 - a0) * k / steps
+        pts.append(point(c.x + r * math.cos(a), c.y + r * math.sin(a)))
+    return pts
+
+
+def _arc_steps(a0, a1):
+    """How many segments to sample an arc's sweep into: roughly one every
+    1/16 of a turn, never fewer than two."""
+    return max(2, math.ceil(abs(a1 - a0) / (math.pi / 16)))
+
+
+def _dedupe_points(points):
+    """Drop consecutive duplicate points -- the fix that keeps a doubled
+    point from becoming a zero-length, direction-less segment."""
+    if not points:
+        return []
+    out = [points[0]]
+    for pt in points[1:]:
+        if magnitude(pt - out[-1]) > 1e-9:
+            out.append(pt)
+    return out
+
+
+def miter_length(d_in, d_out, h):
+    """The distance from a vertex to a miter's tip: h / sin(theta / 2),
+    where theta is the turn's interior angle -- the angle between the
+    incoming direction reversed and the outgoing direction."""
+    d_in = normalize(d_in)
+    d_out = normalize(d_out)
+    cos_theta = max(-1.0, min(1.0, -dot(d_in, d_out)))
+    sin_half = math.sqrt(max(0.0, (1.0 - cos_theta) / 2.0))
+    return h / sin_half
+
+
+def _seg_rect(a, b, h):
+    """The rectangle of half-width h centred on segment a..b."""
+    d = normalize(b - a)
+    n = _perp(d)
+    return [_add_scaled(a, n, h), _add_scaled(b, n, h),
+            _add_scaled(b, n, -h), _add_scaled(a, n, -h)]
+
+
+def _join_shape(v, d_in, d_out, h, join, miter_limit):
+    """The wedge that fills the outer gap at an interior vertex, or None
+    when the path doesn't actually turn there."""
+    turn = cross(d_in, d_out)
+    if abs(turn) < 1e-12:
+        return None
+    s = -1 if turn > 0 else 1
+    n_in = _perp(d_in) * s
+    n_out = _perp(d_out) * s
+    a = _add_scaled(v, n_in, h)
+    b = _add_scaled(v, n_out, h)
+
+    if join == "bevel":
+        return [v, a, b]
+
+    if join == "round":
+        a0 = math.atan2(a.y - v.y, a.x - v.x)
+        a1 = math.atan2(b.y - v.y, b.x - v.x)
+        if s > 0 and a1 < a0:
+            a1 += 2 * math.pi
+        if s < 0 and a1 > a0:
+            a1 -= 2 * math.pi
+        return [v] + _arc_points(v, a0, a1, h, _arc_steps(a0, a1))
+
+    # miter, falling back to bevel past the limit
+    m = _seg_intersect(a, d_in, b, d_out)
+    if m is not None and magnitude(m - v) <= miter_limit * h:
+        return [v, a, m, b]
+    return [v, a, b]
+
+
+def _cap_shape(p, d_out, h, cap):
+    """The shape that closes an open end, or None for a butt cap."""
+    n = _perp(d_out)
+    if cap == "butt":
+        return None
+    if cap == "square":
+        l = _add_scaled(p, n, h)
+        r = _add_scaled(p, n, -h)
+        return [l, _add_scaled(l, d_out, h), _add_scaled(r, d_out, h), r]
+    # round
+    a0 = math.atan2(n.y, n.x)
+    outw = math.atan2(d_out.y, d_out.x)
+    d = ((outw - a0) % (2 * math.pi) + 2 * math.pi) % (2 * math.pi)
+    if d > math.pi:
+        d -= 2 * math.pi
+    a1 = a0 + (math.pi if d > 0 else -math.pi)
+    return _arc_points(p, a0, a1, h, _arc_steps(a0, a1))
+
+
+def _dot_points(c, h, cap):
+    """A single-point subpath's stand-in shape: a disc for a round cap, a
+    square for a square cap, nothing (None) for a butt cap."""
+    if cap == "round":
+        return _arc_points(c, 0, 2 * math.pi, h, 48)
+    if cap == "square":
+        return [point(c.x - h, c.y - h), point(c.x + h, c.y - h),
+                point(c.x + h, c.y + h), point(c.x - h, c.y + h)]
+    return None
+
+
+def stroke_to_path(p, width, cap, join, miter_limit):
+    """Turn a stroked path into a fillable outline: one rectangle per
+    segment, one join wedge per interior vertex, one cap shape per open
+    end, all as subpaths of one path. Fill it nonzero; that's the stroke."""
+    h = width / 2.0
+    out = path()
+    for sp in subpaths(p):
+        pts = _dedupe_points(sp.points)
+        if not pts:
+            continue
+        if len(pts) == 1:
+            dot = _dot_points(pts[0], h, cap)
+            if dot is not None:
+                out.subpaths.append(Subpath(dot, True))
+            continue
+
+        segs = [(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
+        if sp.closed:
+            segs.append((pts[-1], pts[0]))
+
+        for a, b in segs:
+            out.subpaths.append(Subpath(_seg_rect(a, b, h), True))
+
+        dirs = [normalize(b - a) for a, b in segs]
+        n_joins = len(segs) if sp.closed else len(segs) - 1
+        for k in range(n_joins):
+            v = segs[(k + 1) % len(segs)][0]
+            j = _join_shape(v, dirs[k], dirs[(k + 1) % len(dirs)], h, join, miter_limit)
+            if j is not None:
+                out.subpaths.append(Subpath(j, True))
+
+        if not sp.closed:
+            start_dir = vector(-dirs[0].x, -dirs[0].y)
+            sc = _cap_shape(pts[0], start_dir, h, cap)
+            if sc is not None:
+                out.subpaths.append(Subpath(sc, True))
+            ec = _cap_shape(pts[-1], dirs[-1], h, cap)
+            if ec is not None:
+                out.subpaths.append(Subpath(ec, True))
+    return out
+
+
+def chevron():
+    """A three-point open path, a wide V, used to show off each join
+    style on the same corner."""
+    p = path()
+    move_to(p, point(30, 40))
+    line_to(p, point(80, 120))
+    line_to(p, point(130, 40))
+    return p
+
+
+# --- Chapter 13 renders ---
+
+_STROKE_GRAY = color(0.62, 0.62, 0.66)
+_STROKE_MAG = color(0.85, 0.2, 0.55)
+_STROKE_SIZE = 160
+
+
+def _stroke_render_panel(stroke_path, width_px, height_px, stroke_width, cap, join, miter_limit):
+    """Fill a stroked path in gray and draw its generated outline in
+    magenta over it, integer endpoints and all -- one panel of the plate."""
+    c = canvas(width_px, height_px)
+    fill(c, PAPER)
+    outline = stroke_to_path(stroke_path, stroke_width, cap, join, miter_limit)
+    cov = fill_path(outline, "nonzero", width_px, height_px)
+    paint_through(c, cov, _STROKE_GRAY)
+    for e in edges(outline):
+        line_wu(c, round_half_up(e.a.x), round_half_up(e.a.y),
+                round_half_up(e.b.x), round_half_up(e.b.y), _STROKE_MAG)
+    return c
+
+
+def _side_by_side_n(canvases):
+    """Lay out any number of same-height canvases left to right."""
+    total_w = sum(cv.width for cv in canvases)
+    h = canvases[0].height
+    result = Canvas(total_w, h)
+    x_off = 0
+    for cv in canvases:
+        for y in range(h):
+            for x in range(cv.width):
+                write_pixel(result, x_off + x, y, pixel_at(cv, x, y))
+        x_off += cv.width
+    return result
+
+
+def joins_plate():
+    """A chevron stroked three ways -- miter, round, bevel -- each the
+    generated outline in magenta over a gray fill of it."""
+    panels = [
+        _stroke_render_panel(chevron(), _STROKE_SIZE, _STROKE_SIZE, 26, "butt", join, 4.0)
+        for join in ("miter", "round", "bevel")
+    ]
+    return _side_by_side_n(panels)
+
+
+def plate_13():
+    """Chapter 13's plate: the three joins, magnified by 2."""
+    return magnify(joins_plate(), 2)
+
+
+def _cap_segment():
+    """The one horizontal segment the caps demo strokes three ways."""
+    p = path()
+    move_to(p, point(45, 40))
+    line_to(p, point(115, 40))
+    return p
+
+
+def caps_demo():
+    """One horizontal segment stroked with butt, round and square caps."""
+    panels = [
+        _stroke_render_panel(_cap_segment(), _STROKE_SIZE, 80, 30, cap, "miter", 4.0)
+        for cap in ("butt", "round", "square")
+    ]
+    return _side_by_side_n(panels)

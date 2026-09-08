@@ -98,7 +98,22 @@
   <span class="kw">Scenario</span>: The miter reaches its tip at the vertex plus the miter length
     <span class="kw">Given</span> o ← stroke_to_path(chevron(), 26, "butt", "miter", 4.0)
     <span class="kw">Then</span>  subpaths(o)[2].points[0] = point(80, 120)
-    <span class="kw">And</span>   subpaths(o)[2].points[2] = point(80, 144.528) ± 0.01</code></pre>
+    <span class="kw">And</span>   subpaths(o)[2].points[2] = point(80, 144.528) ± 0.01
+
+  <span class="kw">Scenario</span>: The join sits on the outer side of the turn
+    <span class="kw">Given</span> o ← stroke_to_path(chevron(), 26, "butt", "bevel", 4.0)
+    <span class="kw">Then</span>  subpaths(o)[2].points[0] = point(80, 120)
+    <span class="kw">And</span>   subpaths(o)[2].points[1] = point(68.976, 126.89) ± 0.01
+    <span class="kw">And</span>   subpaths(o)[2].points[2] = point(91.024, 126.89) ± 0.01
+
+  <span class="kw">Scenario</span>: A closed subpath strokes to segments and joins, with no caps
+    <span class="kw">Given</span> tri ← path()
+    <span class="kw">When</span>  move_to(tri, point(20, 20))
+    <span class="kw">And</span>   line_to(tri, point(80, 20))
+    <span class="kw">And</span>   line_to(tri, point(50, 70))
+    <span class="kw">And</span>   close(tri)
+    <span class="kw">And</span>   o ← stroke_to_path(tri, 8, "butt", "miter", 4.0)
+    <span class="kw">Then</span>  length(subpaths(o)) = 6</code></pre>
   </div>
 
   <h2><span class="sec">§ 13.2</span> The stroker</h2>
@@ -121,11 +136,19 @@
     <span class="kw">if</span> subpath is open:  emit cap at each end
   <span class="kw">return</span> out                       <span class="cm">// fill it nonzero; that is the stroke</span></code></pre>
 
+  <p>A closed subpath is the same, with two differences: it has a segment from the last point back to
+    the first, so it gets a join at <em>every</em> vertex including that closing one, and it has no
+    ends, so no caps. A stroked closed triangle is three rectangles and three joins, and it fills into
+    a ring.</p>
+
   <h2><span class="sec">§ 13.3</span> The miter, and knowing when to give up on it</h2>
 
   <p>The miter is the one join with a failure mode. Its tip sits at distance
-    <code>miter_length = h / sin(θ/2)</code> from the vertex, where <code>θ</code> is the turn's
-    interior angle. As the angle gets sharp, <code>sin(θ/2)</code> goes to zero and the tip shoots off
+    <code>miter_length = h / sin(θ/2)</code> from the vertex, where <code>θ</code> is the interior
+    angle of the corner — the angle you'd measure inside the bend, between the incoming edge and the
+    outgoing one, which is the angle from the <em>reversed</em> incoming direction to the outgoing
+    direction. A straight-through path has <code>θ = 180°</code> and no miter to speak of; a sharp
+    corner has a small <code>θ</code>. As the angle gets sharp, <code>sin(θ/2)</code> goes to zero and the tip shoots off
     toward infinity — a nearly-doubled-back path would grow a miter spike a mile long. So there's a
     <code>miter_limit</code>: cap the ratio <code>miter_length / h</code>, and when a join exceeds it,
     fall back to a bevel. The default limit is 4, which switches to bevel at about 29°. The scenarios
@@ -169,9 +192,10 @@
       zero-length segment. A subpath of one point is not an error to reject — it's a dot, and with a
       round cap it's a filled disc of radius <code>h</code>, a construct the SVG spec calls out by name
       for drawing a single round point. With a butt cap the same dot is nothing at all, correctly. The
-      hairpin reversal, where the direction flips 180°, has no well-defined miter and the miter limit
-      catches it — the tip is at infinity, so it bevels. None of these is deep; all of them are the
-      difference between a stroker that works on your test path and one that works on the web.</p>
+      near-hairpin reversal, where the direction almost flips 180°, has no well-defined miter — the tip
+      runs off toward infinity, and the miter limit catches it and bevels. At an <em>exact</em> 180°
+      reversal the two offset edges are collinear, the outer gap closes to nothing, and there's no join to emit at all — the segments' rectangles already overlap. None of these is deep; all of them are
+      the difference between a stroker that works on your test path and one that works on the web.</p>
   </div>
 
   <div class="test" data-feature="chapter13-degenerate.feature">
@@ -204,6 +228,15 @@
     <span class="kw">When</span>  move_to(p, point(20, 20))
     <span class="kw">And</span>   o ← stroke_to_path(p, 10, "butt", "miter", 4.0)
     <span class="kw">Then</span>  length(subpaths(o)) = 0
+
+  <span class="kw">Scenario</span>: A square cap extends a half-width past the end
+    <span class="kw">Given</span> seg ← path()
+    <span class="kw">When</span>  move_to(seg, point(45, 40))
+    <span class="kw">And</span>   line_to(seg, point(115, 40))
+    <span class="kw">And</span>   o ← stroke_to_path(seg, 30, "square", "miter", 4.0)
+    <span class="kw">Then</span>  length(subpaths(o)) = 3
+    <span class="kw">And</span>   subpaths(o)[2].points[1] = point(130, 55)
+    <span class="kw">And</span>   subpaths(o)[2].points[2] = point(130, 25)
 
   <span class="kw">Scenario</span>: A single point with a square cap is a square
     <span class="kw">Given</span> p ← path()
