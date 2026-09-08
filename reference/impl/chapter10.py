@@ -36,8 +36,15 @@ def solid(c):
     return Paint("solid", color=c)
 
 
+# later chapters add paint kinds here: kind -> sampler(paint, x, y), the way
+# chapter 2's KINDS lets new shapes join `inside`. Chapter 11's image is one.
+PAINT_KINDS = {}
+
+
 def paint_at(p, x, y):
     """the colour this paint puts at device point (x, y)"""
+    if p.kind in PAINT_KINDS:
+        return PAINT_KINDS[p.kind](p, x, y)
     if p.kind == "solid":
         return p.data["color"]
     if p.kind == "linear":

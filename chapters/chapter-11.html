@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 11 · Images and Resampling — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 11 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-10.html">← 10</a> · <a href="#plate">Plate&nbsp;11</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Eleven</p>
+    <h1>Images and Resampling</h1>
+    <p class="hook">A gradient is a function you can evaluate at any point, to any precision. A
+      photograph is not. It's a fixed grid of pixels, and the moment you want it at any size or angle
+      other than exactly as stored, you have to invent the colours that fall between the ones you
+      have. That inventing is resampling, and it splits into two opposite problems that no single
+      filter solves: making an image <em>bigger</em>, where you're guessing detail you don't have, and
+      making it <em>smaller</em>, where you have too much detail and have to throw it away without it
+      turning to sparkle. This chapter builds both, and it slots the image straight into chapter 10's
+      paint: an image is a function of position too, it's the one you look up instead of compute.</p>
+  </header>
+
+  <p>The image plugs into everything you already have. It's a paint, so <code>paint_fill</code> draws
+    it through coverage exactly as it drew a gradient. It stores premultiplied linear-light pixels,
+    the chapter 9 representation, because filtering is averaging and averaging transparency any other
+    way brings back the dark halo from chapter 9. And it's placed on the canvas by a chapter 4 matrix.
+    The only genuinely new idea is which direction you walk: not from the source pixels forward, but
+    from the destination pixels back, through the inverse of that matrix, asking each output pixel
+    where in the image it came from.</p>
+
+  <h2><span class="sec">§ 11.1</span> An image is a grid of pixels</h2>
+
+  <p>Reading an image is chapter 1's PPM writer run backwards. <code>read_image(ppm)</code> parses the
+    header, and for every pixel decodes its three bytes from sRGB back to linear light — the same
+    <code>decode</code> that chapter 1 defined and never used until now — and stores an opaque
+    premultiplied pixel. A photo you saved in chapter 2 comes back in the space the renderer works in.
+    <code>image_texel(img, ix, iy, extend)</code> reads one texel by integer coordinates, and when the
+    index falls outside the image the <code>extend</code> mode folds it back: <em>clamp</em> holds the
+    edge texel, <em>repeat</em> wraps for a tiling pattern, <em>reflect</em> bounces so the tile meets
+    itself without a seam. Same three modes as a gradient's, one dimension up.</p>
+
+  <div class="test" data-feature="chapter11-image.feature">
+    <p class="label">features/chapter11-image.feature</p>
+<pre><code><span class="kw">Feature</span>: An image is a grid of pixels
+  read_image(ppm) reads a PPM back into an image, decoding each byte from sRGB
+  to linear light and storing opaque premultiplied pixels. image_texel(img,
+  ix, iy, extend) is the pixel at an integer texel, with an index outside the
+  image folded back in by the extend mode: clamp holds the edge, repeat wraps,
+  reflect bounces.
+
+  <span class="kw">Scenario</span>: A PPM reads back into the image it was written from
+    <span class="kw">Given</span> c ← canvas(2, 2)
+    <span class="kw">When</span>  write_pixel(c, 0, 0, color(1, 0, 0))
+    <span class="kw">And</span>   write_pixel(c, 1, 0, color(0, 1, 0))
+    <span class="kw">And</span>   write_pixel(c, 0, 1, color(0, 0, 1))
+    <span class="kw">And</span>   write_pixel(c, 1, 1, color(1, 1, 1))
+    <span class="kw">And</span>   img ← read_image(canvas_to_p6(c))
+    <span class="kw">Then</span>  img.width = 2
+    <span class="kw">And</span>   img.height = 2
+    <span class="kw">And</span>   pixel_color(image_texel(img, 0, 0)) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_color(image_texel(img, 1, 1)) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_alpha(image_texel(img, 0, 0)) = 1
+
+  <span class="kw">Scenario</span>: Clamp holds the edge texel
+    <span class="kw">Given</span> img ← image(2, 2, [opaque(color(1, 0, 0)), opaque(color(0, 1, 0)), opaque(color(0, 0, 1)), opaque(color(1, 1, 1))])
+    <span class="kw">Then</span>  pixel_color(image_texel(img, -1, 0, "clamp")) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_color(image_texel(img, 2, 0, "clamp")) = color(0, 1, 0)
+
+  <span class="kw">Scenario</span>: Repeat wraps and reflect bounces
+    <span class="kw">Given</span> img ← image(2, 2, [opaque(color(1, 0, 0)), opaque(color(0, 1, 0)), opaque(color(0, 0, 1)), opaque(color(1, 1, 1))])
+    <span class="kw">Then</span>  pixel_color(image_texel(img, 2, 0, "repeat")) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_color(image_texel(img, -1, 0, "repeat")) = color(0, 1, 0)
+    <span class="kw">And</span>   pixel_color(image_texel(img, 2, 0, "reflect")) = color(0, 1, 0)
+    <span class="kw">And</span>   pixel_color(image_texel(img, -1, 0, "reflect")) = color(1, 0, 0)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 11.2</span> Sampling, and the half-pixel offset</h2>
+
+  <p>Now the guessing. To draw the image bigger, most output pixels land <em>between</em> stored
+    texels, and a filter decides the colour there. <em>Nearest</em> takes the texel the point falls in
+    — blocky, but honest, and right for pixel art. <em>Bilinear</em> blends the four texels around the
+    point by distance, the smooth default. <em>Bicubic</em> fits a little curve through sixteen texels
+    with Catmull-Rom weights, sharper than bilinear and able to overshoot slightly at edges, which
+    reads as crispness. All three are a handful of lines over the texels.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>A texel's centre is at <code>(tx + 0.5, ty + 0.5)</code>, not at <code>(tx, ty)</code>. The
+      stored value is the colour <em>at the middle of the cell</em>, the same convention pixels have
+      had since chapter 2. So every sampler works in what you can call texel-centre space: take the
+      source coordinate, subtract <code>0.5</code>, and now integer values land on texel centres and
+      the fractional part is the blend. Forget the <code>0.5</code> and nothing looks broken — the
+      image still draws, still smooth — but it's shifted half a texel up and to the left, and every
+      resample compounds it. You catch it with one test that has no tolerance for it: draw the image
+      through the identity transform and it must come back <em>bit-for-bit identical</em>, under every
+      filter. With the offset wrong, bilinear through the identity blends each pixel with its
+      neighbour instead of reproducing it, and the test fails on the first pixel. That's the whole
+      value of the identity case — it's the one input where guessing shouldn't happen at all, so any
+      guessing shows.</p>
+  </div>
+
+  <figure>
+    <canvas id="fig111" role="img" aria-label="A row of texels drawn as cells, with a dot at the center of each cell at position tx plus one half rather than at the cell's left edge. A sample point between two centers is marked, with its fractional distance to each labeled, showing that the blend weight is measured between centers"></canvas>
+    <figcaption><span class="fig">Figure 11.1</span> The half-pixel offset. Texels are cells, but the colour sits at each cell's centre, at <code>tx + 0.5</code>. A sample blends by distance <em>between centres</em>, so the sampler subtracts <code>0.5</code> first. Skip that and the whole image slides half a texel.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter11-sampling.feature">
+    <p class="label">features/chapter11-sampling.feature</p>
+<pre><code><span class="kw">Feature</span>: Sampling, and the half-pixel offset
+  A texel's center is at (tx + 0.5, ty + 0.5), not at (tx, ty). Every sampler
+  works in texel-center space, the source coordinate minus 0.5, which is the
+  detail that keeps a resampled image from sliding half a pixel. sample_nearest
+  takes the texel the point falls in; sample_bilinear blends the four around
+  it; sample_bicubic is a Catmull-Rom over sixteen, sharper. All are given a
+  2x2 image of red, green, blue, white.
+
+  <span class="kw">Scenario</span>: Every sampler returns the texel exactly at its center
+    <span class="kw">Given</span> img ← image(2, 2, [opaque(color(1, 0, 0)), opaque(color(0, 1, 0)), opaque(color(0, 0, 1)), opaque(color(1, 1, 1))])
+    <span class="kw">Then</span>  pixel_color(sample_nearest(img, 0.5, 0.5)) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_color(sample_bilinear(img, 0.5, 0.5)) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_color(sample_bicubic(img, 0.5, 0.5)) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_color(sample_bilinear(img, 1.5, 1.5)) = color(1, 1, 1)
+
+  <span class="kw">Scenario</span>: Nearest takes the texel the point falls in
+    <span class="kw">Given</span> img ← image(2, 2, [opaque(color(1, 0, 0)), opaque(color(0, 1, 0)), opaque(color(0, 0, 1)), opaque(color(1, 1, 1))])
+    <span class="kw">Then</span>  pixel_color(sample_nearest(img, 0.9, 0.1)) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_color(sample_nearest(img, 1.1, 0.1)) = color(0, 1, 0)
+
+  <span class="kw">Scenario</span>: Bilinear blends toward its neighbours
+    <span class="kw">Given</span> img ← image(2, 2, [opaque(color(1, 0, 0)), opaque(color(0, 1, 0)), opaque(color(0, 0, 1)), opaque(color(1, 1, 1))])
+    <span class="kw">Then</span>  pixel_color(sample_bilinear(img, 1.0, 0.5)) = color(0.5, 0.5, 0)
+    <span class="kw">And</span>   pixel_color(sample_bilinear(img, 1.0, 1.0)) = color(0.5, 0.5, 0.5)
+
+  <span class="kw">Scenario</span>: The Catmull-Rom weights sum to one and pass through the samples
+    <span class="kw">Then</span>  catmull(0) = [0, 1, 0, 0]
+    <span class="kw">And</span>   catmull(0.5) = [-0.0625, 0.5625, 0.5625, -0.0625]</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 11.3</span> The image as a paint, and which way you walk</h2>
+
+  <p>Here's the move that makes it all work. You might think to draw an image you'd loop over its
+    texels and splat each onto the canvas. Try it and you get gaps where the image is magnified — the
+    texels spread out and leave holes — and a mess where it's rotated. The fix is to loop over the
+    <em>destination</em> pixels instead, and for each one ask "where in the source did you come from?"
+    That's the matrix inverted: the transform <code>m</code> maps image space to device space, so
+    <code>inverse(m)</code> maps a device pixel back to the point in the image to sample. Every output
+    pixel gets filled exactly once, no gaps, no matter the transform.</p>
+
+<pre><code>image_paint(img, m, filter, extend):     <span class="cm">// m places the image on the canvas</span>
+  <span class="kw">return</span> a paint that, at device (x, y):
+    src ← inverse(m) · point(x, y)       <span class="cm">// walk backward into the image</span>
+    <span class="kw">return</span> sample(img, src.x, src.y, filter, extend)</code></pre>
+
+  <p>And because <code>image_paint</code> is a <code>Paint</code>, it needs no new drawing code:
+    <code>paint_fill</code> from chapter 10 already samples a paint at every covered pixel. An image
+    is now the same kind of thing as a gradient, which is what chapter 10 promised — solid, gradient,
+    image, all one interface. The scenarios pin the identity as bit-exact, then place the image with a
+    translation and a scale and check the inverse lands on the right texel.</p>
+
+  <figure>
+    <canvas id="fig112" role="img" aria-label="A small source image grid on the left and a larger rotated destination grid on the right, with an arrow from a destination pixel back through the inverse transform to the source point it samples, illustrating that resampling walks destination to source"></canvas>
+    <figcaption><span class="fig">Figure 11.2</span> Walk backward. For each destination pixel, the inverse transform finds the source point to sample. Every output pixel is filled once — the forward direction would leave holes on magnification and overlaps on rotation.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter11-paint.feature">
+    <p class="label">features/chapter11-paint.feature</p>
+<pre><code><span class="kw">Feature</span>: The image as a paint
+  image_paint(img, m, filter, extend) is a paint that samples an image, placed
+  on the canvas by matrix m. m maps image space to device space, so a device
+  point is taken back through the inverse to find where in the image to look —
+  the reason resampling walks destination pixels, not source ones.
+
+  <span class="kw">Scenario</span>: The identity transform is bit-exact under every filter
+    <span class="kw">Given</span> img ← image(2, 2, [opaque(color(1, 0, 0)), opaque(color(0, 1, 0)), opaque(color(0, 0, 1)), opaque(color(1, 1, 1))])
+    <span class="kw">Then</span>  paint_at(image_paint(img, identity(), "nearest", "clamp"), 0.5, 0.5) = color(1, 0, 0)
+    <span class="kw">And</span>   paint_at(image_paint(img, identity(), "bilinear", "clamp"), 0.5, 0.5) = color(1, 0, 0)
+    <span class="kw">And</span>   paint_at(image_paint(img, identity(), "bicubic", "clamp"), 0.5, 0.5) = color(1, 0, 0)
+    <span class="kw">And</span>   paint_at(image_paint(img, identity(), "bilinear", "clamp"), 1.5, 0.5) = color(0, 1, 0)
+    <span class="kw">And</span>   paint_at(image_paint(img, identity(), "bilinear", "clamp"), 1.5, 1.5) = color(1, 1, 1)
+
+  <span class="kw">Scenario</span>: The transform places the image, and the inverse finds the texel
+    <span class="kw">Given</span> img ← image(2, 2, [opaque(color(1, 0, 0)), opaque(color(0, 1, 0)), opaque(color(0, 0, 1)), opaque(color(1, 1, 1))])
+    <span class="kw">When</span>  p ← image_paint(img, translation(10, 0), "nearest", "clamp")
+    <span class="kw">Then</span>  paint_at(p, 10.5, 0.5) = color(1, 0, 0)
+    <span class="kw">And</span>   paint_at(p, 11.5, 0.5) = color(0, 1, 0)
+
+  <span class="kw">Scenario</span>: A doubled image samples the same texel across two device pixels
+    <span class="kw">Given</span> img ← image(2, 2, [opaque(color(1, 0, 0)), opaque(color(0, 1, 0)), opaque(color(0, 0, 1)), opaque(color(1, 1, 1))])
+    <span class="kw">When</span>  p ← image_paint(img, scaling(2, 2), "nearest", "clamp")
+    <span class="kw">Then</span>  paint_at(p, 0.5, 0.5) = color(1, 0, 0)
+    <span class="kw">And</span>   paint_at(p, 1.5, 0.5) = color(1, 0, 0)
+    <span class="kw">And</span>   paint_at(p, 2.5, 0.5) = color(0, 1, 0)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 11.4</span> Making it smaller is a different problem</h2>
+
+  <p>Everything so far is about magnification, where you have too few samples and interpolate between
+    them. Minification is the reverse and it's genuinely a different problem, not the same filter run
+    backward. When an image is drawn at a tenth its size, each output pixel covers a hundred source
+    texels, and any of the filters above looks at only a handful of them — so it reports whatever those
+    few happen to be and ignores the rest. Drag a fine checkerboard down to a small size that way and
+    it doesn't average to grey, it breaks into swirling moiré, because which texels the sampler happens
+    to hit changes from pixel to pixel. The output pixel should be the <em>average</em> of everything it
+    covers, and a point sample is not that average.</p>
+
+  <p>The standard fix is a <em>mip pyramid</em>: precompute the image at half size, then half of that,
+    down to a single pixel, each level the box-average of the one above. <code>downsample(img)</code> is
+    that halving; <code>mip_chain(img)</code> is the whole stack. To draw the image minified, read from
+    the level whose texels are about the size of an output pixel, so a single bilinear tap is already
+    averaging the right amount of source — <code>mip_level_for</code> picks it from the scale factor,
+    which chapter 4's <code>approx_scale</code> pulls out of the matrix. A box downsample preserves the
+    average exactly, so a level and its parent agree on the picture's overall colour, and the scenarios
+    pin that. This is the sense in which one filter can't serve both jobs: magnification reconstructs
+    detail that isn't there, minification throws away detail that is, and they pull in opposite
+    directions.</p>
+
+  <figure>
+    <canvas id="fig113" role="img" aria-label="A fine checkerboard shrunk two ways. On the left, point-sampled minification produces swirling moire patterns; on the right, mip-based averaging produces a clean even grey"></canvas>
+    <figcaption><span class="fig">Figure 11.3</span> A fine checkerboard, minified. Left: point-sampled, so it hits some squares and misses others and breaks into moiré. Right: mip-averaged, so each pixel is the mean of what it covers, and it settles to grey — which is what a checkerboard too small to resolve should be.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter11-mip.feature">
+    <p class="label">features/chapter11-mip.feature</p>
+<pre><code><span class="kw">Feature</span>: Minification and mip pyramids
+  Shrinking an image is a different problem from enlarging it: every
+  reconstruction filter drops detail between the pixels it lands on, so a
+  minified image sparkles. The standard answer is a mip pyramid: downsample the
+  image by half repeatedly, each level the average of the one above, and read
+  from the level whose size matches the target. A box downsample preserves the
+  average, so a level and its parent agree on the whole image's colour.
+
+  <span class="kw">Scenario</span>: Downsample averages each 2x2 block
+    <span class="kw">Given</span> img ← image(2, 2, [opaque(color(1, 0, 0)), opaque(color(0, 1, 0)), opaque(color(0, 0, 1)), opaque(color(1, 1, 1))])
+    <span class="kw">When</span>  d ← downsample(img)
+    <span class="kw">Then</span>  d.width = 1
+    <span class="kw">And</span>   d.height = 1
+    <span class="kw">And</span>   pixel_color(image_texel(d, 0, 0)) = color(0.5, 0.5, 0.5)
+
+  <span class="kw">Scenario</span>: A mip chain halves down to a single pixel
+    <span class="kw">Given</span> img ← image(2, 2, [opaque(color(1, 0, 0)), opaque(color(0, 1, 0)), opaque(color(0, 0, 1)), opaque(color(1, 1, 1))])
+    <span class="kw">When</span>  chain ← mip_chain(img)
+    <span class="kw">Then</span>  length(chain) = 2
+    <span class="kw">And</span>   chain[0].width = 2
+    <span class="kw">And</span>   chain[1].width = 1
+    <span class="kw">And</span>   pixel_color(image_texel(chain[1], 0, 0)) = color(0.5, 0.5, 0.5)
+
+  <span class="kw">Scenario</span>: The mip level follows the minification
+    <span class="kw">Then</span>  mip_level_for(2.0) = 0
+    <span class="kw">And</span>   mip_level_for(1.0) = 0
+    <span class="kw">And</span>   mip_level_for(0.5) = 1
+    <span class="kw">And</span>   mip_level_for(0.25) = 2
+    <span class="kw">And</span>   mip_level_for(0.3) = 1</code></pre>
+  </div>
+
+  <div class="note">
+    <h4>Why premultiplied, again</h4>
+    <p>Every filter here is a weighted average of texels, and chapter 9 already showed that averaging
+      straight-alpha pixels drags the stored colour of transparent texels into the result. So images
+      store premultiplied pixels and the samplers blend premultiplied, which is why <code>downsample</code>
+      and <code>lerp_pixel</code> add up <code>r, g, b, a</code> alike. For the opaque photos in this
+      chapter it makes no visible difference; the first time you resample a cut-out with a soft edge,
+      it's the difference between a clean edge and a grey fringe.</p>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>Photoshop's resample dropdown is this chapter's filter list under marketing names:
+      <em>Nearest Neighbor</em> is nearest, <em>Bilinear</em> is bilinear, and <em>Bicubic Smoother</em>
+      versus <em>Bicubic Sharper</em> is the enlarge-versus-reduce split — smoother reconstructs,
+      sharper prefilters. The menu even tells you which to pick for growing and which for shrinking.</p>
+  </aside>
+
+  <h2><span class="sec">§ 11.5</span> Putting it together</h2>
+
+  <p>The plate is the smallest honest demonstration there is: one tiny image, magnified hard, by two
+    filters. An 8-by-8 sprite — built as a canvas, written to a PPM and read straight back, so the
+    round trip is real — blown up twenty times. Nearest on the left keeps every hard edge, twenty
+    device pixels to a texel, the look of pixel art. Bilinear on the right blends across the texel
+    boundaries into smooth ramps. Same eight-by-eight source, same transform, one line different.</p>
+
+<pre><code>two_filters():
+  s ← sprite()                           <span class="cm">// the 8×8 image, round-tripped through a PPM</span>
+  left  ← paint s, scaled 20×, with "nearest"    <span class="cm">// image_paint(s, scaling(20,20), "nearest")</span>
+  right ← paint s, scaled 20×, with "bilinear"
+  <span class="kw">return</span> side_by_side(left, right)
+
+plate_11():
+  <span class="kw">return</span> two_filters()</code></pre>
+
+  <div class="test" data-feature="chapter11-plate.feature">
+    <p class="label">features/chapter11-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 11
+  two_filters() magnifies the 8x8 sprite 20x, nearest on the left and bilinear
+  on the right; plate_11() is it. three_filters() adds bicubic. The sprite is
+  built as a canvas, written to a PPM and read back, so the round trip is
+  exercised.
+
+  <span class="kw">Scenario</span>: The sprite round-trips through a PPM
+    <span class="kw">Given</span> s ← sprite()
+    <span class="kw">Then</span>  s.width = 8
+    <span class="kw">And</span>   s.height = 8
+    <span class="kw">And</span>   length(mip_chain(s)) = 4
+
+  <span class="kw">Scenario</span>: Two filters, nearest against bilinear
+    <span class="kw">Given</span> c ← two_filters()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-11/two-filters.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 160
+    <span class="kw">And</span>   ppm_pixel(p6, 50, 50) = (249, 247, 237) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (69, 69, 80) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 11
+    <span class="kw">Given</span> c ← plate_11()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-11/plate-11.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 160
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Three filters, adding bicubic
+    <span class="kw">Given</span> c ← three_filters()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-11/three-filters.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 384
+    <span class="kw">And</span>   c.height = 128
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate11" role="img" aria-label="A small pixel-art creature shown twice at large size. On the left it is magnified with nearest-neighbor sampling, so every texel is a hard 20-pixel block; on the right with bilinear sampling, so the same shape is smooth and soft-edged"></canvas>
+    <figcaption><span class="fig">Plate 11</span> One 8×8 sprite, magnified twenty times. Nearest on the left, bilinear on the right. Same data, two reconstruction filters — the whole of magnification in one picture.</figcaption>
+  </figure>
+
+  <p>An image is a paint, resampling walks backward through the inverse, and shrinking wants a
+    pyramid. That's the last of the paints. What's left in this part is the machinery that decides
+    <em>where</em> paint is allowed to land and how whole stacks of it combine: clipping, masks and
+    groups, chapter 12, which turns out to need almost no new code at all, because the coverage buffer
+    you built in chapter 2 was the right idea all along.</p>
+
+  <nav class="endnav">
+    <a href="chapter-10.html">← 10 · Paint Servers and Gradients</a>
+    <span>Chapter 11 · Images and Resampling</span>
+    <span>Next: 12 · Clipping, Masks and Groups (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+function toByte(light){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255+0.5);}
+function blit(ctx,pixels,pw,ph,scale,ox,oy){var img=ctx.createImageData(pw,ph); for(var i=0;i<pw*ph;i++){img.data[i*4]=pixels[i][0];img.data[i*4+1]=pixels[i][1];img.data[i*4+2]=pixels[i][2];img.data[i*4+3]=255;} var off=Plate.offcan(pw,ph); off.getContext('2d').putImageData(img,0,0); ctx.imageSmoothingEnabled=false; ctx.drawImage(off,ox,oy,pw*scale,ph*scale);}
+
+/* an image is a grid of linear-light colours (opaque, so no premultiply needed) */
+function mix3(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+function wrap(i,n,ext){ if(i>=0&&i<n)return i; if(ext==='clamp')return i<0?0:n-1; if(ext==='repeat'){var m=i%n; return m<0?m+n:m;} var p=2*n; i=((i%p)+p)%p; return i<n?i:p-1-i; }
+function texel(img,ix,iy,ext){ return img.px[wrap(iy,img.h,ext)*img.w+wrap(ix,img.w,ext)]; }
+function nearest(img,sx,sy,ext){ return texel(img,Math.floor(sx),Math.floor(sy),ext); }
+function bilinear(img,sx,sy,ext){ var gx=sx-0.5,gy=sy-0.5,x0=Math.floor(gx),y0=Math.floor(gy),fx=gx-x0,fy=gy-y0;
+  var top=mix3(texel(img,x0,y0,ext),texel(img,x0+1,y0,ext),fx), bot=mix3(texel(img,x0,y0+1,ext),texel(img,x0+1,y0+1,ext),fx); return mix3(top,bot,fy); }
+function catmull(t){var t2=t*t,t3=t2*t; return [-0.5*t3+t2-0.5*t, 1.5*t3-2.5*t2+1, -1.5*t3+2*t2+0.5*t, 0.5*t3-0.5*t2];}
+function bicubic(img,sx,sy,ext){ var gx=sx-0.5,gy=sy-0.5,x0=Math.floor(gx),y0=Math.floor(gy),wx=catmull(gx-x0),wy=catmull(gy-y0),o=[0,0,0];
+  for(var j=0;j<4;j++)for(var i=0;i<4;i++){var p=texel(img,x0-1+i,y0-1+j,ext),w=wx[i]*wy[j]; o[0]+=w*p[0];o[1]+=w*p[1];o[2]+=w*p[2];} return o; }
+var SAMP={nearest:nearest,bilinear:bilinear,bicubic:bicubic};
+
+var PAPER=[0.02,0.02,0.025];
+function sprite(){ var O=[0.95,0.55,0.1],B=[0.15,0.45,0.85],W=[0.95,0.93,0.85],K=[0.06,0.06,0.08];
+  var g=[K,K,B,B,B,B,K,K, K,B,B,B,B,B,B,K, B,B,W,B,B,W,B,B, B,B,W,B,B,W,B,B, B,B,B,B,B,B,B,B, O,B,B,O,O,B,B,O, K,O,O,B,B,O,O,K, K,K,O,O,O,O,K,K];
+  return {w:8,h:8,px:g}; }
+function magnified(img,k,filter){ var W=img.w*k,H=img.h*k,out=[],f=SAMP[filter];
+  for(var y=0;y<H;y++)for(var x=0;x<W;x++){var c=f(img,(x+0.5)/k,(y+0.5)/k,'clamp'); out.push([toByte(c[0]),toByte(c[1]),toByte(c[2])]);} return {bytes:out,w:W,h:H}; }
+function sideBySide(a,b){ var W=a.w+b.w,H=a.h,out=new Array(W*H);
+  for(var y=0;y<H;y++){ for(var x=0;x<a.w;x++)out[y*W+x]=a.bytes[y*a.w+x]; for(var x2=0;x2<b.w;x2++)out[y*W+a.w+x2]=b.bytes[y*b.w+x2]; } return {bytes:out,w:W,h:H}; }
+function twoFilters(){ var s=sprite(); return sideBySide(magnified(s,20,'nearest'),magnified(s,20,'bilinear')); }
+function threeFilters(){ var s=sprite(); return sideBySide(sideBySide(magnified(s,16,'nearest'),magnified(s,16,'bilinear')),magnified(s,16,'bicubic')); }
+
+/* ---------- Figure 11.1 — the half-pixel offset ---------- */
+Plate.add('fig111', 0.34, function (ctx, w, h, p) {
+  var n=5, cs=Math.floor((w-40)/n), ox=20, oy=24, cols=[[0.95,0.55,0.1],[0.15,0.45,0.85],[0.95,0.93,0.85],[0.85,0.3,0.4],[0.4,0.7,0.5]];
+  for(var i=0;i<n;i++){ var c=cols[i]; ctx.fillStyle=Plate.rgbs([Plate.l2s(c[0])*255,Plate.l2s(c[1])*255,Plate.l2s(c[2])*255]); ctx.fillRect(ox+i*cs,oy,cs,cs);
+    ctx.strokeStyle=p.rule; ctx.strokeRect(ox+i*cs,oy,cs,cs);
+    var cx=ox+i*cs+cs/2; ctx.fillStyle=p.ink; ctx.beginPath(); ctx.arc(cx,oy+cs/2,3,0,Math.PI*2); ctx.fill();
+    Plate.label(ctx, i+'.5', cx, oy+cs+16, p.ink2, 10, 'center'); Plate.label(ctx, ''+i, ox+i*cs, oy-6, p.ink3, 9.5, 'center'); }
+  var sx=ox+1.75*cs; ctx.strokeStyle=p.magenta; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(sx,oy-4); ctx.lineTo(sx,oy+cs+4); ctx.stroke(); ctx.setLineDash([]);
+  Plate.label(ctx, 'sample at 1.75  →  blend texels 1 and 2 by 0.25', ox, oy+cs+34, p.ink2, 10);
+});
+
+/* ---------- Figure 11.2 — walk destination to source ---------- */
+Plate.add('fig112', 0.4, function (ctx, w, h, p) {
+  function grid(gx,gy,cells,cs,rot){ ctx.save(); ctx.translate(gx,gy); ctx.rotate(rot); ctx.strokeStyle=Plate.rgba(p.ink3,0.8); ctx.lineWidth=1;
+    for(var i=0;i<=cells;i++){ctx.beginPath();ctx.moveTo(i*cs,0);ctx.lineTo(i*cs,cells*cs);ctx.stroke();ctx.beginPath();ctx.moveTo(0,i*cs);ctx.lineTo(cells*cs,i*cs);ctx.stroke();} ctx.restore(); }
+  var cs=Math.min((w-120)/8, (h-40)/5); grid(20,20,4,cs,0); grid(w-20-4*cs*0.9,30,4,cs*0.9,0.25);
+  Plate.label(ctx,'source',20,16,p.ink2,10); Plate.label(ctx,'destination (placed by m)',w-20-4*cs,20,p.ink2,10,'right');
+  var dpx=w-20-2.2*cs, dpy=30+2.2*cs; ctx.fillStyle=p.magenta; ctx.beginPath(); ctx.arc(dpx,dpy,4,0,Math.PI*2); ctx.fill();
+  var spx=20+1.7*cs, spy=20+1.7*cs; ctx.fillStyle=p.cyan; ctx.beginPath(); ctx.arc(spx,spy,4,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle=p.magenta; ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(dpx,dpy); ctx.lineTo(spx,spy); ctx.stroke();
+  Plate.label(ctx,'inverse(m)', (dpx+spx)/2, (dpy+spy)/2-6, p.magenta, 10, 'center');
+});
+
+/* ---------- Figure 11.3 — minification: point vs averaged ---------- */
+Plate.add('fig113', 0.5, function (ctx, w, h, p) {
+  var N=96, check=[]; for(var y=0;y<N;y++)for(var x=0;x<N;x++){var on=(Math.floor(x/3)+Math.floor(y/3))%2; check.push(on?[0.9,0.9,0.9]:[0.06,0.06,0.08]);}
+  var src={w:N,h:N,px:check}, M=40;
+  // point-sampled minify
+  var pt=[]; for(var y2=0;y2<M;y2++)for(var x2=0;x2<M;x2++){var c=nearest(src,(x2+0.5)*N/M,(y2+0.5)*N/M,'clamp'); pt.push([toByte(c[0]),toByte(c[1]),toByte(c[2])]);}
+  // box-averaged minify (mip-like): average the N/M x N/M block
+  var av=[],r=N/M; for(var y3=0;y3<M;y3++)for(var x3=0;x3<M;x3++){var s=[0,0,0],cnt=0; for(var dy=0;dy<r;dy++)for(var dx=0;dx<r;dx++){var px=src.px[(Math.floor(y3*r+dy))*N+Math.floor(x3*r+dx)]; s[0]+=px[0];s[1]+=px[1];s[2]+=px[2];cnt++;} av.push([toByte(s[0]/cnt),toByte(s[1]/cnt),toByte(s[2]/cnt)]);}
+  var scale=Math.max(1,Math.floor(Math.min((w-24)/(2*M),(h-24)/M))), gap=8, ox=(w-(2*M*scale+gap))/2, oy=(h-M*scale)/2;
+  blit(ctx,pt,M,M,scale,ox,oy); blit(ctx,av,M,M,scale,ox+M*scale+gap,oy);
+  Plate.label(ctx,'point-sampled',ox,oy-6,p.ink2,10); Plate.label(ctx,'averaged',ox+M*scale+gap,oy-6,p.ink2,10);
+});
+
+/* ---------- Plate 11 — two filters, pixel for pixel ---------- */
+Plate.add('plate11', 0.5, function (ctx, w, h, p) {
+  var g=twoFilters(), scale=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h))); if(g.w*scale>w)scale=w/g.w; blit(ctx,g.bytes,g.w,g.h,scale,(w-g.w*scale)/2,0);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, blit, mix3, wrap, texel, nearest, bilinear, catmull, bicubic, sprite, magnified, sideBySide, twoFilters, threeFilters].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>

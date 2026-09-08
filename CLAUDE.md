@@ -174,6 +174,18 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   (that case is a genuine quadratic); pinned the true reductions instead — concentric is distance
   over radius, focal runs focal→end-circle. Interpolation and dither are in linear light (browsers
   differ), consistent with chapter 1.
+- Chapter 11 images: an `Image` is a premultiplied-linear `Pixel` buffer (chapter 9); `read_image`
+  decodes a PPM's bytes from sRGB to linear (opaque). `image_texel(img, ix, iy, extend)` folds
+  out-of-range indices by clamp/repeat/reflect. The samplers `sample_nearest`/`sample_bilinear`/
+  `sample_bicubic` (Catmull-Rom, `catmull(t)` public) all work in texel-CENTER space — the source
+  coord minus 0.5, since a texel's centre is at `tx + 0.5`. The identity transform must be
+  bit-exact under every filter; that is the test that catches a dropped half-pixel offset.
+  `image_paint(img, m, filter, extend)` is a chapter-10 `Paint` of kind "image" that samples
+  through `inverse(m)` (walk destination→source). To let it join `paint_at` without editing chapter
+  10, chapter 10 gained a `PAINT_KINDS` registry (kind→sampler, mirroring chapter 2's shape
+  `KINDS`); chapter 11 registers "image" into it. Minification: `downsample` (2×2 box average, which
+  preserves the whole-image average), `mip_chain`, `mip_level_for(scale)`. Trap: the half-pixel
+  offset. All sampling/averaging is premultiplied, in linear light.
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and
   `Then X is the following matrix:`. The runner understands exactly those two table steps.
 
