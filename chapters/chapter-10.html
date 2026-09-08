@@ -146,7 +146,11 @@
 
   <p>A <em>conic</em> gradient, last, sweeps the parameter around a centre: the angle from the centre
     to the point, divided by a full turn, wrapping once around. It's the one gradient that's periodic
-    by nature, and it's how you draw a colour wheel or a pie chart in one paint.</p>
+    by nature, and it's how you draw a colour wheel or a pie chart in one paint. Because it wraps, the
+    last stop meets the first at the start angle with no blend between them: if those two colours
+    differ — as they do in the plate's sunset — you get a hard seam there, a spoke of one colour
+    against the other. That's not a bug, it's what a conic gradient of a non-looping table looks like,
+    and the way to hide it is to make the first and last stops the same colour so the ends match.</p>
 
   <div class="trap">
     <h4>The trap</h4>
