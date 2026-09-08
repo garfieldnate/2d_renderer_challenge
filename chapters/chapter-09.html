@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 9 · Compositing — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 9 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-08.html">← 8</a> · <a href="#plate">Plate&nbsp;9</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Nine</p>
+    <h1>Compositing</h1>
+    <p class="hook">Every shape so far has landed on opaque paper. Real pictures are stacks of
+      translucent things: a shadow under the type, a wash of colour over a photo, a logo dropped to
+      half strength. <code>paint_through</code> can't do any of that — it assumes the thing
+      underneath is solid. This chapter builds the general operation, the one that combines a new
+      pixel with whatever's already there, and it turns out there are twelve ways to do it, all of
+      them one formula. But first a smaller thing that everyone gets wrong once: how you even
+      <em>store</em> a half-transparent pixel. Get that wrong and every soft edge grows a dark halo,
+      and it took the industry years to name why.</p>
+  </header>
+
+  <p>Here is the shape of the part. Coverage answered <em>where</em>. This chapter and the two after
+    it are about <em>what colour</em>, and the deepest question in that is what happens where a new
+    colour meets one already on the canvas. So far the answer was always the same — the new colour
+    wins in proportion to its coverage, painted onto solid paper. Now the thing underneath might be
+    translucent too, or might not be there at all, and "wins in proportion" splits into a family of
+    operators with names like <em>atop</em> and <em>xor</em>. They were worked out in 1984 by Porter
+    and Duff in three pages, and those three pages are still exactly right.</p>
+
+  <h2><span class="sec">§ 9.1</span> Premultiplied pixels</h2>
+
+  <p>A translucent pixel has a colour and an alpha, the fraction of the pixel the colour covers.
+    The obvious way to store it is the four numbers straight: red, green, blue, alpha. The obvious
+    way is wrong, and here is the one-line reason. Sit a soft-edged red shape on nothing and ask what
+    a pixel half inside the edge should hold. Its colour is red, its alpha is <code>0.5</code>. Now
+    let a filter average that pixel with the fully transparent one next to it — a shrink, a blur, a
+    gradient, anything that mixes neighbours. Average the alphas: <code>0.25</code>, fine. Average
+    the colours: red and… what colour is a transparent pixel? It has none. Whatever you stored there
+    — black is the usual default — bleeds into the average, and the red picks up a dark tint it never
+    had. That's the halo. It's on more shipped software than you'd believe.</p>
+
+  <p>The fix is to store the colour already multiplied by the alpha. A <code>pixel(r, g, b, a)</code>
+    holds <code>r, g, b</code> each scaled by <code>a</code>, so the half-covered red is
+    <code>(0.5, 0, 0, 0.5)</code> and the transparent one is <code>(0, 0, 0, 0)</code> — genuinely
+    zero, no phantom colour. Average them and you get <code>(0.25, 0, 0, 0.25)</code>, which
+    un-premultiplies back to pure red at a quarter alpha. The transparent pixel contributed nothing,
+    because in this representation nothing is what it is. <code>from_color(c, a)</code> premultiplies,
+    <code>pixel_color</code> divides back out (a transparent pixel has no colour to recover, so it
+    reads black), and <code>lerp_pixel</code> is the averaging the last paragraph relied on. This isn't an
+    optimization. It's the only representation in which filtering a picture with transparency is
+    even defined.</p>
+
+  <figure>
+    <canvas id="fig91" role="img" aria-label="Two pixels, opaque red and fully transparent, averaged two ways. Straight down the raw colour channels the result is a muddy dark red at half alpha; premultiplied the result is clean red at half alpha. Swatches compare the two"></canvas>
+    <figcaption><span class="fig">Figure 9.1</span> Opaque red and nothing, averaged. Straight alpha pulls the stored black of the transparent pixel into the colour and darkens it; premultiplied, the transparent pixel weighs nothing and the red stays red. Every soft edge in the book depends on the right side.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter09-pixels.feature">
+    <p class="label">features/chapter09-pixels.feature</p>
+<pre><code><span class="kw">Feature</span>: Premultiplied pixels
+  A pixel carries a colour and an alpha, and stores the colour already
+  multiplied by the alpha: pixel(r, g, b, a) with r, g, b in [0, a].
+  from_color(c, a) premultiplies a straight colour; opaque(c) is that at
+  alpha 1; pixel_color un-premultiplies and pixel_alpha reads the alpha; CLEAR
+  is fully transparent. lerp_pixel blends two pixels straight down the
+  premultiplied channels, which is the whole reason for premultiplying:
+  half of opaque red and half of nothing is red at half alpha, not a muddy grey.
+
+  <span class="kw">Scenario</span>: A colour and an alpha premultiply into a pixel
+    <span class="kw">Given</span> p ← from_color(color(1, 0, 0), 0.5)
+    <span class="kw">Then</span>  p = pixel(0.5, 0, 0, 0.5)
+    <span class="kw">And</span>   pixel_alpha(p) = 0.5
+    <span class="kw">And</span>   pixel_color(p) = color(1, 0, 0)
+
+  <span class="kw">Scenario</span>: Opaque is alpha 1 and leaves the colour alone
+    <span class="kw">Given</span> p ← opaque(color(0.2, 0.4, 0.8))
+    <span class="kw">Then</span>  p = pixel(0.2, 0.4, 0.8, 1)
+    <span class="kw">And</span>   pixel_color(p) = color(0.2, 0.4, 0.8)
+
+  <span class="kw">Scenario</span>: A transparent pixel has no colour
+    <span class="kw">Then</span>  CLEAR = pixel(0, 0, 0, 0)
+    <span class="kw">And</span>   pixel_color(CLEAR) = color(0, 0, 0)
+
+  <span class="kw">Scenario</span>: Averaging premultiplied pixels stays clean
+    <span class="kw">Given</span> red ← opaque(color(1, 0, 0))
+    <span class="kw">When</span>  half ← lerp_pixel(red, CLEAR, 0.5)
+    <span class="kw">Then</span>  half = pixel(0.5, 0, 0, 0.5)
+    <span class="kw">And</span>   pixel_color(half) = color(1, 0, 0)
+
+  <span class="kw">Scenario</span>: A pixel halfway between opaque red and opaque blue
+    <span class="kw">Given</span> m ← lerp_pixel(opaque(color(1, 0, 0)), opaque(color(0, 0, 1)), 0.5)
+    <span class="kw">Then</span>  m = pixel(0.5, 0, 0.5, 1)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 9.2</span> Source-over</h2>
+
+  <p>Now the operation you already know, named properly. To put a source pixel on top of a
+    destination pixel, keep all of the source, and let through the fraction of the destination the
+    source didn't cover: <code>over(src, dst) = src + (1 - src.a) · dst</code>, every channel
+    including alpha, in premultiplied form. That's it. An opaque source has
+    <code>src.a = 1</code>, so nothing of the destination survives and the result is the source —
+    which is exactly what happened every time chapter 2's <code>paint_through</code> laid an opaque
+    colour on paper. <code>paint_through</code> was <code>over</code> all along, with the destination
+    pinned opaque. Now the destination can be anything, and the same one line handles it.</p>
+
+  <figure>
+    <canvas id="fig92" role="img" aria-label="Three translucent horizontal bars in different colours overlapping, each at partial alpha, composited source-over so the overlaps show the accumulated colour and the paper still shows faintly through all of them"></canvas>
+    <figcaption><span class="fig">Figure 9.2</span> Three translucent washes, each source-over the last. Where they overlap the colours build up, and because none is opaque the dark paper still shows through the whole stack. This is the operator behind every drop shadow.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter09-over.feature">
+    <p class="label">features/chapter09-over.feature</p>
+<pre><code><span class="kw">Feature</span>: Source-over
+  over(src, dst) is src composited over dst: src + (1 - src.a) * dst, every
+  channel including alpha. It is exactly what paint_through has done since
+  chapter 2, with an opaque destination. An opaque source hides whatever is
+  behind it; a transparent source changes nothing; over an opaque destination
+  the result stays opaque.
+
+  <span class="kw">Scenario</span>: A translucent source over an opaque destination
+    <span class="kw">Given</span> src ← from_color(color(1, 0, 0), 0.5)
+    <span class="kw">And</span>   dst ← opaque(color(0, 0, 1))
+    <span class="kw">Then</span>  over(src, dst) = pixel(0.5, 0, 0.5, 1)
+
+  <span class="kw">Scenario</span>: An opaque source hides the destination
+    <span class="kw">Given</span> src ← opaque(color(1, 0, 0))
+    <span class="kw">And</span>   dst ← opaque(color(0, 0, 1))
+    <span class="kw">Then</span>  over(src, dst) = src
+
+  <span class="kw">Scenario</span>: A transparent source changes nothing
+    <span class="kw">Given</span> dst ← from_color(color(0, 0, 1), 0.4)
+    <span class="kw">Then</span>  over(CLEAR, dst) = dst
+
+  <span class="kw">Scenario</span>: Over nothing leaves the source alone
+    <span class="kw">Given</span> src ← from_color(color(1, 0, 0), 0.6)
+    <span class="kw">Then</span>  over(src, CLEAR) = src
+
+  <span class="kw">Scenario</span>: Two translucent pixels stack their alphas
+    <span class="kw">Given</span> src ← from_color(color(1, 0, 0), 0.6)
+    <span class="kw">And</span>   dst ← from_color(color(0, 0, 1), 0.4)
+    <span class="kw">Then</span>  over(src, dst) = pixel(0.6, 0, 0.16, 0.76)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 9.3</span> Twelve operators, one formula</h2>
+
+  <p>Source-over is one answer to "combine these two pixels", and it's the common one, but it's not
+    the only sensible one. What if you want the source only where the destination already is — a
+    highlight confined to a shape? Or the destination only where the source <em>isn't</em> — a hole
+    punched out? Porter and Duff's insight is that every one of these is the same equation. Each
+    output pixel is <code>Fa · src + Fb · dst</code>, and an operator is nothing but its choice of
+    the two coefficients <code>Fa</code> and <code>Fb</code> — how much of the source survives, and
+    how much of the destination — each written in terms of the two alphas. Source-over is
+    <code>Fa = 1, Fb = 1 - src.a</code>. Twelve rows of a small table, and you have the lot.</p>
+
+<pre><code>coefficients(op, a_s, a_d):        <span class="cm">// how much source (Fa) and destination (Fb) survive</span>
+  clear    → (0,       0)          src-out  → (1 - a_d, 0)
+  src      → (1,       0)          dst-out  → (0,       1 - a_s)
+  dst      → (0,       1)          src-atop → (a_d,     1 - a_s)
+  src-over → (1,       1 - a_s)    dst-atop → (1 - a_d, a_s)
+  dst-over → (1 - a_d, 1)          xor      → (1 - a_d, 1 - a_s)
+  src-in   → (a_d,     0)
+  dst-in   → (0,       a_s)
+
+composite(op, src, dst):
+  (Fa, Fb) ← coefficients(op, src.a, dst.a)
+  <span class="kw">return</span> Fa · src + Fb · dst          <span class="cm">// every channel, alpha included</span></code></pre>
+
+  <p>Read the table and it explains itself. <code>src-in</code> keeps the source scaled by the
+    destination's alpha, so the source shows only where the destination was — the source clipped to
+    the destination's shape. <code>dst-out</code> keeps the destination scaled by
+    <code>1 - src.a</code>, so it erases the destination wherever the source is opaque. <code>xor</code>
+    keeps each only where the other is absent. And the two that look like typos, <code>src</code> and
+    <code>dst</code>, throw one pixel away entirely — useful more often than you'd guess, once
+    clipping and groups arrive in chapter 12. The scenarios pin all twelve against a half-red source
+    and a half-blue destination, and check the two identities that keep you honest: <code>src-over</code>
+    is <code>over</code>, and <code>dst-over</code> is <code>over</code> with the arguments swapped.</p>
+
+  <div class="test" data-feature="chapter09-porterduff.feature">
+    <p class="label">features/chapter09-porterduff.feature</p>
+<pre><code><span class="kw">Feature</span>: The twelve Porter-Duff operators
+  composite(op, src, dst) is one formula, Fa * src + Fb * dst on every channel,
+  where Fa and Fb are the fraction of the source and of the destination that
+  survive. Each operator is just its choice of those two coefficients. With a
+  source of red at alpha 0.6 and a destination of blue at alpha 0.4, the twelve
+  operators come out as below. src-over is over; dst-over is over with the
+  arguments swapped.
+
+  <span class="kw">Scenario Outline</span>: Each operator is its two coefficients
+    <span class="kw">Given</span> src ← from_color(color(1, 0, 0), 0.6)
+    <span class="kw">And</span>   dst ← from_color(color(0, 0, 1), 0.4)
+    <span class="kw">Then</span>  composite("&lt;op&gt;", src, dst) = pixel(&lt;r&gt;, &lt;g&gt;, &lt;b&gt;, &lt;a&gt;)
+
+    <span class="kw">Examples</span>:
+      | op        | r    | g | b    | a    |
+      | clear     | 0    | 0 | 0    | 0    |
+      | src       | 0.6  | 0 | 0    | 0.6  |
+      | dst       | 0    | 0 | 0.4  | 0.4  |
+      | src-over  | 0.6  | 0 | 0.16 | 0.76 |
+      | dst-over  | 0.36 | 0 | 0.4  | 0.76 |
+      | src-in    | 0.24 | 0 | 0    | 0.24 |
+      | dst-in    | 0    | 0 | 0.24 | 0.24 |
+      | src-out   | 0.36 | 0 | 0    | 0.36 |
+      | dst-out   | 0    | 0 | 0.16 | 0.16 |
+      | src-atop  | 0.24 | 0 | 0.16 | 0.4  |
+      | dst-atop  | 0.36 | 0 | 0.24 | 0.6  |
+      | xor       | 0.36 | 0 | 0.16 | 0.52 |
+
+  <span class="kw">Scenario</span>: src-over is over, and dst-over is over with the arguments swapped
+    <span class="kw">Given</span> src ← from_color(color(1, 0, 0), 0.6)
+    <span class="kw">And</span>   dst ← from_color(color(0, 0, 1), 0.4)
+    <span class="kw">Then</span>  composite("src-over", src, dst) = over(src, dst)
+    <span class="kw">And</span>   composite("dst-over", src, dst) = over(dst, src)
+
+  <span class="kw">Scenario</span>: clear empties the pixel and dst keeps it
+    <span class="kw">Given</span> src ← opaque(color(1, 0, 0))
+    <span class="kw">And</span>   dst ← opaque(color(0, 0, 1))
+    <span class="kw">Then</span>  composite("clear", src, dst) = CLEAR
+    <span class="kw">And</span>   composite("dst", src, dst) = dst
+    <span class="kw">And</span>   composite("src", src, dst) = src</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 9.4</span> Blend modes</h2>
+
+  <p>Compositing decides how much of each pixel survives. <em>Blending</em> decides what colour
+    comes out where both are present — and where source-over takes the source unchanged, a blend mode
+    combines the two colours first. Multiply darkens, screen lightens, overlay does both at once,
+    and a dozen more sit in the layer menu of every editor. The machinery is small: a blend mode is a
+    function <code>B(backdrop, source)</code> that produces a colour, and it slots into source-over so
+    that the blended colour appears exactly where source and destination overlap, fading to plain
+    source-over where they don't. When the mode is <em>normal</em>, <code>B</code> returns the source
+    and the whole thing collapses back to <code>over</code> — which is the first thing to test.</p>
+
+  <p>The twelve <em>separable</em> modes treat the three channels independently, so each is a
+    one-line function of two numbers in <code>[0, 1]</code>. Multiply is <code>b · s</code>. Screen is
+    <code>b + s - b·s</code>, multiply's mirror. Darken and lighten are <code>min</code> and
+    <code>max</code>. Hard-light is multiply or screen depending on the source; overlay is hard-light
+    with the arguments swapped; the dodges and burns are the division pair with their zero cases
+    spelled out; soft-light has an awkward piecewise form worth copying carefully. With an opaque
+    source over an opaque destination there's no coverage to complicate things, so the result is the
+    blend function itself, which is how the scenarios pin each one to a single number.</p>
+
+  <pre><code>blend(mode, src, dst):             <span class="cm">// source-over, with the overlap blended first</span>
+  a_s ← src.a;  a_d ← dst.a
+  Cs ← pixel_color(src);  Cb ← pixel_color(dst)
+  B  ← blend_color(mode, Cb, Cs)   <span class="cm">// the blend function, per channel or whole-colour</span>
+  out.rgb ← a_s·(1 - a_d)·Cs + a_s·a_d·B + (1 - a_s)·dst.rgb
+  out.a   ← a_s + a_d·(1 - a_s)
+  <span class="kw">return</span> out</code></pre>
+
+  <figure>
+    <canvas id="fig93" role="img" aria-label="A four-by-four grid of tiles, each an orange circle blended over a blue square by one of the sixteen blend modes, so multiply, screen, overlay, difference and the rest each produce a visibly different colour in the overlap"></canvas>
+    <figcaption><span class="fig">Figure 9.3</span> All sixteen modes, orange over blue. The top three rows are the separable modes; the bottom row is the four that need the next section. Read the overlaps: multiply and darken sink, screen and lighten lift, difference and exclusion invert.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter09-blend.feature">
+    <p class="label">features/chapter09-blend.feature</p>
+<pre><code><span class="kw">Feature</span>: Blend modes
+  blend(mode, src, dst) is source-over with the overlap first passed through a
+  blend function. With mode "normal" the blend function returns the source, so
+  blend is exactly over. The twelve separable modes act on each channel on its
+  own; with an opaque source over an opaque destination the result is the blend
+  function itself. blend_color(mode, backdrop, source) is that function.
+
+  <span class="kw">Scenario</span>: Normal is source-over
+    <span class="kw">Given</span> src ← from_color(color(1, 0, 0), 0.6)
+    <span class="kw">And</span>   dst ← from_color(color(0, 0, 1), 0.4)
+    <span class="kw">Then</span>  blend("normal", src, dst) = over(src, dst)
+
+  <span class="kw">Scenario Outline</span>: The separable modes, opaque source 0.8 over opaque backdrop 0.3
+    <span class="kw">Given</span> src ← opaque(color(0.8, 0.8, 0.8))
+    <span class="kw">And</span>   dst ← opaque(color(0.3, 0.3, 0.3))
+    <span class="kw">Then</span>  blend("&lt;mode&gt;", src, dst).r = &lt;value&gt; ± 0.0001
+
+    <span class="kw">Examples</span>:
+      | mode        | value    |
+      | normal      | 0.8      |
+      | multiply    | 0.24     |
+      | screen      | 0.86     |
+      | overlay     | 0.48     |
+      | darken      | 0.3      |
+      | lighten     | 0.8      |
+      | color-dodge | 1.0      |
+      | color-burn  | 0.125    |
+      | hard-light  | 0.72     |
+      | soft-light  | 0.448634 |
+      | difference  | 0.5      |
+      | exclusion   | 0.62     |
+
+  <span class="kw">Scenario</span>: A blended pixel over an opaque backdrop stays opaque
+    <span class="kw">Given</span> src ← opaque(color(0.8, 0.8, 0.8))
+    <span class="kw">And</span>   dst ← opaque(color(0.3, 0.3, 0.3))
+    <span class="kw">Then</span>  blend("multiply", src, dst).a = 1
+    <span class="kw">And</span>   blend("screen", src, dst).a = 1
+
+  <span class="kw">Scenario</span>: The four non-separable modes mix a saturated red with a blue
+    <span class="kw">Given</span> src ← opaque(color(0.9, 0.2, 0.2))
+    <span class="kw">And</span>   dst ← opaque(color(0.2, 0.4, 0.8))
+    <span class="kw">Then</span>  pixel_color(blend("hue", src, dst)) = color(0.804, 0.204, 0.204) ± 0.0001
+    <span class="kw">And</span>   pixel_color(blend("saturation", src, dst)) = color(0.169333, 0.402667, 0.869333) ± 0.0001
+    <span class="kw">And</span>   pixel_color(blend("color", src, dst)) = color(0.874, 0.174, 0.174) ± 0.0001
+    <span class="kw">And</span>   pixel_color(blend("luminosity", src, dst)) = color(0.226, 0.426, 0.826) ± 0.0001
+
+  <span class="kw">Scenario</span>: blend_color is the blend function on two straight colours
+    <span class="kw">Then</span>  blend_color("multiply", color(0.8, 0.8, 0.8), color(0.5, 0.5, 0.5)) = color(0.4, 0.4, 0.4)
+    <span class="kw">And</span>   blend_color("color", color(0.2, 0.4, 0.8), color(0.9, 0.2, 0.2)) = color(0.874, 0.174, 0.174) ± 0.0001</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 9.5</span> The four that mix whole colours</h2>
+
+  <p>Four modes at the bottom of the menu — hue, saturation, colour, luminosity — can't be done
+    channel by channel, because they're about properties of the colour as a whole. You can't compute
+    "the hue of the source with the brightness of the backdrop" one channel at a time; brightness is
+    a weighted sum of all three. So these four need three small helpers from the compositing spec, and
+    they're worth writing once because they're a tidy little bit of colour science. <code>Lum(C)</code>
+    is a colour's brightness, <code>0.3R + 0.59G + 0.11B</code>. <code>Sat(C)</code> is how far its
+    channels spread, <code>max − min</code>. <code>set_lum</code> shifts a colour to a target
+    brightness and clips it back into range without changing its hue; <code>set_sat</code> stretches
+    it to a target saturation. From those, each mode is one line: <em>colour</em> is the source's hue
+    and saturation at the backdrop's brightness, <em>luminosity</em> is the reverse, and hue and
+    saturation take one property from each. This is how you tint a photo without darkening it, and
+    it's four lines once the helpers exist.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>Two shapes that abut along an edge — a country and its neighbour on a map, two faces of an
+      unfolded box — each cover about half of every pixel along that shared edge. Paint the first: the
+      seam pixels come out half covered, alpha <code>0.5</code>. Composite the second over it, also
+      half covering those pixels: source-over gives <code>0.5 + 0.5 · 0.5 = 0.75</code>. Not
+      <code>1.0</code>. A quarter of the background shows through a line that should have been solid,
+      and you get a faint seam down every shared edge in the picture. This is <em>conflation</em>:
+      coverage and opacity are different things that both live in the alpha channel, and compositing
+      treats the two half-covered pixels as two independent translucent layers when really they're
+      two halves of one opaque surface. Every production renderer has this bug. The honest fixes are
+      expensive — render the shapes into one coverage buffer before compositing, or supersample the
+      seam — and most software lives with it. The book shows you the seam plainly rather than
+      pretending it isn't there, because the first step to a fix you can afford is seeing the thing for what it is.</p>
+  </div>
+
+  <figure>
+    <canvas id="fig94" role="img" aria-label="A solid orange square that should be uniform, but a faint darker line runs diagonally across it from corner to corner, where two abutting triangles were composited and their shared antialiased edge conflated to seventy-five percent coverage"></canvas>
+    <figcaption><span class="fig">Figure 9.4</span> Two opaque triangles, composited, that should fill a solid square. The diagonal seam is coverage <code>0.75</code> where it should be <code>1.0</code>, letting the dark paper leak through. Nothing is wrong with the operators; the model itself leaks here.</figcaption>
+  </figure>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>The layer blend-mode dropdown, read top to bottom. <em>Normal</em> is source-over;
+      <em>Multiply</em>, <em>Screen</em> and <em>Overlay</em> are the separable set; and
+      <em>Hue</em>, <em>Saturation</em>, <em>Color</em> and <em>Luminosity</em> at the very bottom are
+      this section's four. The divider above them in Photoshop's menu is exactly the separable /
+      non-separable line.</p>
+  </aside>
+
+  <h2><span class="sec">§ 9.6</span> Putting it together</h2>
+
+  <p>The plate is the whole family in one picture: a blue square as destination, an orange circle as
+    source, and each of the twelve operators applied to the pair. A <em>layer</em> is a buffer of
+    premultiplied pixels — paint a shape into it through its coverage, the way chapter 2 painted
+    colour through coverage, and now the transparent parts are genuinely transparent instead of
+    paper-coloured. Composite two layers pixel by pixel with an operator, then flatten
+    the result over paper with flatten_layer to see it. Read the table and every operator's definition is in front of you at
+    once.</p>
+
+<pre><code>porter_duff_table():
+  dst ← a layer with a blue square painted into it       <span class="cm">// destination</span>
+  src ← a layer with an orange circle painted into it     <span class="cm">// source</span>
+  <span class="kw">for</span> op, i <span class="kw">in</span> the twelve operators:
+    tile ← flatten_layer(composite_layers(op, src, dst), PAPER)
+    place tile at column i mod 4, row i / 4
+  <span class="kw">return</span> the grid
+
+plate_09():
+  <span class="kw">return</span> magnify(porter_duff_table(), 2)</code></pre>
+
+  <div class="test" data-feature="chapter09-plate.feature">
+    <p class="label">features/chapter09-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 9
+  The renders of chapter 9. porter_duff_table() lays the twelve operators in a
+  4-by-3 grid, a blue square as destination and an orange circle as source,
+  each tile flattened over paper; plate_09() is it magnified. blend_strip()
+  shows the sixteen blend modes. seam() is the conflation trap: two opaque
+  triangles that share the diagonal, drawn so a shape that should be solid
+  carries a darker seam where both antialiased edges land on the same pixels.
+
+  <span class="kw">Scenario</span>: The Porter-Duff table places each operator
+    <span class="kw">Given</span> c ← porter_duff_table()
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 256
+    <span class="kw">And</span>   c.height = 192
+    <span class="kw">And</span>   ppm_pixel(p6, 20, 20) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 102, 38) = (249, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 148, 20) = (124, 188, 237) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 232, 38) = (249, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 40, 102) = (124, 188, 237) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 79, 79) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 102, 96) = (249, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 230, 160) = (39, 39, 44) ± 1
+
+  <span class="kw">Scenario</span>: The conflation seam is 0.75, not 1.0
+    <span class="kw">Given</span> half ← from_color(color(1, 1, 1), 0.5)
+    <span class="kw">And</span>   black ← opaque(color(0, 0, 0))
+    <span class="kw">When</span>  once ← composite("src-over", half, black)
+    <span class="kw">And</span>   twice ← composite("src-over", half, once)
+    <span class="kw">Then</span>  once = pixel(0.5, 0.5, 0.5, 1)
+    <span class="kw">And</span>   twice = pixel(0.75, 0.75, 0.75, 1)
+
+  <span class="kw">Scenario</span>: The seam shows in the render
+    <span class="kw">Given</span> c ← seam()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-09/seam.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 320
+    <span class="kw">And</span>   ppm_pixel(p6, 40, 160) = (249, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 160) = (220, 173, 81) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 9
+    <span class="kw">Given</span> c ← plate_09()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-09/plate-09.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 512
+    <span class="kw">And</span>   c.height = 384
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The blend-mode strip
+    <span class="kw">Given</span> c ← blend_strip()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-09/blend-modes.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 256
+    <span class="kw">And</span>   c.height = 256
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate9" role="img" aria-label="A four-by-three grid of tiles on dark paper, each showing an orange circle and a blue square combined by one of the twelve Porter-Duff operators: clear is empty, src is the circle alone, dst the square alone, then over, in, out, atop and xor in their source and destination forms"></canvas>
+    <figcaption><span class="fig">Plate 9</span> The Porter–Duff table, generated, not reproduced. Square is destination, circle is source. Twelve operators, one <code>Fa · src + Fb · dst</code>. The empty tile top-left is <code>clear</code>; work along and you can watch the coefficients do their arithmetic.</figcaption>
+  </figure>
+
+  <p>Twelve operators, sixteen blend modes, and one leak the model can't paper over. That's the
+    machinery of paint combining with paint. What's missing is the paint itself: so far a shape has
+    always been one flat colour. Chapter 10 makes colour a function of position — gradients, then
+    patterns, then in chapter 11 whole images — and every one of them ends up composited by exactly
+    the operators you wrote here.</p>
+
+  <nav class="endnav">
+    <a href="chapter-08.html">← 8 · Curves</a>
+    <span>Chapter 9 · Compositing</span>
+    <span>Next: 10 · Paint Servers and Gradients (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+function toByte(light) { var v = light < 0 ? 0 : light > 1 ? 1 : light; return Math.floor(Plate.l2s(v) * 255 + 0.5); }
+function blit(ctx, pixels, pw, ph, scale, ox, oy) {
+  var img = ctx.createImageData(pw, ph);
+  for (var i = 0; i < pw * ph; i++) { img.data[i*4]=pixels[i][0]; img.data[i*4+1]=pixels[i][1]; img.data[i*4+2]=pixels[i][2]; img.data[i*4+3]=255; }
+  var off = Plate.offcan(pw, ph); off.getContext('2d').putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false; ctx.drawImage(off, ox, oy, pw*scale, ph*scale);
+}
+
+/* paths and the chapter 7 fill, as before */
+function point(x, y) { return [x, y, 1]; }
+function path() { return { subpaths: [] }; }
+function moveTo(p, q) { p.subpaths.push({ points: [q], closed: false }); }
+function lineTo(p, q) { if (!p.subpaths.length) return moveTo(p, q); var c = p.subpaths[p.subpaths.length-1]; if (c.closed) { moveTo(p, c.points[0]); c = p.subpaths[p.subpaths.length-1]; } c.points.push(q); }
+function close(p) { if (p.subpaths.length) p.subpaths[p.subpaths.length-1].closed = true; }
+function polygon() { var p = path(), a = arguments; moveTo(p, a[0]); for (var i=1;i<a.length;i++) lineTo(p, a[i]); close(p); return p; }
+function circlePath(cx, cy, r, n) { var p = path(); for (var k=0;k<n;k++){ var a=2*Math.PI*k/n, q=point(cx+r*Math.cos(a), cy+r*Math.sin(a)); k?lineTo(p,q):moveTo(p,q);} close(p); return p; }
+function edges(p) { var out=[]; p.subpaths.forEach(function(sp){var n=sp.points.length; if(n<2)return; for(var i=0;i<n;i++)out.push([sp.points[i],sp.points[(i+1)%n]]);}); return out; }
+function accRow(acc, row, x0, x1, h) { var xa=Math.min(x0,x1),xb=Math.max(x0,x1),ca=Math.floor(xa),cb=Math.floor(xb); function add(x,ar,co){if(x<0){x=0;ar=co;} if(x>=acc.w)return; var i=row*acc.w+x; acc.area[i]+=ar; acc.cover[i]+=co;} if(ca===cb){var xm=(xa+xb)/2-ca; add(ca,h*(1-xm),h); return;} var dx=xb-xa; for(var c=ca;c<=cb;c++){var lo=Math.max(xa,c),hi=Math.min(xb,c+1),s=h*(hi-lo)/dx,m=(lo+hi)/2-c; add(c,s*(1-m),s);} }
+function fillPath(p, w, h) { var acc={w:w,h:h,area:new Array(w*h).fill(0),cover:new Array(w*h).fill(0)}; edges(p).forEach(function(e){var a=e[0],b=e[1]; if(a[1]===b[1])return; var sign=a[1]>b[1]?1:-1,top=a[1]>b[1]?b:a,bot=a[1]>b[1]?a:b,slope=(bot[0]-top[0])/(bot[1]-top[1]); var first=Math.max(Math.floor(top[1]),0),last=Math.min(Math.ceil(bot[1])-1,h-1); for(var row=first;row<=last;row++){var y0=Math.max(top[1],row),y1=Math.min(bot[1],row+1); accRow(acc,row,top[0]+(y0-top[1])*slope,top[0]+(y1-top[1])*slope,sign*(y1-y0));}}); var cov=new Array(w*h).fill(0); for(var row=0;row<h;row++){var run=0; for(var x=0;x<w;x++){var i=row*w+x; cov[i]=Math.min(1,Math.abs(run+acc.area[i])); run+=acc.cover[i];}} return cov; }
+
+/* chapter 9: premultiplied pixels, compositing, blending */
+function px(r,g,b,a){return {r:r,g:g,b:b,a:a};}
+function fromColor(c,a){return {r:c[0]*a,g:c[1]*a,b:c[2]*a,a:a};}
+function opaque(c){return fromColor(c,1);}
+var CLEAR = px(0,0,0,0);
+function pcolor(p){return p.a===0?[0,0,0]:[p.r/p.a,p.g/p.a,p.b/p.a];}
+function over(s,d){var t=1-s.a; return px(s.r+t*d.r,s.g+t*d.g,s.b+t*d.b,s.a+t*d.a);}
+function coeffs(op,as,ad){switch(op){
+  case 'clear':return[0,0]; case 'src':return[1,0]; case 'dst':return[0,1];
+  case 'src-over':return[1,1-as]; case 'dst-over':return[1-ad,1];
+  case 'src-in':return[ad,0]; case 'dst-in':return[0,as];
+  case 'src-out':return[1-ad,0]; case 'dst-out':return[0,1-as];
+  case 'src-atop':return[ad,1-as]; case 'dst-atop':return[1-ad,as];
+  case 'xor':return[1-ad,1-as];}}
+function composite(op,s,d){var f=coeffs(op,s.a,d.a),fa=f[0],fb=f[1]; return px(fa*s.r+fb*d.r,fa*s.g+fb*d.g,fa*s.b+fb*d.b,fa*s.a+fb*d.a);}
+var PORTER_DUFF=['clear','src','dst','src-over','dst-over','src-in','dst-in','src-out','dst-out','src-atop','dst-atop','xor'];
+function screen(b,s){return b+s-b*s;}
+function hardlight(b,s){return s<=0.5?b*2*s:screen(b,2*s-1);}
+function softlight(b,s){if(s<=0.5)return b-(1-2*s)*b*(1-b); var d=b<=0.25?((16*b-12)*b+4)*b:Math.sqrt(b); return b+(2*s-1)*(d-b);}
+function dodge(b,s){return b===0?0:s===1?1:Math.min(1,b/(1-s));}
+function burn(b,s){return b===1?1:s===0?0:1-Math.min(1,(1-b)/s);}
+var SEP={normal:function(b,s){return s;},multiply:function(b,s){return b*s;},screen:screen,
+  overlay:function(b,s){return hardlight(s,b);},darken:function(b,s){return Math.min(b,s);},
+  lighten:function(b,s){return Math.max(b,s);},'color-dodge':dodge,'color-burn':burn,
+  'hard-light':hardlight,'soft-light':softlight,difference:function(b,s){return Math.abs(b-s);},
+  exclusion:function(b,s){return b+s-2*b*s;}};
+function lum(c){return 0.3*c[0]+0.59*c[1]+0.11*c[2];}
+function clipColor(c){var l=lum(c),n=Math.min(c[0],c[1],c[2]),x=Math.max(c[0],c[1],c[2]),o=c.slice(); if(n<0)o=o.map(function(v){return l+(v-l)*l/(l-n);}); if(x>1)o=o.map(function(v){return l+(v-l)*(1-l)/(x-l);}); return o;}
+function setLum(c,l){var d=l-lum(c); return clipColor(c.map(function(v){return v+d;}));}
+function sat(c){return Math.max(c[0],c[1],c[2])-Math.min(c[0],c[1],c[2]);}
+function setSat(c,s){var idx=[0,1,2].sort(function(i,j){return c[i]-c[j];}),lo=idx[0],mid=idx[1],hi=idx[2],o=[0,0,0]; if(c[hi]>c[lo]){o[mid]=(c[mid]-c[lo])*s/(c[hi]-c[lo]); o[hi]=s;} o[lo]=0; return o;}
+function nonsep(mode,b,s){ if(mode==='hue')return setLum(setSat(s,sat(b)),lum(b)); if(mode==='saturation')return setLum(setSat(b,sat(s)),lum(b)); if(mode==='color')return setLum(s,lum(b)); return setLum(b,lum(s)); }
+var BLEND_MODES=['normal','multiply','screen','overlay','darken','lighten','color-dodge','color-burn','hard-light','soft-light','difference','exclusion','hue','saturation','color','luminosity'];
+function blendColor(mode,cb,cs){ if(SEP[mode]){var f=SEP[mode]; return [f(cb[0],cs[0]),f(cb[1],cs[1]),f(cb[2],cs[2])];} return nonsep(mode,cb,cs); }
+function blend(mode,s,d){ var as=s.a,ad=d.a,cs=pcolor(s),cb=pcolor(d),B=blendColor(mode,cb,cs);
+  function ch(csx,bx,sx,dx){return as*(1-ad)*csx+as*ad*bx+(1-as)*dx;}
+  return px(ch(cs[0],B[0],s.r,d.r),ch(cs[1],B[1],s.g,d.g),ch(cs[2],B[2],s.b,d.b),as+ad*(1-as)); }
+
+/* layers */
+function layer(w,h){var p=[]; for(var i=0;i<w*h;i++)p.push(CLEAR); return {w:w,h:h,p:p};}
+function paintShape(l,cov,col){for(var i=0;i<l.w*l.h;i++){var k=cov[i]; if(k>0)l.p[i]=fromColor(col,k);}}
+function flattenBytes(l,bg){var base=opaque(bg),out=[]; for(var i=0;i<l.w*l.h;i++){var q=over(l.p[i],base); out.push([toByte(q.r),toByte(q.g),toByte(q.b)]);} return out;}
+var PAPER=[0.02,0.02,0.025], DST=[0.2,0.5,0.85], SRC=[0.95,0.55,0.1], TILE=64;
+function dstLayer(){var l=layer(TILE,TILE); paintShape(l,fillPath(polygon(point(10,10),point(42,10),point(42,42),point(10,42)),TILE,TILE),DST); return l;}
+function srcLayer(){var l=layer(TILE,TILE); paintShape(l,fillPath(circlePath(38,38,20,48),TILE,TILE),SRC); return l;}
+
+function tableGrid(perTile) {
+  var cols=4, rows=Math.ceil(perTile.length/4);
+  var buf=[]; for(var i=0;i<cols*TILE*rows*TILE;i++)buf.push([toByte(PAPER[0]),toByte(PAPER[1]),toByte(PAPER[2])]);
+  var src=srcLayer(), dst=dstLayer();
+  perTile.forEach(function(make,i){ var tileBytes=make(src,dst); var ox=(i%cols)*TILE, oy=Math.floor(i/cols)*TILE;
+    for(var y=0;y<TILE;y++)for(var x=0;x<TILE;x++) buf[(oy+y)*cols*TILE+(ox+x)]=tileBytes[y*TILE+x]; });
+  return {bytes:buf, w:cols*TILE, h:rows*TILE};
+}
+function porterDuff(){ return tableGrid(PORTER_DUFF.map(function(op){ return function(src,dst){ var out=layer(TILE,TILE); for(var j=0;j<TILE*TILE;j++)out.p[j]=composite(op,src.p[j],dst.p[j]); return flattenBytes(out,PAPER);};})); }
+function blendGrid(){ return tableGrid(BLEND_MODES.map(function(mode){ return function(src,dst){ var out=layer(TILE,TILE); for(var j=0;j<TILE*TILE;j++)out.p[j]=blend(mode,src.p[j],dst.p[j]); return flattenBytes(out,PAPER);};})); }
+function seamBytes(){ var W=80; var base=layer(W,W); for(var i=0;i<W*W;i++)base.p[i]=opaque(PAPER);
+  var tris=[polygon(point(4,4),point(76,76),point(4,76)), polygon(point(4,4),point(76,4),point(76,76))];
+  tris.forEach(function(tri){ var s=layer(W,W); paintShape(s,fillPath(tri,W,W),SRC); var nb=layer(W,W); for(var j=0;j<W*W;j++)nb.p[j]=composite('src-over',s.p[j],base.p[j]); base=nb; });
+  var out=[]; for(var k=0;k<W*W;k++)out.push([toByte(base.p[k].r),toByte(base.p[k].g),toByte(base.p[k].b)]); return {bytes:out,w:W,h:W}; }
+
+/* ---------- Figure 9.1 — premultiplied vs straight averaging ---------- */
+Plate.add('fig91', 0.42, function (ctx, w, h, p) {
+  var sw = Math.min(70, (w - 60) / 4), y = 20, gap = 16;
+  function swatch(x, rgb, a, label, sub) {
+    // draw a checkerboard behind to show alpha
+    for (var j=0;j<sw;j+=8)for(var i=0;i<sw;i+=8){ ctx.fillStyle=((i+j)/8)%2?'#2a2a30':'#3a3a42'; ctx.fillRect(x+i,y+j,8,8);}
+    ctx.fillStyle='rgba('+Math.round(Plate.l2s(rgb[0])*255)+','+Math.round(Plate.l2s(rgb[1])*255)+','+Math.round(Plate.l2s(rgb[2])*255)+','+a+')';
+    ctx.fillRect(x,y,sw,sw);
+    Plate.label(ctx, label, x+sw/2, y+sw+16, p.ink, 11, 'center');
+    if (sub) Plate.label(ctx, sub, x+sw/2, y+sw+30, p.ink2, 9.5, 'center');
+  }
+  var red=[1,0,0];
+  swatch(20, red, 1, 'opaque red', 'pixel(1,0,0,1)');
+  // straight average: colours averaged (red + black)/2 = (0.5,0,0), alpha 0.5 -> muddy
+  swatch(20+sw+gap, [0.5,0,0], 0.5, 'straight avg', 'dark, wrong');
+  // premultiplied average unpremultiplies to red
+  swatch(20+2*(sw+gap), red, 0.5, 'premult avg', 'red, right');
+  swatch(20+3*(sw+gap), [0,0,0], 0, 'nothing', 'pixel(0,0,0,0)');
+});
+
+/* ---------- Figure 9.2 — three translucent washes ---------- */
+Plate.add('fig92', 0.5, function (ctx, w, h, p) {
+  var W=120, H=60, l=layer(W,H); for(var i=0;i<W*H;i++)l.p[i]=opaque(PAPER);
+  var cols=[[0.9,0.3,0.2],[0.2,0.7,0.4],[0.2,0.5,0.9]];
+  cols.forEach(function(c,k){ var bar=polygon(point(10+k*24,8),point(W-10,8),point(W-10,H-8),point(10+k*24,H-8));
+    var s=layer(W,H); paintShape(s,fillPath(bar,W,H),c); for(var j=0;j<W*H;j++)s.p[j]=px(s.p[j].r*0.55,s.p[j].g*0.55,s.p[j].b*0.55,s.p[j].a*0.55);
+    var nb=layer(W,H); for(var j2=0;j2<W*H;j2++)nb.p[j2]=composite('src-over',s.p[j2],l.p[j2]); l=nb; });
+  var bytes=[]; for(var q=0;q<W*H;q++)bytes.push([toByte(l.p[q].r),toByte(l.p[q].g),toByte(l.p[q].b)]);
+  var scale=Math.max(1,Math.floor(Math.min((w-20)/W,(h-20)/H)));
+  blit(ctx,bytes,W,H,scale,(w-W*scale)/2,(h-H*scale)/2);
+});
+
+/* ---------- Figure 9.3 — the sixteen blend modes ---------- */
+Plate.add('fig93', 1, function (ctx, w, h, p) {
+  var g=blendGrid(), scale=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));
+  blit(ctx,g.bytes,g.w,g.h,scale,(w-g.w*scale)/2,(h-g.h*scale)/2);
+});
+
+/* ---------- Figure 9.4 — the conflation seam ---------- */
+Plate.add('fig94', 1, function (ctx, w, h, p) {
+  var s=seamBytes(), scale=Math.max(1,Math.floor(Math.min((w-16)/s.w,(h-16)/s.h)));
+  blit(ctx,s.bytes,s.w,s.h,scale,(w-s.w*scale)/2,(h-s.h*scale)/2);
+});
+
+/* ---------- Plate 9 — the Porter-Duff table, pixel for pixel ---------- */
+Plate.add('plate9', 0.75, function (ctx, w, h, p) {
+  var g=porterDuff(), scale=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));
+  blit(ctx,g.bytes,g.w,g.h,scale,(w-g.w*scale)/2,(h-g.h*scale)/2);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, blit, point, path, moveTo, lineTo, close, polygon, circlePath, edges, fillPath, px, fromColor, opaque, pcolor, over, coeffs, composite, screen, hardlight, softlight, dodge, burn, lum, clipColor, setLum, sat, setSat, nonsep, blendColor, blend, layer, paintShape, flattenBytes, porterDuff, blendGrid, seamBytes].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>

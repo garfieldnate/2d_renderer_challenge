@@ -146,6 +146,19 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   parser), returns `none` for coincident endpoints or a zero radius; `arc_point(a, t)` walks it. The
   two flags pick one of four arcs. The runner learned `none`/None comparison and the
   `accumulate`/`accumulate_row`/`add_cell` mutation steps.
+- Chapter 9 compositing: a `pixel(r, g, b, a)` is premultiplied linear light (r,g,b in [0, a]);
+  `from_color`/`opaque` premultiply, `pixel_color` divides back out (transparent reads black),
+  `lerp_pixel` averages straight down the premultiplied channels (the reason premultiply is a
+  correctness requirement, reused by chapter 11). `over(src, dst) = src + (1 − src.a)·dst` is
+  `paint_through` generalized. `composite(op, src, dst)` is the twelve Porter-Duff operators as
+  `Fa·src + Fb·dst` with a `(Fa, Fb)` table. `blend(mode, src, dst)` is source-over with a blend
+  function; `blend("normal") == over`; twelve separable modes plus hue/saturation/color/luminosity,
+  all in linear light (browsers use encoded space, so numbers differ — chapter 1's lane). A `layer`
+  is a premultiplied-pixel buffer; `flatten_layer(layer, bg)` composites it over an opaque
+  background to a canvas — named `flatten_layer`, NOT `flatten`, so it doesn't shadow chapter 8's
+  curve `flatten` in the runner's flat namespace. The canvas stays opaque RGB; chapters 1-8 are
+  untouched. Trap: conflation — two abutting opaque shapes composite to 0.75 along the shared edge,
+  not 1.0, a seam every renderer has.
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and
   `Then X is the following matrix:`. The runner understands exactly those two table steps.
 
