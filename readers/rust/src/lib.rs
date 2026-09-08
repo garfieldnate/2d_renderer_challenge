@@ -2782,3 +2782,805 @@ pub fn flower() -> Canvas {
 pub fn plate_08() -> Canvas {
     magnify(&flower(), 2)
 }
+
+// =======================================================================
+// Chapter 9: Compositing
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 9.1 Premultiplied pixels
+// ---------------------------------------------------------------------
+
+/// A translucent pixel: red, green, blue and alpha, with the colour
+/// already multiplied by the alpha (`r`, `g`, `b` each in `[0, a]`). This
+/// is the only representation in which averaging two pixels -- what any
+/// filter does -- is even defined: a fully transparent pixel contributes
+/// nothing, because here nothing is what it is.
+#[derive(Debug, Clone, Copy)]
+pub struct Pixel {
+    pub r: f64,
+    pub g: f64,
+    pub b: f64,
+    pub a: f64,
+}
+
+pub fn pixel(r: f64, g: f64, b: f64, a: f64) -> Pixel {
+    Pixel { r, g, b, a }
+}
+
+/// Premultiplies a straight colour by an alpha.
+pub fn from_color(c: Color, a: f64) -> Pixel {
+    pixel(c.red * a, c.green * a, c.blue * a, a)
+}
+
+/// A straight colour at alpha 1: premultiplying leaves it unchanged.
+pub fn opaque(c: Color) -> Pixel {
+    from_color(c, 1.0)
+}
+
+/// Fully transparent: no colour, no alpha.
+pub const CLEAR: Pixel = Pixel { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+
+/// Un-premultiplies a pixel back into a straight colour. A transparent
+/// pixel has no colour to recover, so it reads black -- consistent with
+/// `CLEAR`'s own channels, and never divides by zero.
+pub fn pixel_color(p: Pixel) -> Color {
+    if p.a == 0.0 {
+        color(0.0, 0.0, 0.0)
+    } else {
+        color(p.r / p.a, p.g / p.a, p.b / p.a)
+    }
+}
+
+pub fn pixel_alpha(p: Pixel) -> f64 {
+    p.a
+}
+
+/// Pixels compare channel by channel (`r`, `g`, `b`, `a`), with the usual
+/// tolerance.
+pub fn pixels_eq(a: Pixel, b: Pixel) -> bool {
+    approx_eq(a.r, b.r) && approx_eq(a.g, b.g) && approx_eq(a.b, b.b) && approx_eq(a.a, b.a)
+}
+
+/// Straight down the premultiplied channels: the whole reason for
+/// premultiplying in the first place -- half of opaque red and half of
+/// nothing comes out red at half alpha, not a muddy grey.
+pub fn lerp_pixel(a: Pixel, b: Pixel, t: f64) -> Pixel {
+    pixel(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t)
+}
+
+// ---------------------------------------------------------------------
+// § 9.2 Source-over
+// ---------------------------------------------------------------------
+
+/// `src` composited over `dst`: keep all of the source, and let through
+/// the fraction of the destination the source didn't cover. Every channel,
+/// alpha included. What `paint_through` has been doing since chapter 2,
+/// with the destination pinned opaque.
+pub fn over(src: Pixel, dst: Pixel) -> Pixel {
+    let t = 1.0 - src.a;
+    pixel(src.r + t * dst.r, src.g + t * dst.g, src.b + t * dst.b, src.a + t * dst.a)
+}
+
+// ---------------------------------------------------------------------
+// § 9.3 Twelve operators, one formula
+// ---------------------------------------------------------------------
+
+/// The two Porter-Duff coefficients (Fa, Fb) for `op`, given the source
+/// and destination alphas: how much of the source survives, and how much
+/// of the destination.
+fn porter_duff_coeffs(op: &str, a_s: f64, a_d: f64) -> (f64, f64) {
+    match op {
+        "clear" => (0.0, 0.0),
+        "src" => (1.0, 0.0),
+        "dst" => (0.0, 1.0),
+        "src-over" => (1.0, 1.0 - a_s),
+        "dst-over" => (1.0 - a_d, 1.0),
+        "src-in" => (a_d, 0.0),
+        "dst-in" => (0.0, a_s),
+        "src-out" => (1.0 - a_d, 0.0),
+        "dst-out" => (0.0, 1.0 - a_s),
+        "src-atop" => (a_d, 1.0 - a_s),
+        "dst-atop" => (1.0 - a_d, a_s),
+        "xor" => (1.0 - a_d, 1.0 - a_s),
+        other => panic!("unknown porter-duff operator: {other}"),
+    }
+}
+
+/// `Fa * src + Fb * dst`, every channel including alpha: one formula, and
+/// an operator is nothing but its choice of the two coefficients.
+pub fn composite(op: &str, src: Pixel, dst: Pixel) -> Pixel {
+    let (fa, fb) = porter_duff_coeffs(op, src.a, dst.a);
+    pixel(
+        fa * src.r + fb * dst.r,
+        fa * src.g + fb * dst.g,
+        fa * src.b + fb * dst.b,
+        fa * src.a + fb * dst.a,
+    )
+}
+
+// ---------------------------------------------------------------------
+// § 9.4 Blend modes
+// ---------------------------------------------------------------------
+
+fn blend_screen(b: f64, s: f64) -> f64 {
+    b + s - b * s
+}
+
+fn blend_hard_light(b: f64, s: f64) -> f64 {
+    if s <= 0.5 {
+        b * 2.0 * s
+    } else {
+        blend_screen(b, 2.0 * s - 1.0)
+    }
+}
+
+fn blend_soft_light(b: f64, s: f64) -> f64 {
+    if s <= 0.5 {
+        b - (1.0 - 2.0 * s) * b * (1.0 - b)
+    } else {
+        let d = if b <= 0.25 { ((16.0 * b - 12.0) * b + 4.0) * b } else { b.sqrt() };
+        b + (2.0 * s - 1.0) * (d - b)
+    }
+}
+
+fn blend_dodge(b: f64, s: f64) -> f64 {
+    if b == 0.0 {
+        0.0
+    } else if s == 1.0 {
+        1.0
+    } else {
+        (b / (1.0 - s)).min(1.0)
+    }
+}
+
+fn blend_burn(b: f64, s: f64) -> f64 {
+    if b == 1.0 {
+        1.0
+    } else if s == 0.0 {
+        0.0
+    } else {
+        1.0 - ((1.0 - b) / s).min(1.0)
+    }
+}
+
+/// The twelve separable modes, each a one-line function of `(backdrop,
+/// source)`. `None` for a mode this table doesn't cover -- the four
+/// non-separable ones, handled by `nonsep`.
+fn separable_blend(mode: &str) -> Option<fn(f64, f64) -> f64> {
+    match mode {
+        "normal" => Some(|_b: f64, s: f64| s),
+        "multiply" => Some(|b: f64, s: f64| b * s),
+        "screen" => Some(blend_screen),
+        "overlay" => Some(|b: f64, s: f64| blend_hard_light(s, b)),
+        "darken" => Some(|b: f64, s: f64| b.min(s)),
+        "lighten" => Some(|b: f64, s: f64| b.max(s)),
+        "color-dodge" => Some(blend_dodge),
+        "color-burn" => Some(blend_burn),
+        "hard-light" => Some(blend_hard_light),
+        "soft-light" => Some(blend_soft_light),
+        "difference" => Some(|b: f64, s: f64| (b - s).abs()),
+        "exclusion" => Some(|b: f64, s: f64| b + s - 2.0 * b * s),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 9.5 The four that mix whole colours
+// ---------------------------------------------------------------------
+
+/// A colour's brightness: a weighted sum of its channels, not their
+/// average -- green counts for more than blue.
+fn lum(c: Color) -> f64 {
+    0.3 * c.red + 0.59 * c.green + 0.11 * c.blue
+}
+
+/// Shifts `c`'s channels back into `[0, 1]` without changing its hue,
+/// after `set_lum` has already moved it to the target brightness (which
+/// can push a channel out of range in either direction).
+fn clip_color(c: Color) -> Color {
+    let l = lum(c);
+    let n = c.red.min(c.green).min(c.blue);
+    let x = c.red.max(c.green).max(c.blue);
+    let mut o = c;
+    if n < 0.0 {
+        o = color(l + (o.red - l) * l / (l - n), l + (o.green - l) * l / (l - n), l + (o.blue - l) * l / (l - n));
+    }
+    if x > 1.0 {
+        o = color(
+            l + (o.red - l) * (1.0 - l) / (x - l),
+            l + (o.green - l) * (1.0 - l) / (x - l),
+            l + (o.blue - l) * (1.0 - l) / (x - l),
+        );
+    }
+    o
+}
+
+/// Shifts `c` to brightness `l`, clipping back into range without
+/// changing its hue.
+fn set_lum(c: Color, l: f64) -> Color {
+    let d = l - lum(c);
+    clip_color(color(c.red + d, c.green + d, c.blue + d))
+}
+
+/// How far a colour's channels spread: the largest minus the smallest.
+fn sat(c: Color) -> f64 {
+    c.red.max(c.green).max(c.blue) - c.red.min(c.green).min(c.blue)
+}
+
+/// Stretches `c` to saturation `s`, keeping its hue and (before `set_lum`
+/// fixes it up) roughly its brightness.
+fn set_sat(c: Color, s: f64) -> Color {
+    let v = [c.red, c.green, c.blue];
+    let mut idx = [0usize, 1, 2];
+    idx.sort_by(|&i, &j| v[i].partial_cmp(&v[j]).unwrap());
+    let (lo, mid, hi) = (idx[0], idx[1], idx[2]);
+    let mut o = [0.0; 3];
+    if v[hi] > v[lo] {
+        o[mid] = (v[mid] - v[lo]) * s / (v[hi] - v[lo]);
+        o[hi] = s;
+    }
+    o[lo] = 0.0;
+    color(o[0], o[1], o[2])
+}
+
+/// The four modes that mix whole colours instead of channels: `colour` is
+/// the source's hue and saturation at the backdrop's brightness,
+/// `luminosity` is the reverse, and `hue`/`saturation` take one property
+/// from each.
+fn nonseparable_blend(mode: &str, b: Color, s: Color) -> Color {
+    match mode {
+        "hue" => set_lum(set_sat(s, sat(b)), lum(b)),
+        "saturation" => set_lum(set_sat(b, sat(s)), lum(b)),
+        "color" => set_lum(s, lum(b)),
+        _ => set_lum(b, lum(s)), // "luminosity"
+    }
+}
+
+/// The blend function itself, `B(backdrop, source)`: the twelve separable
+/// modes channel by channel, the four non-separable ones on the whole
+/// colour.
+pub fn blend_color(mode: &str, backdrop: Color, source: Color) -> Color {
+    if let Some(f) = separable_blend(mode) {
+        color(f(backdrop.red, source.red), f(backdrop.green, source.green), f(backdrop.blue, source.blue))
+    } else {
+        nonseparable_blend(mode, backdrop, source)
+    }
+}
+
+/// Source-over, with the overlap blended first: where source and
+/// destination overlap the blended colour appears, fading to plain
+/// source-over where they don't. Mode `"normal"` returns the source
+/// unchanged, which collapses this back to `over`.
+pub fn blend(mode: &str, src: Pixel, dst: Pixel) -> Pixel {
+    let a_s = src.a;
+    let a_d = dst.a;
+    let cs = pixel_color(src);
+    let cb = pixel_color(dst);
+    let b = blend_color(mode, cb, cs);
+    let ch = |csx: f64, bx: f64, dx: f64| a_s * (1.0 - a_d) * csx + a_s * a_d * bx + (1.0 - a_s) * dx;
+    pixel(
+        ch(cs.red, b.red, dst.r),
+        ch(cs.green, b.green, dst.g),
+        ch(cs.blue, b.blue, dst.b),
+        a_s + a_d * (1.0 - a_s),
+    )
+}
+
+// ---------------------------------------------------------------------
+// § 9.6 Putting it together: layers
+// ---------------------------------------------------------------------
+
+/// A buffer of premultiplied pixels, starting fully transparent.
+#[derive(Debug, Clone)]
+pub struct Layer {
+    pub width: usize,
+    pub height: usize,
+    pub pixels: Vec<Pixel>,
+}
+
+pub fn layer(width: usize, height: usize) -> Layer {
+    Layer { width, height, pixels: vec![CLEAR; width * height] }
+}
+
+/// Paints a shape into a layer through its coverage, the way chapter 2's
+/// `paint_through` painted a shape into a canvas -- except the untouched
+/// parts stay genuinely transparent instead of paper-coloured.
+pub fn paint_shape(l: &mut Layer, cov: &CoverageBuffer, col: Color) {
+    for y in 0..l.height as i64 {
+        for x in 0..l.width as i64 {
+            let k = coverage_at(cov, x, y);
+            if k > 0.0 {
+                let idx = y as usize * l.width + x as usize;
+                l.pixels[idx] = from_color(col, k);
+            }
+        }
+    }
+}
+
+/// Composites `src` over `dst`, pixel by pixel, with a Porter-Duff
+/// operator.
+pub fn composite_layers(op: &str, src: &Layer, dst: &Layer) -> Layer {
+    let mut out = layer(src.width, src.height);
+    for i in 0..out.pixels.len() {
+        out.pixels[i] = composite(op, src.pixels[i], dst.pixels[i]);
+    }
+    out
+}
+
+/// Blends `src` over `dst`, pixel by pixel, with a blend mode --
+/// `composite_layers`'s sibling for §9.4/9.5.
+fn blend_layers(mode: &str, src: &Layer, dst: &Layer) -> Layer {
+    let mut out = layer(src.width, src.height);
+    for i in 0..out.pixels.len() {
+        out.pixels[i] = blend(mode, src.pixels[i], dst.pixels[i]);
+    }
+    out
+}
+
+/// Flattens a layer over an opaque background so it can be seen: `over`
+/// against `bg`, pixel by pixel, un-premultiplied back into a canvas.
+pub fn flatten_layer(l: &Layer, bg: Color) -> Canvas {
+    let mut c = canvas(l.width, l.height);
+    let base = opaque(bg);
+    for y in 0..l.height as i64 {
+        for x in 0..l.width as i64 {
+            let idx = y as usize * l.width + x as usize;
+            let q = over(l.pixels[idx], base);
+            write_pixel(&mut c, x, y, pixel_color(q));
+        }
+    }
+    c
+}
+
+const CH9_PAPER: Color = Color { red: 0.02, green: 0.02, blue: 0.025 };
+const CH9_DST: Color = Color { red: 0.2, green: 0.5, blue: 0.85 };
+const CH9_SRC: Color = Color { red: 0.95, green: 0.55, blue: 0.1 };
+const CH9_TILE: usize = 64;
+
+const PORTER_DUFF_OPS: [&str; 12] = [
+    "clear", "src", "dst", "src-over", "dst-over", "src-in", "dst-in", "src-out", "dst-out", "src-atop",
+    "dst-atop", "xor",
+];
+
+const BLEND_MODES: [&str; 16] = [
+    "normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light",
+    "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity",
+];
+
+/// A blue square, the destination for every tile of the table.
+fn dst_layer() -> Layer {
+    let mut l = layer(CH9_TILE, CH9_TILE);
+    let square = polygon(&[point(10.0, 10.0), point(42.0, 10.0), point(42.0, 42.0), point(10.0, 42.0)]);
+    let cov = fill_path(&square, "nonzero", CH9_TILE, CH9_TILE);
+    paint_shape(&mut l, &cov, CH9_DST);
+    l
+}
+
+/// An orange circle (a 48-sided polygon standing in for one), the source
+/// for every tile of the table.
+fn src_layer() -> Layer {
+    let mut l = layer(CH9_TILE, CH9_TILE);
+    let circle = circle_path(38.0, 38.0, 20.0, 48);
+    let cov = fill_path(&circle, "nonzero", CH9_TILE, CH9_TILE);
+    paint_shape(&mut l, &cov, CH9_SRC);
+    l
+}
+
+/// Lays out `tiles.len()` flattened layers in a grid four columns wide,
+/// each `CH9_TILE` square, on paper.
+fn tile_grid<F: Fn(&Layer, &Layer) -> Layer>(tiles: &[F]) -> Canvas {
+    let cols = 4;
+    let rows = tiles.len().div_ceil(cols);
+    let mut c = canvas(cols * CH9_TILE, rows * CH9_TILE);
+    fill(&mut c, CH9_PAPER);
+    let src = src_layer();
+    let dst = dst_layer();
+    for (i, make) in tiles.iter().enumerate() {
+        let flat = flatten_layer(&make(&src, &dst), CH9_PAPER);
+        let ox = (i % cols) * CH9_TILE;
+        let oy = (i / cols) * CH9_TILE;
+        for y in 0..CH9_TILE {
+            for x in 0..CH9_TILE {
+                write_pixel(&mut c, (ox + x) as i64, (oy + y) as i64, pixel_at(&flat, x as i64, y as i64));
+            }
+        }
+    }
+    c
+}
+
+/// The twelve Porter-Duff operators, a blue square as destination and an
+/// orange circle as source, laid out four columns by three rows.
+pub fn porter_duff_table() -> Canvas {
+    let tiles: Vec<_> =
+        PORTER_DUFF_OPS.iter().map(|&op| move |s: &Layer, d: &Layer| composite_layers(op, s, d)).collect();
+    tile_grid(&tiles)
+}
+
+/// Plate 9: the Porter-Duff table, magnified by 2.
+pub fn plate_09() -> Canvas {
+    magnify(&porter_duff_table(), 2)
+}
+
+/// The sixteen blend modes, same square and circle, laid out four columns
+/// by four rows.
+pub fn blend_strip() -> Canvas {
+    let tiles: Vec<_> =
+        BLEND_MODES.iter().map(|&mode| move |s: &Layer, d: &Layer| blend_layers(mode, s, d)).collect();
+    tile_grid(&tiles)
+}
+
+/// The conflation trap: two opaque triangles that share a diagonal,
+/// composited src-over one after the other onto opaque paper. Together
+/// they cover a solid square, but the shared edge is antialiased on both
+/// triangles, so the seam pixels get composited as two independent
+/// translucent layers instead of one opaque surface -- coverage 0.75
+/// where it should be 1.0. Magnified by 4 so the seam is visible.
+pub fn seam() -> Canvas {
+    let w = 80usize;
+    let mut base = layer(w, w);
+    for p in base.pixels.iter_mut() {
+        *p = opaque(CH9_PAPER);
+    }
+    let tris = [
+        polygon(&[point(4.0, 4.0), point(76.0, 76.0), point(4.0, 76.0)]),
+        polygon(&[point(4.0, 4.0), point(76.0, 4.0), point(76.0, 76.0)]),
+    ];
+    for tri in &tris {
+        let mut s = layer(w, w);
+        let cov = fill_path(tri, "nonzero", w, w);
+        paint_shape(&mut s, &cov, CH9_SRC);
+        let mut next = layer(w, w);
+        for j in 0..w * w {
+            next.pixels[j] = composite("src-over", s.pixels[j], base.pixels[j]);
+        }
+        base = next;
+    }
+    let mut c = canvas(w, w);
+    for y in 0..w as i64 {
+        for x in 0..w as i64 {
+            let idx = y as usize * w + x as usize;
+            write_pixel(&mut c, x, y, pixel_color(base.pixels[idx]));
+        }
+    }
+    magnify(&c, 4)
+}
+
+// =======================================================================
+// Chapter 10: Paint Servers and Gradients
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 10.1 The stop table
+// ---------------------------------------------------------------------
+
+/// One colour stop: an offset in `[0, 1]` and the colour there.
+#[derive(Debug, Clone, Copy)]
+pub struct Stop {
+    pub offset: f64,
+    pub color: Color,
+}
+
+pub fn stop(offset: f64, color: Color) -> Stop {
+    Stop { offset, color }
+}
+
+/// The colour at parameter `t`: the first colour below the first stop,
+/// the last colour above the last stop, and otherwise a straight blend
+/// (in linear light) between the two stops that bracket `t`, weighted by
+/// how far along it falls. `stops` is assumed sorted by offset, as every
+/// gradient constructor here builds it. A binary search finds the
+/// bracketing pair -- with more than a couple of stops, a linear scan
+/// would mean walking the whole table for every pixel.
+pub fn sample_stops(stops: &[Stop], t: f64) -> Color {
+    let n = stops.len();
+    if t <= stops[0].offset {
+        return stops[0].color;
+    }
+    if t >= stops[n - 1].offset {
+        return stops[n - 1].color;
+    }
+    let mut lo = 0usize;
+    let mut hi = n - 1;
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if stops[mid].offset <= t {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let a = stops[lo];
+    let b = stops[hi];
+    let frac = if b.offset == a.offset { 0.0 } else { (t - a.offset) / (b.offset - a.offset) };
+    a.color + (b.color - a.color) * frac
+}
+
+// ---------------------------------------------------------------------
+// § 10.2 Extend modes
+// ---------------------------------------------------------------------
+
+/// Folds a parameter that fell outside `[0, 1]` back in. `"pad"` clamps
+/// to the ends, `"repeat"` wraps, and `"reflect"` bounces back and forth
+/// so the gradient mirrors every unit.
+pub fn extend(t: f64, mode: &str) -> f64 {
+    match mode {
+        "pad" => t.clamp(0.0, 1.0),
+        "repeat" => t - t.floor(),
+        "reflect" => {
+            let u = t.abs() % 2.0;
+            if u <= 1.0 {
+                u
+            } else {
+                2.0 - u
+            }
+        }
+        other => panic!("unknown extend mode: {other}"),
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 10.3 The three gradients, and § 10.4 painting with a paint
+// ---------------------------------------------------------------------
+
+/// Anything that turns a device point into a colour. A solid paint
+/// ignores the point; the three gradients project it down to a number
+/// and look that up in a stop table.
+#[derive(Debug, Clone)]
+pub enum Paint {
+    Solid(Color),
+    Linear { p0: Tuple, p1: Tuple, stops: Vec<Stop>, extend: String },
+    Radial { c0: Tuple, r0: f64, c1: Tuple, r1: f64, stops: Vec<Stop>, extend: String },
+    Conic { center: Tuple, angle0: f64, stops: Vec<Stop>, extend: String },
+}
+
+/// A paint that ignores the point and always returns `c`.
+pub fn solid(c: Color) -> Paint {
+    Paint::Solid(c)
+}
+
+/// An axis from `p0` to `p1`: the parameter of a point is how far it
+/// projects onto that axis, as a fraction of the axis's length.
+pub fn linear_gradient(p0: Tuple, p1: Tuple, stops: Vec<Stop>, extend: &str) -> Paint {
+    Paint::Linear { p0, p1, stops, extend: extend.to_string() }
+}
+
+/// Two circles -- a start circle at `t = 0`, an end circle at `t = 1` --
+/// interpolating both center and radius. `r0 = 0` and an offset `c0` is
+/// SVG's focal gradient.
+pub fn radial_gradient(c0: Tuple, r0: f64, c1: Tuple, r1: f64, stops: Vec<Stop>, extend: &str) -> Paint {
+    Paint::Radial { c0, r0, c1, r1, stops, extend: extend.to_string() }
+}
+
+/// The angle from `center` to the point, swept around a full turn
+/// starting at `angle0`.
+pub fn conic_gradient(center: Tuple, angle0: f64, stops: Vec<Stop>, extend: &str) -> Paint {
+    Paint::Conic { center, angle0, stops, extend: extend.to_string() }
+}
+
+/// The parameter of `(x, y)` along a linear gradient's axis: a dot
+/// product over the squared length of the axis. On the axis this is
+/// exactly the fraction of the way from `p0` to `p1`; perpendicular to
+/// it, unchanged.
+pub fn linear_t(g: &Paint, x: f64, y: f64) -> f64 {
+    match g {
+        Paint::Linear { p0, p1, .. } => {
+            let dx = p1.x - p0.x;
+            let dy = p1.y - p0.y;
+            ((x - p0.x) * dx + (y - p0.y) * dy) / (dx * dx + dy * dy)
+        }
+        _ => panic!("linear_t: not a linear gradient"),
+    }
+}
+
+/// The `t` of the interpolated circle (between the start and end circles)
+/// that passes through `(x, y)`: solve the quadratic in `t` and return the
+/// first root (checked in this order, not sorted by size) whose radius
+/// isn't negative. `None` when neither root has a valid radius -- the
+/// focal gradient's unreachable cone.
+pub fn radial_t(g: &Paint, x: f64, y: f64) -> Option<f64> {
+    match g {
+        Paint::Radial { c0, r0, c1, r1, .. } => {
+            let cdx = c1.x - c0.x;
+            let cdy = c1.y - c0.y;
+            let dr = r1 - r0;
+            let pdx = x - c0.x;
+            let pdy = y - c0.y;
+            let a = cdx * cdx + cdy * cdy - dr * dr;
+            let b = -2.0 * (pdx * cdx + pdy * cdy + r0 * dr);
+            let c = pdx * pdx + pdy * pdy - r0 * r0;
+            if a.abs() < 1e-9 {
+                if b.abs() < 1e-12 {
+                    return None;
+                }
+                let t0 = -c / b;
+                return if r0 + t0 * dr >= 0.0 { Some(t0) } else { None };
+            }
+            let disc = b * b - 4.0 * a * c;
+            if disc < 0.0 {
+                return None;
+            }
+            let s = disc.sqrt();
+            let roots = [(-b + s) / (2.0 * a), (-b - s) / (2.0 * a)];
+            for t in roots {
+                if r0 + t * dr >= 0.0 {
+                    return Some(t);
+                }
+            }
+            None
+        }
+        _ => panic!("radial_t: not a radial gradient"),
+    }
+}
+
+/// The angle from the conic gradient's center to `(x, y)`, as a fraction
+/// of a full turn starting at `angle0`, wrapped once around into `[0, 1)`.
+pub fn conic_t(g: &Paint, x: f64, y: f64) -> f64 {
+    match g {
+        Paint::Conic { center, angle0, .. } => {
+            let a = (y - center.y).atan2(x - center.x) - angle0;
+            let t = a / (2.0 * std::f64::consts::PI);
+            t - t.floor()
+        }
+        _ => panic!("conic_t: not a conic gradient"),
+    }
+}
+
+/// The colour a paint hands back at `(x, y)`. A solid paint ignores the
+/// point. Each gradient projects the point to a parameter, folds it back
+/// into range with its extend mode, and looks it up in its stop table --
+/// except a focal radial's unreachable cone, which has no parameter at
+/// all and takes the last stop's colour instead of a black hole.
+pub fn paint_at(g: &Paint, x: f64, y: f64) -> Color {
+    match g {
+        Paint::Solid(c) => *c,
+        Paint::Linear { stops, extend: ext, .. } => sample_stops(stops, extend(linear_t(g, x, y), ext)),
+        Paint::Radial { stops, extend: ext, .. } => match radial_t(g, x, y) {
+            Some(t) => sample_stops(stops, extend(t, ext)),
+            None => sample_stops(stops, 1.0),
+        },
+        Paint::Conic { stops, extend: ext, .. } => sample_stops(stops, extend(conic_t(g, x, y), ext)),
+    }
+}
+
+/// `paint_through`, with the colour replaced by a function: samples
+/// `paint_at` at each pixel's center and blends that colour in through
+/// the coverage, in linear light. A solid paint makes this exactly
+/// `paint_through`.
+pub fn paint_fill(c: &mut Canvas, cov: &CoverageBuffer, paint: &Paint) {
+    let width = c.width.min(cov.width);
+    let height = c.height.min(cov.height);
+    for y in 0..height as i64 {
+        for x in 0..width as i64 {
+            let coverage = coverage_at(cov, x, y);
+            let old = pixel_at(c, x, y);
+            let col = paint_at(paint, x as f64 + 0.5, y as f64 + 0.5);
+            write_pixel(c, x, y, mix_with(old, col, coverage, true));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 10.5 Eight bits isn't enough: ordered dithering
+// ---------------------------------------------------------------------
+
+/// `channel_to_byte`, exposed under the chapter's own name: clamp,
+/// encode, scale to 255, round to nearest.
+pub fn to_byte(light: f64) -> i64 {
+    channel_to_byte(light)
+}
+
+/// The 4x4 Bayer matrix: `BAYER4[y][x]` is the dither order at that cell,
+/// 0 to 15.
+pub const BAYER4: [[i64; 4]; 4] =
+    [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+
+/// The nudge ordered dithering adds before rounding down, in `[0, 1)`:
+/// the Bayer matrix entry for `(x, y)`'s position in the tile, over 16.
+pub fn dither_threshold(x: i64, y: i64) -> f64 {
+    let xi = x.rem_euclid(4) as usize;
+    let yi = y.rem_euclid(4) as usize;
+    BAYER4[yi][xi] as f64 / 16.0
+}
+
+/// `to_byte`, with the Bayer threshold for `(x, y)` added before the
+/// floor instead of `0.5` added before it -- so a value that sits, say,
+/// 0.3 of the way between two bytes rounds up in 30% of a tile's
+/// positions and down in the rest, instead of snapping to one byte
+/// everywhere.
+pub fn to_byte_dithered(light: f64, x: i64, y: i64) -> i64 {
+    let clamped = light.clamp(0.0, 1.0);
+    (encode(clamped) * 255.0 + dither_threshold(x, y)).floor() as i64
+}
+
+/// `canvas_to_p6`, dithered: same header, same channel order, each byte
+/// through `to_byte_dithered` at its own pixel's position instead of
+/// `channel_to_byte`.
+pub fn canvas_to_p6_dithered(c: &Canvas) -> Vec<u8> {
+    let mut out = Vec::with_capacity(11 + c.width * c.height * 3);
+    out.extend_from_slice(format!("P6\n{} {}\n255\n", c.width, c.height).as_bytes());
+    for y in 0..c.height {
+        for x in 0..c.width {
+            let col = pixel_at(c, x as i64, y as i64);
+            for value in [col.red, col.green, col.blue] {
+                out.push(to_byte_dithered(value, x as i64, y as i64) as u8);
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------
+// § 10.6 Putting it together
+// ---------------------------------------------------------------------
+
+const CH10_PAPER: Color = Color { red: 0.02, green: 0.02, blue: 0.025 };
+
+/// A sunset: dark purple, warm red, bright orange, pale cream.
+fn sunset_stops() -> Vec<Stop> {
+    vec![
+        stop(0.0, color(0.05, 0.02, 0.15)),
+        stop(0.35, color(0.75, 0.15, 0.25)),
+        stop(0.7, color(0.98, 0.6, 0.15)),
+        stop(1.0, color(1.0, 0.95, 0.75)),
+    ]
+}
+
+/// One stop table, addressed three ways: a linear ramp across the
+/// diagonal, a focal radial with its highlight up and to the left, and a
+/// conic sweep -- three 150x150 panels, left to right, on paper.
+pub fn three_gradients() -> Canvas {
+    let p = 150usize;
+    let gap = 4usize;
+    let w = p * 3 + gap * 2;
+    let h = p;
+    let mut c = canvas(w, h);
+    fill(&mut c, CH10_PAPER);
+
+    let stops = sunset_stops();
+    let paints = [
+        linear_gradient(point(10.0, 10.0), point(140.0, 140.0), stops.clone(), "pad"),
+        radial_gradient(point(55.0, 55.0), 0.0, point(75.0, 75.0), 85.0, stops.clone(), "pad"),
+        conic_gradient(point(75.0, 75.0), -std::f64::consts::PI / 2.0, stops, "pad"),
+    ];
+
+    for (i, paint) in paints.iter().enumerate() {
+        let ox = i * (p + gap);
+        for y in 0..p {
+            for x in 0..p {
+                let col = paint_at(paint, x as f64 + 0.5, y as f64 + 0.5);
+                write_pixel(&mut c, (ox + x) as i64, y as i64, col);
+            }
+        }
+    }
+    c
+}
+
+/// Plate 10: the three gradients, unmagnified -- the picture is the
+/// point, not the pixels.
+pub fn plate_10() -> Canvas {
+    three_gradients()
+}
+
+/// One short gradient (blue to orange) under the three extend modes,
+/// stacked in three 30-pixel-tall bands on a 180x90 canvas, magnified by
+/// 2. The axis (60 to 100) is only the middle third of the strip, so pad,
+/// repeat and reflect all have room on both sides to show what they do.
+pub fn extend_strip() -> Canvas {
+    let w = 180usize;
+    let h = 90usize;
+    let stops = vec![stop(0.0, color(0.1, 0.15, 0.5)), stop(1.0, color(1.0, 0.7, 0.1))];
+    let modes = ["pad", "repeat", "reflect"];
+
+    let mut c = canvas(w, h);
+    for (r, mode) in modes.iter().enumerate() {
+        let g = linear_gradient(point(60.0, 0.0), point(100.0, 0.0), stops.clone(), mode);
+        for y in (r * 30)..(r * 30 + 30) {
+            for x in 0..w {
+                let col = paint_at(&g, x as f64 + 0.5, y as f64 + 0.5);
+                write_pixel(&mut c, x as i64, y as i64, col);
+            }
+        }
+    }
+    magnify(&c, 2)
+}

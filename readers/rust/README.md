@@ -1,11 +1,12 @@
 # The 2D Renderer Challenge — Rust
 
-Chapters 1 (`The Canvas and the Color`) through 8 (`Curves`), stdlib only.
+Chapters 1 (`The Canvas and the Color`) through 10 (`Paint Servers and
+Gradients`), stdlib only.
 
 ## Build, test, render
 
 ```
-cargo test --release   # every scenario in features/, chapters 1-8
+cargo test --release   # every scenario in features/, chapters 1-10
 cargo run --release --bin render_all   # writes all renders (P3 + P6) to out/
 ```
 
@@ -18,13 +19,16 @@ That's it — `cargo build` alone also works if you just want the library to com
   algorithms, `thick_line`, tuples, matrices and transforms, paths and
   winding numbers, the classical scanline sweep, the analytic
   (accumulator-based) exact fill, Bezier curves and flattening, the SVG
-  elliptical arc, and the chapter's named figures/plates.
+  elliptical arc, premultiplied pixels, Porter-Duff compositing and the
+  sixteen blend modes, layers, paint servers (solid + three gradients),
+  ordered dithering, and the chapter's named figures/plates.
 - `src/bin/render_all.rs` — renders every figure/plate to `out/`.
 - `tests/*.rs` — one test file per `features/*.feature` file (Gherkin
   scenarios translated 1:1 into `#[test]` functions; outlines expanded per
   row).
-- `reference/chapter-0{1..8}/*.ppm` — the book's reference images,
-  compared against with `max_channel_difference`.
+- `reference/chapter-0{1..9}/*.ppm` and `reference/chapter-10/*.ppm` —
+  the book's reference images, compared against with
+  `max_channel_difference`.
 
 `--release` matters here: chapter 2's brute-force `coverage()` samples 64
 points per pixel per disc, chapter 3's `thick_line` reuses that same
@@ -107,3 +111,66 @@ radius-growing correction and the large_arc/sweep angle adjustment.
 `derivative`, `curve_bounds`, `polyline_length` and `flatten_length` have
 no JS reference source in the chapter either (only prose and scenarios);
 their algorithms are standard Bezier math, not lifted from the book.
+
+## Chapter 9 notes
+
+`Pixel` is premultiplied (`r`, `g`, `b` each already scaled by `a`);
+`from_color`/`opaque`/`pixel_color`/`pixel_alpha`/`CLEAR`/`lerp_pixel` are
+the whole of §9.1. `over` and `composite` share one shape (`Fa * src + Fb
+* dst`, alpha included); `composite`'s twelve operators are a lookup
+table of `(Fa, Fb)` pairs (`porter_duff_coeffs`) keyed by the operator's
+own name string, matching the book's table exactly. The sixteen blend
+modes split into `separable_blend` (a `fn(f64, f64) -> f64` per mode,
+applied channel by channel) and `nonseparable_blend` (`hue`/
+`saturation`/`color`/`luminosity`, each one line once `lum`, `sat`,
+`set_lum`, `set_sat` and `clip_color` exist); `blend_color` picks between
+them and `blend` is source-over with the overlap run through it. `Layer`
+is a flat `Vec<Pixel>` (public field, no accessor ceremony — nothing
+outside this file needs one); `paint_shape` is `paint_through`'s
+premultiplying twin, `composite_layers`/`blend_layers` apply an operator
+or mode pixel by pixel, and `flatten_layer` is `over` against an opaque
+background, un-premultiplied back into a `Canvas`. `porter_duff_table`,
+`blend_strip` and `seam` were built to match the chapter's own reference
+JS byte for byte (tile size, square/circle geometry, triangle
+coordinates, magnification factors) — every one of `out/*.ppm` diffs 0
+against `reference/chapter-09/`, not merely within tolerance. `seam`
+reproduces the conflation bug on purpose (two independently antialiased
+triangles composited src-over in sequence): "fixing" it by merging their
+coverage before painting is exactly the mutation this project's testing
+caught (see FEEDBACK.md).
+
+## Chapter 10 notes
+
+`Stop`/`stop`/`sample_stops` are the table shared by all three
+gradients; `sample_stops` binary-searches for the bracketing pair rather
+than scanning linearly. `extend` is three one-line branches (`pad`
+clamps, `repeat` takes the fractional part, `reflect` folds the absolute
+value's mod-2 back under 1). `Paint` is an enum (`Solid`, `Linear`,
+`Radial`, `Conic`); `linear_t`/`radial_t`/`conic_t` each pattern-match
+their own variant (and panic on a mismatch, which no scenario ever
+triggers). `radial_t` returns `Option<f64>`, checking the quadratic's two
+roots in the order the book's own reference does (not sorted by size —
+whichever root has a non-negative interpolated radius wins), so
+`paint_at`'s focal-cone case (`None` maps to the last stop, not black)
+matches exactly. `paint_fill` is `paint_through` with the color argument
+replaced by a `paint_at` sample per pixel, forced through `mix_with(...,
+true)` the same way `paint_through` always was. `to_byte` is
+`channel_to_byte` under its chapter-10 name; `BAYER4`/`dither_threshold`/
+`to_byte_dithered`/`canvas_to_p6_dithered` are ordered dithering, floor
+instead of round-to-nearest with the Bayer nudge added first. All three
+named renders (`three_gradients`/`plate_10` — identical by the book's own
+pseudocode — and `extend_strip`) diff 0 against `reference/chapter-10/`.
+
+## Mutation testing (chapters 9-10)
+
+Eight deliberate bugs were introduced one at a time, tested, and
+reverted: a swapped `src-over` coefficient (using `dst`'s alpha instead
+of `src`'s), blending in encoded instead of linear space, a wrong `lum`
+weighting (equal thirds instead of 0.3/0.59/0.11), "fixing" the chapter 9
+conflation seam by merging coverage before painting, always taking the
+first root of the radial quadratic instead of checking eligibility,
+`reflect` implemented as `repeat`, the dither threshold omitted, and the
+focal gradient's unreachable cone painted black instead of the last
+stop. Every one of the eight was caught by at least one scenario — none
+survived. Details, including which scenario caught each, are in
+FEEDBACK.md.

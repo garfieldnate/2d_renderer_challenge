@@ -44,6 +44,11 @@ Feature: Blend modes
     And   pixel_color(blend("color", src, dst)) = color(0.874, 0.174, 0.174) ± 0.0001
     And   pixel_color(blend("luminosity", src, dst)) = color(0.226, 0.426, 0.826) ± 0.0001
 
+  Scenario: A non-separable blend that overflows is clipped back into range
+    Given src ← opaque(color(0.95, 0.95, 0.95))
+    And   dst ← opaque(color(0.2, 0.45, 0.95))
+    Then  pixel_color(blend("luminosity", src, dst)) = color(0.927885, 0.951923, 1.0) ± 0.0001
+
   Scenario: blend_color is the blend function on two straight colours
     Then  blend_color("multiply", color(0.8, 0.8, 0.8), color(0.5, 0.5, 0.5)) = color(0.4, 0.4, 0.4)
     And   blend_color("color", color(0.2, 0.4, 0.8), color(0.9, 0.2, 0.2)) = color(0.874, 0.174, 0.174) ± 0.0001

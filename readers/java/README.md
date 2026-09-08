@@ -1,6 +1,6 @@
 # The 2D Renderer Challenge — Java
 
-Chapters 1-8, hand-rolled test runner, no JUnit, no network.
+Chapters 1-10, hand-rolled test runner, no JUnit, no network.
 
 ## Compile, test, render
 
@@ -16,17 +16,22 @@ java -cp classes Chapter05Tests
 java -cp classes Chapter06Tests
 java -cp classes Chapter07Tests
 java -cp classes Chapter08Tests
+java -cp classes Chapter09Tests
+java -cp classes Chapter10Tests
 ```
 
 Each run prints one `PASS`/`FAIL` line per scenario, a pass/fail total, and
-then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-8 as
+then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-10 as
 P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/plate-02.ppm`, `out/fan-bresenham.ppm`, `out/fan-wu.ppm`,
 `out/fan-coverage.ppm`, `out/plate-03.ppm`, `out/fan-both-orders.ppm`,
 `out/plate-04.ppm`, `out/star-centers.ppm`, `out/star-coverage.ppm`,
 `out/plate-05.ppm`, `out/spiral.ppm`, `out/plate-06.ppm`, `out/needles.ppm`,
 `out/soft-square.ppm`, `out/star-exact.ppm`, `out/spiral-smooth.ppm`,
-`out/plate-07.ppm`, `out/drops.ppm`, `out/flower.ppm`, `out/plate-08.ppm`.
+`out/plate-07.ppm`, `out/drops.ppm`, `out/flower.ppm`, `out/plate-08.ppm`,
+`out/porter-duff.ppm`, `out/plate-09.ppm`, `out/blend-modes.ppm`,
+`out/seam.ppm`, `out/three-gradients.ppm`, `out/plate-10.ppm`,
+`out/extend-modes.ppm`.
 
 ## Chapter 3
 
@@ -168,3 +173,73 @@ match the chapter's pseudocode exactly (the teardrop is its own shape in a
 60 by 60 box, not the petal reused at a different scale). `drops()`,
 `flower()` and `plate08()` all diff 0 against the reference bytes now. See
 FEEDBACK.md's Catch-up section for what the earlier guesses got wrong.
+
+## Chapter 9
+
+Premultiplied pixels: `Pixel` (`r`, `g`, `b`, `a`, each channel already
+scaled by alpha), `Pixel.CLEAR`, `Pixel.fromColor(c, a)`, `Pixel.opaque(c)`,
+instance methods `pixelColor()` (un-premultiplies, black for a transparent
+pixel) and `pixelAlpha()`, and `Pixel.lerpPixel(x, y, t)` -- straight down
+the premultiplied channels, which is the whole point: half of opaque red
+and half of nothing comes out red at half alpha, not muddy grey.
+
+Compositing: `Compositing.over(src, dst)` and `Compositing.composite(op,
+src, dst)`, one of the twelve Porter-Duff operator names (`"clear"`,
+`"src"`, `"dst"`, `"src-over"`, `"dst-over"`, `"src-in"`, `"dst-in"`,
+`"src-out"`, `"dst-out"`, `"src-atop"`, `"dst-atop"`, `"xor"`), each nothing
+but its own choice of the two coefficients `Fa`/`Fb` in a private lookup
+table.
+
+Blending: `Blend.blend(mode, src, dst)` is source-over with the overlap
+passed through `Blend.blendColor(mode, backdrop, source)` first. The twelve
+separable modes are one-line functions of two channels; the four
+non-separable ones (`"hue"`, `"saturation"`, `"color"`, `"luminosity"`) go
+through the compositing spec's `Lum`/`Sat`/`clipColor`/`setLum`/`setSat`
+helpers, private to `Blend`.
+
+Layers: `Layer(w, h)` is a buffer of `Pixel`, starting `CLEAR`.
+`Layers.paintShape(layer, cov, color)` paints one shape's coverage into a
+layer, the way chapter 2 painted onto a canvas. `Layers.compositeLayers(op,
+src, dst)` and `Layers.blendLayers(mode, src, dst)` combine two layers
+pixel by pixel; `Layers.flattenLayer(layer, bg)` is `over` against an
+opaque background, read off into an ordinary `Canvas`.
+
+`Figures` adds `porterDuffTable()`, `plate09()`, `blendStrip()`, and `seam()`
+(the conflation trap: two opaque triangles sharing a diagonal, each
+composited src-over the one before, leaking a lighter seam where the
+antialiased edges land on the same pixels twice). All four diff 0 against
+the reference bytes.
+
+## Chapter 10
+
+Paint is a function of position: `Paint` (`paintAt(x, y)`), with a static
+`Paint.solid(c)` factory backed by `Solid`. The stop table: `Stop(offset,
+color)` (a record, with a static `Stop.stop(...)` matching the book's
+name), and `Stops.sampleStops(stops, t)` (binary search, straight blend in
+linear light between the bracketing pair) plus `Stops.extend(t, mode)`
+(`"pad"`/`"repeat"`/`"reflect"`).
+
+The three gradients, each a plain data class implementing `Paint` and
+constructed directly (`new LinearGradient(p0, p1, stops, extend)`, etc.,
+matching the `Circle`/`Segment` convention rather than a static factory):
+`LinearGradient.linearT(x, y)`, `RadialGradient.radialT(x, y)` (returns
+`Double`, `null` for the book's `none` when no root of the quadratic has a
+non-negative radius), and `ConicGradient.conicT(x, y)`. Each class's
+`paintAt` samples the stop table through `extend`; a radial gradient's
+`paintAt` takes the last stop's color on `none` rather than propagating it,
+per §10.3's trap.
+
+`Painter.paintFill(c, cov, paint)` sits next to `paintThrough`: for every
+covered pixel it samples `paint.paintAt` at the pixel's center and blends
+the result in through the coverage, in linear light. A solid paint makes it
+`paintThrough` exactly.
+
+Ordered dithering: `Dither.BAYER4` (the 4x4 matrix), `Dither.ditherThreshold(x,
+y)`, `Dither.toByteDithered(light, x, y)`. `Ppm.toByte(light)` is now public
+(clamp, encode, scale to 255, round -- the same conversion `canvasToPpm` and
+`canvasToP6` always used); `Ppm.canvasToP6Dithered(c)` is `canvasToP6` with
+every channel rounded through `toByteDithered` instead.
+
+`Figures` adds `threeGradients()`, `plate10()` (which is `threeGradients()`,
+per the chapter's own pseudocode), and `extendStrip()`. All three diff 0
+against the reference bytes.

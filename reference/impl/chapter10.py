@@ -139,10 +139,15 @@ def radial_t(p, x, y):
     if disc < 0:
         return None
     s = math.sqrt(disc)
-    for t in (( -b + s) / (2 * a), (-b - s) / (2 * a)):
-        if r0 + t * dr >= 0:
-            return t
-    return None
+    # the largest t whose interpolated radius is not negative, per the spec.
+    # picking a root by sign of the discriminant is a trap: which root is
+    # larger depends on the sign of a, and the radius filter hides the mistake
+    # whenever only one root is valid.
+    best = None
+    for t in ((-b + s) / (2 * a), (-b - s) / (2 * a)):
+        if r0 + t * dr >= 0 and (best is None or t > best):
+            best = t
+    return best
 
 
 def conic_gradient(center, angle0, stops, extend="pad"):

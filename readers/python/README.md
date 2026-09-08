@@ -1,6 +1,6 @@
 # 2D Renderer Challenge: Python Implementation
 
-Python 3 implementation of chapters 1 through 8 of the 2D Renderer Challenge, using only the Python standard library.
+Python 3 implementation of chapters 1 through 10 of the 2D Renderer Challenge, using only the Python standard library.
 
 ## Build
 
@@ -12,7 +12,7 @@ No build step required. The implementation uses only Python 3 stdlib.
 python3 test_runner.py
 ```
 
-This runs all Gherkin scenarios from chapters 1 through 8, from every `.feature` file under `features/`.
+This runs all Gherkin scenarios from chapters 1 through 10, from every `.feature` file under `features/`.
 
 ## Produce Renders
 
@@ -35,6 +35,10 @@ for name, func in [
     ('plate-07.ppm', renderer.plate_07),
     ('drops.ppm', renderer.drops), ('flower.ppm', renderer.flower),
     ('plate-08.ppm', renderer.plate_08),
+    ('porter-duff.ppm', renderer.porter_duff_table), ('plate-09.ppm', renderer.plate_09),
+    ('blend-modes.ppm', renderer.blend_strip), ('seam.ppm', renderer.seam),
+    ('three-gradients.ppm', renderer.three_gradients), ('plate-10.ppm', renderer.plate_10),
+    ('extend-modes.ppm', renderer.extend_strip),
 ]:
     p6 = renderer.canvas_to_p6(func())
     with open(f'out/{name}', 'wb') as f:
@@ -42,7 +46,7 @@ for name, func in [
 "
 ```
 
-Renders for chapters 1-6 land under `reference/chapter-01/` through `reference/chapter-06/`; chapter 7's renders (`needles.ppm`, `soft-square.ppm`, `star-exact.ppm`, `spiral-smooth.ppm`, `plate-07.ppm`) are under `reference/chapter-07/`, and chapter 8's (`drops.ppm`, `flower.ppm`, `plate-08.ppm`) under `reference/chapter-08/`.
+Renders for chapters 1-6 land under `reference/chapter-01/` through `reference/chapter-06/`; chapter 7's renders (`needles.ppm`, `soft-square.ppm`, `star-exact.ppm`, `spiral-smooth.ppm`, `plate-07.ppm`) are under `reference/chapter-07/`, chapter 8's (`drops.ppm`, `flower.ppm`, `plate-08.ppm`) under `reference/chapter-08/`, chapter 9's (`porter-duff.ppm`, `plate-09.ppm`, `blend-modes.ppm`, `seam.ppm`) under `reference/chapter-09/`, and chapter 10's (`three-gradients.ppm`, `plate-10.ppm`, `extend-modes.ppm`) under `reference/chapter-10/`.
 
 Compare a render against its reference with `renderer.max_channel_difference`:
 
@@ -73,6 +77,8 @@ print(renderer.max_channel_difference(p6, ref))
 - Chapter 6 replaces the per-pixel winding-number query with a classical scanline sweep. `edge_table` prepares every non-horizontal edge (`y_top`, `y_bottom`, `x_top`, `slope`, `direction`) sorted for the sweep; horizontal edges (`a.y == b.y` exactly) are dropped. `x_at` evaluates an edge's x at a height. `crossings_on_row` and `spans_from_crossings` turn a table into spans for one row; `fill_span` paints the pixels whose centers fall in a half-open span. `fill_path_aliased` is the full sweep with an active-edge list, producing a 0/1 coverage buffer identical to chapter 5's `rasterize_centers(filled(path, rule), w, h)` (checked directly by scenarios via `max_coverage_difference`). `transform_path` carries a path through a matrix without touching the original. `unit_star`/`spiral`/`plate_06` render the spiral plate of 24 stars.
 - Chapter 7 replaces the center-sample/sweep fill with an analytic (signed-area) rasterizer. `Accumulator`/`accumulator(w, h)` holds two floats per cell, `area` and `cover`; `add_cell` deposits into one cell, folding a deposit left of the buffer onto column 0 as pure cover and dropping one right of the buffer. `accumulate_row` deposits one edge's piece within a single row, sharing its signed height across the cells it crosses by width and weighting each cell's area by the trapezoid midpoint rule. `accumulate` walks a whole edge down the rows it crosses (clipped to the buffer), with sign `+1` when the edge's first point has the larger `y` (heading up the canvas) and `-1` otherwise; horizontal edges deposit nothing. `resolve` sweeps each row left to right, turning the running cover-sum plus each cell's own area into a winding number, and `apply_rule` folds that (possibly fractional) winding into coverage — `min(1, |w|)` for `"nonzero"`, a triangle wave for `"evenodd"`. `fill_path(p, rule, w, h)` is the fill from here on, replacing `fill_path_aliased`; `polygon_area` is the shoelace formula, used by the scenarios to check the fill's total ink against the shape's exact area. `needle_path`/`needles`, `soft_square`, `star_exact`, `spiral_smooth`, `rays`/`sunburst`/`plate_07` render chapter 7's plates.
 - Chapter 8 adds Bezier curves and the SVG elliptical arc. `Curve`/`quadratic`/`cubic` hold a curve as its control points; `point_at` evaluates it by de Casteljau's repeated linear interpolation; `split_at` keeps the same construction's left and right edges to split a curve into two of the same degree; `derivative` evaluates the curve's hodograph (one degree lower) for the tangent vector; `transform_curve` takes every control point through a matrix. `curve_bounds` finds the tight axis-aligned box by solving each axis of the derivative for its roots in `(0, 1)` (linear for a quadratic, quadratic for a cubic) and evaluating the curve there and at both ends. `flatness` is the farthest an interior control point sits from the chord between the curve's ends; `flatten` recursively bisects with `split_at` until every piece is flat enough, returning the polyline's points; `flatten_into_path` appends a flattened curve to a path with `line_to`. `polyline_length`/`flatten_length` measure a polyline/flattened curve's length. `arc(x1, y1, rx, ry, phi, large_arc, sweep, x2, y2)` converts SVG's endpoint form to a center form (growing the radii together and setting `corrected` when they're too small to reach, and returning `None` for coincident endpoints or a zero radius); `arc_point` walks it. `teardrop`/`drops`, `petal`/`flower_at`/`flower`/`plate_08` render chapter 8's plates.
+- Chapter 9 adds premultiplied pixels and compositing. `Pixel`/`pixel(r, g, b, a)` stores colour already scaled by alpha; `from_color`/`opaque` premultiply, `pixel_color` un-premultiplies (reading black for a fully transparent pixel), `pixel_alpha` reads the alpha, `CLEAR` is the fully-transparent pixel, `lerp_pixel` blends two pixels straight down their channels. `over(src, dst)` is source-over; `coefficients(op, a_s, a_d)` is the Porter-Duff `(Fa, Fb)` table for the twelve named operators, and `composite(op, src, dst)` applies them. `blend(mode, src, dst)` is source-over with the overlap passed through `blend_color(mode, backdrop, source)`, which dispatches to the twelve separable per-channel modes or, for `"hue"`/`"saturation"`/`"color"`/`"luminosity"`, to `_lum`/`_sat`/`_clip_color`/`_set_lum`/`_set_sat` (the standard `Lum`/`Sat`/`ClipColor`/`SetLum`/`SetSat` compositing-spec helpers). `layer(w, h)` is a buffer of premultiplied pixels; `paint_shape` paints a colour into one through a coverage buffer (chapter 2's `paint_through`, but landing on a layer instead of paper); `composite_layers` and `flatten_layer` composite two layers and flatten one onto an opaque backing colour. `porter_duff_table`/`plate_09`, `blend_strip`, and `seam` render chapter 9's plates — `seam()` renders at quarter scale (two triangles sharing a main-diagonal edge, `(4, 4)`-`(76, 76)` on an 80×80 canvas) and magnifies by 4 so the one-pixel-wide conflation seam reads clearly.
+- Chapter 10 turns paint into a function of position. `Stop`/`stop(offset, color)` and `sample_stops(stops, t)` are the colour-stop table, found by binary search and blended in linear light. `extend(t, mode)` folds an out-of-range parameter back in for `"pad"`/`"repeat"`/`"reflect"`. `linear_gradient`/`linear_t` project a point onto an axis; `radial_gradient`/`radial_t` solve the interpolated-circle quadratic, taking the largest root with a non-negative radius (or `None` if the point is outside every circle in the family — the focal gradient's unreachable cone); `conic_gradient`/`conic_t` take the angle around a center as a fraction of a turn. `solid(color)` and `paint_at(paint, x, y)` round out the `Paint` protocol (a `None` from `radial_t` reads as the last stop, not black). `paint_fill(c, cov, paint)` is `paint_through` with the colour replaced by a `paint_at` sample per pixel. `three_gradients`/`plate_10` and `extend_strip` render chapter 10's plates (the sunset stop table and the two-stop extend-mode table were reverse-engineered from the reference PPMs — see FEEDBACK.md). `BAYER4`/`dither_threshold`/`to_byte_dithered`/`canvas_to_p6_dithered` add ordered dithering: nudge the scaled light value by the position's 4×4 Bayer-matrix threshold before the floor.
 - All geometry calculations use floating-point coordinates
 - Antialiasing uses 8×8 supersampling (64 samples per pixel)
 - P6 binary PPM files are used for efficiency

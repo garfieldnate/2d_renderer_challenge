@@ -193,6 +193,12 @@
     <span class="kw">And</span>   radial_t(g, 70, 50) = 0.5
     <span class="kw">And</span>   radial_t(g, 90, 50) = 1
 
+  <span class="kw">Scenario</span>: When both roots are valid the larger one wins
+    <span class="kw">Given</span> g ← radial_gradient(point(0, 0), 10, point(30, 0), 12, [], "pad")
+    <span class="kw">Then</span>  radial_t(g, 5, 0) = 0.535714 ± 0.0001
+    <span class="kw">And</span>   radial_t(g, 15, 0) = 0.892857 ± 0.0001
+    <span class="kw">And</span>   radial_t(g, 20, 0) = 1.071429 ± 0.0001
+
   <span class="kw">Scenario</span>: A focal gradient runs from the focal point to the end circle
     <span class="kw">Given</span> g ← radial_gradient(point(35, 50), 0, point(50, 50), 40, [], "pad")
     <span class="kw">Then</span>  radial_t(g, 35, 50) = 0
@@ -283,24 +289,36 @@
 
   <h2><span class="sec">§ 10.6</span> Putting it together</h2>
 
-  <p>The plate is one stop table — a sunset, five colours dark to pale — addressed three ways: a
+  <p>The plate is one stop table — a sunset, four colours dark to pale — addressed three ways: a
     linear ramp across the diagonal, a focal radial with its highlight up and to the left, and a
     conic sweep. Nothing about the stops changed between the three panels. Only the function from
     point to parameter did. That's the chapter in one picture: paint is a function, and a gradient is
     that function wearing three different hats.</p>
 
-<pre><code>three_gradients():
-  stops ← the sunset table                              <span class="cm">// shared by all three</span>
-  lin ← linear_gradient(point(10, 10), point(140, 140), stops, "pad")
-  rad ← radial_gradient(point(55, 55), 0, point(75, 75), 85, stops, "pad")   <span class="cm">// focal</span>
-  con ← conic_gradient(point(75, 75), −π/2, stops, "pad")
+<pre><code>SUNSET ← [stop(0.0,  color(0.05, 0.02, 0.15)),      <span class="cm">// deep violet</span>
+          stop(0.35, color(0.75, 0.15, 0.25)),      <span class="cm">// red</span>
+          stop(0.7,  color(0.98, 0.6,  0.15)),      <span class="cm">// orange</span>
+          stop(1.0,  color(1.0,  0.95, 0.75))]      <span class="cm">// pale</span>
+
+three_gradients():
+  lin ← linear_gradient(point(10, 10), point(140, 140), SUNSET, "pad")
+  rad ← radial_gradient(point(55, 55), 0, point(75, 75), 85, SUNSET, "pad")   <span class="cm">// focal</span>
+  con ← conic_gradient(point(75, 75), −π/2, SUNSET, "pad")
   <span class="kw">for</span> paint <span class="kw">in</span> lin, rad, con:
     panel ← a 150×150 canvas;  paint_fill(panel, full coverage, paint)
-    place panel left to right
+    place panel left to right, 4 px of paper between them
   <span class="kw">return</span> the row
 
 plate_10():
-  <span class="kw">return</span> three_gradients()</code></pre>
+  <span class="kw">return</span> three_gradients()
+
+extend_strip():                          <span class="cm">// one short gradient under the three modes, ×2</span>
+  stops ← [stop(0, color(0.1, 0.15, 0.5)), stop(1, color(1.0, 0.7, 0.1))]
+  c ← canvas(180, 90)
+  <span class="kw">for</span> mode, i <span class="kw">in</span> "pad", "repeat", "reflect":
+    g ← linear_gradient(point(60, 0), point(100, 0), stops, mode)   <span class="cm">// axis is the middle third</span>
+    fill the band of rows [30i, 30i + 30) with g
+  <span class="kw">return</span> magnify(c, 2)</code></pre>
 
   <div class="test" data-feature="chapter10-plate.feature">
     <p class="label">features/chapter10-plate.feature</p>
@@ -397,7 +415,7 @@ function radialT(g,x,y){var cdx=g.c1[0]-g.c0[0],cdy=g.c1[1]-g.c0[1],dr=g.r1-g.r0
   var a=cdx*cdx+cdy*cdy-dr*dr, b=-2*(pdx*cdx+pdy*cdy+g.r0*dr), c=pdx*pdx+pdy*pdy-g.r0*g.r0;
   if(Math.abs(a)<1e-9){ if(Math.abs(b)<1e-12)return null; var t0=-c/b; return g.r0+t0*dr>=0?t0:null; }
   var disc=b*b-4*a*c; if(disc<0)return null; var s=Math.sqrt(disc);
-  var roots=[(-b+s)/(2*a),(-b-s)/(2*a)]; for(var k=0;k<2;k++){ if(g.r0+roots[k]*dr>=0)return roots[k]; } return null; }
+  var roots=[(-b+s)/(2*a),(-b-s)/(2*a)], best=null; for(var k=0;k<2;k++){ if(g.r0+roots[k]*dr>=0 && (best===null||roots[k]>best))best=roots[k]; } return best; }
 function conicT(g,x,y){var a=Math.atan2(y-g.center[1],x-g.center[0])-g.angle0, t=a/(2*Math.PI); return t-Math.floor(t);}
 function paintAt(g,x,y){ if(g.kind==='solid')return g.color;
   if(g.kind==='linear')return sampleStops(g.stops,extend(linearT(g,x,y),g.extend));

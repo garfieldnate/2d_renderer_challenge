@@ -7,10 +7,11 @@ use std::fs;
 use std::path::Path;
 
 use renderer::{
-    canvas_to_p6, canvas_to_ppm, clamp_pair, disc_centers, disc_coverage, drops, fan_bresenham,
-    fan_both_orders, fan_coverage, fan_wu, flower, gray_match, needles, painted_twice, plate_01,
-    plate_02, plate_03, plate_04, plate_05, plate_06, plate_07, plate_08, quarter_match, ramp,
-    soft_square, spiral, spiral_smooth, star_centers, star_coverage, star_exact,
+    blend_strip, canvas_to_p6, canvas_to_ppm, clamp_pair, disc_centers, disc_coverage, drops,
+    extend_strip, fan_bresenham, fan_both_orders, fan_coverage, fan_wu, flower, gray_match, needles,
+    painted_twice, plate_01, plate_02, plate_03, plate_04, plate_05, plate_06, plate_07, plate_08,
+    plate_09, plate_10, porter_duff_table, quarter_match, ramp, seam, soft_square, spiral,
+    spiral_smooth, star_centers, star_coverage, star_exact, three_gradients,
 };
 
 fn write_p3(dir: &Path, name: &str, ppm: String) {
@@ -69,5 +70,16 @@ fn main() {
     write_p6(out, "flower.ppm", canvas_to_p6(&flower()));
     write_p6(out, "plate-08.ppm", canvas_to_p6(&plate_08()));
 
-    println!("wrote 28 renders to out/");
+    // Chapter 9: compositing.
+    write_p6(out, "porter-duff.ppm", canvas_to_p6(&porter_duff_table()));
+    write_p6(out, "blend-modes.ppm", canvas_to_p6(&blend_strip()));
+    write_p6(out, "seam.ppm", canvas_to_p6(&seam()));
+    write_p6(out, "plate-09.ppm", canvas_to_p6(&plate_09()));
+
+    // Chapter 10: paint servers and gradients.
+    write_p6(out, "three-gradients.ppm", canvas_to_p6(&three_gradients()));
+    write_p6(out, "extend-modes.ppm", canvas_to_p6(&extend_strip()));
+    write_p6(out, "plate-10.ppm", canvas_to_p6(&plate_10()));
+
+    println!("wrote 35 renders to out/");
 }

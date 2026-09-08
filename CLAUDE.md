@@ -162,8 +162,10 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
 - Chapter 10 paint: a `Paint` answers `paint_at(paint, x, y)`. `solid(c)` ignores the point; the
   gradients turn it into a parameter and read `sample_stops(stops, t)` (a `stop` is `(offset,
   color)`, binary search, interpolate in linear light). `extend(t, mode)` is pad/repeat/reflect.
-  `linear_t` projects onto the axis; `radial_t` solves the two-circle quadratic and returns `none`
-  for points no circle reaches (a focal gradient's cone); `conic_t` is the angle. `paint_fill(c,
+  `linear_t` projects onto the axis; `radial_t` solves the two-circle quadratic and returns the
+  LARGEST t whose interpolated radius is non-negative (not the first root by discriminant sign — that
+  passes whenever only one root is valid, which every simple scenario is; a reader round caught it),
+  and `none` for points no circle reaches (a focal gradient's cone); `conic_t` is the angle. `paint_fill(c,
   cov, paint)` samples per pixel center and is byte-identical to `paint_through` for a solid.
   Ordered dither: `BAYER4`, `dither_threshold`, `to_byte_dithered`, `canvas_to_p6_dithered` — a
   flat value splits across the two bytes around it. Trap: a focal point outside the end circle makes

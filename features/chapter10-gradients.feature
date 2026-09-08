@@ -28,6 +28,12 @@ Feature: The three gradients
     And   radial_t(g, 70, 50) = 0.5
     And   radial_t(g, 90, 50) = 1
 
+  Scenario: When both roots are valid the larger one wins
+    Given g ← radial_gradient(point(0, 0), 10, point(30, 0), 12, [], "pad")
+    Then  radial_t(g, 5, 0) = 0.535714 ± 0.0001
+    And   radial_t(g, 15, 0) = 0.892857 ± 0.0001
+    And   radial_t(g, 20, 0) = 1.071429 ± 0.0001
+
   Scenario: A focal gradient runs from the focal point to the end circle
     Given g ← radial_gradient(point(35, 50), 0, point(50, 50), 40, [], "pad")
     Then  radial_t(g, 35, 50) = 0

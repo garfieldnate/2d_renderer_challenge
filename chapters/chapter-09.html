@@ -190,7 +190,7 @@ composite(op, src, dst):
 <pre><code><span class="kw">Feature</span>: The twelve Porter-Duff operators
   composite(op, src, dst) is one formula, Fa * src + Fb * dst on every channel,
   where Fa and Fb are the fraction of the source and of the destination that
-  survive. Each operator is just its choice of those two coefficients. With a
+  survive. Each operator is only its choice of those two coefficients. With a
   source of red at alpha 0.6 and a destination of blue at alpha 0.4, the twelve
   operators come out as below. src-over is over; dst-over is over with the
   arguments swapped.
@@ -310,6 +310,11 @@ composite(op, src, dst):
     <span class="kw">And</span>   pixel_color(blend("color", src, dst)) = color(0.874, 0.174, 0.174) ± 0.0001
     <span class="kw">And</span>   pixel_color(blend("luminosity", src, dst)) = color(0.226, 0.426, 0.826) ± 0.0001
 
+  <span class="kw">Scenario</span>: A non-separable blend that overflows is clipped back into range
+    <span class="kw">Given</span> src ← opaque(color(0.95, 0.95, 0.95))
+    <span class="kw">And</span>   dst ← opaque(color(0.2, 0.45, 0.95))
+    <span class="kw">Then</span>  pixel_color(blend("luminosity", src, dst)) = color(0.927885, 0.951923, 1.0) ± 0.0001
+
   <span class="kw">Scenario</span>: blend_color is the blend function on two straight colours
     <span class="kw">Then</span>  blend_color("multiply", color(0.8, 0.8, 0.8), color(0.5, 0.5, 0.5)) = color(0.4, 0.4, 0.4)
     <span class="kw">And</span>   blend_color("color", color(0.2, 0.4, 0.8), color(0.9, 0.2, 0.2)) = color(0.874, 0.174, 0.174) ± 0.0001</code></pre>
@@ -328,7 +333,38 @@ composite(op, src, dst):
     it to a target saturation. From those, each mode is one line: <em>colour</em> is the source's hue
     and saturation at the backdrop's brightness, <em>luminosity</em> is the reverse, and hue and
     saturation take one property from each. This is how you tint a photo without darkening it, and
-    it's four lines once the helpers exist.</p>
+    it's four lines once the helpers exist. Here are the helpers in full, because the clipping in
+    <code>set_lum</code> and the stretch in <code>set_sat</code> are the fiddly parts and the book
+    doesn't leave them to prose:</p>
+
+<pre><code>Lum(C) ← 0.3·R + 0.59·G + 0.11·B
+Sat(C) ← max(R, G, B) − min(R, G, B)
+
+clip_color(C):                         <span class="cm">// pull a colour back into [0, 1] around its own brightness</span>
+  L ← Lum(C);  n ← min(C);  x ← max(C)
+  <span class="kw">if</span> n &lt; 0:  C ← L + (C − L) · L / (L − n)      <span class="cm">// per channel</span>
+  <span class="kw">if</span> x &gt; 1:  C ← L + (C − L) · (1 − L) / (x − L)
+  <span class="kw">return</span> C
+
+set_lum(C, L):
+  <span class="kw">return</span> clip_color(C + (L − Lum(C)))            <span class="cm">// shift every channel, then clip</span>
+
+set_sat(C, s):                         <span class="cm">// stretch the mid and max channels, floor the min at 0</span>
+  sort the channels into min ≤ mid ≤ max
+  <span class="kw">if</span> max &gt; min:  mid ← (mid − min) · s / (max − min);  max ← s
+  <span class="kw">else</span>:          mid ← 0;  max ← 0
+  min ← 0
+  <span class="kw">return</span> C
+
+hue        ← set_lum(set_sat(Cs, Sat(Cb)), Lum(Cb))
+saturation ← set_lum(set_sat(Cb, Sat(Cs)), Lum(Cb))
+color      ← set_lum(Cs, Lum(Cb))
+luminosity ← set_lum(Cb, Lum(Cs))</code></pre>
+
+  <p>The <code>x &gt; 1</code> branch of <code>clip_color</code> is easy to drop and easy to miss:
+    plenty of colour pairs never overflow, so a version without it passes until a bright backdrop and
+    a bright source push a channel past 1, and then that channel blows out. A scenario feeds it exactly
+    such a pair so the branch can't be skipped.</p>
 
   <div class="trap">
     <h4>The trap</h4>
@@ -370,16 +406,40 @@ composite(op, src, dst):
     the result over paper with flatten_layer to see it. Read the table and every operator's definition is in front of you at
     once.</p>
 
-<pre><code>porter_duff_table():
-  dst ← a layer with a blue square painted into it       <span class="cm">// destination</span>
-  src ← a layer with an orange circle painted into it     <span class="cm">// source</span>
+<pre><code>DST_COLOR ← color(0.2, 0.5, 0.85)    <span class="cm">// the square: blue</span>
+SRC_COLOR ← color(0.95, 0.55, 0.1)   <span class="cm">// the circle: orange</span>
+TILE ← 64
+
+dst_layer():                                        <span class="cm">// a blue square, transparent outside it</span>
+  l ← layer(TILE, TILE)
+  sq ← polygon(point(10, 10), point(42, 10), point(42, 42), point(10, 42))
+  paint_shape(l, fill_path(sq, "nonzero", TILE, TILE), DST_COLOR)
+  <span class="kw">return</span> l
+
+src_layer():                                        <span class="cm">// an orange circle, transparent outside it</span>
+  l ← layer(TILE, TILE)
+  paint_shape(l, fill_path(circle_path(38, 38, 20, 48), "nonzero", TILE, TILE), SRC_COLOR)
+  <span class="kw">return</span> l
+
+porter_duff_table():
+  src ← src_layer();  dst ← dst_layer()
   <span class="kw">for</span> op, i <span class="kw">in</span> the twelve operators:
     tile ← flatten_layer(composite_layers(op, src, dst), PAPER)
     place tile at column i mod 4, row i / 4
-  <span class="kw">return</span> the grid
+  <span class="kw">return</span> the 4×3 grid
 
 plate_09():
   <span class="kw">return</span> magnify(porter_duff_table(), 2)</code></pre>
+
+  <p>The blend strip and the seam are the same shapes. <code>blend_strip()</code> is the identical
+    two layers, sixteen tiles this time, each <code>blend(mode, src, dst)</code> per pixel and then
+    flattened over paper — note that the square and circle are painted into <em>layers</em>, transparent
+    outside their shapes, so a blend mode where the destination isn't present fades to plain source-over
+    rather than reacting to a phantom black backdrop. <code>seam()</code> is two opaque triangles on an
+    80×80 canvas, <code>polygon(point(4, 4), point(76, 76), point(4, 76))</code> and
+    <code>polygon(point(4, 4), point(76, 4), point(76, 76))</code>, each painted at
+    <code>SRC_COLOR</code> and composited <code>src-over</code> onto an opaque-paper layer, magnified by
+    4 so the one-pixel seam is visible.</p>
 
   <div class="test" data-feature="chapter09-plate.feature">
     <p class="label">features/chapter09-plate.feature</p>

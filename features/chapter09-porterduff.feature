@@ -1,7 +1,7 @@
 Feature: The twelve Porter-Duff operators
   composite(op, src, dst) is one formula, Fa * src + Fb * dst on every channel,
   where Fa and Fb are the fraction of the source and of the destination that
-  survive. Each operator is just its choice of those two coefficients. With a
+  survive. Each operator is only its choice of those two coefficients. With a
   source of red at alpha 0.6 and a destination of blue at alpha 0.4, the twelve
   operators come out as below. src-over is over; dst-over is over with the
   arguments swapped.

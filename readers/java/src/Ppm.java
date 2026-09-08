@@ -30,9 +30,9 @@ public final class Ppm {
             StringBuilder line = new StringBuilder();
             for (int x = 0; x < c.width; x++) {
                 Color col = c.pixelAt(x, y);
-                appendToken(sb, line, channelToFileValue(col.red));
-                appendToken(sb, line, channelToFileValue(col.green));
-                appendToken(sb, line, channelToFileValue(col.blue));
+                appendToken(sb, line, toByte(col.red));
+                appendToken(sb, line, toByte(col.green));
+                appendToken(sb, line, toByte(col.blue));
             }
             sb.append(line).append('\n');
         }
@@ -49,15 +49,39 @@ public final class Ppm {
         for (int y = 0; y < c.height; y++) {
             for (int x = 0; x < c.width; x++) {
                 Color col = c.pixelAt(x, y);
-                out[pos++] = (byte) channelToFileValue(col.red);
-                out[pos++] = (byte) channelToFileValue(col.green);
-                out[pos++] = (byte) channelToFileValue(col.blue);
+                out[pos++] = (byte) toByte(col.red);
+                out[pos++] = (byte) toByte(col.green);
+                out[pos++] = (byte) toByte(col.blue);
             }
         }
         return out;
     }
 
-    private static int channelToFileValue(double channel) {
+    /**
+     * §10.5: canvas_to_p6, with every channel rounded through
+     * to_byte_dithered instead of to_byte, so a flat value that sits
+     * between two bytes is split across both in a fine, position-dependent
+     * pattern instead of snapping to one.
+     */
+    public static byte[] canvasToP6Dithered(Canvas c) {
+        byte[] header = ("P6\n" + c.width + " " + c.height + "\n255\n")
+                .getBytes(StandardCharsets.US_ASCII);
+        byte[] out = new byte[header.length + c.width * c.height * 3];
+        System.arraycopy(header, 0, out, 0, header.length);
+        int pos = header.length;
+        for (int y = 0; y < c.height; y++) {
+            for (int x = 0; x < c.width; x++) {
+                Color col = c.pixelAt(x, y);
+                out[pos++] = (byte) Dither.toByteDithered(col.red, x, y);
+                out[pos++] = (byte) Dither.toByteDithered(col.green, x, y);
+                out[pos++] = (byte) Dither.toByteDithered(col.blue, x, y);
+            }
+        }
+        return out;
+    }
+
+    /** Clamp to 0..1, encode, scale to 255, round to nearest -- in that order. */
+    public static int toByte(double channel) {
         double clamped = Math.max(0.0, Math.min(1.0, channel));
         double encoded = Srgb.encode(clamped);
         return (int) Numbers.round(encoded * 255.0);

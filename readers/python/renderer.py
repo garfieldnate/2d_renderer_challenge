@@ -2647,3 +2647,738 @@ def plate_08():
     """The final plate for chapter 8: the flowers, magnified by 2."""
     return magnify(flower(), 2)
 
+
+
+# ============================================================
+# Chapter 9: Compositing
+# ============================================================
+
+class Pixel:
+    """A premultiplied pixel: r, g, b already scaled by a, each in [0, a]."""
+
+    def __init__(self, r, g, b, a):
+        self.r = r
+        self.g = g
+        self.b = b
+        self.a = a
+
+    def __eq__(self, other):
+        if not isinstance(other, Pixel):
+            return False
+        tolerance = 0.0001
+        return (abs(self.r - other.r) <= tolerance and
+                abs(self.g - other.g) <= tolerance and
+                abs(self.b - other.b) <= tolerance and
+                abs(self.a - other.a) <= tolerance)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __repr__(self):
+        return f"Pixel({self.r}, {self.g}, {self.b}, {self.a})"
+
+
+def pixel(r, g, b, a):
+    """Create a premultiplied pixel directly."""
+    return Pixel(r, g, b, a)
+
+
+def from_color(c, a):
+    """Premultiply a straight colour at the given alpha."""
+    return Pixel(c.red * a, c.green * a, c.blue * a, a)
+
+
+def opaque(c):
+    """A colour at alpha 1, premultiplied (which leaves it unchanged)."""
+    return from_color(c, 1)
+
+
+CLEAR = Pixel(0, 0, 0, 0)
+
+
+def pixel_color(p):
+    """Un-premultiply: the straight colour a pixel holds. A transparent
+    pixel has no colour to recover, so it reads black."""
+    if p.a == 0:
+        return Color(0, 0, 0)
+    return Color(p.r / p.a, p.g / p.a, p.b / p.a)
+
+
+def pixel_alpha(p):
+    """The alpha a pixel holds."""
+    return p.a
+
+
+def lerp_pixel(a, b, t):
+    """Blend two pixels straight down the premultiplied channels."""
+    return Pixel(
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+        a.a + (b.a - a.a) * t,
+    )
+
+
+def over(src, dst):
+    """Source-over: keep all of src, and the fraction of dst src didn't
+    cover. Every channel, including alpha, in premultiplied form."""
+    return Pixel(
+        src.r + (1 - src.a) * dst.r,
+        src.g + (1 - src.a) * dst.g,
+        src.b + (1 - src.a) * dst.b,
+        src.a + (1 - src.a) * dst.a,
+    )
+
+
+def coefficients(op, a_s, a_d):
+    """The Porter-Duff (Fa, Fb) coefficients for an operator: how much of
+    the source survives, and how much of the destination."""
+    table = {
+        "clear":    (0,       0),
+        "src":      (1,       0),
+        "dst":      (0,       1),
+        "src-over": (1,       1 - a_s),
+        "dst-over": (1 - a_d, 1),
+        "src-in":   (a_d,     0),
+        "dst-in":   (0,       a_s),
+        "src-out":  (1 - a_d, 0),
+        "dst-out":  (0,       1 - a_s),
+        "src-atop": (a_d,     1 - a_s),
+        "dst-atop": (1 - a_d, a_s),
+        "xor":      (1 - a_d, 1 - a_s),
+    }
+    return table[op]
+
+
+def composite(op, src, dst):
+    """Fa * src + Fb * dst, every channel including alpha."""
+    fa, fb = coefficients(op, src.a, dst.a)
+    return Pixel(
+        fa * src.r + fb * dst.r,
+        fa * src.g + fb * dst.g,
+        fa * src.b + fb * dst.b,
+        fa * src.a + fb * dst.a,
+    )
+
+
+# --- Blend modes ---
+
+def _multiply(b, s):
+    return b * s
+
+
+def _screen(b, s):
+    return b + s - b * s
+
+
+def _hard_light(b, s):
+    if s <= 0.5:
+        return _multiply(b, 2 * s)
+    return _screen(b, 2 * s - 1)
+
+
+def _color_dodge(b, s):
+    if b == 0:
+        return 0.0
+    if s == 1:
+        return 1.0
+    return min(1.0, b / (1 - s))
+
+
+def _color_burn(b, s):
+    if b == 1:
+        return 1.0
+    if s == 0:
+        return 0.0
+    return 1 - min(1.0, (1 - b) / s)
+
+
+def _soft_light_d(x):
+    if x <= 0.25:
+        return ((16 * x - 12) * x + 4) * x
+    return math.sqrt(x)
+
+
+def _soft_light(b, s):
+    if s <= 0.5:
+        return b - (1 - 2 * s) * b * (1 - b)
+    return b + (2 * s - 1) * (_soft_light_d(b) - b)
+
+
+_SEPARABLE_MODES = {
+    "normal":      lambda b, s: s,
+    "multiply":    _multiply,
+    "screen":      _screen,
+    "overlay":     lambda b, s: _hard_light(s, b),
+    "darken":      lambda b, s: min(b, s),
+    "lighten":     lambda b, s: max(b, s),
+    "color-dodge": _color_dodge,
+    "color-burn":  _color_burn,
+    "hard-light":  _hard_light,
+    "soft-light":  _soft_light,
+    "difference":  lambda b, s: abs(b - s),
+    "exclusion":   lambda b, s: b + s - 2 * b * s,
+}
+
+
+def _lum(c):
+    """A colour's brightness."""
+    return 0.3 * c.red + 0.59 * c.green + 0.11 * c.blue
+
+
+def _sat(c):
+    """How far a colour's channels spread."""
+    return max(c.red, c.green, c.blue) - min(c.red, c.green, c.blue)
+
+
+def _clip_color(c):
+    """Shift a colour back into range without changing its hue or luminosity."""
+    l = _lum(c)
+    n = min(c.red, c.green, c.blue)
+    x = max(c.red, c.green, c.blue)
+    r, g, b = c.red, c.green, c.blue
+    if n < 0:
+        r = l + (r - l) * l / (l - n)
+        g = l + (g - l) * l / (l - n)
+        b = l + (b - l) * l / (l - n)
+    if x > 1:
+        r = l + (r - l) * (1 - l) / (x - l)
+        g = l + (g - l) * (1 - l) / (x - l)
+        b = l + (b - l) * (1 - l) / (x - l)
+    return Color(r, g, b)
+
+
+def _set_lum(c, l):
+    """Shift a colour to a target brightness, clipped back into range."""
+    d = l - _lum(c)
+    return _clip_color(Color(c.red + d, c.green + d, c.blue + d))
+
+
+def _set_sat(c, s):
+    """Stretch a colour to a target saturation."""
+    channels = ['red', 'green', 'blue']
+    vals = {ch: getattr(c, ch) for ch in channels}
+    order = sorted(channels, key=lambda ch: vals[ch])
+    cmin, cmid, cmax = order
+    if vals[cmax] > vals[cmin]:
+        new_mid = (vals[cmid] - vals[cmin]) * s / (vals[cmax] - vals[cmin])
+    else:
+        new_mid = 0.0
+    result = {cmin: 0.0, cmid: new_mid, cmax: s}
+    return Color(result['red'], result['green'], result['blue'])
+
+
+def _blend_hue(cb, cs):
+    return _set_lum(_set_sat(cs, _sat(cb)), _lum(cb))
+
+
+def _blend_saturation(cb, cs):
+    return _set_lum(_set_sat(cb, _sat(cs)), _lum(cb))
+
+
+def _blend_color_mode(cb, cs):
+    return _set_lum(cs, _lum(cb))
+
+
+def _blend_luminosity(cb, cs):
+    return _set_lum(cb, _lum(cs))
+
+
+_NONSEPARABLE_MODES = {
+    "hue": _blend_hue,
+    "saturation": _blend_saturation,
+    "color": _blend_color_mode,
+    "luminosity": _blend_luminosity,
+}
+
+
+def blend_color(mode, backdrop, source):
+    """The blend function on two straight colours."""
+    if mode in _NONSEPARABLE_MODES:
+        return _NONSEPARABLE_MODES[mode](backdrop, source)
+    fn = _SEPARABLE_MODES[mode]
+    return Color(
+        fn(backdrop.red, source.red),
+        fn(backdrop.green, source.green),
+        fn(backdrop.blue, source.blue),
+    )
+
+
+def blend(mode, src, dst):
+    """Source-over, with the overlap blended first."""
+    a_s = src.a
+    a_d = dst.a
+    cs = pixel_color(src)
+    cb = pixel_color(dst)
+    b = blend_color(mode, cb, cs)
+    out_r = a_s * (1 - a_d) * cs.red + a_s * a_d * b.red + (1 - a_s) * dst.r
+    out_g = a_s * (1 - a_d) * cs.green + a_s * a_d * b.green + (1 - a_s) * dst.g
+    out_b = a_s * (1 - a_d) * cs.blue + a_s * a_d * b.blue + (1 - a_s) * dst.b
+    out_a = a_s + a_d * (1 - a_s)
+    return Pixel(out_r, out_g, out_b, out_a)
+
+
+# --- Layers ---
+
+class Layer:
+    """A buffer of premultiplied pixels."""
+
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+        self.pixels = [[CLEAR for _ in range(width)] for _ in range(height)]
+
+    def __repr__(self):
+        return f"Layer({self.width}, {self.height})"
+
+
+def layer(width, height):
+    """Create a layer, fully transparent."""
+    return Layer(width, height)
+
+
+def paint_shape(lyr, cov, color):
+    """Paint a colour into a layer through a coverage buffer, the way
+    chapter 2 painted colour through coverage onto a canvas -- except a
+    layer's transparent parts are genuinely transparent."""
+    for y in range(min(lyr.height, cov.height)):
+        for x in range(min(lyr.width, cov.width)):
+            c = coverage_at(cov, x, y)
+            if c > 0:
+                src = from_color(color, c)
+                lyr.pixels[y][x] = over(src, lyr.pixels[y][x])
+
+
+def composite_layers(op, src, dst):
+    """Composite two layers pixel by pixel with a Porter-Duff operator."""
+    width = min(src.width, dst.width)
+    height = min(src.height, dst.height)
+    result = Layer(width, height)
+    for y in range(height):
+        for x in range(width):
+            result.pixels[y][x] = composite(op, src.pixels[y][x], dst.pixels[y][x])
+    return result
+
+
+def flatten_layer(lyr, paper):
+    """Flatten a layer over an opaque backing colour into a canvas."""
+    c = Canvas(lyr.width, lyr.height)
+    backing = opaque(paper)
+    for y in range(lyr.height):
+        for x in range(lyr.width):
+            c.pixels[y][x] = pixel_color(over(lyr.pixels[y][x], backing))
+    return c
+
+
+# --- Chapter 9 renders ---
+
+_PD_ORANGE = color(0.95, 0.55, 0.1)
+_PD_BLUE = color(0.2, 0.5, 0.85)
+
+
+def _pd_square_path():
+    return polygon(point(10, 10), point(42, 10), point(42, 42), point(10, 42))
+
+
+def _pd_circle_path():
+    return circle_path(38, 38, 20, 48)
+
+
+def porter_duff_table():
+    """The twelve Porter-Duff operators applied to a blue square (dst)
+    and an orange circle (src), each tile 64x64 in a 4x3 grid."""
+    tile = 64
+    ops = ["clear", "src", "dst", "src-over", "dst-over", "src-in",
+           "dst-in", "src-out", "dst-out", "src-atop", "dst-atop", "xor"]
+
+    dst = layer(tile, tile)
+    paint_shape(dst, fill_path(_pd_square_path(), "nonzero", tile, tile), _PD_BLUE)
+    src = layer(tile, tile)
+    paint_shape(src, fill_path(_pd_circle_path(), "nonzero", tile, tile), _PD_ORANGE)
+
+    grid = Canvas(tile * 4, tile * 3)
+    fill(grid, PAPER)
+    for i, op in enumerate(ops):
+        flat = flatten_layer(composite_layers(op, src, dst), PAPER)
+        col = i % 4
+        row = i // 4
+        for y in range(tile):
+            for x in range(tile):
+                grid.pixels[row * tile + y][col * tile + x] = flat.pixels[y][x]
+    return grid
+
+
+def plate_09():
+    """Chapter 9's plate: the operator table, magnified by 2."""
+    return magnify(porter_duff_table(), 2)
+
+
+def blend_strip():
+    """All sixteen blend modes: an orange circle blended over a blue
+    square, each in its own 64x64 tile, four to a row. The square is a
+    layer -- genuinely transparent outside it, not painted on paper --
+    so a mode fades to plain source-over where the square doesn't reach,
+    and only the finished blend is flattened onto paper."""
+    tile = 64
+    modes = ["normal", "multiply", "screen", "overlay",
+             "darken", "lighten", "color-dodge", "color-burn",
+             "hard-light", "soft-light", "difference", "exclusion",
+             "hue", "saturation", "color", "luminosity"]
+
+    square_cov = fill_path(_pd_square_path(), "nonzero", tile, tile)
+    disc_cov = fill_path(_pd_circle_path(), "nonzero", tile, tile)
+
+    dst_layer = layer(tile, tile)
+    paint_shape(dst_layer, square_cov, _PD_BLUE)
+
+    grid = Canvas(tile * 4, tile * 4)
+    fill(grid, PAPER)
+    for i, mode in enumerate(modes):
+        col = i % 4
+        row = i // 4
+        result = layer(tile, tile)
+        for y in range(tile):
+            for x in range(tile):
+                cv = coverage_at(disc_cov, x, y)
+                src = from_color(_PD_ORANGE, cv)
+                dst = dst_layer.pixels[y][x]
+                result.pixels[y][x] = blend(mode, src, dst)
+        flat = flatten_layer(result, PAPER)
+        for y in range(tile):
+            for x in range(tile):
+                grid.pixels[row * tile + y][col * tile + x] = flat.pixels[y][x]
+    return grid
+
+
+def seam():
+    """The conflation trap: two opaque triangles that should tile a solid
+    square, each composited via over, leaking a seam along the diagonal
+    they share. Rendered at quarter scale and magnified by 4, so the
+    single-pixel-wide seam reads clearly in the plate."""
+    base = Canvas(80, 80)
+    fill(base, PAPER)
+    orange = _PD_ORANGE
+    t1 = polygon(point(4, 4), point(76, 4), point(76, 76))
+    t2 = polygon(point(4, 4), point(76, 76), point(4, 76))
+    paint_through(base, fill_path(t1, "nonzero", 80, 80), orange)
+    cov2 = fill_path(t2, "nonzero", 80, 80)
+    for y in range(80):
+        for x in range(80):
+            cv = coverage_at(cov2, x, y)
+            if cv > 0:
+                src = from_color(orange, cv)
+                dst = opaque(pixel_at(base, x, y))
+                base.pixels[y][x] = pixel_color(over(src, dst))
+    return magnify(base, 4)
+
+
+# ============================================================
+# Chapter 10: Paint Servers and Gradients
+# ============================================================
+
+class Stop:
+    """One colour stop: an offset in [0, 1] and a colour."""
+
+    def __init__(self, offset, color):
+        self.offset = offset
+        self.color = color
+
+    def __repr__(self):
+        return f"Stop({self.offset}, {self.color})"
+
+
+def stop(offset, color):
+    """Create a colour stop."""
+    return Stop(offset, color)
+
+
+def sample_stops(stops, t):
+    """The colour at parameter t: the first colour below the first stop,
+    the last colour above the last stop, and a straight blend in linear
+    light between the two stops that bracket t, found by binary search."""
+    if stops[0].offset >= t:
+        return stops[0].color
+    if stops[-1].offset <= t:
+        return stops[-1].color
+    lo, hi = 0, len(stops) - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if stops[mid].offset <= t:
+            lo = mid
+        else:
+            hi = mid
+    s0, s1 = stops[lo], stops[hi]
+    frac = (t - s0.offset) / (s1.offset - s0.offset)
+    return Color(
+        s0.color.red + (s1.color.red - s0.color.red) * frac,
+        s0.color.green + (s1.color.green - s0.color.green) * frac,
+        s0.color.blue + (s1.color.blue - s0.color.blue) * frac,
+    )
+
+
+def extend(t, mode):
+    """Fold a parameter that fell outside [0, 1] back in."""
+    if mode == "pad":
+        return clamp(t)
+    if mode == "repeat":
+        return t % 1.0
+    if mode == "reflect":
+        tt = t % 2.0
+        return tt if tt <= 1.0 else 2.0 - tt
+    raise ValueError(f"unknown extend mode: {mode}")
+
+
+class LinearGradient:
+    def __init__(self, p0, p1, stops, mode):
+        self.p0 = p0
+        self.p1 = p1
+        self.stops = stops
+        self.mode = mode
+
+
+def linear_gradient(p0, p1, stops, mode):
+    """A gradient whose axis runs from p0 to p1."""
+    return LinearGradient(p0, p1, stops, mode)
+
+
+def linear_t(g, x, y):
+    """How far (x, y) projects onto the axis, as a fraction of its length."""
+    dx = g.p1.x - g.p0.x
+    dy = g.p1.y - g.p0.y
+    len2 = dx * dx + dy * dy
+    if len2 == 0:
+        return 0.0
+    px = x - g.p0.x
+    py = y - g.p0.y
+    return (px * dx + py * dy) / len2
+
+
+class RadialGradient:
+    def __init__(self, c0, r0, c1, r1, stops, mode):
+        self.c0 = c0
+        self.r0 = r0
+        self.c1 = c1
+        self.r1 = r1
+        self.stops = stops
+        self.mode = mode
+
+
+def radial_gradient(c0, r0, c1, r1, stops, mode):
+    """A gradient between a start circle (t = 0) and an end circle (t = 1)."""
+    return RadialGradient(c0, r0, c1, r1, stops, mode)
+
+
+def radial_t(g, x, y):
+    """The t of the interpolated circle that passes through (x, y), or
+    None if no circle in the family reaches it."""
+    cdx = g.c1.x - g.c0.x
+    cdy = g.c1.y - g.c0.y
+    dr = g.r1 - g.r0
+    pdx = x - g.c0.x
+    pdy = y - g.c0.y
+    a = cdx * cdx + cdy * cdy - dr * dr
+    b = -2 * (pdx * cdx + pdy * cdy + g.r0 * dr)
+    c = pdx * pdx + pdy * pdy - g.r0 * g.r0
+
+    roots = []
+    if abs(a) < 1e-9:
+        if abs(b) > 1e-9:
+            roots = [-c / b]
+    else:
+        disc = b * b - 4 * a * c
+        if disc >= 0:
+            sq = math.sqrt(disc)
+            roots = [(-b + sq) / (2 * a), (-b - sq) / (2 * a)]
+
+    best = None
+    for t in roots:
+        if g.r0 + t * dr >= 0:
+            if best is None or t > best:
+                best = t
+    return best
+
+
+class ConicGradient:
+    def __init__(self, center, angle, stops, mode):
+        self.center = center
+        self.angle = angle
+        self.stops = stops
+        self.mode = mode
+
+
+def conic_gradient(center, angle, stops, mode):
+    """A gradient that sweeps the angle around a center, starting at angle."""
+    return ConicGradient(center, angle, stops, mode)
+
+
+def conic_t(g, x, y):
+    """The angle from the center to (x, y), as a fraction of a full turn."""
+    dx = x - g.center.x
+    dy = y - g.center.y
+    two_pi = 2 * math.pi
+    theta = (math.atan2(dy, dx) - g.angle) % two_pi
+    return theta / two_pi
+
+
+class SolidPaint:
+    """A paint that ignores the point and always returns its colour."""
+
+    def __init__(self, color):
+        self.color = color
+
+
+def solid(color):
+    """A solid paint: paint_at ignores the point."""
+    return SolidPaint(color)
+
+
+def paint_at(paint, x, y):
+    """Sample a paint at a device point."""
+    if isinstance(paint, SolidPaint):
+        return paint.color
+    if isinstance(paint, LinearGradient):
+        t = extend(linear_t(paint, x, y), paint.mode)
+        return sample_stops(paint.stops, t)
+    if isinstance(paint, RadialGradient):
+        t = radial_t(paint, x, y)
+        if t is None:
+            return paint.stops[-1].color
+        t = extend(t, paint.mode)
+        return sample_stops(paint.stops, t)
+    if isinstance(paint, ConicGradient):
+        t = extend(conic_t(paint, x, y), paint.mode)
+        return sample_stops(paint.stops, t)
+    raise TypeError(f"unknown paint type: {paint!r}")
+
+
+def paint_fill(canvas, cov, paint):
+    """paint_through with the colour replaced by a function: for every
+    covered pixel, sample paint_at at the pixel's centre and blend that
+    colour in through the coverage, in linear light."""
+    for y in range(min(canvas.height, cov.height)):
+        for x in range(min(canvas.width, cov.width)):
+            cv = coverage_at(cov, x, y)
+            if cv > 0:
+                col = paint_at(paint, x + 0.5, y + 0.5)
+                current = pixel_at(canvas, x, y)
+                painted = mix(current, col, cv, True)
+                write_pixel(canvas, x, y, painted)
+
+
+def _full_coverage(width, height):
+    cov = CoverageBuffer(width, height)
+    for y in range(height):
+        for x in range(width):
+            cov.coverage[y][x] = 1.0
+    return cov
+
+
+# --- Chapter 10 renders ---
+
+_SUNSET_STOPS = [
+    stop(0.0, color(0.05, 0.02, 0.15)),
+    stop(0.35, color(0.75, 0.15, 0.25)),
+    stop(0.7, color(0.98, 0.6, 0.15)),
+    stop(1.0, color(1.0, 0.95, 0.75)),
+]
+
+
+def three_gradients():
+    """One stop table -- a sunset, dark to pale -- addressed three ways:
+    a linear ramp, a focal radial, and a conic sweep, side by side."""
+    stops = _SUNSET_STOPS
+    lin = linear_gradient(point(10, 10), point(140, 140), stops, "pad")
+    rad = radial_gradient(point(55, 55), 0, point(75, 75), 85, stops, "pad")
+    con = conic_gradient(point(75, 75), -math.pi / 2, stops, "pad")
+
+    panel_size = 150
+    gap = 4
+    width = panel_size * 3 + gap * 2
+    row = Canvas(width, panel_size)
+    fill(row, PAPER)
+    cov = _full_coverage(panel_size, panel_size)
+    for i, paint in enumerate([lin, rad, con]):
+        panel = Canvas(panel_size, panel_size)
+        paint_fill(panel, cov, paint)
+        x0 = i * (panel_size + gap)
+        for y in range(panel_size):
+            for x in range(panel_size):
+                row.pixels[y][x0 + x] = panel.pixels[y][x]
+    return row
+
+
+def plate_10():
+    """Chapter 10's plate: the three gradients, side by side."""
+    return three_gradients()
+
+
+_EXTEND_STOPS = [
+    stop(0.0, color(0.1, 0.15, 0.5)),
+    stop(1.0, color(1.0, 0.7, 0.1)),
+]
+
+
+def extend_strip():
+    """One short gradient under the three extend modes: pad holds the
+    ends, repeat tiles, reflect mirrors."""
+    base_w, base_h = 180, 90
+    band_h = 30
+    p0 = point(60, 0)
+    p1 = point(100, 0)
+    modes = ["pad", "repeat", "reflect"]
+
+    base = Canvas(base_w, base_h)
+    cov = _full_coverage(base_w, band_h)
+    for i, mode in enumerate(modes):
+        g = linear_gradient(p0, p1, _EXTEND_STOPS, mode)
+        panel = Canvas(base_w, band_h)
+        paint_fill(panel, cov, g)
+        for y in range(band_h):
+            for x in range(base_w):
+                base.pixels[i * band_h + y][x] = panel.pixels[y][x]
+    return magnify(base, 2)
+
+
+# --- Ordered dithering ---
+
+BAYER4 = [
+    [0, 8, 2, 10],
+    [12, 4, 14, 6],
+    [3, 11, 1, 9],
+    [15, 7, 13, 5],
+]
+
+
+def dither_threshold(x, y):
+    """The Bayer-matrix nudge for this pixel position, in [0, 1)."""
+    return BAYER4[y % 4][x % 4] / 16.0
+
+
+def to_byte(light):
+    """Plain eight-bit encoding: clamp, encode, scale, round."""
+    return color_to_byte(light)
+
+
+def to_byte_dithered(light, x, y):
+    """Ordered dithering: nudge by the position's threshold before the
+    floor, so a value that sits between two bytes splits across both."""
+    clamped = clamp(light)
+    encoded = encode(clamped)
+    scaled = encoded * 255
+    value = math.floor(scaled + dither_threshold(x, y))
+    return max(0, min(255, value))
+
+
+def canvas_to_p6_dithered(canvas):
+    """Like canvas_to_p6, but each byte is ordered-dithered instead of
+    plainly rounded."""
+    header = f"P6\n{canvas.width} {canvas.height}\n255\n"
+    header_bytes = header.encode('ascii')
+    pixel_data = bytearray()
+    for y in range(canvas.height):
+        for x in range(canvas.width):
+            c = canvas.pixels[y][x]
+            pixel_data.append(to_byte_dithered(c.red, x, y))
+            pixel_data.append(to_byte_dithered(c.green, x, y))
+            pixel_data.append(to_byte_dithered(c.blue, x, y))
+    return header_bytes + pixel_data

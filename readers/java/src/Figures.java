@@ -629,4 +629,195 @@ public final class Figures {
         }
         return Magnify.magnify(sideBySide(left, right), 4);
     }
+
+    // ---- chapter 9: compositing ------------------------------------------
+
+    private static final Color DST9 = new Color(0.2, 0.5, 0.85);
+    private static final Color SRC9 = new Color(0.95, 0.55, 0.1);
+    private static final int TILE = 64;
+
+    private static final String[] PORTER_DUFF_OPS = {
+        "clear", "src", "dst", "src-over", "dst-over", "src-in", "dst-in",
+        "src-out", "dst-out", "src-atop", "dst-atop", "xor"
+    };
+
+    private static final String[] BLEND_MODE_NAMES = {
+        "normal", "multiply", "screen", "overlay", "darken", "lighten",
+        "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion",
+        "hue", "saturation", "color", "luminosity"
+    };
+
+    /** §9.6: a layer with a 32 by 32 blue square painted into a 64 by 64 tile. */
+    private static Layer dstLayer9() {
+        Layer l = new Layer(TILE, TILE);
+        Path square = Paths.polygon(
+                Tuple.point(10, 10), Tuple.point(42, 10), Tuple.point(42, 42), Tuple.point(10, 42));
+        Layers.paintShape(l, Fill.fillPath(square, "nonzero", TILE, TILE), DST9);
+        return l;
+    }
+
+    /** §9.6: a layer with an orange circle painted into a 64 by 64 tile. */
+    private static Layer srcLayer9() {
+        Layer l = new Layer(TILE, TILE);
+        Path circle = Paths.circlePath(38, 38, 20, 48);
+        Layers.paintShape(l, Fill.fillPath(circle, "nonzero", TILE, TILE), SRC9);
+        return l;
+    }
+
+    /** §9.6: lay one flattened tile per name into a grid four columns wide, over paper. */
+    private static Canvas tileGrid(int count, java.util.function.IntFunction<Canvas> tileAt) {
+        int cols = 4;
+        int rows = (count + cols - 1) / cols;
+        Canvas c = new Canvas(cols * TILE, rows * TILE);
+        c.fill(PAPER);
+        for (int i = 0; i < count; i++) {
+            Canvas tile = tileAt.apply(i);
+            int ox = (i % cols) * TILE;
+            int oy = (i / cols) * TILE;
+            for (int y = 0; y < TILE; y++) {
+                for (int x = 0; x < TILE; x++) {
+                    c.writePixel(ox + x, oy + y, tile.pixelAt(x, y));
+                }
+            }
+        }
+        return c;
+    }
+
+    /**
+     * §9.6: porter_duff_table() -- a blue square as destination, an orange
+     * circle as source, each of the twelve operators composited and
+     * flattened over paper, laid four to a row.
+     */
+    public static Canvas porterDuffTable() {
+        Layer src = srcLayer9();
+        Layer dst = dstLayer9();
+        return tileGrid(PORTER_DUFF_OPS.length, i ->
+                Layers.flattenLayer(Layers.compositeLayers(PORTER_DUFF_OPS[i], src, dst), PAPER));
+    }
+
+    /** §9.6: plate_09() -- porter_duff_table(), magnified by 2. */
+    public static Canvas plate09() {
+        return Magnify.magnify(porterDuffTable(), 2);
+    }
+
+    /** §9.6: blend_strip() -- the same square and circle, all sixteen blend modes, four to a row. */
+    public static Canvas blendStrip() {
+        Layer src = srcLayer9();
+        Layer dst = dstLayer9();
+        return tileGrid(BLEND_MODE_NAMES.length, i ->
+                Layers.flattenLayer(Layers.blendLayers(BLEND_MODE_NAMES[i], src, dst), PAPER));
+    }
+
+    /**
+     * §9.6, the trap: seam() -- two opaque triangles sharing the diagonal
+     * of an 80 by 80 square, each composited src-over the one before, so
+     * the shared edge's antialiasing double-counts and leaves a seam where
+     * the square should read as one solid color.
+     */
+    public static Canvas seam() {
+        int w = 80;
+        Layer base = new Layer(w, w);
+        for (int y = 0; y < w; y++) {
+            for (int x = 0; x < w; x++) {
+                base.setPixel(x, y, Pixel.opaque(PAPER));
+            }
+        }
+        Path[] tris = {
+            Paths.polygon(Tuple.point(4, 4), Tuple.point(76, 76), Tuple.point(4, 76)),
+            Paths.polygon(Tuple.point(4, 4), Tuple.point(76, 4), Tuple.point(76, 76))
+        };
+        for (Path tri : tris) {
+            Layer s = new Layer(w, w);
+            Layers.paintShape(s, Fill.fillPath(tri, "nonzero", w, w), SRC9);
+            Layer next = new Layer(w, w);
+            for (int y = 0; y < w; y++) {
+                for (int x = 0; x < w; x++) {
+                    next.setPixel(x, y, Compositing.composite("src-over", s.pixelAt(x, y), base.pixelAt(x, y)));
+                }
+            }
+            base = next;
+        }
+        Canvas c = new Canvas(w, w);
+        for (int y = 0; y < w; y++) {
+            for (int x = 0; x < w; x++) {
+                c.writePixel(x, y, base.pixelAt(x, y).pixelColor());
+            }
+        }
+        return Magnify.magnify(c, 4);
+    }
+
+    // ---- chapter 10: paint servers and gradients --------------------------
+
+    private static final java.util.List<Stop> SUNSET = java.util.List.of(
+            new Stop(0.0, new Color(0.05, 0.02, 0.15)),
+            new Stop(0.35, new Color(0.75, 0.15, 0.25)),
+            new Stop(0.7, new Color(0.98, 0.6, 0.15)),
+            new Stop(1.0, new Color(1.0, 0.95, 0.75)));
+
+    private static CoverageBuffer fullCoverage(int w, int h) {
+        CoverageBuffer cov = new CoverageBuffer(w, h);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                cov.setCoverage(x, y, 1.0);
+            }
+        }
+        return cov;
+    }
+
+    /**
+     * §10.6: three_gradients() -- one sunset stop table, addressed three
+     * ways: a linear ramp across the diagonal, a focal radial with its
+     * highlight up and to the left, and a conic sweep, each a 150 by 150
+     * panel, left to right with a 4 pixel gap.
+     */
+    public static Canvas threeGradients() {
+        LinearGradient lin = new LinearGradient(Tuple.point(10, 10), Tuple.point(140, 140), SUNSET, "pad");
+        RadialGradient rad = new RadialGradient(Tuple.point(55, 55), 0, Tuple.point(75, 75), 85, SUNSET, "pad");
+        ConicGradient con = new ConicGradient(Tuple.point(75, 75), -Math.PI / 2, SUNSET, "pad");
+        Paint[] paints = {lin, rad, con};
+        int panel = 150;
+        int gap = 4;
+        Canvas c = new Canvas(panel * 3 + gap * 2, panel);
+        c.fill(PAPER);
+        CoverageBuffer full = fullCoverage(panel, panel);
+        for (int i = 0; i < 3; i++) {
+            Canvas p = new Canvas(panel, panel);
+            Painter.paintFill(p, full, paints[i]);
+            int ox = i * (panel + gap);
+            for (int y = 0; y < panel; y++) {
+                for (int x = 0; x < panel; x++) {
+                    c.writePixel(ox + x, y, p.pixelAt(x, y));
+                }
+            }
+        }
+        return c;
+    }
+
+    /** §10.6: plate_10() is three_gradients(). */
+    public static Canvas plate10() {
+        return threeGradients();
+    }
+
+    /**
+     * §10.2: extend_strip() -- one short gradient (axis only the middle
+     * third of the strip), stacked three ways: pad, repeat, reflect, each
+     * 30 rows of a 180 by 90 canvas, magnified by 2.
+     */
+    public static Canvas extendStrip() {
+        int w = 180;
+        int h = 90;
+        java.util.List<Stop> stops = java.util.List.of(
+                new Stop(0, new Color(0.1, 0.15, 0.5)), new Stop(1, new Color(1.0, 0.7, 0.1)));
+        String[] modes = {"pad", "repeat", "reflect"};
+        Canvas c = new Canvas(w, h);
+        for (int r = 0; r < modes.length; r++) {
+            LinearGradient g = new LinearGradient(Tuple.point(60, 0), Tuple.point(100, 0), stops, modes[r]);
+            for (int y = r * 30; y < r * 30 + 30; y++) {
+                for (int x = 0; x < w; x++) {
+                    c.writePixel(x, y, g.paintAt(x + 0.5, y + 0.5));
+                }
+            }
+        }
+        return Magnify.magnify(c, 2);
+    }
 }
