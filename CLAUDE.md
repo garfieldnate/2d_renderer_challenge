@@ -196,6 +196,17 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   overlaps, because the group flattens before the opacity applies — that is Plate 12. Trap: a group
   buffer should be sized to its bounding box, not the canvas (the book keeps canvas-sized for
   readability, but says so). Runner learned the `set_layer_pixel` mutation step.
+- Chapter 13 stroking: `stroke_to_path(path, width, cap, join, miter_limit)` builds the stroke as a
+  UNION of primitives — a rectangle per segment, a join wedge per interior vertex, a cap per open end
+  — returned as subpaths of one path filled nonzero (the inner-turn overlap winds twice, stays
+  inside). No new rasterizer; the only drawing op is fill. Joins: miter (tip at `h/sin(θ/2)`, public
+  `miter_length`; falls back to bevel when `miter_length/h > miter_limit`, default 4 ≈ 29°), round
+  (arc radius h about the vertex), bevel (triangle). Caps: butt (nothing), round (semicircle), square
+  (extend a half-width). Outer side of a turn = sign of `cross(d_in, d_out)`. Degenerate handling:
+  dedupe consecutive points; a single-point subpath is a dot (round → disc radius h, square → square,
+  butt → nothing); a 180° reversal bevels via the limit (miter at infinity). The plate overlays the
+  generated outline in magenta (chapter 3's `line_wu`, integer endpoints, so round the outline coords)
+  over the gray fill. Trap: zero-length segments / duplicates / reversals all divide by zero naively.
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and
   `Then X is the following matrix:`. The runner understands exactly those two table steps.
 

@@ -9,7 +9,7 @@ Cucumber scenarios, no library dependencies, no printed implementation, and a pi
 end of every chapter. Where that book renders a sphere, this one renders the Ghostscript
 tiger.
 
-**Status:** outline complete, chapters 1 to 12 written; 1 to 6 reader-tested in twelve languages, 7 to 10 in three so far. 24 chapters across 6 parts,
+**Status:** outline complete, chapters 1 to 13 written; 1 to 6 reader-tested in twelve languages, 7 to 12 in three so far. 24 chapters across 6 parts,
 plus two bonus tracks. Start at [`plan.html`](plan.html).
 
 ---
