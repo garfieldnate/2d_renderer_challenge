@@ -251,7 +251,7 @@ public final class Chapter16Tests {
         scenario("Composites: a font can be written by hand, and a bump's bounds stop where the curve does", () -> {
             String json = "{\"units_per_em\": 1000, \"ascender\": 800, \"descender\": -200, \"line_gap\": 0, "
                     + "\"cmap\": {\"98\": \"bump\"}, \"glyphs\": {\"bump\": {\"advance\": 300, "
-                    + "\"contours\": [[[0, 0, 1], [100, 200, 0], [200, 0, 1]]], \"components\": []}, "
+                    + "\"contours\": [[[0, 0, true], [100, 200, false], [200, 0, true]]], \"components\": []}, "
                     + "\"twice\": {\"advance\": 600, \"contours\": [], \"components\": ["
                     + "{\"glyph\": \"bump\", \"transform\": [1, 0, 0, 1, 0, 0]}, "
                     + "{\"glyph\": \"bump\", \"transform\": [1, 0, 0.5, 2, 300, 0]}]}}}";

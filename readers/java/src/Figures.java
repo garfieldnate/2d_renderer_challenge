@@ -1518,8 +1518,11 @@ public final class Figures {
     private static final Color TYPE_WHITE = new Color(1, 1, 1);
     private static final Color TYPE_BLACK = new Color(0, 0, 0);
 
-    /** §17.1: pen advances by penAdvance, each glyph rendered at its nearest quarter. */
-    private static double drawText(Canvas c, Font font, String text, double size, double x, double y,
+    /**
+     * §17.1: pen advances by penAdvance, each glyph rendered at its nearest
+     * quarter; answers the pen's final position, per features/chapter17-plate.feature.
+     */
+    public static double drawText(Canvas c, Font font, String text, double size, double x, double y,
                                     Color color, boolean linear) {
         double pen = x;
         for (int i = 0; i < text.length(); i++) {

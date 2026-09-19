@@ -622,14 +622,12 @@ coverage value).
 `Figures` adds `glyphPlate()`, `plate16()`, `compositeDemo()`, `sizes()`,
 and `flipTrap()`, matching the chapter's own printed pseudocode for
 `glyph_plate()`/`plate_16()` exactly. `composite_demo()`, `sizes()` and
-`flip_trap()` have no printed pseudocode in the chapter text or a Gherkin
-table pinning their geometry -- only the feature file's one-sentence
-descriptions -- so their exact layout (canvas sizes, pen positions, ink
-colors, the hairline bounding box) was taken from the chapter's own figure
-JS (`chapter-16.html`'s embedded `compositeDemo`/`sizes`/`flipTrap`
-functions), the same source of truth the chapter's own canvas figures run
-from. See **Prose problems** in `FEEDBACK.md` for why that's worth flagging
-(chapter 12's `clip_demo()` had the identical problem). All five renders
+`flip_trap()` have no printed pseudocode in the chapter text, but
+`chapter16-plate.feature`'s own `Feature:` description now states their
+exact geometry in prose (canvas sizes, `text_matrix`/origin/size for each
+glyph, which component goes in which ink, the hairline bounding box, the
+baseline positions) -- so their implementation is pinned by the feature
+file's words, not just by the chapter's figure JS. All five renders
 (`glyph.ppm`, `plate-16.ppm`, `composite.ppm`, `sizes.ppm`, `flip.ppm`) diff
 0 against the reference bytes.
 
@@ -652,15 +650,18 @@ per the feature's own wording).
 
 `GlyphCache` is a `Map` keyed by `(name, size, subpixel)`;
 `cachedBitmap`/`size()` are one line each. `Atlas` packs `Bitmap`s into one
-big `CoverageBuffer`, shelf by shelf: a shelf's height is fixed by the
-first bitmap actually placed on it (a `shelfHeight == 0` sentinel means "not
-yet fixed"), bitmaps go left to right until one doesn't fit, and then a new
-shelf opens at `shelfY + shelfHeight` below it -- even when that new shelf
-still doesn't have the room (the packing scenario's 30x20 rectangle),
-because the *next* item's shelf still opens at that same y. A bitmap wider
-than the whole atlas is rejected immediately, without ever touching shelf
-state, since no shelf, however placed, could ever hold it. `AtlasSpot`
-(`x`, `y`) or `null` (the book's "none") is what `add` answers.
+big `CoverageBuffer`, shelf by shelf, following `chapter-17.html` §17.2's
+printed pseudocode for `atlas_add` exactly: a bitmap wider or taller than
+the whole atlas is rejected immediately; otherwise, if it doesn't fit to
+the right of the current shelf, a new shelf opens at `shelfY + shelfHeight`
+(unconditionally -- that shift happens even if the bitmap then turns out
+not to fit vertically either, so the *next* item's shelf still opens at
+that same y, which is what the packing scenario's 30x20 rectangle relies
+on); a bitmap that fits width-wise stays on the current shelf even if it is
+taller than everything placed there so far -- the shelf just grows
+(`shelfHeight = max(shelfHeight, bm.height)`), it is not bumped to a new
+shelf. `AtlasSpot` (`x`, `y`) or `null` (the book's "none") is what `add`
+answers.
 
 `Bitmaps.embolden(font, name, size, amount)` is the glyph's own fill plus
 chapter 13's stroke of every one of its (already-closed) subpaths, `amount`
@@ -678,14 +679,15 @@ book doesn't give `paint_lcd` a `linear` flag the way `paint_bitmap` has
 one).
 
 `Glyphs.penAdvance(font, name, size)` is `glyph.advance * size /
-units_per_em`. `Figures` adds `subpixelStrip()`, `smoothingDemo()`,
-`lcdPlate()`, and `plate17()`, all built from the chapter's own figure JS
-(`chapter-17.html`'s `subpixelStrip`/`smoothingDemo`/`lcdPlate` functions --
-`§17.5`'s printed pseudocode covers `lcd_plate()`/`plate_17()` only).
-`smoothing_demo()`'s middle and bottom rows are drawn with a small
-`drawText` helper (pen position stepped by `penAdvance`, each glyph placed
-at its own nearest quarter via `subpixelOf`) that mirrors the book's own
-description of `draw_text` in prose, since the function itself is never
-named as something a scenario calls directly. All four renders
+units_per_em`. `Figures.drawText(canvas, font, text, size, x, y, color,
+linear)` is public: it steps the pen by `penAdvance`, places each glyph at
+its own nearest quarter via `subpixelOf`, and answers the pen's final
+position, per `chapter17-plate.feature`'s scenario that now calls it
+directly and pins both that return value and two of its painted pixels.
+`Figures` also adds `subpixelStrip()`, `smoothingDemo()` (which calls
+`drawText` for its top two rows), `lcdPlate()`, and `plate17()`, built from
+the chapter's own figure JS (`chapter-17.html`'s
+`subpixelStrip`/`smoothingDemo`/`lcdPlate` functions -- `§17.5`'s printed
+pseudocode covers `lcd_plate()`/`plate_17()` only). All four renders
 (`subpixels.ppm`, `smoothing.ppm`, `lcd.ppm`, `plate-17.ppm`) diff 0 against
 the reference bytes.

@@ -17,33 +17,30 @@ public final class Atlas {
         this.coverage = new CoverageBuffer(width, height);
     }
 
+    // Matches chapter-17.html section 17.2's pseudo-code exactly: a bitmap
+    // that fits width-wise stays on the current shelf even if it is taller
+    // than what has been placed there so far (the shelf just grows), and
+    // the "no room on this shelf" shift happens unconditionally before the
+    // height check, so a shelf can be committed even when the bitmap that
+    // triggered it then turns out not to fit.
     public AtlasSpot add(Bitmap bm) {
-        if (bm.width > coverage.width) {
-            return null; // never fits, on any shelf
-        }
-        if (currentX + bm.width <= coverage.width && (shelfHeight == 0 || bm.height <= shelfHeight)) {
-            if (shelfHeight == 0) {
-                shelfHeight = bm.height; // the shelf's height is set by its first bitmap
-            }
-            int x = currentX;
-            int y = shelfY;
-            blit(bm, x, y);
-            currentX += bm.width;
-            return new AtlasSpot(x, y);
-        }
-        // Open a new shelf below the tallest one so far.
-        int newY = shelfY + shelfHeight;
-        if (newY + bm.height > coverage.height) {
-            shelfY = newY;
-            shelfHeight = 0;
-            currentX = 0;
+        if (bm.width > coverage.width || bm.height > coverage.height) {
             return null;
         }
-        shelfY = newY;
-        shelfHeight = bm.height;
-        currentX = bm.width;
-        blit(bm, 0, newY);
-        return new AtlasSpot(0, newY);
+        if (currentX + bm.width > coverage.width) {
+            shelfY = shelfY + shelfHeight;
+            currentX = 0;
+            shelfHeight = 0;
+        }
+        if (shelfY + Math.max(bm.height, shelfHeight) > coverage.height) {
+            return null;
+        }
+        blit(bm, currentX, shelfY);
+        int x = currentX;
+        int y = shelfY;
+        currentX += bm.width;
+        shelfHeight = Math.max(shelfHeight, bm.height);
+        return new AtlasSpot(x, y);
     }
 
     private void blit(Bitmap bm, int x, int y) {

@@ -299,6 +299,18 @@ public final class Chapter17Tests {
             assertDoubleEq("pen_advance(font, \"space\", 11)", Glyphs.penAdvance(f, "space", 11), 2.7231, 0.0001);
         });
 
+        scenario("Plate 17: draw_text steps the pen by each advance and answers where it stopped", () -> {
+            Font f = font();
+            Canvas c = new Canvas(30, 14);
+            c.fill(new Color(1, 1, 1));
+            double pen = Figures.drawText(c, f, "Ha", 11, 2, 11, new Color(0, 0, 0), true);
+            assertDoubleEq("pen", pen, 15.8252, 0.0001);
+            assertDoubleEq("pen = 2 + pen_advance(font, \"H\", 11) + pen_advance(font, \"a\", 11)", pen,
+                    2 + Glyphs.penAdvance(f, "H", 11) + Glyphs.penAdvance(f, "a", 11), 0.0001);
+            assertColorEq("pixel_at(c, 3, 6)", c.pixelAt(3, 6), new Color(0.0331, 0.0331, 0.0331));
+            assertColorEq("pixel_at(c, 29, 6)", c.pixelAt(29, 6), new Color(1, 1, 1));
+        });
+
         scenario("Plate 17: the same stem at four quarters", () -> {
             Canvas c = Figures.subpixelStrip();
             byte[] ref = readReference("subpixels.ppm");

@@ -200,6 +200,13 @@
     <span class="kw">And</span>   atlas_add(a, bitmap(coverage_buffer(2, 2), 0, 0)) = (0, 16)
     <span class="kw">And</span>   atlas_add(a, bitmap(coverage_buffer(31, 2), 0, 0)) = (0, 18)
 
+  <span class="kw">Scenario</span>: A taller bitmap that fits the width stays on the shelf and raises it
+    <span class="kw">Given</span> a ← atlas(32, 32)
+    <span class="kw">Then</span>  atlas_add(a, bitmap(coverage_buffer(10, 8), 0, 0)) = (0, 0)
+    <span class="kw">And</span>   atlas_add(a, bitmap(coverage_buffer(12, 12), 0, 0)) = (10, 0)
+    <span class="kw">And</span>   atlas_add(a, bitmap(coverage_buffer(10, 4), 0, 0)) = (22, 0)
+    <span class="kw">And</span>   atlas_add(a, bitmap(coverage_buffer(5, 5), 0, 0)) = (0, 12)
+
   <span class="kw">Scenario</span>: The atlas holds the bitmap's coverage where it said
     <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
     <span class="kw">And</span>   a ← atlas(32, 32)
