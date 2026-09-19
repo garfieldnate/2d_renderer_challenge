@@ -4921,8 +4921,8 @@ def glyph_path(font, name, m, tolerance):
 
 _GLYPH_GRAY = _STROKE_GRAY
 _GLYPH_MAGENTA = _STROKE_MAG
-_GLYPH_CYAN = INKS[1]
-_GLYPH_HAIRLINE = color(0.28, 0.28, 0.32)
+_GLYPH_CYAN = color(0.2, 0.75, 0.9)
+_GLYPH_DIM = color(0.3, 0.3, 0.34)
 
 
 def _square_path(q, half_side):
@@ -4947,7 +4947,7 @@ def glyph_plate():
 
     for contour in font.glyphs["a"].contours:
         pts = [m * point(x, y) for (x, y, _on) in contour]
-        _stroke_path(c, _polyline_path(pts, True), 1.0, _GLYPH_HAIRLINE, "butt", "miter")
+        _stroke_path(c, _polyline_path(pts, True), 1.0, _GLYPH_DIM, "butt", "round")
 
     for contour in font.glyphs["a"].contours:
         file_points = {(x, y) for (x, y, _on) in contour}
@@ -5009,21 +5009,17 @@ def sizes():
     return c
 
 
-_BASELINE_LINE = color(0.16, 0.16, 0.18)
-
-
 def _flip_trap_panel(font, name, m, w, h, baseline_y, ink):
-    """One panel of flip_trap: a baseline guide line, then the glyph
-    filled in ink -- gray where the flip is right, magenta where it's
-    forgotten, so the reader can see the glyph sitting on the baseline
-    versus hanging below it."""
+    """One panel of flip_trap: the glyph filled in ink -- gray where the
+    flip is right, magenta where it's forgotten -- then a dim hairline
+    along the baseline drawn over it, so the reader can see the glyph
+    sitting on the baseline versus hanging below it."""
     c = canvas(w, h)
     fill(c, PAPER)
-    rect = polygon(point(0, baseline_y - 1), point(w, baseline_y - 1),
-                   point(w, baseline_y + 1), point(0, baseline_y + 1))
-    paint_through(c, fill_path(rect, "nonzero", w, h), _BASELINE_LINE)
     cov = fill_path(glyph_path(font, name, m, 0.1), "nonzero", w, h)
     paint_through(c, cov, ink)
+    _stroke_path(c, _polyline_path([point(0, baseline_y), point(w, baseline_y)], False),
+                 1.0, _GLYPH_DIM, "butt", "round")
     return c
 
 
