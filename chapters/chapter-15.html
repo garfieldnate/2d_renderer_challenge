@@ -1,0 +1,704 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 15 · Dashes — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 15 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-14.html">← 14</a> · <a href="#plate">Plate&nbsp;15</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Fifteen</p>
+    <h1>Dashes</h1>
+    <p class="hook">Put eleven marks along a curve at <code>t = 0, 0.1, 0.2, …, 1</code> and look at
+      them. They bunch up at one end and spread out at the other, and not by a little: on the curve
+      in Figure 15.1 the mark at <code>t = 0.5</code> sits six pixels short of halfway. A Bézier's
+      parameter is not a distance. It never was; it's a recipe for blending control points, and it
+      runs fast where the handles are long and crawls where they're short. Dashes have to be measured
+      in distance, because a dash that's twelve pixels long on one part of a path and nine on another
+      is the first thing anyone notices. So this chapter starts by finding out how long a curve is,
+      which, like the offset, has no closed form. Then it cuts.</p>
+  </header>
+
+  <p>Where dashing sits matters as much as how it works. It is a path-to-path transform: a path goes
+    in, a path of shorter open subpaths comes out, and chapter 13's stroker never learns it happened.
+    Every dash gets caps like any other open subpath, every corner a dash turns gets a join, and the
+    stroker doesn't grow a second job. The alternative, a stroker with a dash mode, is how you end up
+    with a stroker nobody can read.</p>
+
+  <h2><span class="sec">§ 15.1</span> How long is a curve</h2>
+
+  <p>For a path it's trivial: add up the segments, and if the subpath is closed, add the one from the
+    last point back to the first. That's <code>path_length</code>, and dashing a path needs nothing
+    more. Curves are the problem. The length of a Bézier is the integral of its speed, and the speed
+    is the square root of a polynomial, and that integral has no elementary answer. Chapter 8 crept up
+    on it by flattening: the length of the polyline at tolerance <code>0.001</code> was
+    <code>7.9992</code> for a curve whose true length is <code>8.0000</code>. This chapter does the
+    same thing on purpose and keeps the intermediate results, because the intermediate results are
+    the useful part.</p>
+
+  <p>Evaluate the curve at <code>n + 1</code> evenly spaced parameters, <code>t = 0, 1/n, …, 1</code>,
+    and record the running length of the polyline through them: <code>table[i]</code> is the distance
+    along the chords from the start to the point at <code>t = i/n</code>. That's the
+    <em>arc-length table</em>, and its last entry is the curve's length, a little short because
+    chords cut corners, and less short the bigger <code>n</code> is. With 256 chords the chapter 8
+    curve comes out at <code>7.99995</code>. The table answers the question dashing needs asked: at
+    what parameter is the running length <code>s</code>? Find the entry that spans it, which is a
+    binary search, and interpolate linearly inside that one chord. Chords are straight, so on a
+    chord the interpolation is exact; the only error is the chord's own. Before the start the answer
+    is <code>0</code>, past the end it's <code>1</code>, and <code>point_at_length</code> and
+    <code>split_at_length</code> are chapter 8's <code>point_at</code> and <code>split_at</code> handed
+    the parameter the table found.</p>
+
+  <figure>
+    <canvas id="fig151" role="img" aria-label="The same lopsided curve drawn twice. Left: eleven orange marks at equal steps of the parameter, crowded near the start and spread out near the end. Right: eleven blue marks at equal steps of arc length, evenly spaced along the curve"></canvas>
+    <figcaption><span class="fig">Figure 15.1</span> Eleven marks by parameter (left) and eleven by arc length (right) on the same curve. One handle is short and one is long, so the parameter crawls at the start and races at the end. The right-hand marks are what a dash pattern needs.</figcaption>
+  </figure>
+
+  <p>Figure 15.1 is the scenarios' <code>lopsided()</code> curve: one short handle, one long one, so
+    the parameter's speed changes by a factor of five along it, and the midpoint by parameter lands
+    at <code>x = 88.75</code> while the midpoint by length is at <code>94.85</code>. The scenarios
+    pin the table on a curve small enough to check with a ruler, the convergence of its last entry as
+    <code>n</code> grows, and the interpolation at a quarter and a half of the way along.</p>
+
+  <div class="test" data-feature="chapter15-length.feature">
+    <p class="label">features/chapter15-length.feature</p>
+<pre><code><span class="kw">Feature</span>: Length along a path, and along a curve
+  path_length(p) sums the segments of every subpath; a closed subpath
+  includes the segment from its last point back to its first. For a curve,
+  arc_length_table(c, n) is n + 1 running lengths of the polyline through
+  point_at(c, i / n), arc_length(c, n) is its last entry, and t_at_length(
+  table, s) finds the parameter where the running length reaches s by
+  linear interpolation inside the segment that spans it, 0 before the start
+  and 1 past the end. point_at_length and split_at_length go through it.
+
+  <span class="kw">Scenario</span>: The length of a path sums its segments, and a closed subpath includes the closing one
+    <span class="kw">Given</span> open ← path()
+    <span class="kw">When</span>  move_to(open, point(0, 0))
+    <span class="kw">And</span>   line_to(open, point(3, 4))
+    <span class="kw">And</span>   line_to(open, point(3, 0))
+    <span class="kw">Then</span>  path_length(open) = 9
+    <span class="kw">And</span>   path_length(polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))) = 40
+
+  <span class="kw">Scenario</span>: The arc-length table is the running length of chords
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">When</span>  table ← arc_length_table(c, 4)
+    <span class="kw">Then</span>  length(table) = 5
+    <span class="kw">And</span>   table[0] = 0
+    <span class="kw">And</span>   table[1] = 2.335193
+    <span class="kw">And</span>   table[2] = 3.901438
+    <span class="kw">And</span>   table[4] = 7.802876
+
+  <span class="kw">Scenario</span>: More chords creep up on the true length
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">And</span>   line ← cubic(point(0, 0), point(1, 1), point(2, 2), point(3, 3))
+    <span class="kw">Then</span>  arc_length(c, 4) = 7.802876
+    <span class="kw">And</span>   arc_length(c, 16) = 7.987725
+    <span class="kw">And</span>   arc_length(c, 256) = 7.999952
+    <span class="kw">And</span>   arc_length(line, 256) = 4.242641
+
+  <span class="kw">Scenario</span>: The parameter at a length, by interpolation
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">When</span>  table ← arc_length_table(c, 256)
+    <span class="kw">And</span>   total ← arc_length(c, 256)
+    <span class="kw">Then</span>  t_at_length(table, 0) = 0
+    <span class="kw">And</span>   t_at_length(table, total / 2) = 0.5
+    <span class="kw">And</span>   t_at_length(table, total / 4) = 0.201966
+    <span class="kw">And</span>   t_at_length(table, total + 1) = 1
+    <span class="kw">And</span>   t_at_length(table, -1) = 0
+
+  <span class="kw">Scenario</span>: A point and a split at a given length
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">When</span>  total ← arc_length(c, 256)
+    <span class="kw">And</span>   left ← split_at_length(c, 2, 256)[0]
+    <span class="kw">And</span>   right ← split_at_length(c, 2, 256)[1]
+    <span class="kw">Then</span>  point_at_length(c, total / 2, 256) = point(2, 3)
+    <span class="kw">And</span>   point_at_length(c, total / 4, 256) = point(0.423579, 1.93411) ± 0.0001
+    <span class="kw">And</span>   arc_length(left, 256) = 2 ± 0.001
+    <span class="kw">And</span>   arc_length(right, 256) = 6 ± 0.001
+    <span class="kw">And</span>   point_at(left, 1) = point_at(right, 0)
+
+  <span class="kw">Scenario</span>: The parameter is not the length
+    <span class="kw">Given</span> c ← lopsided()
+    <span class="kw">When</span>  total ← arc_length(c, 256)
+    <span class="kw">Then</span>  total = 225.8293 ± 0.001
+    <span class="kw">And</span>   point_at(c, 0.5) = point(88.75, 37.5)
+    <span class="kw">And</span>   point_at_length(c, total / 2, 256) = point(94.8542, 37.4727) ± 0.001
+    <span class="kw">And</span>   t_at_length(arc_length_table(c, 256), total / 2) = 0.527003 ± 0.0001</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 15.2</span> The pattern</h2>
+
+  <p>A dash pattern is a list of lengths that alternate on and off: <code>[12, 6]</code> is twelve
+    on, six off, twelve on, and so on until the path runs out. Three rules about the list, all of
+    them specified behaviour in every format that has dashes, and all of them the kind of thing only
+    a scenario will make you get right. An odd number of entries is repeated: <code>[5]</code> means
+    <code>[5, 5]</code>, and <code>[5, 2, 1]</code> means <code>[5, 2, 1, 5, 2, 1]</code>, so that the
+    second cycle's on and off fall the same way as the first's. A pattern whose entries add up to
+    zero, or an empty one, is no pattern: the path is drawn solid. And a negative entry makes the
+    whole pattern invalid, which is also drawn solid. <code>normalize_pattern</code> turns the list
+    you were given into the list the walk will use, and comes back empty for the two solid cases.</p>
+
+  <p>A zero-length entry, on the other hand, is not only legal but useful. A dash of length zero is
+    a single point, and chapter 13 already knows what a single-point subpath is: under a round cap
+    it's a dot, under a butt cap it's nothing. So <code>[0, 9]</code> with round caps is a dotted
+    line, one dot every nine units, which is how every drawing program makes one. The scenarios pin
+    all of it, including the fact that <code>dash</code> hands back the original subpaths when there
+    is no pattern.</p>
+
+  <div class="test" data-feature="chapter15-pattern.feature">
+    <p class="label">features/chapter15-pattern.feature</p>
+<pre><code><span class="kw">Feature</span>: The pattern
+  A dash pattern is a list of lengths, on, off, on, off. normalize_pattern
+  turns it into the list the walk uses: an odd number of entries is repeated
+  so on and off alternate the same way every cycle, and a pattern with a
+  negative entry, or whose entries add up to nothing, is no pattern at all
+  and comes back empty, which dash treats as draw the path solid. A
+  zero-length entry is legal: a dash of length zero is a single point, which
+  chapter 13 strokes into a dot under a round cap and nothing under a butt.
+
+  <span class="kw">Scenario</span>: An odd pattern is repeated so on and off alternate the same way each cycle
+    <span class="kw">Then</span>  normalize_pattern([5]) = [5, 5]
+    <span class="kw">And</span>   normalize_pattern([5, 2, 1]) = [5, 2, 1, 5, 2, 1]
+    <span class="kw">And</span>   normalize_pattern([4, 2]) = [4, 2]
+
+  <span class="kw">Scenario</span>: A pattern that adds up to nothing, or has a negative entry, is no pattern
+    <span class="kw">Given</span> seg ← path()
+    <span class="kw">When</span>  move_to(seg, point(0, 0))
+    <span class="kw">And</span>   line_to(seg, point(100, 0))
+    <span class="kw">Then</span>  normalize_pattern([0, 0]) = []
+    <span class="kw">And</span>   normalize_pattern([]) = []
+    <span class="kw">And</span>   normalize_pattern([5, -5]) = []
+    <span class="kw">And</span>   length(subpaths(dash(seg, [0, 0], 0))) = 1
+    <span class="kw">And</span>   subpaths(dash(seg, [0, 0], 0))[0].points[1] = point(100, 0)
+    <span class="kw">And</span>   length(subpaths(dash(seg, [], 0))) = 1
+    <span class="kw">And</span>   length(subpaths(dash(seg, [5, -5], 0))) = 1
+
+  <span class="kw">Scenario</span>: A repeated odd pattern walks as its doubled self
+    <span class="kw">Given</span> seg ← path()
+    <span class="kw">When</span>  move_to(seg, point(0, 0))
+    <span class="kw">And</span>   line_to(seg, point(30, 0))
+    <span class="kw">And</span>   d ← dash(seg, [5, 2, 1], 0)
+    <span class="kw">Then</span>  length(subpaths(d)) = 6
+    <span class="kw">And</span>   subpaths(d)[0].points[1] = point(5, 0)
+    <span class="kw">And</span>   subpaths(d)[1].points[0] = point(7, 0)
+    <span class="kw">And</span>   subpaths(d)[1].points[1] = point(8, 0)
+    <span class="kw">And</span>   subpaths(d)[2].points[0] = point(13, 0)
+    <span class="kw">And</span>   subpaths(d)[3].points[0] = point(16, 0)
+    <span class="kw">And</span>   subpaths(d)[3].points[1] = point(21, 0)
+
+  <span class="kw">Scenario</span>: A zero-length dash is a point, and with a round cap a dot
+    <span class="kw">Given</span> seg ← path()
+    <span class="kw">When</span>  move_to(seg, point(0, 0))
+    <span class="kw">And</span>   line_to(seg, point(12, 0))
+    <span class="kw">And</span>   d ← dash(seg, [0, 6], 0)
+    <span class="kw">Then</span>  length(subpaths(d)) = 2
+    <span class="kw">And</span>   length(subpaths(d)[0].points) = 1
+    <span class="kw">And</span>   subpaths(d)[0].points[0] = point(0, 0)
+    <span class="kw">And</span>   subpaths(d)[1].points[0] = point(6, 0)
+    <span class="kw">And</span>   length(subpaths(stroke_to_path(d, 4, "round", "round", 4.0))) = 2
+    <span class="kw">And</span>   bounds(stroke_to_path(d, 4, "round", "round", 4.0)) = (-2, -2, 8, 2)
+    <span class="kw">And</span>   length(subpaths(stroke_to_path(d, 4, "butt", "round", 4.0))) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 15.3</span> The walk</h2>
+
+  <p>Now cut. For each subpath, walk it from its start, segment by segment, keeping two things: which
+    entry of the pattern you're in and how much of it is left. Take steps of the smaller of what's
+    left in the entry and what's left in the segment. If the entry is an <em>on</em>, the step is
+    part of a dash: start a new output subpath if one isn't open, and extend it to where the step
+    ends. When the entry runs out, move to the next one, flip on to off or back, and close the dash
+    you were building. When the segment runs out, move to the next segment without flipping anything:
+    the walk goes straight through the vertices, so a dash that reaches a corner turns it and keeps
+    its corner, and the stroker gives that corner a join. The phase is where in the pattern the walk
+    begins: walk <code>phase</code> units into the pattern before you start, so a phase of
+    <code>3</code> on <code>[10, 5]</code> starts seven units into the first dash. Take it modulo the
+    pattern's sum first, so a phase of the whole sum is no phase at all, and a negative phase is the
+    same as the sum plus it.</p>
+
+<pre><code>dash(path, pattern, phase):
+  pat ← normalize_pattern(pattern)
+  <span class="kw">if</span> pat is empty:  <span class="kw">return</span> a copy of path              <span class="cm">// solid</span>
+  out ← path()
+  <span class="kw">for</span> subpath <span class="kw">in</span> path:
+    pts ← its points, plus its first point again <span class="kw">if</span> closed
+    i ← 0;  remaining ← pat[0];  on ← true
+    walk (phase mod sum(pat)) into the pattern, advancing i and flipping on
+    dash ← none
+    <span class="kw">for</span> each segment (a, b) of pts, skipping zero-length ones:
+      pos ← 0
+      <span class="kw">while</span> pos &lt; |b − a|:
+        step ← min(remaining, |b − a| − pos)
+        <span class="kw">if</span> on:
+          <span class="kw">if</span> dash is none:  dash ← move_to(out, a + (b − a)·pos/|b − a|)
+          <span class="kw">if</span> step &gt; 0:  line_to(out, a + (b − a)·(pos + step)/|b − a|)
+        pos += step;  remaining −= step
+        <span class="kw">if</span> remaining = 0:  i ← (i + 1) mod n;  remaining ← pat[i];  on ← not on;  dash ← none
+    <span class="kw">if</span> subpath is closed <span class="kw">and</span> its last dash ends at its start <span class="kw">and</span> its first dash begins there:
+      join the last dash to the first        <span class="cm">// §15.4</span>
+  <span class="kw">return</span> out</code></pre>
+
+  <figure>
+    <canvas id="fig152" role="img" aria-label="A bent polyline with a dash pattern walked along it: on-stretches in ink, off-stretches faint, tick marks at every pattern boundary, one dash bending around the corner, and a bracket at the start showing the phase"></canvas>
+    <figcaption><span class="fig">Figure 15.2</span> The walk. The pattern is measured along the path from its start, minus the phase, straight through the corner. The dash that reaches the corner turns it.</figcaption>
+  </figure>
+
+  <p>Two details are decisions, and the scenarios pin them so your renderer and the book's agree. A
+    dash that would begin exactly where the subpath ends is not emitted: <code>[0, 6]</code> on a line
+    twelve long makes dots at <code>0</code> and <code>6</code>, not at <code>12</code>. And zero-length
+    segments (chapter 13's duplicate points again) are skipped, which is what stops a zero step from
+    looping forever. The rest is arithmetic, and the scenarios check the arithmetic: dashes on a
+    straight line land at exact multiples, the dashes and the gaps add up to the length of the path,
+    and the phase moves everything by exactly what it says.</p>
+
+  <div class="test" data-feature="chapter15-dash.feature">
+    <p class="label">features/chapter15-dash.feature</p>
+<pre><code><span class="kw">Feature</span>: The walk
+  dash(p, pattern, phase) walks every subpath from its start by arc length,
+  on for pattern[0], off for pattern[1], and so on around the pattern, and
+  every on-stretch becomes an open subpath of the result. The walk goes
+  straight through a subpath's vertices, so a dash that reaches a corner
+  turns it. phase is how far into the pattern the walk begins, taken modulo
+  the pattern's sum, so a phase of the sum is no phase at all and a negative
+  phase is the same as the sum plus it. A dash that would begin exactly at
+  the end of a subpath is not emitted.
+
+  <span class="kw">Scenario</span>: Dashes on a straight line land at exact multiples
+    <span class="kw">Given</span> seg ← path()
+    <span class="kw">When</span>  move_to(seg, point(0, 0))
+    <span class="kw">And</span>   line_to(seg, point(100, 0))
+    <span class="kw">And</span>   d ← dash(seg, [10, 5], 0)
+    <span class="kw">Then</span>  length(subpaths(d)) = 7
+    <span class="kw">And</span>   subpaths(d)[0].points[0] = point(0, 0)
+    <span class="kw">And</span>   subpaths(d)[0].points[1] = point(10, 0)
+    <span class="kw">And</span>   subpaths(d)[1].points[0] = point(15, 0)
+    <span class="kw">And</span>   subpaths(d)[1].points[1] = point(25, 0)
+    <span class="kw">And</span>   subpaths(d)[6].points[0] = point(90, 0)
+    <span class="kw">And</span>   subpaths(d)[6].points[1] = point(100, 0)
+    <span class="kw">And</span>   subpaths(d)[6].closed = false
+
+  <span class="kw">Scenario</span>: The dashes and the gaps add up to the path
+    <span class="kw">Given</span> seg ← path()
+    <span class="kw">When</span>  move_to(seg, point(0, 0))
+    <span class="kw">And</span>   line_to(seg, point(100, 0))
+    <span class="kw">And</span>   d ← dash(seg, [10, 5], 0)
+    <span class="kw">Then</span>  path_length(d) = 70
+    <span class="kw">And</span>   path_length(seg) - path_length(d) = 30
+
+  <span class="kw">Scenario</span>: The phase starts the walk partway into the pattern
+    <span class="kw">Given</span> seg ← path()
+    <span class="kw">When</span>  move_to(seg, point(0, 0))
+    <span class="kw">And</span>   line_to(seg, point(100, 0))
+    <span class="kw">And</span>   d ← dash(seg, [10, 5], 3)
+    <span class="kw">Then</span>  length(subpaths(d)) = 7
+    <span class="kw">And</span>   subpaths(d)[0].points[0] = point(0, 0)
+    <span class="kw">And</span>   subpaths(d)[0].points[1] = point(7, 0)
+    <span class="kw">And</span>   subpaths(d)[1].points[0] = point(12, 0)
+    <span class="kw">And</span>   subpaths(d)[6].points[1] = point(97, 0)
+
+  <span class="kw">Scenario</span>: A phase into a gap starts with a gap
+    <span class="kw">Given</span> seg ← path()
+    <span class="kw">When</span>  move_to(seg, point(0, 0))
+    <span class="kw">And</span>   line_to(seg, point(100, 0))
+    <span class="kw">And</span>   d ← dash(seg, [10, 5], 12)
+    <span class="kw">Then</span>  length(subpaths(d)) = 7
+    <span class="kw">And</span>   subpaths(d)[0].points[0] = point(3, 0)
+    <span class="kw">And</span>   subpaths(d)[0].points[1] = point(13, 0)
+    <span class="kw">And</span>   subpaths(d)[6].points[0] = point(93, 0)
+    <span class="kw">And</span>   subpaths(d)[6].points[1] = point(100, 0)
+
+  <span class="kw">Scenario</span>: A phase of the pattern's sum is no phase, and a negative phase wraps
+    <span class="kw">Given</span> seg ← path()
+    <span class="kw">When</span>  move_to(seg, point(0, 0))
+    <span class="kw">And</span>   line_to(seg, point(100, 0))
+    <span class="kw">Then</span>  subpaths(dash(seg, [10, 5], 15))[0].points[1] = point(10, 0)
+    <span class="kw">And</span>   subpaths(dash(seg, [10, 5], 15))[1].points[0] = point(15, 0)
+    <span class="kw">And</span>   subpaths(dash(seg, [10, 5], -3))[0].points[0] = point(3, 0)
+    <span class="kw">And</span>   subpaths(dash(seg, [10, 5], -3))[0].points[1] = point(13, 0)
+
+  <span class="kw">Scenario</span>: A dash that reaches a corner turns it
+    <span class="kw">Given</span> bend ← path()
+    <span class="kw">When</span>  move_to(bend, point(0, 0))
+    <span class="kw">And</span>   line_to(bend, point(10, 0))
+    <span class="kw">And</span>   line_to(bend, point(10, 10))
+    <span class="kw">And</span>   d ← dash(bend, [12, 4], 0)
+    <span class="kw">Then</span>  length(subpaths(d)) = 2
+    <span class="kw">And</span>   length(subpaths(d)[0].points) = 3
+    <span class="kw">And</span>   subpaths(d)[0].points[1] = point(10, 0)
+    <span class="kw">And</span>   subpaths(d)[0].points[2] = point(10, 2)
+    <span class="kw">And</span>   subpaths(d)[1].points[0] = point(10, 6)
+    <span class="kw">And</span>   subpaths(d)[1].points[1] = point(10, 10)
+
+  <span class="kw">Scenario</span>: A gap that reaches a corner turns it too
+    <span class="kw">Given</span> bend ← path()
+    <span class="kw">When</span>  move_to(bend, point(0, 0))
+    <span class="kw">And</span>   line_to(bend, point(10, 0))
+    <span class="kw">And</span>   line_to(bend, point(10, 10))
+    <span class="kw">And</span>   d ← dash(bend, [8, 4], 0)
+    <span class="kw">Then</span>  length(subpaths(d)) = 2
+    <span class="kw">And</span>   subpaths(d)[0].points[1] = point(8, 0)
+    <span class="kw">And</span>   subpaths(d)[1].points[0] = point(10, 2)
+
+  <span class="kw">Scenario</span>: Duplicate points do not stall the walk
+    <span class="kw">Given</span> seg ← path()
+    <span class="kw">When</span>  move_to(seg, point(0, 0))
+    <span class="kw">And</span>   line_to(seg, point(0, 0))
+    <span class="kw">And</span>   line_to(seg, point(10, 0))
+    <span class="kw">And</span>   d ← dash(seg, [4, 2], 0)
+    <span class="kw">Then</span>  length(subpaths(d)) = 2
+    <span class="kw">And</span>   subpaths(d)[0].points[1] = point(4, 0)
+    <span class="kw">And</span>   subpaths(d)[1].points[0] = point(6, 0)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 15.4</span> Closed subpaths, and starting over</h2>
+
+  <p>The pattern starts over at every subpath, from the phase. That's the rule SVG and PDF both use,
+    and it's the one you'd guess, but it means the same pattern on two subpaths of one path can
+    disagree about where the dashes fall, and that's correct. A closed subpath is walked around its
+    closing segment as well, back to the start, and then there's a corner case that every renderer
+    handles and none of them advertise. If the walk is <em>on</em> when it gets back to the start,
+    and it was on when it left, the last dash and the first dash are touching, and drawn separately
+    they'd get two caps where there should be a join. So join them: the last dash absorbs the first,
+    turning the starting corner as one subpath. If a single dash covers the whole loop, it comes back
+    as the loop, closed. The square in the scenarios does all three: a pattern that ends on a gap and
+    leaves the corner alone, one whose last dash runs into its first, and one dash longer than the
+    perimeter.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>A dash pattern is user data, and two of its legal forms will hang a walk written from
+      intuition. An odd pattern that isn't doubled makes the second cycle start with an off where the
+      first started with an on, so the dashes drift and nobody can say why. A pattern that adds up to
+      zero, <code>[0, 0]</code> or <code>[]</code>, never advances: a walk that takes steps of
+      <code>min(remaining, left)</code> takes steps of zero forever. Both are specified behaviour,
+      double and draw solid, and both are pinned, because the only way to find out your walk hangs is
+      to hand it the pattern that hangs it.</p>
+  </div>
+
+  <figure>
+    <canvas id="fig153" role="img" aria-label="One wavy path stroked four times in rows: solid gray; dashed twelve on six off in orange; the same pattern shifted by a phase of nine in blue; and a dotted line of round pink dots"></canvas>
+    <figcaption><span class="fig">Figure 15.3</span> One wave, four ways: solid, <code>[12, 6]</code>, the same at phase <code>9</code>, and <code>[0, 9]</code> with round caps. The dots are chapter 13's single-point subpaths. Every dash and dot is stroked by the stroker you already had.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter15-closed.feature">
+    <p class="label">features/chapter15-closed.feature</p>
+<pre><code><span class="kw">Feature</span>: Closed subpaths, and starting over
+  Every subpath starts the pattern over from the phase. A closed subpath is
+  walked around its closing segment as well, and if its last dash runs all
+  the way into its first, the two are joined into one dash that turns the
+  starting corner. A dash that covers the whole loop comes back as the loop,
+  closed.
+
+  <span class="kw">Scenario</span>: Each subpath starts the pattern over
+    <span class="kw">Given</span> two ← path()
+    <span class="kw">When</span>  move_to(two, point(0, 0))
+    <span class="kw">And</span>   line_to(two, point(7, 0))
+    <span class="kw">And</span>   move_to(two, point(0, 10))
+    <span class="kw">And</span>   line_to(two, point(20, 10))
+    <span class="kw">And</span>   d ← dash(two, [6, 4], 0)
+    <span class="kw">Then</span>  length(subpaths(d)) = 3
+    <span class="kw">And</span>   subpaths(d)[0].points[1] = point(6, 0)
+    <span class="kw">And</span>   subpaths(d)[1].points[0] = point(0, 10)
+    <span class="kw">And</span>   subpaths(d)[1].points[1] = point(6, 10)
+    <span class="kw">And</span>   subpaths(d)[2].points[0] = point(10, 10)
+    <span class="kw">And</span>   subpaths(d)[2].points[1] = point(16, 10)
+
+  <span class="kw">Scenario</span>: A closed subpath is walked around its closing segment
+    <span class="kw">Given</span> square ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">When</span>  d ← dash(square, [6, 4], 0)
+    <span class="kw">Then</span>  length(subpaths(d)) = 4
+    <span class="kw">And</span>   subpaths(d)[3].points[0] = point(0, 10)
+    <span class="kw">And</span>   subpaths(d)[3].points[1] = point(0, 4)
+    <span class="kw">And</span>   subpaths(d)[3].closed = false
+
+  <span class="kw">Scenario</span>: A last dash that runs into the first is joined to it
+    <span class="kw">Given</span> square ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">When</span>  d ← dash(square, [4, 2], 0)
+    <span class="kw">Then</span>  length(subpaths(d)) = 6
+    <span class="kw">And</span>   subpaths(d)[0].points[0] = point(6, 0)
+    <span class="kw">And</span>   subpaths(d)[0].points[1] = point(10, 0)
+    <span class="kw">And</span>   length(subpaths(d)[5].points) = 3
+    <span class="kw">And</span>   subpaths(d)[5].points[0] = point(0, 4)
+    <span class="kw">And</span>   subpaths(d)[5].points[1] = point(0, 0)
+    <span class="kw">And</span>   subpaths(d)[5].points[2] = point(4, 0)
+    <span class="kw">And</span>   path_length(d) = 28
+
+  <span class="kw">Scenario</span>: A dash that covers the whole loop is the loop, closed
+    <span class="kw">Given</span> square ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">When</span>  d ← dash(square, [100, 1], 0)
+    <span class="kw">Then</span>  length(subpaths(d)) = 1
+    <span class="kw">And</span>   subpaths(d)[0].closed = true
+    <span class="kw">And</span>   length(subpaths(d)[0].points) = 4
+    <span class="kw">And</span>   path_length(d) = 40
+
+  <span class="kw">Scenario</span>: A pattern that ends on a gap at the start leaves the corner alone
+    <span class="kw">Given</span> square ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">When</span>  d ← dash(square, [10, 10], 0)
+    <span class="kw">Then</span>  length(subpaths(d)) = 2
+    <span class="kw">And</span>   subpaths(d)[0].points[0] = point(0, 0)
+    <span class="kw">And</span>   subpaths(d)[1].points[1] = point(0, 10)</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>Illustrator's Stroke panel: <em>Dashed Line</em> turns the walk on, the <em>dash</em> and
+      <em>gap</em> boxes are the pattern, and the second of the two small buttons beside them,
+      <em>Aligns dashes to corners and path ends</em>, stretches the pattern so a corner always lands
+      on a dash: a redistribution pass on top of this chapter. Inkscape's <em>Pattern offset</em> is
+      the phase.</p>
+  </aside>
+
+  <h2><span class="sec">§ 15.5</span> Putting it together</h2>
+
+  <p>The plate needs a path where the parameter would have lied and the arc length doesn't, so it's
+    a spiral: seven quarter circles, each <code>φ</code> times the radius of the last and tangent to
+    it, which is the golden spiral you've seen drawn over nautilus shells. Each quarter is a cubic
+    with the usual <code>0.5523</code> handles, and all seven are flattened into one open subpath, so
+    the walk carries the pattern from the innermost turn to the outermost without a reset. Then dash
+    it, and stroke every dash with a round cap, in the next of three inks. The dashes are the same
+    length on the tight inner turns as on the wide outer sweep, which is the entire point, and the
+    spiral itself is drawn faintly underneath so you can see what was cut.</p>
+
+<pre><code>golden_spiral():
+  p ← path();  r ← 6;  center ← (148, 130);  θ ← π
+  <span class="kw">repeat</span> 7 times:
+    d0 ← (cos θ, sin θ);  d1 ← (cos(θ + π/2), sin(θ + π/2))
+    P0 ← center + r·d0;  P3 ← center + r·d1
+    flatten_into_path(p, cubic(P0, P0 + 0.5523·r·d1, P3 + 0.5523·r·d0, P3), 0.05)
+    r' ← r·φ;  center ← P3 − r'·d1;  r ← r';  θ ← θ + π/2   <span class="cm">// tangent-continuous</span>
+  <span class="kw">return</span> p
+
+spiral_dashes():
+  c ← canvas(340, 340), filled with paper
+  stroke golden_spiral() 1 wide in dim gray
+  <span class="kw">for</span> k, d <span class="kw">in</span> subpaths(dash(golden_spiral(), [16, 10], 0)):
+    stroke d 7 wide, round caps, round joins, in INKS[k mod 3]
+  <span class="kw">return</span> c
+
+plate_15():
+  <span class="kw">return</span> magnify(spiral_dashes(), 2)</code></pre>
+
+  <div class="test" data-feature="chapter15-plate.feature">
+    <p class="label">features/chapter15-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 15
+  even_marks() draws lopsided() twice with eleven marks: at equal steps of
+  the parameter on the left, at equal steps of arc length on the right.
+  dash_strip() strokes one wave four ways: solid, 12 on 6 off, the same at
+  phase 9, and dots (0 on 9 off with round caps). golden_spiral() is seven
+  quarter circles, each phi times the radius of the last, flattened into one
+  open subpath; spiral_dashes() dashes it 16 on 10 off and strokes every
+  dash 7 wide with round caps; plate_15() is it magnified.
+
+  <span class="kw">Scenario</span>: Marks by parameter and by length
+    <span class="kw">Given</span> c ← even_marks()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-15/even-marks.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 400
+    <span class="kw">And</span>   c.height = 120
+    <span class="kw">And</span>   ppm_pixel(p6, 89, 37) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 295, 37) = (124, 196, 237) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 100, 100) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The strip
+    <span class="kw">Given</span> c ← dash_strip()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-15/dash-strip.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 160
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 20) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 20, 140) = (237, 137, 149) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 24, 140) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The spiral is one subpath, and it dashes into seventeen
+    <span class="kw">Given</span> sp ← golden_spiral()
+    <span class="kw">Then</span>  length(subpaths(sp)) = 1
+    <span class="kw">And</span>   path_length(sp) = 427.493 ± 0.01
+    <span class="kw">And</span>   dash_count(sp, [16, 10], 0) = 17
+    <span class="kw">And</span>   subpaths(dash(sp, [16, 10], 0))[0].points[0] = point(142, 130)
+    <span class="kw">And</span>   path_length(dash(sp, [16, 10], 0)) = 267.493 ± 0.01
+
+  <span class="kw">Scenario</span>: The spiral, dashed
+    <span class="kw">Given</span> c ← spiral_dashes()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-15/spiral.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 340
+    <span class="kw">And</span>   c.height = 340
+    <span class="kw">And</span>   ppm_pixel(p6, 142, 130) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 157, 138) = (124, 196, 237) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 20, 20) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 15
+    <span class="kw">Given</span> c ← plate_15()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-15/plate-15.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 680
+    <span class="kw">And</span>   c.height = 680
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate15" role="img" aria-label="A golden spiral on dark paper, cut into seventeen equal dashes with rounded ends, colored in turn orange, blue and red, from a tight center out to a wide final sweep; the uncut spiral shows faintly beneath"></canvas>
+    <figcaption><span class="fig">Plate 15</span> A dash pattern walked along a spiral by arc length, with round caps on every dash. Sixteen on, ten off, from the innermost turn to the outermost, and every dash the same length.</figcaption>
+  </figure>
+
+  <p>That's Part IV. Three chapters, and the rasterizer from chapter 7 is still the only thing that
+    touches a pixel: a stroke is a path you build, an offset is a path you fit, a dash is a path you
+    cut. Part V hands you paths somebody else authored, thousands of them, with rules about how they
+    sit next to each other. They're called glyphs.</p>
+
+  <nav class="endnav">
+    <a href="chapter-14.html">← 14 · Offsetting Curves</a>
+    <span>Chapter 15 · Dashes</span>
+    <span>Next: 16 · Glyphs (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+function toByte(light){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255+0.5);}
+function lerp3(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+function blit(ctx,pixels,pw,ph,scale,ox,oy){var img=ctx.createImageData(pw,ph);for(var i=0;i<pw*ph;i++){img.data[i*4]=pixels[i][0];img.data[i*4+1]=pixels[i][1];img.data[i*4+2]=pixels[i][2];img.data[i*4+3]=255;}var off=Plate.offcan(pw,ph);off.getContext('2d').putImageData(img,0,0);ctx.imageSmoothingEnabled=false;ctx.drawImage(off,ox,oy,pw*scale,ph*scale);}
+
+/* 2D vector helpers (chapter 13) */
+function sub(a,b){return [a[0]-b[0],a[1]-b[1]];}
+function mag(v){return Math.sqrt(v[0]*v[0]+v[1]*v[1]);}
+function unit(a,b){var d=sub(b,a),m=mag(d);return [d[0]/m,d[1]/m];}
+function perp(v){return [-v[1],v[0]];}
+function crss(a,b){return a[0]*b[1]-a[1]*b[0];}
+function add(p,v,s){return [p[0]+v[0]*s,p[1]+v[1]*s];}
+function intersect(p1,d1,p2,d2){var den=crss(d1,d2);if(Math.abs(den)<1e-12)return null;var t=crss(sub(p2,p1),d2)/den;return add(p1,d1,t);}
+function arc(pts,c,a0,a1,r,steps){for(var k=0;k<=steps;k++){var a=a0+(a1-a0)*k/steps;pts.push([c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)]);}}
+function arcSteps(a0,a1){return Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/16)));}
+function angBetween(a,b){var d=((b-a)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);return d>Math.PI?d-2*Math.PI:d;}
+
+/* curves (chapter 8) */
+function lerpP(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];}
+function decasteljau(pts,t){var left=[pts[0]],right=[pts[pts.length-1]],p=pts.slice();while(p.length>1){var q=[];for(var i=0;i<p.length-1;i++)q.push(lerpP(p[i],p[i+1],t));p=q;left.push(p[0]);right.push(p[p.length-1]);}return {at:p[0],left:left,right:right.reverse()};}
+function pointAt(c,t){return decasteljau(c,t).at;}
+function flatness(c){var a=c[0],b=c[c.length-1],dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy),w=0;for(var i=1;i<c.length-1;i++){var p=c[i],d=L===0?Math.hypot(p[0]-a[0],p[1]-a[1]):Math.abs((p[0]-a[0])*dy-(p[1]-a[1])*dx)/L;w=Math.max(w,d);}return w;}
+function flattenInto(c,tol,out){if(flatness(c)<=tol)out.push(c[c.length-1]);else{var d=decasteljau(c,0.5);flattenInto(d.left,tol,out);flattenInto(d.right,tol,out);}}
+function flatten(c,tol){var out=[c[0]];flattenInto(c,tol,out);return out;}
+function flattenIntoPath(pts,c,tol){var f=flatten(c,tol);if(pts.length&&pts[pts.length-1][0]===f[0][0]&&pts[pts.length-1][1]===f[0][1])f=f.slice(1);return pts.concat(f);}
+
+/* chapter 15: length along a curve */
+function arcLengthTable(c,n){var t=[0],prev=pointAt(c,0);for(var i=1;i<=n;i++){var q=pointAt(c,i/n);t.push(t[t.length-1]+mag(sub(q,prev)));prev=q;}return t;}
+function tAtLength(table,s){var n=table.length-1;if(s<=0)return 0;if(s>=table[n])return 1;var lo=0,hi=n;while(hi-lo>1){var mid=(lo+hi)>>1;if(table[mid]<=s)lo=mid;else hi=mid;}var span=table[lo+1]-table[lo],frac=span>0?(s-table[lo])/span:0;return (lo+frac)/n;}
+function pointAtLength(c,s,n){return pointAt(c,tAtLength(arcLengthTable(c,n),s));}
+
+/* chapter 15: the walk. a path is a list of {pts, closed}; dashes come back as open subpaths */
+function normalizePattern(pat){var sum=0,neg=false;pat.forEach(function(v){sum+=v;if(v<0)neg=true;});if(neg||sum<=0)return [];return pat.length%2?pat.concat(pat):pat.slice();}
+function dash(path,pattern,phase){var pat=normalizePattern(pattern);if(!pat.length)return path.map(function(sp){return {pts:sp.pts.slice(),closed:sp.closed};});
+  var n=pat.length,total=0;pat.forEach(function(v){total+=v;});var out=[];
+  path.forEach(function(sp){var pts=sp.pts.slice();if(sp.closed&&pts.length>1)pts.push(pts[0]);
+    var i=0,remaining=pat[0],on=true,ph=((phase%total)+total)%total;
+    while(ph>0){if(ph>=remaining){ph-=remaining;i=(i+1)%n;remaining=pat[i];on=!on;}else{remaining-=ph;ph=0;}}
+    var first=out.length,cur=null;
+    for(var k=0;k<pts.length-1;k++){var a=pts[k],b=pts[k+1],seg=mag(sub(b,a));if(seg<1e-9)continue;var pos=0;
+      while(pos<seg){var step=Math.min(remaining,seg-pos);
+        if(on){if(!cur){cur={pts:[lerpP(a,b,pos/seg)],closed:false};out.push(cur);}if(step>0)cur.pts.push(lerpP(a,b,(pos+step)/seg));}
+        pos+=step;remaining-=step;
+        if(remaining<=1e-9){i=(i+1)%n;remaining=pat[i];on=!on;cur=null;}}}
+    var dashes=out.slice(first);
+    if(sp.closed&&dashes.length){var head=dashes[0],tail=dashes[dashes.length-1];
+      if(mag(sub(head.pts[0],pts[0]))<1e-9&&mag(sub(tail.pts[tail.pts.length-1],pts[0]))<1e-9){
+        if(head===tail){tail.pts.pop();tail.closed=true;}else{tail.pts=tail.pts.concat(head.pts.slice(1));out.splice(first,1);}}}});
+  return out;}
+
+/* the stroker (chapter 13) */
+function segRect(a,b,h){var d=unit(a,b),n=perp(d);return [add(a,n,h),add(b,n,h),add(b,n,-h),add(a,n,-h)];}
+function joinShape(v,din,dout,h,join,ml){var turn=crss(din,dout);if(Math.abs(turn)<1e-12)return null;var s=turn>0?-1:1,nin=perp(din).map(function(x){return x*s;}),nout=perp(dout).map(function(x){return x*s;}),a=add(v,nin,h),b=add(v,nout,h);
+  if(join==='bevel')return [v,a,b];
+  if(join==='round'){var a0=Math.atan2(a[1]-v[1],a[0]-v[0]),a1=a0+angBetween(a0,Math.atan2(b[1]-v[1],b[0]-v[0]));var p=[v];arc(p,v,a0,a1,h,arcSteps(a0,a1));return p;}
+  var m=intersect(a,din,b,dout);if(m&&mag(sub(m,v))<=ml*h)return [v,a,m,b];return [v,a,b];}
+function capShape(p,dout,h,cap){var n=perp(dout);if(cap==='butt')return null;
+  if(cap==='square'){var l=add(p,n,h),r=add(p,n,-h);return [l,add(l,dout,h),add(r,dout,h),r];}
+  var a0=Math.atan2(n[1],n[0]),d=angBetween(a0,Math.atan2(dout[1],dout[0]));var a1=a0+(d>0?Math.PI:-Math.PI),pts=[];arc(pts,p,a0,a1,h,arcSteps(a0,a1));return pts;}
+function dedupe(pts){var o=[pts[0]];for(var i=1;i<pts.length;i++)if(mag(sub(pts[i],o[o.length-1]))>1e-9)o.push(pts[i]);return o;}
+function area(sp){var s=0;for(var i=0;i<sp.length;i++){var a=sp[i],b=sp[(i+1)%sp.length];s+=a[0]*b[1]-b[0]*a[1];}return s/2;}
+function strokeToPath(pts,closed,width,cap,join,ml){var h=width/2,subs=[];pts=dedupe(pts);
+  function emit(sp){if(!sp)return;if(area(sp)>0)sp.reverse();subs.push(sp);}
+  if(pts.length<2){if(cap==='round'){var d=[];arc(d,pts[0],0,2*Math.PI,h,48);emit(d);}else if(cap==='square'){var c=pts[0];emit([[c[0]-h,c[1]-h],[c[0]+h,c[1]-h],[c[0]+h,c[1]+h],[c[0]-h,c[1]+h]]);}return subs;}
+  var segs=[];for(var i=0;i<pts.length-1;i++)segs.push([pts[i],pts[i+1]]);if(closed)segs.push([pts[pts.length-1],pts[0]]);
+  segs.forEach(function(s){emit(segRect(s[0],s[1],h));});
+  var dirs=segs.map(function(s){return unit(s[0],s[1]);}),nj=closed?segs.length:segs.length-1;
+  for(var k=0;k<nj;k++){var v=segs[(k+1)%segs.length][0];emit(joinShape(v,dirs[k],dirs[(k+1)%segs.length],h,join,ml));}
+  if(!closed){emit(capShape(pts[0],dirs[0].map(function(x){return -x;}),h,cap));emit(capShape(pts[pts.length-1],dirs[dirs.length-1],h,cap));}
+  return subs;}
+function strokePath(path,width,cap,join){var subs=[];path.forEach(function(sp){subs=subs.concat(strokeToPath(sp.pts,sp.closed,width,cap,join,4));});return subs;}
+
+/* fill a list of subpaths (chapter 7, nonzero) into a coverage array */
+function edgesOf(subs){var out=[];subs.forEach(function(sp){var n=sp.length;for(var i=0;i<n;i++)out.push([sp[i],sp[(i+1)%n]]);});return out;}
+function fillSubs(subs,w,h){var acc={area:new Array(w*h).fill(0),cover:new Array(w*h).fill(0)};edgesOf(subs).forEach(function(e){var a=e[0],b=e[1];if(a[1]===b[1])return;var sign=a[1]>b[1]?1:-1,top=a[1]>b[1]?b:a,bot=a[1]>b[1]?a:b,slope=(bot[0]-top[0])/(bot[1]-top[1]);var first=Math.max(Math.floor(top[1]),0),last=Math.min(Math.ceil(bot[1])-1,h-1);for(var row=first;row<=last;row++){var y0=Math.max(top[1],row),y1=Math.min(bot[1],row+1),x0=top[0]+(y0-top[1])*slope,x1=top[0]+(y1-top[1])*slope,xa=Math.min(x0,x1),xb=Math.max(x0,x1),ca=Math.floor(xa),cb=Math.floor(xb);function ad(x,ar,co){if(x<0){x=0;ar=co;}if(x>=w)return;var idx=row*w+x;acc.area[idx]+=ar;acc.cover[idx]+=co;}var hg=sign*(y1-y0);if(ca===cb){var xm=(xa+xb)/2-ca;ad(ca,hg*(1-xm),hg);}else{var dx=xb-xa;for(var c=ca;c<=cb;c++){var lo=Math.max(xa,c),hi=Math.min(xb,c+1),sh=hg*(hi-lo)/dx,mm=(lo+hi)/2-c;ad(c,sh*(1-mm),sh);}}}});var cov=new Array(w*h).fill(0);for(var row=0;row<h;row++){var run=0;for(var x=0;x<w;x++){var idx=row*w+x;cov[idx]=Math.min(1,Math.abs(run+acc.area[idx]));run+=acc.cover[idx];}}return cov;}
+
+/* a paint buffer */
+var PAPER=[0.02,0.02,0.025],GRAY=[0.62,0.62,0.66],DIM=[0.25,0.25,0.28],INKS=[[0.9,0.55,0.1],[0.2,0.55,0.85],[0.85,0.25,0.3]];
+var PHI=(1+Math.sqrt(5))/2,KAPPA=0.5522847498;
+function Buf(w,h){this.w=w;this.h=h;this.p=[];for(var i=0;i<w*h;i++)this.p.push(PAPER.slice());}
+Buf.prototype.paint=function(cov,col){for(var i=0;i<this.w*this.h;i++){var k=cov[i];if(k>0)this.p[i]=lerp3(this.p[i],col,k);}};
+Buf.prototype.stroke=function(path,width,col,cap,join){this.paint(fillSubs(strokePath(path,width,cap||'butt',join||'round'),this.w,this.h),col);};
+Buf.prototype.dot=function(q,r,col){var pts=[];for(var k=0;k<24;k++){var a=2*Math.PI*k/24;pts.push([q[0]+r*Math.cos(a),q[1]+r*Math.sin(a)]);}this.paint(fillSubs([pts],this.w,this.h),col);};
+Buf.prototype.bytes=function(){return this.p.map(function(c){return c.map(toByte);});};
+function sideBySide(a,b,w,h){var o=new Array(2*w*h);for(var y=0;y<h;y++)for(var x=0;x<w;x++){o[y*2*w+x]=a[y*w+x];o[y*2*w+w+x]=b[y*w+x];}return {bytes:o,w:2*w,h:h};}
+
+function lopsided(){return [[15,100],[20,20],[150,15],[185,95]];}
+function evenMarks(){var W=200,H=120,c=lopsided(),left=new Buf(W,H),right=new Buf(W,H),spine=[{pts:flattenIntoPath([],c,0.1),closed:false}];
+  left.stroke(spine,1.5,DIM);right.stroke(spine,1.5,DIM);var L=arcLengthTable(c,256)[256];
+  for(var i=0;i<=10;i++){left.dot(pointAt(c,i/10),3,INKS[0]);right.dot(pointAtLength(c,L*i/10,256),3,INKS[1]);}
+  return sideBySide(left.bytes(),right.bytes(),W,H);}
+function wave(dy){return [{pts:flattenIntoPath([],[[20,20+dy],[120,-20+dy],[200,60+dy],[300,20+dy]],0.1),closed:false}];}
+function dashStrip(){var b=new Buf(320,160),rows=[[[],0,'butt',GRAY],[[12,6],0,'butt',INKS[0]],[[12,6],9,'butt',INKS[1]],[[0,9],0,'round',INKS[2]]];
+  rows.forEach(function(r,k){b.stroke(dash(wave(40*k),r[0],r[1]),5,r[3],r[2]);});return {bytes:b.bytes(),w:320,h:160};}
+function goldenSpiral(){var pts=[],r=6,cx=148,cy=130,theta=Math.PI;
+  for(var k=0;k<7;k++){var a0=theta,a1=theta+Math.PI/2,d0=[Math.cos(a0),Math.sin(a0)],d1=[Math.cos(a1),Math.sin(a1)],p0=[cx+r*d0[0],cy+r*d0[1]],p3=[cx+r*d1[0],cy+r*d1[1]],p1=[p0[0]+KAPPA*r*d1[0],p0[1]+KAPPA*r*d1[1]],p2=[p3[0]+KAPPA*r*d0[0],p3[1]+KAPPA*r*d0[1]];
+    pts=flattenIntoPath(pts,[p0,p1,p2,p3],0.05);var nr=r*PHI;cx=p3[0]-nr*d1[0];cy=p3[1]-nr*d1[1];r=nr;theta=a1;}
+  return [{pts:pts,closed:false}];}
+function spiralDashes(){var W=340,H=340,b=new Buf(W,H),sp=goldenSpiral();b.stroke(sp,1.0,DIM);
+  dash(sp,[16,10],0).forEach(function(d,k){b.stroke([d],7,INKS[k%3],'round');});return {bytes:b.bytes(),w:W,h:H};}
+
+/* ---------- Figure 15.1 — marks by parameter and by length ---------- */
+Plate.add('fig151', 0.3, function (ctx, w, h, p) {
+  var g=evenMarks(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,(h-g.h*sc)/2);
+});
+
+/* ---------- Figure 15.2 — the walk ---------- */
+Plate.add('fig152', 0.42, function (ctx, w, h, p) {
+  var path=[{pts:[[0.08*w,0.78*h],[0.5*w,0.78*h],[0.86*w,0.22*h]],closed:false}],pat=[0.13*w,0.06*w],phase=0.05*w;
+  function poly(pts){ctx.beginPath();pts.forEach(function(q,i){i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]);});ctx.stroke();}
+  ctx.lineWidth=1;ctx.strokeStyle=p.ink3;ctx.setLineDash([3,3]);poly(path[0].pts);ctx.setLineDash([]);
+  ctx.lineWidth=7;ctx.lineCap='butt';ctx.lineJoin='round';ctx.strokeStyle=p.cyan;dash(path,pat,phase).forEach(function(d){poly(d.pts);});
+  /* ticks at every pattern boundary */
+  var pts=path[0].pts,pos=-phase,k=0;ctx.strokeStyle=p.ink;ctx.lineWidth=1;
+  var seg=[],total=0;for(var i=0;i<pts.length-1;i++){var L=mag(sub(pts[i+1],pts[i]));seg.push(L);total+=L;}
+  while(pos<total){if(pos>0){var s=pos,i=0;while(s>seg[i]){s-=seg[i];i++;}var a=pts[i],b=pts[i+1],d=unit(a,b),q=add(a,d,s),n=perp(d);ctx.beginPath();ctx.moveTo(q[0]+n[0]*8,q[1]+n[1]*8);ctx.lineTo(q[0]-n[0]*8,q[1]-n[1]*8);ctx.stroke();}pos+=pat[k%2];k++;}
+  Plate.label(ctx,'phase',pts[0][0]+2,pts[0][1]+24,p.ink2,10);Plate.label(ctx,'on',pts[0][0]+0.13*w,pts[0][1]-12,p.cyan,10,'center');Plate.label(ctx,'off',pts[0][0]+0.22*w,pts[0][1]-12,p.ink2,10,'center');
+  Plate.label(ctx,'the dash turns the corner',pts[1][0]+10,pts[1][1]+22,p.ink2,10);
+});
+
+/* ---------- Figure 15.3 — the strip ---------- */
+Plate.add('fig153', 0.5, function (ctx, w, h, p) {
+  var g=dashStrip(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,(h-g.h*sc)/2);
+});
+
+/* ---------- Plate 15 — the spiral ---------- */
+Plate.add('plate15', 1.0, function (ctx, w, h, p) {
+  var g=spiralDashes(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,0);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, sub, mag, unit, perp, crss, add, intersect, arc, arcSteps, angBetween, lerpP, decasteljau, pointAt, flatness, flattenInto, flatten, flattenIntoPath, arcLengthTable, tAtLength, pointAtLength, normalizePattern, dash, segRect, joinShape, capShape, dedupe, area, strokeToPath, strokePath, edgesOf, fillSubs, Buf, sideBySide, lopsided, evenMarks, wave, dashStrip, goldenSpiral, spiralDashes].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>

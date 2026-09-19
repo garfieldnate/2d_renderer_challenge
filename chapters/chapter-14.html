@@ -1,0 +1,754 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 14 · Offsetting Curves — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 14 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-13.html">← 13</a> · <a href="#plate">Plate&nbsp;14</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Fourteen</p>
+    <h1>Offsetting Curves</h1>
+    <p class="hook">Stroke a curve with the stroker you have. The curve gets flattened on the way in,
+      chapter 13 sees a polyline of forty short segments, and what comes back is forty rectangles,
+      thirty-nine round joins and two caps: 172 points, to describe a shape whose true boundary is
+      two smooth curves and two flat ends. It looks right. It's also the reason Illustrator's
+      <em>Offset Path</em> gives you back curves and your renderer gives you back gravel. This
+      chapter builds the real thing: the curve that runs parallel to a Bézier at a fixed distance.
+      There's a catch, and it's not a small one. That curve isn't a Bézier. It isn't a polynomial of
+      any degree. Nobody can write it down, so everybody approximates it and rounds the fact off,
+      and knowing exactly how they do that is worth a chapter.</p>
+  </header>
+
+  <p>Why it can't be exact is easy to see once you write it out. The offset of a curve
+    <code>p(t)</code> at distance <code>d</code> is <code>p(t) + d·n(t)</code>, where <code>n</code>
+    is the unit normal. The normal is the tangent turned a quarter turn and divided by its length,
+    and that length is a square root. A cubic's tangent is a quadratic; its length is the square root
+    of a quartic; and no polynomial has a square root of a quartic in it. So the offset is a genuinely
+    different kind of curve, and a cubic can only ever come <em>close</em> to it. "Close within a
+    tolerance" is not a compromise here. It's the only answer there is.</p>
+
+  <h2><span class="sec">§ 14.1</span> The offset point</h2>
+
+  <p>One point at a time, though, the offset is easy. At any <code>t</code> you have the point from
+    chapter 8's <code>point_at</code> and the tangent from <code>derivative</code>. Normalize the
+    tangent, turn it a quarter turn toward <code>+y</code>, and you have the unit normal. Which side
+    is that? On the y-down canvas, turning a rightward tangent toward <code>+y</code> points it
+    <em>down</em>, which is the right-hand side of someone walking along the curve on screen, and it's
+    the same <code>+h</code> side chapter 13's rectangles used. Positive <code>d</code> is the right of
+    travel; negative is the left. The scenarios pin both, on a straight cubic where you can check the
+    answer by hand and on a cubic that bottoms out at <code>(2, 3)</code>, where <code>d = 1</code> lands
+    at <code>(2, 4)</code> and <code>d = −1</code> at <code>(2, 2)</code>.</p>
+
+  <figure>
+    <canvas id="fig141" role="img" aria-label="A cubic curve with short normal ticks at several parameters, each tick ending at the offset point on both sides; the offset points on each side connect into a curve parallel to the original"></canvas>
+    <figcaption><span class="fig">Figure 14.1</span> The offset point. At each <code>t</code>, step <code>d</code> along the unit normal. Positive <code>d</code> is the right-hand side of travel on screen. String the points together and you have the offset curve, which is not a curve you can write down.</figcaption>
+  </figure>
+
+  <p>One thing will bite you the first time a real file arrives. Illustrator, when a handle isn't
+    being used, drops it exactly on its anchor, and a cubic whose first control point equals its
+    first anchor has a derivative of zero at <code>t = 0</code>. You can't normalize a zero. The curve
+    still leaves its start in a perfectly definite direction; it does so at zero speed. So when the
+    derivative vanishes at the parameter you asked for, take the direction a hair further into the
+    curve instead: <code>t + 0.0001</code> at the start, <code>t − 0.0001</code> at the end. The
+    scenario stalls a cubic on its first anchor and checks that the offset point still comes out where
+    the geometry says.</p>
+
+  <div class="test" data-feature="chapter14-offset.feature">
+    <p class="label">features/chapter14-offset.feature</p>
+<pre><code><span class="kw">Feature</span>: The offset point
+  tangent_at(c, t) is the unit tangent of a curve, normal_at(c, t) is that
+  tangent turned a quarter turn toward +y, which on the y-down canvas is the
+  right-hand side of travel and chapter 13's +h side, and offset_point(c, t,
+  d) is the point d along the normal. Positive d is the right-hand side.
+  Where a handle sits on its anchor the derivative is zero there, and the
+  direction is taken a hair further into the curve instead.
+
+  <span class="kw">Scenario</span>: The normal is the tangent turned toward +y
+    <span class="kw">Given</span> q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
+    <span class="kw">Then</span>  tangent_at(q, 0) = vector(0.447214, 0.894427)
+    <span class="kw">And</span>   normal_at(q, 0) = vector(-0.894427, 0.447214)
+    <span class="kw">And</span>   tangent_at(q, 0.5) = vector(1, 0)
+    <span class="kw">And</span>   normal_at(q, 0.5) = vector(0, 1)
+
+  <span class="kw">Scenario</span>: Offsetting a straight curve gives the parallel line
+    <span class="kw">Given</span> line ← cubic(point(0, 0), point(1, 1), point(2, 2), point(3, 3))
+    <span class="kw">Then</span>  offset_point(line, 0, 1) = point(-0.707107, 0.707107)
+    <span class="kw">And</span>   offset_point(line, 0.5, sqrt(2)) = point(0.5, 2.5)
+    <span class="kw">And</span>   offset_point(line, 1, -1) = point(3.707107, 2.292893)
+
+  <span class="kw">Scenario</span>: Positive d is below a rightward tangent, negative is above
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">Then</span>  point_at(c, 0.5) = point(2, 3)
+    <span class="kw">And</span>   offset_point(c, 0.5, 1) = point(2, 4)
+    <span class="kw">And</span>   offset_point(c, 0.5, -1) = point(2, 2)
+
+  <span class="kw">Scenario</span>: Offsetting a circle moves it to another circle about the same center
+    <span class="kw">Given</span> arc ← cubic(point(100, 0), point(100, 55.2285), point(55.2285, 100), point(0, 100))
+    <span class="kw">Then</span>  magnitude(offset_point(arc, 0.5, 10) - point(0, 0)) = 90 ± 0.05
+    <span class="kw">And</span>   magnitude(offset_point(arc, 0.25, -10) - point(0, 0)) = 110 ± 0.05
+    <span class="kw">And</span>   magnitude(offset_point(arc, 0, 10) - point(0, 0)) = 90 ± 0.0001
+
+  <span class="kw">Scenario</span>: A handle sitting on its anchor still has a direction
+    <span class="kw">Given</span> stalled ← cubic(point(0, 0), point(0, 0), point(4, 4), point(4, 0))
+    <span class="kw">Then</span>  offset_point(stalled, 0, 1) = point(-0.707107, 0.707107) ± 0.001</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 14.2</span> Curvature, and where the offset stalls</h2>
+
+  <p>Take the derivative of the offset and something useful falls out. The point moves at the
+    curve's speed. The normal turns as the curve bends, and how fast it turns is, by definition, the
+    curvature. Put the two together and the offset at distance <code>d</code> moves at
+    <code>(1 − κd)</code> times the speed of the curve, where <code>κ</code> is the signed curvature.
+    That one factor explains everything that goes wrong in this chapter. On the outside of a bend
+    <code>κd</code> is negative and the offset runs faster than the curve, which is harmless. On the
+    inside it's positive and the offset slows down. When <code>d</code> reaches
+    <code>1/κ</code>, which is the radius of the circle hugging the curve at that point, the offset
+    stops dead. Beyond it, the factor goes negative and the offset runs <em>backward</em>: it
+    doubles back through itself and draws a little loop, a swallowtail, pointing the wrong way. You'll
+    see one in every drawing program that offsets a tight bend, and Plate 14 has three.</p>
+
+  <p>You need curvature as a number, then. For a parametric curve it's
+    <code>κ = cross(v, a) / |v|³</code>, with <code>v</code> the first derivative and <code>a</code>
+    the second. The second derivative of a Bézier is the same trick as the first, one degree further
+    down: a quadratic's second derivative is the constant <code>2·(P0 − 2P1 + P2)</code>, and a
+    cubic's is the straight-line blend
+    <code>6·((1 − t)·(P0 − 2P1 + P2) + t·(P1 − 2P2 + P3))</code>. The sign of <code>κ</code>
+    follows chapter 4's <code>cross</code>: positive where the curve turns clockwise on screen. That's
+    the same side positive <code>d</code> points to, which is why the stall condition reads
+    <code>κd = 1</code> and not <code>−1</code>: positive curvature and positive <code>d</code> are
+    both the clockwise side, so their product is positive on the inside of a turn.</p>
+
+  <figure>
+    <canvas id="fig142" role="img" aria-label="A curve with a tight bend and three inner offsets: at less than the radius the offset is a smooth parallel curve; at exactly the radius it comes to a point; beyond the radius it crosses itself in a swallowtail loop"></canvas>
+    <figcaption><span class="fig">Figure 14.2</span> The stall. Inside the bend, the offset moves at <code>(1 − κd)</code> times the curve's speed. Below the radius it's a smooth parallel; at the radius it comes to a point; past the radius it runs backward and draws a swallowtail.</figcaption>
+  </figure>
+
+  <p>The parameters where the offset stalls are the <em>cusps</em>, and you'll need them, because
+    no single smooth curve can be fitted through a point where the direction flips. Finding them is
+    a root problem: where does <code>1 − κ(t)·d</code> change sign? There's no closed form for that
+    either, so <code>cusps(c, d)</code> does the honest thing: evaluate it at 64 evenly spaced
+    parameters, and wherever two neighbours disagree in sign, bisect between them forty times. Two
+    cusps closer together than <code>1/64</code> of the parameter range can hide between samples; a
+    fold that small is narrower than anything you'll draw. The parabola in the scenarios has
+    curvature <code>−1</code> at its vertex, so the offset on its inside (the <code>−d</code> side,
+    since the parabola turns counterclockwise) stalls the moment <code>d</code> passes <code>1</code>,
+    and at <code>d = −2</code> the two cusps sit where the curvature is exactly
+    <code>−1/2</code>.</p>
+
+  <div class="test" data-feature="chapter14-curvature.feature">
+    <p class="label">features/chapter14-curvature.feature</p>
+<pre><code><span class="kw">Feature</span>: Curvature, and where the offset stalls
+  second_derivative(c, t) is the Bezier of second differences of the control
+  points, and curvature(c, t) = cross(v, a) / |v|^3 with v the derivative and
+  a the second derivative: signed like cross, positive where the curve turns
+  clockwise on screen, and 1 / |curvature| is the radius of the circle that
+  hugs the curve there. The offset at distance d moves at (1 - curvature * d)
+  times the curve's speed, so on the inside of a turn it slows, stalls where
+  d equals the radius, and runs backward beyond. cusps(c, d) finds the
+  parameters where that factor changes sign: between 64 evenly spaced
+  samples, bisected 40 times.
+
+  <span class="kw">Scenario</span>: The second derivative of a quadratic is constant, a cubic's is linear
+    <span class="kw">Given</span> q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
+    <span class="kw">And</span>   c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">Then</span>  second_derivative(q, 0) = vector(0, -16)
+    <span class="kw">And</span>   second_derivative(q, 0.5) = vector(0, -16)
+    <span class="kw">And</span>   second_derivative(c, 0) = vector(24, -24)
+    <span class="kw">And</span>   second_derivative(c, 0.5) = vector(0, -24)
+    <span class="kw">And</span>   second_derivative(c, 1) = vector(-24, -24)
+
+  <span class="kw">Scenario</span>: Curvature is signed like the cross product and its reciprocal is a radius
+    <span class="kw">Given</span> q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
+    <span class="kw">And</span>   c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">And</span>   line ← cubic(point(0, 0), point(1, 1), point(2, 2), point(3, 3))
+    <span class="kw">And</span>   arc ← cubic(point(100, 0), point(100, 55.2285), point(55.2285, 100), point(0, 100))
+    <span class="kw">Then</span>  curvature(q, 0.5) = -1
+    <span class="kw">And</span>   curvature(q, 0) = -0.089443
+    <span class="kw">And</span>   curvature(c, 0.5) = -0.666667
+    <span class="kw">And</span>   curvature(line, 0.5) = 0
+    <span class="kw">And</span>   curvature(arc, 0.5) = 0.009938 ± 0.0001
+    <span class="kw">And</span>   curvature(arc, 0) = 0.009786 ± 0.0001
+
+  <span class="kw">Scenario</span>: The offset stalls where d reaches the radius, on the inside of the turn
+    <span class="kw">Given</span> q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
+    <span class="kw">Then</span>  length(cusps(q, -0.5)) = 0
+    <span class="kw">And</span>   length(cusps(q, 2)) = 0
+    <span class="kw">And</span>   length(cusps(q, -2)) = 2
+    <span class="kw">And</span>   cusps(q, -2)[0] = 0.308395 ± 0.0001
+    <span class="kw">And</span>   cusps(q, -2)[1] = 0.691605 ± 0.0001
+    <span class="kw">And</span>   curvature(q, cusps(q, -2)[0]) = -0.5 ± 0.0001
+
+  <span class="kw">Scenario</span>: A wider offset stalls sooner
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">Then</span>  length(cusps(c, -1)) = 0
+    <span class="kw">And</span>   length(cusps(c, -1.5)) = 0
+    <span class="kw">And</span>   length(cusps(c, -2)) = 2
+    <span class="kw">And</span>   cusps(c, -2)[0] = 0.30334 ± 0.0001
+    <span class="kw">And</span>   cusps(c, -2)[1] = 0.69666 ± 0.0001</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 14.3</span> Fitting one cubic, and admitting the miss</h2>
+
+  <p>Now to approximate. The plan is the one every real renderer uses: fit a cubic to a piece of
+    the offset, measure how far off it is, and if it's too far, cut the piece in half and fit each half.
+    The fit itself is small. You know where the offset starts and ends (two offset points) and which
+    way it's heading at each end (the curve's own tangents, because a parallel curve has parallel
+    tangents). That fixes the cubic's two anchors and the <em>directions</em> of its two handles.
+    What's left is how long each handle is, two unknowns, and one more fact pins them: the fitted
+    cubic should pass through the offset point at <code>t = 0.5</code> when its own <code>t</code>
+    is <code>0.5</code>. A cubic's midpoint is <code>(P0 + 3P1 + 3P2 + P3)/8</code>. Write
+    <code>P1 = P0 + a·T0</code> and <code>P2 = P3 − b·T1</code>, set the midpoint equal to the target
+    <code>M</code>, and it collapses to two equations in two unknowns:</p>
+
+<pre><code>fit_offset(c, d):
+  P0 ← offset_point(c, 0, d);  P3 ← offset_point(c, 1, d)
+  T0 ← tangent_at(c, 0);       T1 ← tangent_at(c, 1)
+  M  ← offset_point(c, 0.5, d)
+  R  ← (8M − 4P0 − 4P3) / 3          <span class="cm">// so that a·T0 − b·T1 = R</span>
+  <span class="kw">if</span> |cross(T0, T1)| &lt; 1e-9:          <span class="cm">// parallel tangents: no unique answer</span>
+    a ← b ← |P3 − P0| / 3
+  <span class="kw">else</span>:
+    a ← cross(R, T1) / cross(T0, T1)
+    b ← cross(R, T0) / cross(T0, T1)
+  <span class="kw">return</span> cubic(P0, P0 + a·T0, P3 − b·T1, P3)</code></pre>
+
+  <p>Cross both sides of <code>a·T0 − b·T1 = R</code> with <code>T1</code> and the <code>b</code>
+    term vanishes; cross with <code>T0</code> and the <code>a</code> term does. When the two tangents
+    are parallel, the equation has no unique solution, and it doesn't deserve one: the piece is either
+    straight, in which case a third of the chord for each handle is exactly right, or it's a U-turn,
+    in which case no single cubic is going to fit and the error check below will say so loudly. The
+    scenarios pin both: the straight line's fit is exact, and the U-turn's fit misses by
+    <code>2.5</code>.</p>
+
+  <p>How to measure the miss is a choice. The cheap way is at matched parameters: at
+    <code>t = 0, 1/16, …, 1</code>, compare the fitted point to the true offset point and take the
+    worst. That's <code>offset_error</code>. It's cheap, it's deterministic, and it's a bound: the
+    fitted point can't be further from the offset curve than it is from one particular point on it.
+    It's also pessimistic, because the two curves don't run at the same speed, so it flags pieces that
+    are geometrically fine and makes the subdivision below cut a little more than it strictly needs
+    to. The honest measure is the distance from a point to the curve, and you'll want that anyway.
+    <code>distance_to_curve(c, p)</code> has no closed form either (it's a quintic for a cubic), so
+    it's sampling again: the nearest of 65 samples at <code>t = i/64</code>, then 32 rounds of ternary
+    search between that sample's two neighbours, which narrows the bracket to a millionth. The
+    scenarios pin it on a straight line, where the answer is a perpendicular; past the end of a line,
+    where it's the distance to the endpoint; and below a parabola's vertex, where the nearest point is
+    not the vertex, and the answer happens to be <code>√3</code>.</p>
+
+  <div class="test" data-feature="chapter14-fit.feature">
+    <p class="label">features/chapter14-fit.feature</p>
+<pre><code><span class="kw">Feature</span>: Fitting a cubic to the offset
+  fit_offset(c, d) is one cubic that starts and ends at the curve's offset
+  points with the curve's own end tangents, its two handle lengths solved so
+  that it passes through the offset point at t = 0.5 when its own t is 0.5.
+  <span class="kw">When</span> the end tangents are parallel that solve has no answer and both
+  handles are a third of the chord. offset_error(c, d, fitted) is the
+  largest miss over 17 matched parameters t = i / 16. distance_to_curve(c, p)
+  is the honest measure of anything: the nearest of 65 samples at t = i / 64,
+  refined by 32 rounds of ternary search between that sample's neighbours.
+
+  <span class="kw">Scenario</span>: The fit of a straight curve is exact
+    <span class="kw">Given</span> line ← cubic(point(0, 0), point(1, 1), point(2, 2), point(3, 3))
+    <span class="kw">When</span>  f ← fit_offset(line, 1)
+    <span class="kw">Then</span>  f.points[0] = point(-0.707107, 0.707107)
+    <span class="kw">And</span>   f.points[1] = point(0.292893, 1.707107)
+    <span class="kw">And</span>   f.points[3] = point(2.292893, 3.707107)
+    <span class="kw">And</span>   offset_error(line, 1, f) = 0
+
+  <span class="kw">Scenario</span>: The fit of a quarter circle lands its handles on the offset circle
+    <span class="kw">Given</span> arc ← cubic(point(100, 0), point(100, 55.2285), point(55.2285, 100), point(0, 100))
+    <span class="kw">When</span>  f ← fit_offset(arc, 10)
+    <span class="kw">Then</span>  f.points[0] = point(90, 0)
+    <span class="kw">And</span>   f.points[1] = point(90, 49.7056) ± 0.001
+    <span class="kw">And</span>   f.points[2] = point(49.7056, 90) ± 0.001
+    <span class="kw">And</span>   f.points[3] = point(0, 90)
+    <span class="kw">And</span>   offset_error(arc, 10, f) = 0.012092 ± 0.0001
+
+  <span class="kw">Scenario</span>: A U-turn cannot be fitted in one piece, and the miss says so
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">When</span>  f ← fit_offset(c, 1)
+    <span class="kw">Then</span>  f.points[0] = point(-1, 0)
+    <span class="kw">And</span>   f.points[1] = point(-1, 2)
+    <span class="kw">And</span>   f.points[2] = point(5, 2)
+    <span class="kw">And</span>   f.points[3] = point(5, 0)
+    <span class="kw">And</span>   offset_error(c, 1, f) = 2.5
+
+  <span class="kw">Scenario</span>: The distance from a point to a curve
+    <span class="kw">Given</span> line ← cubic(point(0, 0), point(1, 1), point(2, 2), point(3, 3))
+    <span class="kw">And</span>   q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
+    <span class="kw">And</span>   arc ← cubic(point(100, 0), point(100, 55.2285), point(55.2285, 100), point(0, 100))
+    <span class="kw">Then</span>  distance_to_curve(line, point(3, 0)) = 2.121320
+    <span class="kw">And</span>   distance_to_curve(line, point(5, 5)) = 2.828427
+    <span class="kw">And</span>   distance_to_curve(q, point(2, 5)) = 3
+    <span class="kw">And</span>   distance_to_curve(q, point(2, 0)) = 1.732051
+    <span class="kw">And</span>   distance_to_curve(arc, point(0, 0)) = 100 ± 0.03</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 14.4</span> The offset curve</h2>
+
+  <p>Put the pieces together. Split the curve at its cusps, so no piece contains a flip. Then fit each
+    piece; if the fit is within tolerance, keep it; if not, split the piece at <code>t = 0.5</code> and
+    do both halves. Chapter 8's <code>split_at</code> does the cutting, and the piece between two
+    arbitrary parameters is two cuts, which <code>sub_curve(c, t0, t1)</code> wraps up. Cap the
+    recursion at sixteen halvings so a piece that will never converge (there's always one) stops
+    subdividing and takes what it has.</p>
+
+<pre><code>offset_curve(c, d, tolerance):
+  ts ← [0] + cusps(c, d) + [1]
+  pieces ← []
+  <span class="kw">for</span> each consecutive (t0, t1) <span class="kw">in</span> ts:
+    offset_into(sub_curve(c, t0, t1), d, tolerance, pieces, depth 0)
+  <span class="kw">return</span> pieces
+
+offset_into(c, d, tolerance, pieces, depth):
+  fitted ← fit_offset(c, d)
+  <span class="kw">if</span> offset_error(c, d, fitted) ≤ tolerance <span class="kw">or</span> depth = 16:  append fitted
+  <span class="kw">else</span>:  offset_into(each half of split_at(c, 0.5), d, tolerance, pieces, depth + 1)</code></pre>
+
+  <p>The result is a list of cubics, in order, that chain end to end from the first offset point to
+    the last. A quarter circle offset outward needs one piece at a tolerance of <code>0.1</code> and
+    four at <code>0.01</code>; a U-turn needs four even at a loose tolerance, because that first fit
+    was hopeless. And now the honest check: walk 100 points along the result and ask
+    <code>distance_to_curve</code> how far each one is from the original. On the outside of a bend,
+    every one is <code>|d|</code> away to within the tolerance, which is the property the whole
+    construction exists to deliver, and <code>offset_distance_error</code> reports the worst
+    miss.</p>
+
+  <p>On the inside of a tight bend it isn't, and this is the point of §14.2 arriving in the
+    scenarios. Offset the parabola by <code>−2</code>, past its vertex radius of <code>1</code>, and
+    the pieces still chain perfectly: through the first cusp, back to <code>(2, 0)</code> directly
+    above the vertex, out through the second cusp. But <code>(2, 0)</code> is only <code>√3</code>
+    from the curve, not <code>2</code>, because the parabola's arms curve in toward it. The offset
+    is exactly right, point by point, and it's still closer than <code>d</code>: that's what a fold
+    is. It is not a bug in the fit. What you do about it depends on what the offset is <em>for</em>,
+    and the next section does the case that matters most.</p>
+
+  <div class="test" data-feature="chapter14-curve.feature">
+    <p class="label">features/chapter14-curve.feature</p>
+<pre><code><span class="kw">Feature</span>: The offset curve
+  sub_curve(c, t0, t1) is the piece of a curve between two parameters, by
+  splitting twice. offset_curve(c, d, tolerance) is the offset as a list of
+  cubics in order: the curve is split at its cusps, and each piece is fitted,
+  halved and fitted again until offset_error is within tolerance, at most
+  sixteen halvings deep. offset_distance_error(c, d, tolerance) is the honest
+  check: how far 100 points spread along the result stray from distance |d|
+  to the curve. On the outside of a bend it stays within tolerance. On the
+  inside, past the radius, the offset folds back through itself and comes
+  much closer than d: that is the fold, and it is not an error in the fit.
+
+  <span class="kw">Scenario</span>: A piece of a curve between two parameters
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">When</span>  piece ← sub_curve(c, 0.25, 0.75)
+    <span class="kw">Then</span>  point_at(piece, 0) = point(0.625, 2.25)
+    <span class="kw">And</span>   point_at(piece, 0.5) = point(2, 3)
+    <span class="kw">And</span>   point_at(piece, 1) = point(3.375, 2.25)
+
+  <span class="kw">Scenario</span>: A gentle offset needs one piece at a loose tolerance and four at a tight one
+    <span class="kw">Given</span> arc ← cubic(point(100, 0), point(100, 55.2285), point(55.2285, 100), point(0, 100))
+    <span class="kw">Then</span>  length(offset_curve(arc, 10, 0.1)) = 1
+    <span class="kw">And</span>   length(offset_curve(arc, 10, 0.01)) = 4
+    <span class="kw">And</span>   length(offset_curve(arc, -10, 0.01)) = 4
+
+  <span class="kw">Scenario</span>: The pieces chain end to end from the first offset point to the last
+    <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
+    <span class="kw">When</span>  pieces ← offset_curve(c, 1, 0.01)
+    <span class="kw">Then</span>  length(pieces) = 4
+    <span class="kw">And</span>   pieces[0].points[0] = point(-1, 0)
+    <span class="kw">And</span>   pieces[1].points[0] = pieces[0].points[3]
+    <span class="kw">And</span>   pieces[1].points[3] = point(2, 4)
+    <span class="kw">And</span>   pieces[2].points[0] = point(2, 4)
+    <span class="kw">And</span>   pieces[3].points[3] = point(5, 0)
+
+  <span class="kw">Scenario</span>: On the outside every point of the offset is a distance d from the curve
+    <span class="kw">Given</span> arc ← cubic(point(100, 0), point(100, 55.2285), point(55.2285, 100), point(0, 100))
+    <span class="kw">And</span>   q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
+    <span class="kw">Then</span>  offset_distance_error(arc, 10, 0.01) ≤ 0.01
+    <span class="kw">And</span>   offset_distance_error(arc, -10, 0.01) ≤ 0.01
+    <span class="kw">And</span>   offset_distance_error(q, 2, 0.01) ≤ 0.01
+    <span class="kw">And</span>   offset_distance_error(q, 2, 0.1) ≤ 0.1
+
+  <span class="kw">Scenario</span>: On the inside of a tight bend the offset folds and comes closer than d
+    <span class="kw">Given</span> q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
+    <span class="kw">When</span>  pieces ← offset_curve(q, -2, 0.01)
+    <span class="kw">Then</span>  length(pieces) = 6
+    <span class="kw">And</span>   pieces[1].points[3] = point(2.4502, 0.118898) ± 0.0001
+    <span class="kw">And</span>   pieces[2].points[3] = point(2, 0)
+    <span class="kw">And</span>   pieces[3].points[3] = point(1.5498, 0.118898) ± 0.0001
+    <span class="kw">And</span>   distance_to_curve(q, point(2, 0)) = 1.732051
+    <span class="kw">And</span>   offset_distance_error(q, -2, 0.01) ≥ 0.7</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 14.5</span> Stroking a curve: one outline</h2>
+
+  <p>A stroke is the region within <code>h = width/2</code> of the curve, and its boundary is the
+    offset at <code>+h</code>, the offset at <code>−h</code>, and two caps. So build exactly that as
+    one closed subpath: the right offset, flattened, forward; the end cap's points; the left offset,
+    flattened, backward; the start cap's points. The caps are chapter 13's shapes, walked as
+    points instead of emitted as separate pieces. Fill it nonzero. It's worth writing the whole thing
+    down because of how short it is:</p>
+
+<pre><code>stroke_curve_to_path(c, width, cap, tolerance):
+  h ← width / 2;  pts ← []
+  <span class="kw">for</span> piece <span class="kw">in</span> offset_curve(c, +h, tolerance):  pts += flatten(piece, tolerance)
+  pts += cap points at point_at(c, 1), heading tangent_at(c, 1)
+  <span class="kw">for</span> piece <span class="kw">in</span> offset_curve(c, −h, tolerance), last to first:  pts += flatten(piece, tolerance) reversed
+  pts += cap points at point_at(c, 0), heading −tangent_at(c, 0)
+  drop consecutive duplicates, and the last point if it equals the first
+  <span class="kw">return</span> one closed subpath through pts        <span class="cm">// fill it nonzero</span></code></pre>
+
+  <p>Compare it with the way you were stroking curves until this morning. <code>flatten_then_stroke</code>
+    flattens the curve at the same tolerance and hands the polyline to chapter 13 with round joins.
+    Both are within a pixel of the truth, and the fills agree to within a fraction of a pixel of
+    coverage anywhere. Then count the points. For the hairpin in the scenarios, chapter 13's version
+    is 43 subpaths and 172 points; the outline is one subpath and 58. Figure 14.3 draws both outlines
+    over their fills, and the difference in what you're holding is the entire picture.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>Flattening first is not wrong. Its picture is right, and it's what this book's renderer does for
+      the tiger, because a flattened path is what the fill wants anyway. The trap is treating the
+      polyline outline as the <em>geometry</em>. It's forty rectangles and thirty-nine wedges glued
+      together at the tolerance you happened to flatten at. Scale it up later and the facets show.
+      Export it and the file is enormous. Offset it again, as a font engine or a CNC toolpath does,
+      and the wedges multiply. The offset curve is the thing to keep when the outline has to survive
+      as a shape: Illustrator's <em>Offset Path</em>, a synthesized bold, a pocket-milling contour.
+      When the outline only has to become pixels, flatten and don't feel bad about it. The chapter
+      builds both so you can choose, and the scenario pins that they draw the same thing.</p>
+  </div>
+
+  <figure>
+    <canvas id="fig143" role="img" aria-label="A hairpin curve stroked wide, twice. Left: flattened first, the outline a dense fan of rectangle and join edges in magenta. Right: one smooth outline from the offset curves, with a small loop where the inner offset folds at the apex"></canvas>
+    <figcaption><span class="fig">Figure 14.3</span> The same stroke, two outlines. Left: flatten, then chapter 13: 43 pieces, 172 points, and every one of them drawn in magenta. Right: one outline from the offset curves, 58 points. The gray is the same. The little loop at the apex on the right is the fold.</figcaption>
+  </figure>
+
+  <p>About that loop. The hairpin's tightest radius is about 8, and the stroke is 60 wide, so the
+    inner offset at <code>+30</code> stalls and doubles back: the outline has a swallowtail in it and
+    crosses itself. What does the fill do with that? The same thing it did with chapter 5's pentagram.
+    Under the nonzero rule the loop is wound, so it's inside; under even-odd it's wound twice and
+    becomes a hole. Figure 14.4 fills one outline under both rules. The hole is where the pen
+    <em>was</em>, sweeping through the inside of the bend, so nonzero is the rule that tells the truth,
+    and the scenario pins it against the honest measure: a point inside the loop is closer than
+    <code>h</code> to the curve and inside under nonzero and outside under even-odd, a point beyond
+    the loop is further than <code>h</code> and outside under both. No cusp trimming, no
+    intersection finding: split at the cusps so every piece fits, leave the fold in the outline, and
+    let the fill rule remove it.</p>
+
+  <figure>
+    <canvas id="fig144" role="img" aria-label="The single outline of the stroked hairpin filled twice. Left, nonzero: solid gray all the way through the bend. Right, even-odd: a triangular hole opens up at the apex where the inner offset folds"></canvas>
+    <figcaption><span class="fig">Figure 14.4</span> One outline, two rules. Nonzero on the left fills the fold. Even-odd on the right turns it into a hole, exactly where the pen swept through the inside of the bend. The fill rule is the cusp removal.</figcaption>
+  </figure>
+
+  <p>The scenarios also pin what an outline is: one closed subpath, whose first point is the right
+    offset of the curve's start and whose last point is the left offset of it, with the round cap
+    adding thirty points and the square cap four. One curve, one outline. A path of several curves
+    joined end to end would take chapter 13's joins between the outlines of its pieces, and the
+    book's paths are polylines, so it doesn't build that; the tiger flattens.</p>
+
+  <div class="test" data-feature="chapter14-stroke.feature">
+    <p class="label">features/chapter14-stroke.feature</p>
+<pre><code><span class="kw">Feature</span>: Stroking a curve is one outline
+  stroke_curve_to_path(c, width, cap, tolerance) is the stroke of a curve as
+  one closed subpath: the offset at +h flattened forward, the end cap's
+  points, the offset at -h flattened backward, the start cap's points, with
+  consecutive duplicates dropped. Fill it nonzero. flatten_then_stroke(c,
+  width, cap, tolerance) is chapter 13's way, the flattened polyline stroked
+  with round joins, and point_count(p) counts a path's points. hairpin() is a
+  cubic that bends back on itself with a tightest radius of about 8; stroked
+  60 wide, its inner offset folds into a loop.
+
+  <span class="kw">Scenario</span>: The stroke of a curve is one closed subpath, right offset out and left offset back
+    <span class="kw">Given</span> o ← stroke_curve_to_path(hairpin(), 60, "butt", 0.25)
+    <span class="kw">Then</span>  length(subpaths(o)) = 1
+    <span class="kw">And</span>   subpaths(o)[0].closed = true
+    <span class="kw">And</span>   length(subpaths(o)[0].points) = 58
+    <span class="kw">And</span>   subpaths(o)[0].points[0] = offset_point(hairpin(), 0, 30)
+    <span class="kw">And</span>   subpaths(o)[0].points[57] = offset_point(hairpin(), 0, -30)
+    <span class="kw">And</span>   subpaths(o)[0].points[0] = point(64.5435, 145.214) ± 0.001
+
+  <span class="kw">Scenario</span>: Caps add their points to the same outline
+    <span class="kw">Then</span>  point_count(stroke_curve_to_path(hairpin(), 60, "round", 0.25)) = 88
+    <span class="kw">And</span>   point_count(stroke_curve_to_path(hairpin(), 60, "square", 0.25)) = 62
+
+  <span class="kw">Scenario</span>: Flattening first gives the same picture from many more pieces
+    <span class="kw">Given</span> o ← stroke_curve_to_path(hairpin(), 60, "butt", 0.25)
+    <span class="kw">And</span>   f ← flatten_then_stroke(hairpin(), 60, "butt", 0.25)
+    <span class="kw">Then</span>  length(subpaths(f)) = 43
+    <span class="kw">And</span>   point_count(f) = 172
+    <span class="kw">And</span>   point_count(o) = 58
+    <span class="kw">And</span>   max_coverage_difference(fill_path(o, "nonzero", 160, 160), fill_path(f, "nonzero", 160, 160)) ≤ 0.6
+
+  <span class="kw">Scenario</span>: The inner offset folds into a loop, and nonzero fills it
+    <span class="kw">Given</span> o ← stroke_curve_to_path(hairpin(), 60, "butt", 0.25)
+    <span class="kw">Then</span>  length(cusps(hairpin(), 30)) = 2
+    <span class="kw">And</span>   length(cusps(hairpin(), -30)) = 0
+    <span class="kw">And</span>   distance_to_curve(hairpin(), point(80.5, 60.5)) = 25.967 ± 0.01
+    <span class="kw">And</span>   inside_nonzero(o, 80.5, 60.5) = true
+    <span class="kw">And</span>   inside_evenodd(o, 80.5, 60.5) = false
+    <span class="kw">And</span>   distance_to_curve(hairpin(), point(80.5, 30.5)) = 14.503 ± 0.01
+    <span class="kw">And</span>   inside_nonzero(o, 80.5, 30.5) = true
+    <span class="kw">And</span>   inside_evenodd(o, 80.5, 30.5) = true
+    <span class="kw">And</span>   distance_to_curve(hairpin(), point(80.5, 85.5)) = 32.626 ± 0.01
+    <span class="kw">And</span>   inside_nonzero(o, 80.5, 85.5) = false</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>Illustrator's <em>Object → Path → Offset Path</em> is <code>offset_curve</code> with a dialog:
+      <em>Offset</em> is <code>d</code>, <em>Joins</em> picks what happens at the corners between
+      curves, and the <em>Miter limit</em> field is chapter 13's. Inkscape's <em>Path → Dynamic
+      Offset</em> is the same function with a handle you drag, and you can watch the swallowtails
+      appear as you cross the radius.</p>
+  </aside>
+
+  <h2><span class="sec">§ 14.6</span> Putting it together</h2>
+
+  <p>The plate is the whole chapter in one picture: an arch, its offsets at 15, 30, 45 and 60 on
+    both sides, and every cusp marked. The arch's tightest radius is about 26. On the outside the
+    offsets nest like contour lines, each a smooth parallel of the last. On the inside, 15 clears the
+    radius and is fine; 30, 45 and 60 don't, and each folds into a swallowtail whose two tips are
+    exactly where <code>cusps</code> said they'd be. Every line is an offset curve flattened and
+    stroked hairline-thin with chapter 13, and the dots are chapter 5's circles.</p>
+
+<pre><code>offsets_plate():
+  c ← canvas(320, 270), filled with paper
+  curve ← arch()                                     <span class="cm">// cubic (60,250) (130,5) (190,5) (260,250)</span>
+  <span class="kw">for</span> k, d <span class="kw">in</span> (15, 30, 45, 60):  hairline(c, offset_path(curve, −d, 0.1), COOL[k])
+  <span class="kw">for</span> k, d <span class="kw">in</span> (15, 30, 45, 60):  hairline(c, offset_path(curve, +d, 0.1), WARM[k])
+  hairline(c, flatten(curve, 0.1), white, width 2)
+  <span class="kw">for</span> d <span class="kw">in</span> (15, 30, 45, 60):
+    <span class="kw">for</span> t <span class="kw">in</span> cusps(curve, d):  fill circle_path(offset_point(curve, t, d), 2.5, 24) magenta
+  <span class="kw">return</span> c
+
+hairline(c, p, color, width 1.5):
+  paint fill_path(stroke_to_path(p, width, "butt", "round", 4), "nonzero") through color
+
+plate_14():
+  <span class="kw">return</span> magnify(offsets_plate(), 2)</code></pre>
+
+  <div class="test" data-feature="chapter14-plate.feature">
+    <p class="label">features/chapter14-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 14
+  two_strokes() strokes the hairpin twice, 60 wide with butt caps: flattened
+  and stroked with chapter 13's stroker on the left, one outline from the
+  offset curves on the right, each outline drawn over its fill in magenta.
+  fold_demo() is the right-hand outline filled nonzero on the left and
+  even-odd on the right. offsets_plate() draws arch() with its offsets at
+  15, 30, 45 and 60 on both sides, warm on the inside where they fold, cool
+  outside, the curve in white and every cusp a magenta dot; plate_14() is it
+  magnified.
+
+  <span class="kw">Scenario</span>: Two strokes
+    <span class="kw">Given</span> c ← two_strokes()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-14/two-strokes.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 160
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 40) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 40) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 100) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The fold under two rules
+    <span class="kw">Given</span> c ← fold_demo()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-14/fold.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 160
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 40) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 40) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The offsets
+    <span class="kw">Given</span> c ← offsets_plate()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-14/offsets.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 270
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 66) = (243, 243, 246) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 36) = (137, 203, 243) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 14
+    <span class="kw">Given</span> c ← plate_14()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-14/plate-14.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 640
+    <span class="kw">And</span>   c.height = 540
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate14" role="img" aria-label="An arch drawn in white on dark paper with four offset curves outside it in cool blues and purples, nesting smoothly, and four inside it in warm yellows and reds; the three inner ones closest to the apex cross themselves in swallowtail loops, with magenta dots at the loop tips"></canvas>
+    <figcaption><span class="fig">Plate 14</span> Offsetting a curve at distance <code>d</code>. Outside the bend the offsets nest. Inside, where the radius of curvature drops below <code>d</code>, the offset folds back on itself, and the dots are the cusps that say where.</figcaption>
+  </figure>
+
+  <p>Nothing in this chapter drew a pixel. The offset curve is a path factory, like the stroker, and
+    the swallowtail is a fact about geometry that the fill rule you wrote in chapter 5 already knew how
+    to handle. Chapter 15 is the last path-to-path transform in the part: cutting a path into dashes
+    at exact distances along it, which for a curve means finding out how long it is, and that has no
+    closed form either.</p>
+
+  <nav class="endnav">
+    <a href="chapter-13.html">← 13 · Stroking is Filling</a>
+    <span>Chapter 14 · Offsetting Curves</span>
+    <a href="chapter-15.html">Next: 15 · Dashes →</a>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+function toByte(light){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255+0.5);}
+function lerp3(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+function blit(ctx,pixels,pw,ph,scale,ox,oy){var img=ctx.createImageData(pw,ph);for(var i=0;i<pw*ph;i++){img.data[i*4]=pixels[i][0];img.data[i*4+1]=pixels[i][1];img.data[i*4+2]=pixels[i][2];img.data[i*4+3]=255;}var off=Plate.offcan(pw,ph);off.getContext('2d').putImageData(img,0,0);ctx.imageSmoothingEnabled=false;ctx.drawImage(off,ox,oy,pw*scale,ph*scale);}
+function pyround(x){var r=Math.round(x);if(Math.abs(x%1)===0.5&&r%2!==0)r-=1;return r;}
+
+/* 2D vector helpers (chapter 13) */
+function sub(a,b){return [a[0]-b[0],a[1]-b[1]];}
+function mag(v){return Math.sqrt(v[0]*v[0]+v[1]*v[1]);}
+function unit(a,b){var d=sub(b,a),m=mag(d);return [d[0]/m,d[1]/m];}
+function perp(v){return [-v[1],v[0]];}
+function crss(a,b){return a[0]*b[1]-a[1]*b[0];}
+function add(p,v,s){return [p[0]+v[0]*s,p[1]+v[1]*s];}
+function intersect(p1,d1,p2,d2){var den=crss(d1,d2);if(Math.abs(den)<1e-12)return null;var t=crss(sub(p2,p1),d2)/den;return add(p1,d1,t);}
+function arc(pts,c,a0,a1,r,steps){for(var k=0;k<=steps;k++){var a=a0+(a1-a0)*k/steps;pts.push([c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)]);}}
+function arcSteps(a0,a1){return Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/16)));}
+function angBetween(a,b){var d=((b-a)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);return d>Math.PI?d-2*Math.PI:d;}
+
+/* curves (chapter 8): a curve is an array of control points */
+function lerpP(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];}
+function decasteljau(pts,t){var left=[pts[0]],right=[pts[pts.length-1]],p=pts.slice();while(p.length>1){var q=[];for(var i=0;i<p.length-1;i++)q.push(lerpP(p[i],p[i+1],t));p=q;left.push(p[0]);right.push(p[p.length-1]);}return {at:p[0],left:left,right:right.reverse()};}
+function pointAt(c,t){return decasteljau(c,t).at;}
+function splitAt(c,t){var d=decasteljau(c,t);return [d.left,d.right];}
+function derivative(c,t){var n=c.length-1,d=[];for(var i=0;i<n;i++)d.push([(c[i+1][0]-c[i][0])*n,(c[i+1][1]-c[i][1])*n]);while(d.length>1){var q=[];for(var j=0;j<d.length-1;j++)q.push(lerpP(d[j],d[j+1],t));d=q;}return d[0];}
+function flatness(c){var a=c[0],b=c[c.length-1],dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy),w=0;for(var i=1;i<c.length-1;i++){var p=c[i],d=L===0?Math.hypot(p[0]-a[0],p[1]-a[1]):Math.abs((p[0]-a[0])*dy-(p[1]-a[1])*dx)/L;w=Math.max(w,d);}return w;}
+function flattenInto(c,tol,out){if(flatness(c)<=tol)out.push(c[c.length-1]);else{var lr=splitAt(c,0.5);flattenInto(lr[0],tol,out);flattenInto(lr[1],tol,out);}}
+function flatten(c,tol){var out=[c[0]];flattenInto(c,tol,out);return out;}
+
+/* chapter 14: the offset */
+function second(c,t){var p=c;if(c.length===3)return [2*(p[0][0]-2*p[1][0]+p[2][0]),2*(p[0][1]-2*p[1][1]+p[2][1])];var ax=p[0][0]-2*p[1][0]+p[2][0],ay=p[0][1]-2*p[1][1]+p[2][1],bx=p[1][0]-2*p[2][0]+p[3][0],by=p[1][1]-2*p[2][1]+p[3][1];return [6*((1-t)*ax+t*bx),6*((1-t)*ay+t*by)];}
+function liveT(c,t){return mag(derivative(c,t))<1e-9?(t<0.5?t+1e-4:t-1e-4):t;}
+function tangentAt(c,t){var v=derivative(c,liveT(c,t)),m=mag(v);return [v[0]/m,v[1]/m];}
+function normalAt(c,t){return perp(tangentAt(c,t));}
+function offsetPoint(c,t,d){var p=pointAt(c,t),n=normalAt(c,t);return [p[0]+n[0]*d,p[1]+n[1]*d];}
+function curvature(c,t){t=liveT(c,t);var v=derivative(c,t),a=second(c,t),s=mag(v);return crss(v,a)/(s*s*s);}
+function cusps(c,d){var out=[],f=function(t){return 1-curvature(c,t)*d;},prev=f(0);for(var i=1;i<=64;i++){var t=i/64,cur=f(t);if((prev<0)!==(cur<0)){var lo=(i-1)/64,hi=t,flo=prev;for(var k=0;k<40;k++){var mid=(lo+hi)/2,fm=f(mid);if((fm<0)===(flo<0)){lo=mid;flo=fm;}else hi=mid;}out.push((lo+hi)/2);}prev=cur;}return out;}
+function fitOffset(c,d){var p0=offsetPoint(c,0,d),p3=offsetPoint(c,1,d),t0=tangentAt(c,0),t1=tangentAt(c,1),m=offsetPoint(c,0.5,d),r=[(8*m[0]-4*p0[0]-4*p3[0])/3,(8*m[1]-4*p0[1]-4*p3[1])/3],den=crss(t0,t1),a,b;if(Math.abs(den)<1e-9){a=b=mag(sub(p3,p0))/3;}else{a=crss(r,t1)/den;b=crss(r,t0)/den;}return [p0,[p0[0]+a*t0[0],p0[1]+a*t0[1]],[p3[0]-b*t1[0],p3[1]-b*t1[1]],p3];}
+function offsetError(c,d,f){var w=0;for(var i=0;i<=16;i++){var t=i/16;w=Math.max(w,mag(sub(pointAt(f,t),offsetPoint(c,t,d))));}return w;}
+function subCurve(c,t0,t1){var right=t0>0?splitAt(c,t0)[1]:c;return t1<1?splitAt(right,(t1-t0)/(1-t0))[0]:right;}
+function offsetInto(c,d,tol,out,depth){var f=fitOffset(c,d);if(offsetError(c,d,f)<=tol||depth>=16){out.push(f);return;}var lr=splitAt(c,0.5);offsetInto(lr[0],d,tol,out,depth+1);offsetInto(lr[1],d,tol,out,depth+1);}
+function offsetCurve(c,d,tol){var ts=[0];cusps(c,d).forEach(function(t){if(t-ts[ts.length-1]>1e-9&&1-t>1e-9)ts.push(t);});ts.push(1);var out=[];for(var i=0;i<ts.length-1;i++)offsetInto(subCurve(c,ts[i],ts[i+1]),d,tol,out,0);return out;}
+function offsetPath(c,d,tol){var pts=[];offsetCurve(c,d,tol).forEach(function(pc){var f=flatten(pc,tol);if(pts.length&&pts[pts.length-1][0]===f[0][0]&&pts[pts.length-1][1]===f[0][1])f=f.slice(1);pts=pts.concat(f);});return pts;}
+
+/* the stroker (chapter 13): returns a list of subpaths, each an array of [x,y] points */
+function segRect(a,b,h){var d=unit(a,b),n=perp(d);return [add(a,n,h),add(b,n,h),add(b,n,-h),add(a,n,-h)];}
+function joinShape(v,din,dout,h,join,ml){var turn=crss(din,dout);if(Math.abs(turn)<1e-12)return null;var s=turn>0?-1:1,nin=perp(din).map(function(x){return x*s;}),nout=perp(dout).map(function(x){return x*s;}),a=add(v,nin,h),b=add(v,nout,h);
+  if(join==='bevel')return [v,a,b];
+  if(join==='round'){var a0=Math.atan2(a[1]-v[1],a[0]-v[0]),a1=a0+angBetween(a0,Math.atan2(b[1]-v[1],b[0]-v[0]));var p=[v];arc(p,v,a0,a1,h,arcSteps(a0,a1));return p;}
+  var m=intersect(a,din,b,dout);if(m&&mag(sub(m,v))<=ml*h)return [v,a,m,b];return [v,a,b];}
+function capShape(p,dout,h,cap){var n=perp(dout);if(cap==='butt')return null;
+  if(cap==='square'){var l=add(p,n,h),r=add(p,n,-h);return [l,add(l,dout,h),add(r,dout,h),r];}
+  var a0=Math.atan2(n[1],n[0]),d=angBetween(a0,Math.atan2(dout[1],dout[0]));var a1=a0+(d>0?Math.PI:-Math.PI),pts=[];arc(pts,p,a0,a1,h,arcSteps(a0,a1));return pts;}
+function dedupe(pts){var o=[pts[0]];for(var i=1;i<pts.length;i++)if(mag(sub(pts[i],o[o.length-1]))>1e-9)o.push(pts[i]);return o;}
+function area(sp){var s=0;for(var i=0;i<sp.length;i++){var a=sp[i],b=sp[(i+1)%sp.length];s+=a[0]*b[1]-b[0]*a[1];}return s/2;}
+function strokeToPath(pts,closed,width,cap,join,ml){var h=width/2,subs=[];pts=dedupe(pts);
+  function emit(sp){if(!sp)return;if(area(sp)>0)sp.reverse();subs.push(sp);}
+  if(pts.length<2){if(cap==='round'){var d=[];arc(d,pts[0],0,2*Math.PI,h,48);emit(d);}else if(cap==='square'){var c=pts[0];emit([[c[0]-h,c[1]-h],[c[0]+h,c[1]-h],[c[0]+h,c[1]+h],[c[0]-h,c[1]+h]]);}return subs;}
+  var segs=[];for(var i=0;i<pts.length-1;i++)segs.push([pts[i],pts[i+1]]);if(closed)segs.push([pts[pts.length-1],pts[0]]);
+  segs.forEach(function(s){emit(segRect(s[0],s[1],h));});
+  var dirs=segs.map(function(s){return unit(s[0],s[1]);}),nj=closed?segs.length:segs.length-1;
+  for(var k=0;k<nj;k++){var v=segs[(k+1)%segs.length][0];emit(joinShape(v,dirs[k],dirs[(k+1)%segs.length],h,join,ml));}
+  if(!closed){emit(capShape(pts[0],dirs[0].map(function(x){return -x;}),h,cap));emit(capShape(pts[pts.length-1],dirs[dirs.length-1],h,cap));}
+  return subs;}
+
+/* chapter 14: one outline for a stroked curve, and the flatten-first way */
+function capPoints(p,dout,h,cap){var s=capShape(p,dout,h,cap);return s?s:[];}
+function strokeCurve(c,width,cap,tol){var h=width/2,pts=[];offsetCurve(c,h,tol).forEach(function(pc){pts=pts.concat(flatten(pc,tol));});pts=pts.concat(capPoints(pointAt(c,1),tangentAt(c,1),h,cap));offsetCurve(c,-h,tol).reverse().forEach(function(pc){pts=pts.concat(flatten(pc,tol).reverse());});var t0=tangentAt(c,0);pts=pts.concat(capPoints(pointAt(c,0),[-t0[0],-t0[1]],h,cap));pts=dedupe(pts);if(pts.length>1&&mag(sub(pts[pts.length-1],pts[0]))<1e-9)pts.pop();return [pts];}
+function flattenThenStroke(c,width,cap,tol){return strokeToPath(flatten(c,tol),false,width,cap,'round',4);}
+
+/* fill a list of subpaths (chapter 7) into a coverage array, under a rule */
+function edgesOf(subs){var out=[];subs.forEach(function(sp){var n=sp.length;for(var i=0;i<n;i++)out.push([sp[i],sp[(i+1)%n]]);});return out;}
+function applyRule(w,rule){if(rule==='evenodd'){var t=Math.abs(w)%2;return t<=1?t:2-t;}return Math.min(1,Math.abs(w));}
+function fillSubs(subs,w,h,rule){var acc={area:new Array(w*h).fill(0),cover:new Array(w*h).fill(0)};edgesOf(subs).forEach(function(e){var a=e[0],b=e[1];if(a[1]===b[1])return;var sign=a[1]>b[1]?1:-1,top=a[1]>b[1]?b:a,bot=a[1]>b[1]?a:b,slope=(bot[0]-top[0])/(bot[1]-top[1]);var first=Math.max(Math.floor(top[1]),0),last=Math.min(Math.ceil(bot[1])-1,h-1);for(var row=first;row<=last;row++){var y0=Math.max(top[1],row),y1=Math.min(bot[1],row+1),x0=top[0]+(y0-top[1])*slope,x1=top[0]+(y1-top[1])*slope,xa=Math.min(x0,x1),xb=Math.max(x0,x1),ca=Math.floor(xa),cb=Math.floor(xb);function ad(x,ar,co){if(x<0){x=0;ar=co;}if(x>=w)return;var idx=row*w+x;acc.area[idx]+=ar;acc.cover[idx]+=co;}var hg=sign*(y1-y0);if(ca===cb){var xm=(xa+xb)/2-ca;ad(ca,hg*(1-xm),hg);}else{var dx=xb-xa;for(var c=ca;c<=cb;c++){var lo=Math.max(xa,c),hi=Math.min(xb,c+1),sh=hg*(hi-lo)/dx,mm=(lo+hi)/2-c;ad(c,sh*(1-mm),sh);}}}});var cov=new Array(w*h).fill(0);for(var row=0;row<h;row++){var run=0;for(var x=0;x<w;x++){var idx=row*w+x;cov[idx]=applyRule(run+acc.area[idx],rule||'nonzero');run+=acc.cover[idx];}}return cov;}
+
+/* a paint buffer with Wu line drawing, matching chapter 3 */
+var PAPER=[0.02,0.02,0.025],GRAY=[0.62,0.62,0.66],MAG=[0.85,0.2,0.55],WHITE=[0.9,0.9,0.92];
+var WARM=[[0.95,0.75,0.2],[0.95,0.55,0.15],[0.9,0.35,0.15],[0.8,0.2,0.2]],COOL=[[0.35,0.8,0.9],[0.25,0.6,0.9],[0.3,0.4,0.85],[0.45,0.3,0.8]];
+function Buf(w,h){this.w=w;this.h=h;this.p=[];for(var i=0;i<w*h;i++)this.p.push(PAPER.slice());}
+Buf.prototype.paint=function(cov,col){for(var i=0;i<this.w*this.h;i++){var k=cov[i];if(k>0)this.p[i]=lerp3(this.p[i],col,k);}};
+Buf.prototype.plot=function(x,y,col,wt){if(x>=0&&y>=0&&x<this.w&&y<this.h&&wt>0)this.p[y*this.w+x]=lerp3(this.p[y*this.w+x],col,wt);};
+Buf.prototype.wu=function(x0,y0,x1,y1,col){x0=pyround(x0);y0=pyround(y0);x1=pyround(x1);y1=pyround(y1);var steep=Math.abs(y1-y0)>Math.abs(x1-x0);if(steep){var t=x0;x0=y0;y0=t;t=x1;x1=y1;y1=t;}if(x0>x1){var u=x0;x0=x1;x1=u;u=y0;y0=y1;y1=u;}var dx=x1-x0,slope=dx?(y1-y0)/dx:0;for(var x=x0;x<=x1;x++){var y=y0+(x-x0)*slope,yi=Math.floor(y),f=y-yi;if(steep){this.plot(yi,x,col,1-f);this.plot(yi+1,x,col,f);}else{this.plot(x,yi,col,1-f);this.plot(x,yi+1,col,f);}}};
+Buf.prototype.hairline=function(pts,col,width){this.paint(fillSubs(strokeToPath(pts,false,width||1.5,'butt','round',4),this.w,this.h),col);};
+Buf.prototype.bytes=function(){return this.p.map(function(c){return c.map(toByte);});};
+function circlePath(cx,cy,r,n){var p=[];for(var k=0;k<n;k++){var a=2*Math.PI*k/n;p.push([cx+r*Math.cos(a),cy+r*Math.sin(a)]);}return p;}
+
+var SIZE=160;
+function hairpin(){return [[35,140],[65,-30],[95,-30],[125,140]];}
+function arch(){return [[60,250],[130,5],[190,5],[260,250]];}
+function outlinePanel(subs,rule){var b=new Buf(SIZE,SIZE);b.paint(fillSubs(subs,SIZE,SIZE,rule),GRAY);edgesOf(subs).forEach(function(e){b.wu(e[0][0],e[0][1],e[1][0],e[1][1],MAG);});return b.bytes();}
+function sideBySide(a,b,w,h){var o=new Array(2*w*h);for(var y=0;y<h;y++)for(var x=0;x<w;x++){o[y*2*w+x]=a[y*w+x];o[y*2*w+w+x]=b[y*w+x];}return {bytes:o,w:2*w,h:h};}
+function twoStrokes(){return sideBySide(outlinePanel(flattenThenStroke(hairpin(),60,'butt',0.25)),outlinePanel(strokeCurve(hairpin(),60,'butt',0.25)),SIZE,SIZE);}
+function foldDemo(){var o=strokeCurve(hairpin(),60,'butt',0.25);return sideBySide(outlinePanel(o,'nonzero'),outlinePanel(o,'evenodd'),SIZE,SIZE);}
+function offsetsPlate(){var W=320,H=270,b=new Buf(W,H),c=arch(),ds=[15,30,45,60];
+  ds.forEach(function(d,k){b.hairline(offsetPath(c,-d,0.1),COOL[k]);});
+  ds.forEach(function(d,k){b.hairline(offsetPath(c,d,0.1),WARM[k]);});
+  b.hairline(flatten(c,0.1),WHITE,2.0);
+  ds.forEach(function(d){cusps(c,d).forEach(function(t){var q=offsetPoint(c,t,d);b.paint(fillSubs([circlePath(q[0],q[1],2.5,24)],W,H),MAG);});});
+  return {bytes:b.bytes(),w:W,h:H};}
+
+/* ---------- Figure 14.1 — the offset point ---------- */
+Plate.add('fig141', 0.5, function (ctx, w, h, p) {
+  var c=[[0.08*w,0.82*h],[0.3*w,0.05*h],[0.62*w,1.0*h],[0.92*w,0.25*h]],d=0.11*h;
+  function poly(pts){ctx.beginPath();pts.forEach(function(q,i){i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]);});ctx.stroke();}
+  ctx.lineWidth=1.2;ctx.strokeStyle=p.cyan;var plus=[],minus=[];for(var i=0;i<=80;i++){plus.push(offsetPoint(c,i/80,d));minus.push(offsetPoint(c,i/80,-d));}
+  poly(plus);ctx.strokeStyle=p.magenta;poly(minus);
+  ctx.strokeStyle=p.ink;ctx.lineWidth=2.2;poly(flatten(c,0.2));
+  ctx.strokeStyle=p.ink3;ctx.lineWidth=1;for(var k=0;k<=10;k++){var t=k/10,a=offsetPoint(c,t,-d),b=offsetPoint(c,t,d);ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();ctx.fillStyle=p.cyan;ctx.beginPath();ctx.arc(b[0],b[1],2.6,0,7);ctx.fill();ctx.fillStyle=p.magenta;ctx.beginPath();ctx.arc(a[0],a[1],2.6,0,7);ctx.fill();}
+  var q=offsetPoint(c,0.5,d),m=offsetPoint(c,0.5,-d);Plate.label(ctx,'+d',q[0]+8,q[1]+14,p.cyan,11);Plate.label(ctx,'−d',m[0]+8,m[1]-6,p.magenta,11);
+  var s=pointAt(c,0.02),tg=tangentAt(c,0.02);Plate.label(ctx,'travel →',s[0]+14,s[1]-10,p.ink2,10);
+});
+
+/* ---------- Figure 14.2 — the stall ---------- */
+Plate.add('fig142', 0.46, function (ctx, w, h, p) {
+  var pw=w/3,c=[[0.2*pw,0.95*h],[0.32*pw,-0.15*h],[0.68*pw,-0.15*h],[0.8*pw,0.95*h]];
+  var rmin=Infinity;for(var i=0;i<=200;i++)rmin=Math.min(rmin,1/Math.abs(curvature(c,i/200)));
+  var cols=[p.cyan,p.ink,p.magenta],labels=['d = 0.6 r','d = r','d = 1.6 r'];
+  [0.6,1.0,1.6].forEach(function(f,k){ctx.save();ctx.translate(k*pw,0);var d=f*rmin;
+    function poly(pts){ctx.beginPath();pts.forEach(function(q,i){i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]);});ctx.stroke();}
+    ctx.strokeStyle=p.ink3;ctx.lineWidth=2;poly(flatten(c,0.2));
+    var off=[];for(var i=0;i<=400;i++)off.push(offsetPoint(c,i/400,d));ctx.strokeStyle=cols[k];ctx.lineWidth=1.6;poly(off);
+    cusps(c,d).forEach(function(t){var q=offsetPoint(c,t,d);ctx.fillStyle=cols[k];ctx.beginPath();ctx.arc(q[0],q[1],3,0,7);ctx.fill();});
+    Plate.label(ctx,labels[k],pw/2,h-6,p.ink2,11,'center');ctx.restore();});
+});
+
+/* ---------- Figure 14.3 — two strokes ---------- */
+Plate.add('fig143', 0.5, function (ctx, w, h, p) {
+  var g=twoStrokes(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,(h-g.h*sc)/2);
+});
+
+/* ---------- Figure 14.4 — the fold under two rules ---------- */
+Plate.add('fig144', 0.5, function (ctx, w, h, p) {
+  var g=foldDemo(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,(h-g.h*sc)/2);
+});
+
+/* ---------- Plate 14 — the offsets ---------- */
+Plate.add('plate14', 0.84375, function (ctx, w, h, p) {
+  var g=offsetsPlate(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,0);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, pyround, sub, mag, unit, perp, crss, add, intersect, arc, arcSteps, angBetween, lerpP, decasteljau, pointAt, splitAt, derivative, flatness, flattenInto, flatten, second, liveT, tangentAt, normalAt, offsetPoint, curvature, cusps, fitOffset, offsetError, subCurve, offsetInto, offsetCurve, offsetPath, segRect, joinShape, capShape, dedupe, area, strokeToPath, capPoints, strokeCurve, flattenThenStroke, edgesOf, applyRule, fillSubs, Buf, circlePath, hairpin, arch, outlinePanel, sideBySide, twoStrokes, foldDemo, offsetsPlate].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>

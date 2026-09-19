@@ -177,6 +177,12 @@ def run_step(text, doc, env):
         if not a <= b:
             raise StepError("%r > %r" % (a, b))
         return
+    m = re.match(r"(.+?) ≥ (.+)$", text)
+    if m:
+        a, b = evaluate(m.group(1), env), evaluate(m.group(2), env)
+        if not a >= b:
+            raise StepError("%r < %r" % (a, b))
+        return
     m = re.match(r"(.+?) (=|≠) (.+?)" + EPS_RE + "$", text)
     if m:
         a, b = evaluate(m.group(1), env), evaluate(m.group(3), env)

@@ -207,6 +207,45 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   butt → nothing); a 180° reversal bevels via the limit (miter at infinity). The plate overlays the
   generated outline in magenta (chapter 3's `line_wu`, integer endpoints, so round the outline coords)
   over the gray fill. Trap: zero-length segments / duplicates / reversals all divide by zero naively.
+- Chapter 13 (revised while writing 14): two bugs survived three byte-exact reader rounds because
+  the readers transcribed the figure JS. (1) The round join's arc must sweep the SHORT way from one
+  outer offset point to the other (`a1 = a0 + ang_between(a0, a1)`); the long way is the inner side
+  and leaves a notch, which the shipped Plate 13 had. (2) Every emitted piece must wind the same way
+  (`emit` reverses any piece whose `polygon_area` is positive, so all pieces are counterclockwise on
+  screen, negative area), or a rectangle and a wedge overlapping around a tight bend cancel to zero
+  under nonzero and leave holes. Pinned by the `polygon_area(o) = -4981.625` and `u_turn()`
+  coverage scenarios. Lesson recorded under testing: LOOK at every render (convert to PNG and view it)
+  before pinning it; byte-exact reader agreement proves transcription, not correctness.
+- Chapter 14 offsetting: `tangent_at`/`normal_at` (quarter turn toward +y, the right of travel on
+  screen, chapter 13's +h side; a vanishing derivative at an end is nudged 1e-4 inward),
+  `offset_point(c, t, d)`, `second_derivative`, `curvature = cross(v, a)/|v|^3` (positive
+  clockwise, like `cross`). The offset's speed factor is `1 - curvature*d` (NOT 1 + κd: positive κ
+  and positive d are both the clockwise side); `cusps(c, d)` finds its sign changes on 64 samples +
+  40 bisections. `fit_offset` is one cubic through the three offset points with the curve's end
+  tangents (2x2 cross-product solve; parallel tangents fall back to chord/3 handles and the error
+  check catches the U-turn). `offset_error` is at 17 matched parameters (a bound, pessimistic);
+  `distance_to_curve` is 65 samples + 32 ternary rounds. `offset_curve` splits at cusps then halves
+  to tolerance (depth cap 16); `sub_curve` is two splits. `stroke_curve_to_path` is ONE closed
+  outline (right offset forward, end cap points, left offset backward, start cap points) filled
+  nonzero: the fold on the inside of a tight bend stays in the outline and nonzero fills it (verified
+  pixel-for-pixel against the distance ground truth with round caps; even-odd shows the hole). No
+  cusp trimming, no intersection finding. `flatten_then_stroke` is the chapter 13 way, kept for the
+  trap (flatten first is fine for pixels, wrong as geometry). Paths stay polylines: a multi-curve
+  path is stroked by flattening; the tiger will flatten.
+- Chapter 15 dashes: `path_length` (closed subpaths include the closing segment); curve length by
+  the chord table `arc_length_table(c, n)` (n explicit everywhere, 256 in the scenarios),
+  `arc_length`, `t_at_length` (binary search + linear interpolation, clamped to 0/1),
+  `point_at_length`, `split_at_length`. `normalize_pattern`: odd → doubled; negative entry or zero
+  sum → empty → `dash` returns a copy of the path (solid). `dash(p, pattern, phase)` walks each
+  subpath by arc length from its start, straight through vertices (a dash keeps its corner), restarts
+  the pattern per subpath, phase taken modulo the sum (negative wraps), zero-length segments skipped,
+  a zero-length dash is a single-point subpath (a dot under round caps), a dash that would begin
+  exactly at the subpath's end is NOT emitted. Closed subpaths walk the closing segment; if the last
+  dash ends at the start and the first begins there they are joined (last absorbs first); one dash
+  covering the loop comes back closed. Plate: `golden_spiral()` (seven quarter-circle cubics, radii
+  x phi, flattened into ONE subpath) dashed [16, 10], each dash stroked 7 wide round-capped.
+- Runner learned `≥`. Figure JS `mag` must be `sqrt(x*x+y*y)` to mirror chapter 4's `magnitude`
+  (Math.hypot differs in the last bit and flipped one byte of the spiral).
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and
   `Then X is the following matrix:`. The runner understands exactly those two table steps.
 
@@ -252,6 +291,14 @@ Before declaring a chapter done, have subagents implement it cold, as readers:
    Collect finished readers promptly, and stage new runs under `${TMPDIR}2d-readers/`.
 6. Ask agents to try to break the suite ("find a wrong implementation that still passes"). The
    most valuable round-1 finding came from an agent doing that unprompted.
+7. **Look at every render before pinning it.** Convert the PPM to PNG (a 20-line stdlib script:
+   zlib + the PNG chunk format) and view it with the Read tool, zoomed where the geometry is
+   fiddly. Plate 13 shipped with a notch in its round join and holes waiting in every wide stroke
+   around a tight bend, and three readers matched it byte for byte, because they transcribed the
+   figure JS (see the memory note on the JS leak). A reader round measures agreement with the
+   reference, not the reference's correctness; only eyes and an independent ground truth (chapter
+   14's `distance_to_curve` check) do that. Run the figure JS under node against the PPMs too
+   (`scratchpad/jscheck.js` pattern: stub `Plate`, eval the script, diff the bytes).
 
 ## Git
 
