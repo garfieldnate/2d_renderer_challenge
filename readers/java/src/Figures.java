@@ -1003,6 +1003,27 @@ public final class Figures {
     }
 
     /**
+     * §13.2: u_turn() -- nine points on the upper half of a circle of
+     * radius 10 about (50, 50), from 180 degrees to 360 degrees in steps
+     * of 22.5 degrees, stroked wide enough to overlap itself all the way
+     * round the bend.
+     */
+    public static Path uTurn() {
+        Path p = new Path();
+        for (int i = 0; i <= 8; i++) {
+            double deg = 180 + 22.5 * i;
+            double rad = Math.toRadians(deg);
+            Tuple pt = Tuple.point(50 + 10 * Math.cos(rad), 50 + 10 * Math.sin(rad));
+            if (i == 0) {
+                p.moveTo(pt);
+            } else {
+                p.lineTo(pt);
+            }
+        }
+        return p;
+    }
+
+    /**
      * §13.5: one panel of the plate -- the chevron stroked with the given
      * join, filled gray, with the generated outline traced over it in
      * magenta (chapter 3's line_wu, integer endpoints, so the outline's
@@ -1019,8 +1040,8 @@ public final class Figures {
         CoverageBuffer cov = Fill.fillPath(outline, "nonzero", w, h);
         Painter.paintThrough(c, cov, STROKE_GRAY);
         for (Edge e : outline.edges()) {
-            Lines.lineWu(c, (int) Numbers.round(e.a().x), (int) Numbers.round(e.a().y),
-                    (int) Numbers.round(e.b().x), (int) Numbers.round(e.b().y), STROKE_MAGENTA);
+            Lines.lineWu(c, (int) Numbers.roundHalfEven(e.a().x), (int) Numbers.roundHalfEven(e.a().y),
+                    (int) Numbers.roundHalfEven(e.b().x), (int) Numbers.roundHalfEven(e.b().y), STROKE_MAGENTA);
         }
         return c;
     }
@@ -1057,5 +1078,269 @@ public final class Figures {
         Canvas round = tracedPanel(seg, 30, "round", "miter", STROKE_SIZE, CAP_HEIGHT);
         Canvas square = tracedPanel(seg, 30, "square", "miter", STROKE_SIZE, CAP_HEIGHT);
         return threeAcross(butt, round, square, STROKE_SIZE, CAP_HEIGHT);
+    }
+
+    // ---------------------------------------------------------------------
+    // Chapter 14: offsetting curves.
+
+    private static final Color WHITE_INK = new Color(0.9, 0.9, 0.92);
+    private static final Color[] WARM = {
+        new Color(0.95, 0.75, 0.2), new Color(0.95, 0.55, 0.15),
+        new Color(0.9, 0.35, 0.15), new Color(0.8, 0.2, 0.2)
+    };
+    private static final Color[] COOL = {
+        new Color(0.35, 0.8, 0.9), new Color(0.25, 0.6, 0.9),
+        new Color(0.3, 0.4, 0.85), new Color(0.45, 0.3, 0.8)
+    };
+    private static final int CURVE_SIZE = 160;
+
+    /** §14.1, §14.5: hairpin() -- a cubic that bends back on itself, tightest radius about 8. */
+    public static Curve hairpin() {
+        return Curve.cubic(Tuple.point(35, 140), Tuple.point(65, -30), Tuple.point(95, -30), Tuple.point(125, 140));
+    }
+
+    /** §14.6: arch() -- the cubic the plate offsets on both sides. */
+    public static Curve arch() {
+        return Curve.cubic(Tuple.point(60, 250), Tuple.point(130, 5), Tuple.point(190, 5), Tuple.point(260, 250));
+    }
+
+    /**
+     * §14.5: one panel showing an already-built outline -- filled gray under
+     * the given rule, with every edge traced over it in magenta.
+     */
+    private static Canvas outlinePanel(Path outline, String rule, int w, int h) {
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        CoverageBuffer cov = Fill.fillPath(outline, rule, w, h);
+        Painter.paintThrough(c, cov, STROKE_GRAY);
+        for (Edge e : outline.edges()) {
+            Lines.lineWu(c, (int) Numbers.roundHalfEven(e.a().x), (int) Numbers.roundHalfEven(e.a().y),
+                    (int) Numbers.roundHalfEven(e.b().x), (int) Numbers.roundHalfEven(e.b().y), STROKE_MAGENTA);
+        }
+        return c;
+    }
+
+    /** §14.5: two_strokes() -- the hairpin stroked flatten-first on the left, one outline on the right. */
+    public static Canvas twoStrokes() {
+        Path flattened = Offset.flattenThenStroke(hairpin(), 60, "butt", 0.25);
+        Path outline = Offset.strokeCurveToPath(hairpin(), 60, "butt", 0.25);
+        return sideBySide(
+                outlinePanel(flattened, "nonzero", CURVE_SIZE, CURVE_SIZE),
+                outlinePanel(outline, "nonzero", CURVE_SIZE, CURVE_SIZE));
+    }
+
+    /** §14.5: fold_demo() -- the outline filled nonzero on the left, even-odd on the right. */
+    public static Canvas foldDemo() {
+        Path outline = Offset.strokeCurveToPath(hairpin(), 60, "butt", 0.25);
+        return sideBySide(
+                outlinePanel(outline, "nonzero", CURVE_SIZE, CURVE_SIZE),
+                outlinePanel(outline, "evenodd", CURVE_SIZE, CURVE_SIZE));
+    }
+
+    /** §14.6: one hairline-thin stroke of a raw polyline, painted through the canvas. */
+    private static void hairline(Canvas c, List<Tuple> pts, Color col, double width) {
+        Path p = new Path();
+        boolean first = true;
+        for (Tuple pt : pts) {
+            if (first) {
+                p.moveTo(pt);
+                first = false;
+            } else {
+                p.lineTo(pt);
+            }
+        }
+        Path outline = Stroke.strokeToPath(p, width, "butt", "round", 4.0);
+        CoverageBuffer cov = Fill.fillPath(outline, "nonzero", c.width, c.height);
+        Painter.paintThrough(c, cov, col);
+    }
+
+    /**
+     * §14.6: offsets_plate() -- arch(), its offsets at 15, 30, 45 and 60 on
+     * both sides (warm where they fold, cool outside), the curve itself in
+     * white, and every cusp a magenta dot.
+     */
+    public static Canvas offsetsPlate() {
+        int w = 320;
+        int h = 270;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Curve curve = arch();
+        double[] ds = {15, 30, 45, 60};
+        for (int k = 0; k < ds.length; k++) {
+            hairline(c, Offset.offsetPath(curve, -ds[k], 0.1), COOL[k], 1.5);
+        }
+        for (int k = 0; k < ds.length; k++) {
+            hairline(c, Offset.offsetPath(curve, ds[k], 0.1), WARM[k], 1.5);
+        }
+        hairline(c, Curves.flatten(curve, 0.1), WHITE_INK, 2.0);
+        for (double d : ds) {
+            for (double t : Offset.cusps(curve, d)) {
+                Tuple q = Offset.offsetPoint(curve, t, d);
+                Path dot = Paths.circlePath(q.x, q.y, 2.5, 24);
+                CoverageBuffer cov = Fill.fillPath(dot, "nonzero", w, h);
+                Painter.paintThrough(c, cov, STROKE_MAGENTA);
+            }
+        }
+        return c;
+    }
+
+    /** §14.6: plate_14() -- offsets_plate(), magnified by 2. */
+    public static Canvas plate14() {
+        return Magnify.magnify(offsetsPlate(), 2);
+    }
+
+    // ---------------------------------------------------------------------
+    // Chapter 15: dashes.
+
+    private static final Color DASH_DIM = new Color(0.25, 0.25, 0.28);
+    private static final Color[] DASH_INKS = {
+        new Color(0.9, 0.55, 0.1), new Color(0.2, 0.55, 0.85), new Color(0.85, 0.25, 0.3)
+    };
+    private static final double GOLDEN_KAPPA = 0.5522847498;
+
+    /** §15.1: lopsided() -- one short handle, one long, so the parameter and the length disagree. */
+    public static Curve lopsided() {
+        return Curve.cubic(Tuple.point(15, 100), Tuple.point(20, 20), Tuple.point(150, 15), Tuple.point(185, 95));
+    }
+
+    private static void strokeOpenAndPaint(Canvas c, Path open, double width, Color color) {
+        Path outline = Stroke.strokeToPath(open, width, "butt", "round", 4.0);
+        Painter.paintThrough(c, Fill.fillPath(outline, "nonzero", c.width, c.height), color);
+    }
+
+    private static void dot(Canvas c, Tuple q, double r, Color color) {
+        Path circle = Paths.circlePath(q.x, q.y, r, 24);
+        Painter.paintThrough(c, Fill.fillPath(circle, "nonzero", c.width, c.height), color);
+    }
+
+    /** §15.1: even_marks() -- lopsided() with eleven marks, by parameter on the left, by length on the right. */
+    public static Canvas evenMarks() {
+        int w = 200;
+        int h = 120;
+        Curve c = lopsided();
+        Path spine = new Path();
+        Curves.flattenIntoPath(spine, c, 0.1);
+
+        Canvas left = new Canvas(w, h);
+        left.fill(PAPER);
+        Canvas right = new Canvas(w, h);
+        right.fill(PAPER);
+        strokeOpenAndPaint(left, spine, 1.5, DASH_DIM);
+        strokeOpenAndPaint(right, spine, 1.5, DASH_DIM);
+
+        double totalLength = Length.arcLength(c, 256);
+        for (int i = 0; i <= 10; i++) {
+            dot(left, Curves.pointAt(c, i / 10.0), 3, DASH_INKS[0]);
+            dot(right, Length.pointAtLength(c, totalLength * i / 10.0, 256), 3, DASH_INKS[1]);
+        }
+        return sideBySide(left, right);
+    }
+
+    /** §15.5: wave(dy) -- one flattened cubic wave, offset vertically by dy. */
+    private static Path wave(double dy) {
+        Curve c = Curve.cubic(Tuple.point(20, 20 + dy), Tuple.point(120, -20 + dy),
+                Tuple.point(200, 60 + dy), Tuple.point(300, 20 + dy));
+        Path p = new Path();
+        Curves.flattenIntoPath(p, c, 0.1);
+        return p;
+    }
+
+    /** §15.4: dash_strip() -- one wave four ways: solid, dashed, the same at a phase, and dotted. */
+    public static Canvas dashStrip() {
+        int w = 320;
+        int h = 160;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Object[][] rows = {
+            {new double[0], 0.0, "butt", STROKE_GRAY},
+            {new double[] {12, 6}, 0.0, "butt", DASH_INKS[0]},
+            {new double[] {12, 6}, 9.0, "butt", DASH_INKS[1]},
+            {new double[] {0, 9}, 0.0, "round", DASH_INKS[2]},
+        };
+        for (int k = 0; k < rows.length; k++) {
+            double[] pattern = (double[]) rows[k][0];
+            double phase = (double) rows[k][1];
+            String cap = (String) rows[k][2];
+            Color color = (Color) rows[k][3];
+            Path dashed = Dash.dash(wave(40.0 * k), pattern, phase);
+            Path outline = Stroke.strokeToPath(dashed, 5, cap, "round", 4.0);
+            Painter.paintThrough(c, Fill.fillPath(outline, "nonzero", w, h), color);
+        }
+        return c;
+    }
+
+    /**
+     * §15.5: golden_spiral() -- seven quarter circles, each phi times the
+     * radius of the last and tangent to it, flattened into one open
+     * subpath.
+     */
+    public static Path goldenSpiral() {
+        Path p = new Path();
+        double r = 6;
+        double cx = 148;
+        double cy = 130;
+        double theta = Math.PI;
+        double phi = (1 + Math.sqrt(5)) / 2;
+        for (int k = 0; k < 7; k++) {
+            double a0 = theta;
+            double a1 = theta + Math.PI / 2;
+            Tuple d0 = Tuple.vector(Math.cos(a0), Math.sin(a0));
+            Tuple d1 = Tuple.vector(Math.cos(a1), Math.sin(a1));
+            Tuple p0 = Tuple.point(cx + r * d0.x, cy + r * d0.y);
+            Tuple p3 = Tuple.point(cx + r * d1.x, cy + r * d1.y);
+            Tuple p1 = p0.add(d1.scale(GOLDEN_KAPPA * r));
+            Tuple p2 = p3.add(d0.scale(GOLDEN_KAPPA * r));
+            Curves.flattenIntoPath(p, Curve.cubic(p0, p1, p2, p3), 0.05);
+            double nr = r * phi;
+            cx = p3.x - nr * d1.x;
+            cy = p3.y - nr * d1.y;
+            r = nr;
+            theta = a1;
+        }
+        return p;
+    }
+
+    private static Path singleSubpath(Subpath sp) {
+        Path p = new Path();
+        boolean first = true;
+        for (Tuple pt : sp.points) {
+            if (first) {
+                p.moveTo(pt);
+                first = false;
+            } else {
+                p.lineTo(pt);
+            }
+        }
+        if (sp.closed) {
+            p.close();
+        }
+        return p;
+    }
+
+    /**
+     * §15.5: spiral_dashes() -- the spiral drawn faintly, then dashed 16 on
+     * 10 off, each dash stroked 7 wide with round caps in the next of
+     * three inks.
+     */
+    public static Canvas spiralDashes() {
+        int w = 340;
+        int h = 340;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Path spiral = goldenSpiral();
+        strokeOpenAndPaint(c, spiral, 1.0, DASH_DIM);
+        Path dashed = Dash.dash(spiral, new double[] {16, 10}, 0);
+        List<Subpath> subs = dashed.subpaths();
+        for (int k = 0; k < subs.size(); k++) {
+            Path one = singleSubpath(subs.get(k));
+            Path outline = Stroke.strokeToPath(one, 7, "round", "round", 4.0);
+            Painter.paintThrough(c, Fill.fillPath(outline, "nonzero", w, h), DASH_INKS[k % 3]);
+        }
+        return c;
+    }
+
+    /** §15.5: plate_15() -- spiral_dashes(), magnified by 2. */
+    public static Canvas plate15() {
+        return Magnify.magnify(spiralDashes(), 2);
     }
 }

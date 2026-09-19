@@ -98,9 +98,9 @@ public final class Stroke {
             }
             Tuple c = pts.get(0);
             if (cap.equals("round")) {
-                subs.add(arcPoints(c, 0, 2 * Math.PI, h, DOT_STEPS));
+                emit(subs, arcPoints(c, 0, 2 * Math.PI, h, DOT_STEPS));
             } else if (cap.equals("square")) {
-                subs.add(List.of(
+                emit(subs, List.of(
                         Tuple.point(c.x - h, c.y - h), Tuple.point(c.x + h, c.y - h),
                         Tuple.point(c.x + h, c.y + h), Tuple.point(c.x - h, c.y + h)));
             }
@@ -117,7 +117,7 @@ public final class Stroke {
         }
 
         for (Tuple[] s : segs) {
-            subs.add(segRect(s[0], s[1], h));
+            emit(subs, segRect(s[0], s[1], h));
         }
 
         List<Tuple> dirs = new ArrayList<>();
@@ -130,21 +130,46 @@ public final class Stroke {
             Tuple v = segs.get((k + 1) % segs.size())[0];
             List<Tuple> j = joinShape(v, dirs.get(k), dirs.get((k + 1) % segs.size()), h, join, ml);
             if (j != null) {
-                subs.add(j);
+                emit(subs, j);
             }
         }
 
         if (!closed) {
             List<Tuple> startCap = capShape(pts.get(0), dirs.get(0).negate(), h, cap);
             if (startCap != null) {
-                subs.add(startCap);
+                emit(subs, startCap);
             }
             List<Tuple> endCap = capShape(pts.get(pts.size() - 1), dirs.get(dirs.size() - 1), h, cap);
             if (endCap != null) {
-                subs.add(endCap);
+                emit(subs, endCap);
             }
         }
         return subs;
+    }
+
+    /**
+     * §13.2: every piece has to wind the same way -- counterclockwise on
+     * screen, i.e. a negative signed area -- so that overlapping pieces add
+     * under nonzero instead of cancelling. A piece that comes out the other
+     * way gets its points reversed before it's kept.
+     */
+    private static void emit(List<List<Tuple>> subs, List<Tuple> piece) {
+        List<Tuple> p = new ArrayList<>(piece);
+        if (signedArea(p) > 0) {
+            java.util.Collections.reverse(p);
+        }
+        subs.add(p);
+    }
+
+    private static double signedArea(List<Tuple> pts) {
+        double sum = 0;
+        int n = pts.size();
+        for (int i = 0; i < n; i++) {
+            Tuple a = pts.get(i);
+            Tuple b = pts.get((i + 1) % n);
+            sum += a.x * b.y - b.x * a.y;
+        }
+        return sum / 2.0;
     }
 
     private static Tuple unitDir(Tuple a, Tuple b) {
@@ -171,6 +196,18 @@ public final class Stroke {
         }
         double t = Tuple.cross(p2.subtract(p1), d2) / den;
         return p1.add(d1.scale(t));
+    }
+
+    /** The signed shortest angular difference from a0 to a1, wrapped to (-pi, pi]. */
+    private static double angBetween(double a0, double a1) {
+        double d = (a1 - a0) % (2 * Math.PI);
+        if (d > Math.PI) {
+            d -= 2 * Math.PI;
+        }
+        if (d <= -Math.PI) {
+            d += 2 * Math.PI;
+        }
+        return d;
     }
 
     private static int arcSteps(double a0, double a1) {
@@ -208,14 +245,13 @@ public final class Stroke {
             return List.of(v, a, b);
         }
         if (join.equals("round")) {
+            // §13.1: the arc has to go the short way round -- the long way
+            // sweeps through the inside of the turn and leaves a notch.
+            // angBetween wraps the raw angle difference to (-pi, pi], the
+            // signed shortest turn from a0 to a1.
             double a0 = Math.atan2(a.y - v.y, a.x - v.x);
-            double a1 = Math.atan2(b.y - v.y, b.x - v.x);
-            if (s > 0 && a1 < a0) {
-                a1 += 2 * Math.PI;
-            }
-            if (s < 0 && a1 > a0) {
-                a1 -= 2 * Math.PI;
-            }
+            double a1raw = Math.atan2(b.y - v.y, b.x - v.x);
+            double a1 = a0 + angBetween(a0, a1raw);
             List<Tuple> p = new ArrayList<>();
             p.add(v);
             p.addAll(arcPoints(v, a0, a1, h, arcSteps(a0, a1)));
@@ -228,6 +264,19 @@ public final class Stroke {
             return List.of(v, a, m, b);
         }
         return List.of(v, a, b);
+    }
+
+    /**
+     * §14.5 reuses chapter 13's cap shapes, walked as points instead of
+     * emitted as separate pieces.
+     */
+    public static List<Tuple> capShapePublic(Tuple p, Tuple dout, double h, String cap) {
+        return capShape(p, dout, h, cap);
+    }
+
+    /** §14.5 reuses chapter 13's dedupe rule for the curve stroker's point list. */
+    public static List<Tuple> dedupePublic(List<Tuple> pts) {
+        return dedupe(pts);
     }
 
     /** §13.1, §13.4: the shape that closes an open end. dout points away from the path, out of the endpoint. */

@@ -101,7 +101,7 @@ public final class Chapter13Tests {
         Object[][] chevronJoinTable = {
             {"miter", 4},
             {"bevel", 3},
-            {"round", 24},
+            {"round", 13},
         };
         for (Object[] row : chevronJoinTable) {
             String join = (String) row[0];
@@ -113,12 +113,63 @@ public final class Chapter13Tests {
             });
         }
 
+        scenario("Stroke: the round join is an arc across the outer gap, not around the inside", () -> {
+            Path o = Stroke.strokeToPath(Figures.chevron(), 26, "butt", "round", 4.0);
+            List<Tuple> join = o.subpaths().get(2).points;
+            assertTupleEq("subpaths(o)[2].points[0]", join.get(0), Tuple.point(80, 120));
+            assertDoubleEq("subpaths(o)[2].points[6].x", join.get(6).x, 78.797, 0.01);
+            assertDoubleEq("subpaths(o)[2].points[6].y", join.get(6).y, 132.944, 0.01);
+            assertTrue("inside_nonzero(o, 80, 131) = true", Winding.insideNonzero(o, 80, 131));
+            assertTrue("inside_nonzero(o, 80, 135) = false", !Winding.insideNonzero(o, 80, 135));
+        });
+
         scenario("Stroke: the miter reaches its tip at the vertex plus the miter length", () -> {
             Path o = Stroke.strokeToPath(Figures.chevron(), 26, "butt", "miter", 4.0);
             List<Tuple> join = o.subpaths().get(2).points;
             assertTupleEq("subpaths(o)[2].points[0]", join.get(0), Tuple.point(80, 120));
             assertDoubleEq("subpaths(o)[2].points[2].x", join.get(2).x, 80, 0.01);
             assertDoubleEq("subpaths(o)[2].points[2].y", join.get(2).y, 144.528, 0.01);
+        });
+
+        scenario("Stroke: the join sits on the outer side of the turn", () -> {
+            Path o = Stroke.strokeToPath(Figures.chevron(), 26, "butt", "bevel", 4.0);
+            List<Tuple> join = o.subpaths().get(2).points;
+            assertTupleEq("subpaths(o)[2].points[0]", join.get(0), Tuple.point(80, 120));
+            assertDoubleEq("subpaths(o)[2].points[1].x", join.get(1).x, 68.976, 0.01);
+            assertDoubleEq("subpaths(o)[2].points[1].y", join.get(1).y, 126.89, 0.01);
+            assertDoubleEq("subpaths(o)[2].points[2].x", join.get(2).x, 91.024, 0.01);
+            assertDoubleEq("subpaths(o)[2].points[2].y", join.get(2).y, 126.89, 0.01);
+        });
+
+        scenario("Stroke: every piece winds the same way, so overlapping pieces add instead of cancelling", () -> {
+            Path hat = new Path();
+            hat.moveTo(Tuple.point(30, 120));
+            hat.lineTo(Tuple.point(80, 40));
+            hat.lineTo(Tuple.point(130, 120));
+            Path o = Stroke.strokeToPath(hat, 26, "butt", "bevel", 4.0);
+            assertDoubleEq("polygon_area(o)", Fill.polygonArea(o), -4981.625, 0.01);
+            assertDoubleEq("polygon_area(stroke_to_path(chevron(), 26, \"butt\", \"bevel\", 4.0))",
+                    Fill.polygonArea(Stroke.strokeToPath(Figures.chevron(), 26, "butt", "bevel", 4.0)),
+                    -4981.625, 0.01);
+        });
+
+        scenario("Stroke: a wide stroke around a tight bend overlaps itself and stays solid", () -> {
+            Path o = Stroke.strokeToPath(Figures.uTurn(), 40, "butt", "round", 4.0);
+            CoverageBuffer cov = Fill.fillPath(o, "nonzero", 100, 100);
+            assertEquals("length(subpaths(o))", o.subpaths().size(), 15);
+            assertDoubleEq("coverage_at(cov, 50, 37)", cov.coverageAt(50, 37), 1);
+            assertDoubleEq("coverage_at(cov, 46, 22)", cov.coverageAt(46, 22), 1);
+            assertDoubleEq("coverage_at(cov, 53, 22)", cov.coverageAt(53, 22), 1);
+        });
+
+        scenario("Stroke: a closed subpath strokes to segments and joins, with no caps", () -> {
+            Path tri = new Path();
+            tri.moveTo(Tuple.point(20, 20));
+            tri.lineTo(Tuple.point(80, 20));
+            tri.lineTo(Tuple.point(50, 70));
+            tri.close();
+            Path o = Stroke.strokeToPath(tri, 8, "butt", "miter", 4.0);
+            assertEquals("length(subpaths(o))", o.subpaths().size(), 6);
         });
     }
 
@@ -168,6 +219,17 @@ public final class Chapter13Tests {
             p.moveTo(Tuple.point(20, 20));
             Path o = Stroke.strokeToPath(p, 10, "butt", "miter", 4.0);
             assertEquals("length(subpaths(o))", o.subpaths().size(), 0);
+        });
+
+        scenario("Degenerate: a square cap extends a half-width past the end", () -> {
+            Path seg = new Path();
+            seg.moveTo(Tuple.point(45, 40));
+            seg.lineTo(Tuple.point(115, 40));
+            Path o = Stroke.strokeToPath(seg, 30, "square", "miter", 4.0);
+            assertEquals("length(subpaths(o))", o.subpaths().size(), 3);
+            List<Tuple> capPts = o.subpaths().get(2).points;
+            assertTupleEq("subpaths(o)[2].points[1]", capPts.get(1), Tuple.point(130, 55));
+            assertTupleEq("subpaths(o)[2].points[2]", capPts.get(2), Tuple.point(130, 25));
         });
 
         scenario("Degenerate: a single point with a square cap is a square", () -> {

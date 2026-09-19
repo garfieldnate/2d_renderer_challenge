@@ -145,11 +145,16 @@ public final class Fill {
         return resolve(acc, rule);
     }
 
+    /**
+     * The shoelace formula, signed: positive when the path winds clockwise
+     * on screen, negative counterclockwise (chapter 13 reuses the sign to
+     * orient every stroke piece the same way).
+     */
     public static double polygonArea(Path p) {
         double sum = 0;
         for (Edge e : p.edges()) {
             sum += e.a().x * e.b().y - e.b().x * e.a().y;
         }
-        return Math.abs(sum) / 2.0;
+        return sum / 2.0;
     }
 }
