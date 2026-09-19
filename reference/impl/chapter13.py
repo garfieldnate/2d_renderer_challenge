@@ -171,6 +171,8 @@ def stroke_to_path(p, width, cap="butt", join="miter", miter_limit=4.0):
 
     for sp in p.subpaths:
         pts = _dedupe(sp.points)
+        if sp.closed and len(pts) > 1 and magnitude(pts[-1] - pts[0]) <= 1e-9:
+            pts = pts[:-1]                 # it ends where it began: no zero-length closing segment
         if len(pts) < 2:
             # a single point: a round cap is a dot, a square cap a square
             if cap == "round":

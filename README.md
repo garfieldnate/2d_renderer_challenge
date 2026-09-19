@@ -9,7 +9,7 @@ Cucumber scenarios, no library dependencies, no printed implementation, and a pi
 end of every chapter. Where that book renders a sphere, this one renders the Ghostscript
 tiger.
 
-**Status:** outline complete, chapters 1 to 15 written; 1 to 6 reader-tested in twelve languages, 7 to 15 in three so far. 24 chapters across 6 parts,
+**Status:** outline complete, chapters 1 to 17 written; 1 to 6 reader-tested in twelve languages, 7 to 15 in three so far. 24 chapters across 6 parts,
 plus two bonus tracks. Start at [`plan.html`](plan.html).
 
 ---
@@ -33,6 +33,7 @@ Three-quarters of the book is teaching them to see that.
 | `features/` | Cucumber scenarios, one file per chapter section, exactly as printed in the text. |
 | `reference/chapter-NN/` | The reference PPMs that golden-image scenarios diff against. Shipped with the book. |
 | `reference/impl/` | Author-side reference implementation and the runner that executes every `.feature` against it. Not printed, never shown to readers. |
+| `reference/fonts/` | Roboto Regular (Apache 2.0) and its license, the source of `reference/chapter-16/roboto.json`; `tools/ttf_to_json.py` makes the JSON. |
 | `tools/sync_features.py` | Copies each feature file into the chapter that prints it, so the text can't drift from the tests. |
 | `build.py` | Inlines CSS and JS into a single self-contained file in `dist/`. |
 | `CLAUDE.md` | The rules for writing a chapter: every step pinned by Gherkin, no exercises left to the reader, how to test a chapter with reader agents. |

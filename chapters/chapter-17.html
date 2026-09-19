@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 17 · Rasterizing Type Well — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 17 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-16.html">← 16</a> · <a href="#plate">Plate&nbsp;17</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Seventeen</p>
+    <h1>Rasterizing Type Well</h1>
+    <p class="hook">Set the word <em>Hamburg</em> at eleven pixels, black on white, with the fill
+      from chapter 7 and the blending from chapter 1. It's legible. It's also thin and grey, and next
+      to the same word in any application on your screen it looks like a photocopy of itself. Nothing
+      is wrong. Chapter 7's coverage is exact and chapter 1's blending is physically correct, and the
+      result is that a one-pixel stem that lands across two pixel columns is two half-covered
+      columns, each mixed in linear light to a grey that your eye reads as much lighter than half.
+      Every text stack on earth has looked at this and cheated, and this chapter is about the cheats:
+      where the glyph sits within a pixel, how to stop rasterizing it over and over, the fudge factor
+      everyone applies and nobody names, and the trick of measuring coverage three times per pixel
+      and steering it into the coloured stripes the pixel is made of.</p>
+  </header>
+
+  <p>None of this changes the renderer. Every picture in the chapter is a chapter 7 fill of a
+    chapter 16 path, composited by chapter 1's <code>mix</code>. What changes is what goes in and how
+    the result is kept.</p>
+
+  <h2><span class="sec">§ 17.1</span> A quarter of a pixel</h2>
+
+  <p>Text is set with a pen that moves by fractional amounts: Roboto's <em>H</em> at eleven pixels
+    advances the pen by <code>7.8418</code>. If you round the pen to a whole pixel before drawing each
+    glyph, every letter lands up to half a pixel from where it should, and the spacing of a word
+    wobbles by a pixel here and there in a way you'll see before you can say what's wrong. If you
+    don't round, every glyph is rasterized fresh at its own fractional position, which is correct
+    and slow. The compromise is the one every renderer makes: quarter pixels. <code>subpixel_of(x)</code>
+    splits a pen position into a whole pixel and one of four quarters, the fraction rounded to the
+    nearest quarter, carrying into the next pixel when it rounds all the way up. Four positions is
+    few enough to cache and fine enough that the wobble disappears.</p>
+
+  <p>A glyph rendered at a quarter is a <em>bitmap</em>: its coverage in a buffer of its own, no
+    bigger than it needs, plus two integers saying where the buffer's top-left corner sits relative to the pen.
+    <code>glyph_bitmap(font, name, size, subpixel)</code> takes the glyph's bounds from chapter 16,
+    scales them, shifts them right by the quarter, and rounds outward to whole pixels: the buffer's
+    columns run from <code>floor(xmin)</code> to <code>ceil(xmax) − 1</code>, its rows likewise
+    with y turned over, and the path is filled into it through a <code>text_matrix</code> whose
+    origin is the quarter, offset by the buffer's corner. The same glyph at a different quarter is a
+    different bitmap, and the scenario pins the thing that makes the whole idea honest: the ink is
+    identical. Chapter 7's coverage is the area, and moving a shape a quarter of a pixel doesn't
+    change its area. <code>paint_bitmap</code> puts a bitmap on the canvas with its pen at a whole
+    pixel, each covered pixel mixed toward the colour by its coverage.</p>
+
+  <figure>
+    <canvas id="fig171" role="img" aria-label="Four magnified panels of the letter l at eleven pixels, black on white, its pen a quarter pixel further right in each: the stem's grey shifts from one column into the next in steps"></canvas>
+    <figcaption><span class="fig">Figure 17.1</span> The same stem at four quarters. The pen moves right by a quarter pixel each panel; the ink moves with it, out of one column and into the next, and the total never changes.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter17-bitmap.feature">
+    <p class="label">features/chapter17-bitmap.feature</p>
+<pre><code><span class="kw">Feature</span>: A glyph bitmap, positioned to a quarter pixel
+  A pen position is fractional. subpixel_of(x) splits it into a whole pixel
+  and one of four quarters, the fraction rounded to the nearest quarter and
+  carried into the next pixel when it rounds to four. glyph_bitmap(font,
+  name, size, subpixel) renders the glyph with its origin at x = subpixel /
+  4 into a coverage buffer of its own: columns floor(xmin) to ceil(xmax) - 1
+  of its device bounds shifted by that quarter, rows floor(-ymax) to
+  ceil(-ymin) - 1, with left and top saying where the buffer sits relative
+  to the pen. The same glyph at a different quarter is a different bitmap
+  with exactly the same ink. paint_bitmap(canvas, bitmap, x, y, color,
+  linear) composites it with the pen at whole pixel (x, y).
+
+  <span class="kw">Scenario</span>: A pen position rounds to the nearest quarter pixel
+    <span class="kw">Then</span>  subpixel_of(10) = (10, 0)
+    <span class="kw">And</span>   subpixel_of(10.1) = (10, 0)
+    <span class="kw">And</span>   subpixel_of(10.3) = (10, 1)
+    <span class="kw">And</span>   subpixel_of(10.5) = (10, 2)
+    <span class="kw">And</span>   subpixel_of(10.62) = (10, 2)
+    <span class="kw">And</span>   subpixel_of(10.9) = (11, 0)
+    <span class="kw">And</span>   subpixel_of(-0.3) = (-1, 3)
+
+  <span class="kw">Scenario</span>: A bitmap is just big enough and knows where it sits
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  b ← glyph_bitmap(font, "l", 11, 0)
+    <span class="kw">Then</span>  b.width = 2
+    <span class="kw">And</span>   b.height = 9
+    <span class="kw">And</span>   b.left = 0
+    <span class="kw">And</span>   b.top = -9
+    <span class="kw">And</span>   coverage_at(b.coverage, 0, 5) = 0.1621 ± 0.0001
+    <span class="kw">And</span>   coverage_at(b.coverage, 1, 5) = 0.8315 ± 0.0001
+    <span class="kw">And</span>   glyph_bitmap(font, "g", 11, 0).top = -6
+    <span class="kw">And</span>   glyph_bitmap(font, "g", 11, 0).height = 9
+    <span class="kw">And</span>   glyph_bitmap(font, "space", 11, 0).width = 0
+
+  <span class="kw">Scenario</span>: A quarter to the right moves the ink, not the amount of it
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  b1 ← glyph_bitmap(font, "l", 11, 1)
+    <span class="kw">And</span>   b3 ← glyph_bitmap(font, "l", 11, 3)
+    <span class="kw">Then</span>  b1.left = 1
+    <span class="kw">And</span>   coverage_at(b1.coverage, 0, 5) = 0.9121 ± 0.0001
+    <span class="kw">And</span>   coverage_at(b1.coverage, 1, 5) = 0.0815 ± 0.0001
+    <span class="kw">And</span>   coverage_at(b3.coverage, 0, 5) = 0.4121 ± 0.0001
+    <span class="kw">And</span>   coverage_at(b3.coverage, 1, 5) = 0.5815 ± 0.0001
+    <span class="kw">And</span>   ink(b1.coverage) = ink(glyph_bitmap(font, "l", 11, 0).coverage)
+    <span class="kw">And</span>   ink(b3.coverage) = 8.197632 ± 0.0001
+    <span class="kw">And</span>   ink(glyph_bitmap(font, "H", 11, 1).coverage) = ink(glyph_bitmap(font, "H", 11, 0).coverage)
+
+  <span class="kw">Scenario</span>: Painting a bitmap lands it at the pen
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   c ← canvas(10, 14)
+    <span class="kw">When</span>  fill(c, color(1, 1, 1))
+    <span class="kw">And</span>   paint_bitmap(c, glyph_bitmap(font, "l", 11, 0), 4, 11, color(0, 0, 0), true)
+    <span class="kw">Then</span>  pixel_at(c, 5, 6) = color(0.1685, 0.1685, 0.1685)
+    <span class="kw">And</span>   pixel_at(c, 4, 6) = color(0.8379, 0.8379, 0.8379)
+    <span class="kw">And</span>   pixel_at(c, 6, 6) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(c, 5, 11) = color(1, 1, 1)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 17.2</span> The cache and the atlas</h2>
+
+  <p>A page of text is a few thousand glyphs drawn from a few dozen shapes at one size. Rasterizing
+    each one is the expensive part and the pointless part, since the <em>e</em> at quarter two is the
+    same bitmap every time it appears. So keep them: <code>glyph_cache</code> is a table keyed by
+    <code>(glyph, size, subpixel)</code>, and <code>cached_bitmap</code> renders on the first request
+    and hands back the very same bitmap on every request after. Four quarters times the sizes in use
+    times the glyphs in use is the whole cost of a page, paid once.</p>
+
+  <p>Where the bitmaps live is the other half. A renderer that composites on a GPU can't upload a
+    thousand tiny textures, so it packs them into one big one, an <em>atlas</em>, and remembers where
+    each went. The packing rule this chapter uses is the simplest that works: <em>shelves</em>.
+    Bitmaps go left to right along a shelf whose height is set by its first bitmap; when the next one
+    doesn't fit on the shelf, a new shelf opens below the tallest so far. It wastes a little space at
+    the end of each shelf and a little above the short bitmaps, and it never has to move anything.
+    <code>atlas_add</code> copies a bitmap in and answers where, or <code>none</code> when there is no
+    room. The scenario packs four rectangles by hand so you can draw the shelves on paper, then two
+    real glyphs.</p>
+
+  <figure>
+    <canvas id="fig172" role="img" aria-label="A square atlas with rectangles of different sizes packed left to right in rows, each row as tall as its first rectangle, with a new row starting under the tallest so far; each rectangle labelled with the point where it was placed"></canvas>
+    <figcaption><span class="fig">Figure 17.2</span> Shelf packing, the scenario's four rectangles. Left to right along a shelf; a new shelf opens under the tallest so far when one doesn't fit. The 40-wide one is wider than the atlas and comes back <code>none</code>.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter17-cache.feature">
+    <p class="label">features/chapter17-cache.feature</p>
+<pre><code><span class="kw">Feature</span>: The cache and the atlas
+  glyph_cache() holds bitmaps keyed by (glyph name, size, subpixel);
+  cached_bitmap(cache, font, name, size, subpixel) renders on the first
+  request and hands back the very same bitmap after, and cache_size counts
+  them. atlas(width, height) is one big coverage buffer the bitmaps are
+  packed into, shelf by shelf: bitmaps go left to right along a shelf whose
+  height is its first bitmap's, and when one doesn't fit the shelf, a new
+  shelf opens below the tallest so far. atlas_add(atlas, bitmap) copies the
+  bitmap in and answers (x, y) of its top-left corner, or none when the
+  atlas has no room.
+
+  <span class="kw">Scenario</span>: A cache hit is the identical bitmap
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   cache ← glyph_cache()
+    <span class="kw">When</span>  a ← cached_bitmap(cache, font, "H", 11, 0)
+    <span class="kw">And</span>   b ← cached_bitmap(cache, font, "H", 11, 0)
+    <span class="kw">Then</span>  cache_size(cache) = 1
+    <span class="kw">And</span>   max_coverage_difference(a.coverage, b.coverage) = 0
+    <span class="kw">And</span>   a.left = b.left
+    <span class="kw">And</span>   ink(a.coverage) = 19.495859 ± 0.0001
+
+  <span class="kw">Scenario</span>: A different quarter or size is a different entry
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   cache ← glyph_cache()
+    <span class="kw">When</span>  a ← cached_bitmap(cache, font, "H", 11, 0)
+    <span class="kw">And</span>   b ← cached_bitmap(cache, font, "H", 11, 1)
+    <span class="kw">And</span>   c ← cached_bitmap(cache, font, "H", 12, 0)
+    <span class="kw">Then</span>  cache_size(cache) = 3
+    <span class="kw">And</span>   b.left = 1
+    <span class="kw">And</span>   ink(b.coverage) = ink(a.coverage)
+
+  <span class="kw">Scenario</span>: Shelf packing places bitmaps left to right, then opens a new shelf
+    <span class="kw">Given</span> a ← atlas(32, 32)
+    <span class="kw">Then</span>  atlas_add(a, bitmap(coverage_buffer(10, 8), 0, 0)) = (0, 0)
+    <span class="kw">And</span>   atlas_add(a, bitmap(coverage_buffer(20, 8), 0, 0)) = (10, 0)
+    <span class="kw">And</span>   atlas_add(a, bitmap(coverage_buffer(8, 8), 0, 0)) = (0, 8)
+    <span class="kw">And</span>   atlas_add(a, bitmap(coverage_buffer(40, 5), 0, 0)) = none
+    <span class="kw">And</span>   atlas_add(a, bitmap(coverage_buffer(30, 20), 0, 0)) = none
+    <span class="kw">And</span>   atlas_add(a, bitmap(coverage_buffer(2, 2), 0, 0)) = (0, 16)
+    <span class="kw">And</span>   atlas_add(a, bitmap(coverage_buffer(31, 2), 0, 0)) = (0, 18)
+
+  <span class="kw">Scenario</span>: The atlas holds the bitmap's coverage where it said
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   a ← atlas(32, 32)
+    <span class="kw">When</span>  h ← glyph_bitmap(font, "H", 11, 0)
+    <span class="kw">And</span>   at ← atlas_add(a, h)
+    <span class="kw">And</span>   at2 ← atlas_add(a, glyph_bitmap(font, "a", 11, 0))
+    <span class="kw">Then</span>  at = (0, 0)
+    <span class="kw">And</span>   at2 = (7, 0)
+    <span class="kw">And</span>   coverage_at(a.coverage, 1, 3) = coverage_at(h.coverage, 1, 3)
+    <span class="kw">And</span>   coverage_at(a.coverage, 8, 3) = coverage_at(glyph_bitmap(font, "a", 11, 0).coverage, 1, 3)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 17.3</span> The fudge, named</h2>
+
+  <p>Now the thin grey text. Take one column of the <em>l</em> in Figure 17.1 at coverage
+    <code>0.16</code>: chapter 1 mixes black into white by 16% in linear light, which encodes to a
+    byte of <code>236</code>, a grey so pale it's nearly not there. What you're used to seeing is the
+    other lane from chapter 1: blend the file values instead of the light, and the same pixel comes
+    out at <code>214</code>. Physically that's wrong. Perceptually it's what every operating system
+    and browser does for text, because text is small, high-contrast and read at a glance, and the
+    correct blend makes it look starved. The book's switch is still there: <code>paint_bitmap</code>
+    takes a <code>linear</code> flag, and the scenario pins both values so you can see exactly what
+    the cheat buys.</p>
+
+  <p>The second cheat is subtler and every bit as universal. Even blended the wrong way, a font designed
+    for print looks lighter on screen than on paper, because paper ink spreads and pixels don't. So
+    renderers make the stems a little fatter: <em>stem darkening</em>, which is emboldening by a
+    fraction of a pixel. You have the tool: <code>embolden(font, name, size, amount)</code> is the
+    glyph's fill plus chapter 13's stroke of its outline, <code>amount</code> wide, the two coverages
+    added and clamped to one, in a bitmap grown a pixel all round to make room. A third of a pixel is
+    plenty. Figure 17.3 sets the word three ways. The middle row is what you've been reading all your
+    life; the top row is the truth; the bottom row is the truth with heavier stems, and it's the one
+    a renderer that refuses to blend in encoded space would ship.</p>
+
+  <figure>
+    <canvas id="fig173" role="img" aria-label="The word Hamburg at eleven pixels, black on white, three times, magnified: the top row thin and pale, blended in linear light; the middle row darker, blended in encoded space; the bottom row heavier still, with its stems emboldened"></canvas>
+    <figcaption><span class="fig">Figure 17.3</span> Three ways to smooth. Top: linear light, correct and starved. Middle: encoded-space blending, the universal cheat. Bottom: linear light with the stems darkened by a third of a pixel.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter17-fudge.feature">
+    <p class="label">features/chapter17-fudge.feature</p>
+<pre><code><span class="kw">Feature</span>: The fudge, named
+  Text is the one place physically correct blending looks wrong: black
+  text on white composited in linear light comes out thin and pale, so
+  every text stack cheats. The book names two cheats. The first is
+  chapter 1's switch: paint_bitmap with linear = false blends in encoded
+  space, the way browsers and operating systems do. The second is stem
+  darkening: embolden(font, name, size, amount) is the glyph's coverage
+  with its outline pushed out, the fill plus chapter 13's stroke of the
+  outline amount wide, added and clamped to 1, in a bitmap grown a pixel
+  all round. Neither is correct. Both are what you are used to seeing.
+
+  <span class="kw">Scenario</span>: Encoded-space blending is darker at the same coverage
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   a ← canvas(10, 14)
+    <span class="kw">And</span>   b ← canvas(10, 14)
+    <span class="kw">When</span>  fill(a, color(1, 1, 1))
+    <span class="kw">And</span>   fill(b, color(1, 1, 1))
+    <span class="kw">And</span>   paint_bitmap(a, glyph_bitmap(font, "l", 11, 0), 4, 11, color(0, 0, 0), true)
+    <span class="kw">And</span>   paint_bitmap(b, glyph_bitmap(font, "l", 11, 0), 4, 11, color(0, 0, 0), false)
+    <span class="kw">Then</span>  pixel_at(a, 4, 6) = color(0.8379, 0.8379, 0.8379)
+    <span class="kw">And</span>   pixel_at(b, 4, 6) = color(0.6701, 0.6701, 0.6701)
+    <span class="kw">And</span>   pixel_at(a, 5, 6) = color(0.1685, 0.1685, 0.1685)
+    <span class="kw">And</span>   pixel_at(b, 5, 6) = color(0.0241, 0.0241, 0.0241)
+
+  <span class="kw">Scenario</span>: Emboldening adds ink and grows the bitmap by a pixel all round
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  plain ← glyph_bitmap(font, "l", 11, 0)
+    <span class="kw">And</span>   bold ← embolden(font, "l", 11, 0.333333)
+    <span class="kw">Then</span>  bold.width = 4
+    <span class="kw">And</span>   bold.height = 11
+    <span class="kw">And</span>   bold.left = -1
+    <span class="kw">And</span>   bold.top = -10
+    <span class="kw">And</span>   ink(plain.coverage) = 8.197632 ± 0.0001
+    <span class="kw">And</span>   ink(bold.coverage) = 12.9527 ± 0.001
+    <span class="kw">And</span>   coverage_at(bold.coverage, 2, 6) = 1
+    <span class="kw">And</span>   coverage_at(bold.coverage, 1, 6) = 0.4909 ± 0.001
+    <span class="kw">And</span>   coverage_at(bold.coverage, 0, 6) = 0
+
+  <span class="kw">Scenario</span>: More emboldening, more ink
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  ink(embolden(font, "o", 11, 0.5).coverage) = 25.300 ± 0.01
+    <span class="kw">And</span>   ink(glyph_bitmap(font, "o", 11, 0).coverage) = 14.041 ± 0.01
+    <span class="kw">And</span>   ink(embolden(font, "o", 11, 0.5).coverage) ≥ ink(embolden(font, "o", 11, 0.25).coverage)</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>macOS's <em>Use font smoothing when available</em> was a stem-darkening switch, and Windows'
+      <em>ClearType Text Tuner</em> lets you pick the gamma of the blend. Photoshop's Character panel
+      has an anti-aliasing menu, <em>None, Sharp, Crisp, Strong, Smooth</em>: five fudge factors with
+      names. Hinting, the grid-fitting of outlines, isn't here; it is dying with low-resolution
+      screens.</p>
+  </aside>
+
+  <h2><span class="sec">§ 17.4</span> Three coverages per pixel</h2>
+
+  <p>A pixel on an LCD isn't a dot. It's three vertical stripes, red, green and blue, side by side,
+    and your eye fuses them. Which means a display has three times the horizontal resolution it
+    admits to, if you're willing to colour the edges. Rasterize the glyph three times wider, so each
+    stripe gets its own coverage, then mix red through the first stripe's coverage, green through
+    the second, blue through the third. A stem edge that lands on the boundary between stripes stops
+    being a grey column and becomes a red-tinged column on one side and a blue-tinged one on the
+    other, and at reading size the tinge vanishes into a sharper stem. That's the whole idea, and
+    on its own it looks terrible: the colour fringes are strong enough to see. The fix is a
+    filter along the row: replace every stripe's coverage with the average of itself and its two
+    neighbours. Three taps that sum to one, so the ink is spread across neighbouring stripes but
+    never lost; the fringes soften and the stem stays sharper than grey. <code>lcd_filter</code>
+    is the filter, <code>lcd_coverage</code> is the wide rasterization with every row filtered, and
+    <code>paint_lcd</code> mixes each channel through its own stripe. The scenarios check that the
+    filter spreads a spike into three, that the wide buffer holds exactly three times the grey
+    buffer's ink, and that each channel of a pixel took its own stripe.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>All of it assumes you know the physical order of the stripes, that they're vertical, and that
+      your pixels reach the glass unchanged. Turn the display through ninety degrees and the stripes
+      are horizontal and the filter fringes every stem. Plenty of OLED panels arrange their
+      subpixels in a diamond, or share them between pixels, and there is no row to filter along.
+      Composite the text through a transform, scale it, fade it, put it in a layer that the compositor
+      resamples, and the carefully steered stripes land on the wrong hardware and become plain
+      colour fringes. That's why the industry has been quietly abandoning it: macOS dropped LCD text
+      rendering in 2018, and high-resolution screens took away most of the reason for it. It's in
+      the book because it's clever, because you'll meet it in every renderer older than that, and
+      because the row filter is a two-line lesson in what a filter's taps mean.</p>
+  </div>
+
+  <div class="test" data-feature="chapter17-lcd.feature">
+    <p class="label">features/chapter17-lcd.feature</p>
+<pre><code><span class="kw">Feature</span>: LCD: three coverages per pixel
+  A pixel on an LCD is three stripes, red, green and blue, side by side.
+  lcd_coverage(font, name, size, x, y, w, h) rasterizes the glyph three
+  times wider, one coverage per stripe, into a buffer 3 w wide and h tall,
+  and runs lcd_filter along every row: each value replaced by the average
+  of itself and its two neighbours, zeros beyond the ends, the three taps
+  summing to one so ink is spread across neighbouring stripes but never
+  lost. paint_lcd(canvas, cov3, color) composites it, red through the first
+  stripe of each pixel, green the second, blue the third, each channel
+  mixed on its own.
+
+  <span class="kw">Scenario</span>: The filter's taps sum to one and spread a spike over three stripes
+    <span class="kw">Then</span>  LCD_TAPS = (0.333333, 0.333333, 0.333333)
+    <span class="kw">And</span>   lcd_filter([0, 0, 3, 0, 0]) = [0, 1, 1, 1, 0]
+    <span class="kw">And</span>   lcd_filter([1, 1, 1]) = [0.666667, 1, 0.666667]
+    <span class="kw">And</span>   lcd_filter([6]) = [2]
+    <span class="kw">And</span>   length(lcd_filter([])) = 0
+
+  <span class="kw">Scenario</span>: Three coverages per pixel carry three times the ink
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  cov3 ← lcd_coverage(font, "l", 11, 4, 11, 10, 14)
+    <span class="kw">And</span>   gray ← fill_path(glyph_path(font, "l", text_matrix(font, 11, 4, 11), 0.1), "nonzero", 10, 14)
+    <span class="kw">Then</span>  cov3.width = 30
+    <span class="kw">And</span>   cov3.height = 14
+    <span class="kw">And</span>   ink(cov3) = 24.592896 ± 0.0001
+    <span class="kw">And</span>   ink(gray) = 8.197632 ± 0.0001
+    <span class="kw">And</span>   coverage_at(gray, 4, 5) = 0.1621 ± 0.0001
+    <span class="kw">And</span>   coverage_at(gray, 5, 5) = 0.8315 ± 0.0001
+    <span class="kw">And</span>   coverage_at(cov3, 13, 5) = 0.1621 ± 0.0001
+    <span class="kw">And</span>   coverage_at(cov3, 14, 5) = 0.4954 ± 0.0001
+    <span class="kw">And</span>   coverage_at(cov3, 15, 5) = 0.8288 ± 0.0001
+    <span class="kw">And</span>   coverage_at(cov3, 16, 5) = 0.8315 ± 0.0001
+    <span class="kw">And</span>   coverage_at(cov3, 17, 5) = 0.4982 ± 0.0001
+    <span class="kw">And</span>   coverage_at(cov3, 18, 5) = 0.1649 ± 0.0001
+    <span class="kw">And</span>   coverage_at(cov3, 12, 5) = 0
+
+  <span class="kw">Scenario</span>: Each channel takes its own stripe
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   c ← canvas(10, 14)
+    <span class="kw">When</span>  fill(c, color(1, 1, 1))
+    <span class="kw">And</span>   paint_lcd(c, lcd_coverage(font, "l", 11, 4, 11, 10, 14), color(0, 0, 0))
+    <span class="kw">Then</span>  pixel_at(c, 4, 5) = color(1, 0.8379, 0.5046) ± 0.0001
+    <span class="kw">And</span>   pixel_at(c, 5, 5) = color(0.1712, 0.1685, 0.5018) ± 0.0001
+    <span class="kw">And</span>   pixel_at(c, 6, 5) = color(0.8351, 1, 1) ± 0.0001
+    <span class="kw">And</span>   pixel_at(c, 8, 5) = color(1, 1, 1)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 17.5</span> Putting it together</h2>
+
+  <p>The plate is the same two letters twice, magnified until the pixels are squares: grayscale
+    coverage above, three coverages per pixel below. Look at the left edge of the <em>e</em>'s stem.
+    Above, it's a grey column. Below, it's the same edge, at the same place, resolved into the
+    stripes, with the colour that resolving costs.</p>
+
+<pre><code>lcd_plate():
+  font ← load_font(roboto.json);  top ← canvas(24, 16) white;  bottom ← canvas(24, 16) white
+  pen ← 2
+  <span class="kw">for</span> ch <span class="kw">in</span> "ea":
+    name ← glyph_name(font, ch)
+    fill glyph_path(font, name, text_matrix(font, 13, pen, 12), 0.1) nonzero into top, in black
+    paint_lcd(bottom, lcd_coverage(font, name, 13, pen, 12, 24, 16), black)
+    pen ← pen + pen_advance(font, name, 13)
+  <span class="kw">return</span> magnify(top above bottom, 6)
+
+plate_17():
+  <span class="kw">return</span> magnify(lcd_plate(), 2)</code></pre>
+
+  <div class="test" data-feature="chapter17-plate.feature">
+    <p class="label">features/chapter17-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 17
+  subpixel_strip() draws l at 11 pixels with its pen at x = 4, 4.25, 4.5
+  and 4.75 in four 10 by 14 panels, black on white, magnified eight times.
+  smoothing_demo() sets Hamburg at 11 pixels three ways, blended in linear
+  light, blended in encoded space, and linear with the stems emboldened by
+  a third of a pixel, magnified four times. lcd_plate() sets ea at 13
+  pixels twice, grayscale above and LCD below, magnified six times;
+  plate_17() is it magnified again. pen_advance(font, name, size) is a
+  glyph's advance in pixels, and draw_text steps the pen by it, each glyph
+  at its nearest quarter.
+
+  <span class="kw">Scenario</span>: The pen advance in pixels
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  pen_advance(font, "H", 11) = 7.8418 ± 0.0001
+    <span class="kw">And</span>   pen_advance(font, "space", 11) = 2.7231 ± 0.0001
+
+  <span class="kw">Scenario</span>: The same stem at four quarters
+    <span class="kw">Given</span> c ← subpixel_strip()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-17/subpixels.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 112
+    <span class="kw">And</span>   ppm_pixel(p6, 40, 60) = (114, 114, 114) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 120, 60) = (84, 84, 84) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 280, 60) = (202, 202, 202) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (255, 255, 255)
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Three ways to smooth
+    <span class="kw">Given</span> c ← smoothing_demo()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-17/smoothing.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 288
+    <span class="kw">And</span>   c.height = 168
+    <span class="kw">And</span>   ppm_pixel(p6, 150, 20) = (250, 250, 250) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 150, 76) = (243, 243, 243) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 150, 132) = (174, 174, 174) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Grayscale above, stripes below
+    <span class="kw">Given</span> c ← lcd_plate()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-17/lcd.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 144
+    <span class="kw">And</span>   c.height = 192
+    <span class="kw">And</span>   ppm_pixel(p6, 60, 40) = (46, 46, 46) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 60, 136) = (123, 51, 126) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 5, 5) = (255, 255, 255)
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 17
+    <span class="kw">Given</span> c ← plate_17()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-17/plate-17.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 288
+    <span class="kw">And</span>   c.height = 384
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate17" role="img" aria-label="The letters e and a at thirteen pixels, black on white, magnified into large square pixels, shown twice: above in shades of grey, below with the same edges rendered as red, green and blue stripes"></canvas>
+    <figcaption><span class="fig">Plate 17</span> The same stem edge at the same position. Below, coverage is measured three times per pixel and steered into the RGB stripes.</figcaption>
+  </figure>
+
+  <p>Every trick in this chapter is a decision about what to feed the fill and what to do with what
+    comes out. Chapter 18 puts the glyphs in a row: advances, kerning, a baseline, and the moment
+    you discover a text run is a list of positions handed to chapter 16.</p>
+
+  <nav class="endnav">
+    <a href="chapter-16.html">← 16 · What a Glyph Is</a>
+    <span>Chapter 17 · Rasterizing Type Well</span>
+    <span>Next: 18 · Setting a Line of Text (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+/* the figures draw from this subset of reference/chapter-16/roboto.json */
+var GLYPHS={"units_per_em":2048,"ascender":1900,"descender":-500,"line_gap":0,"cmap":{"32":"space","72":"H","82":"R","97":"a","98":"b","101":"e","103":"g","105":"i","108":"l","109":"m","111":"o","114":"r","117":"u","180":"acute","233":"eacute"},"glyphs":{"H":{"advance":1460,"contours":[[[1288,0,1],[1095,0,1],[1095,673,1],[361,673,1],[361,0,1],[169,0,1],[169,1456,1],[361,1456,1],[361,830,1],[1095,830,1],[1095,1456,1],[1288,1456,1]]],"components":[]},"R":{"advance":1261,"contours":[[[703,589,1],[361,589,1],[361,0,1],[168,0,1],[168,1456,1],[650,1456,1],[896,1456,0],[1161,1232,0],[1161,1018,1],[1161,882,0],[1014,680,0],[883,630,1],[1225,12,1],[1225,0,1],[1019,0,1]],[[361,746,1],[656,746,1],[799,746,0],[968,894,0],[968,1018,1],[968,1153,0],[807,1297,0],[655,1298,1],[361,1298,1]]],"components":[]},"a":{"advance":1114,"contours":[[[808,0,1],[792,32,0],[782,114,1],[653,-20,0],[474,-20,1],[314,-20,0],[109,161,0],[109,300,1],[109,469,0],[366,656,0],[599,656,1],[779,656,1],[779,741,1],[779,838,0],[663,953,0],[550,953,1],[451,953,0],[317,853,0],[317,782,1],[131,782,1],[131,863,0],[246,1014,0],[443,1102,0],[561,1102,1],[748,1102,0],[960,915,0],[964,751,1],[964,253,1],[964,104,0],[1002,16,1],[1002,0,1]],[[501,141,1],[588,141,0],[744,231,0],[779,303,1],[779,525,1],[634,525,1],[294,525,0],[294,326,1],[294,239,0],[410,141,0]]],"components":[]},"acute":{"advance":642,"contours":[[[316,1534,1],[540,1534,1],[272,1240,1],[123,1240,1]]],"components":[]},"b":{"advance":1149,"contours":[[[1056,529,1],[1056,281,0],[828,-20,0],[636,-20,1],[431,-20,0],[319,125,1],[310,0,1],[140,0,1],[140,1536,1],[325,1536,1],[325,963,1],[437,1102,0],[831,1102,0],[1056,804,0],[1056,545,1]],[[871,550,1],[871,739,0],[725,945,0],[588,945,1],[405,945,0],[325,775,1],[325,307,1],[410,137,0],[590,137,1],[723,137,0],[871,343,0]]],"components":[]},"e":{"advance":1085,"contours":[[[589,-20,1],[369,-20,0],[93,269,0],[93,511,1],[93,545,1],[93,706,0],[216,959,0],[437,1102,0],[566,1102,1],[777,1102,0],[1011,824,0],[1011,565,1],[1011,488,1],[278,488,1],[282,328,0],[461,131,0],[599,131,1],[697,131,0],[833,211,0],[884,277,1],[997,189,1],[861,-20,0]],[[566,950,1],[454,950,0],[302,787,0],[284,640,1],[826,640,1],[826,654,1],[818,795,0],[682,950,0]]],"components":[]},"eacute":{"advance":1085,"contours":[],"components":[{"glyph":"e","transform":[1.0,0.0,0.0,1.0,0.0,0.0]},{"glyph":"acute","transform":[1.0,0.0,0.0,1.0,340.0,0.0]}]},"g":{"advance":1149,"contours":[[[96,550,1],[96,803,0],[330,1102,0],[523,1102,1],[721,1102,0],[832,962,1],[841,1082,1],[1010,1082,1],[1010,26,1],[1010,-184,0],[761,-426,0],[551,-426,1],[434,-426,0],[210,-326,0],[151,-239,1],[247,-128,1],[366,-275,0],[538,-275,1],[673,-275,0],[824,-123,0],[824,15,1],[824,108,1],[713,-20,0],[521,-20,1],[331,-20,0],[96,286,0]],[[282,529,1],[282,346,0],[432,137,0],[567,137,1],[742,137,0],[824,296,1],[824,790,1],[739,945,0],[569,945,1],[434,945,0],[282,735,0]]],"components":[]},"i":{"advance":497,"contours":[[[341,0,1],[156,0,1],[156,1082,1],[341,1082,1]],[[141,1369,1],[141,1414,0],[196,1476,0],[304,1476,0],[360,1414,0],[360,1324,0],[304,1264,0],[196,1264,0],[141,1324,0]]],"components":[]},"l":{"advance":497,"contours":[[[341,0,1],[156,0,1],[156,1536,1],[341,1536,1]]],"components":[]},"m":{"advance":1795,"contours":[[[314,1082,1],[319,962,1],[438,1102,0],[640,1102,1],[867,1102,0],[949,928,1],[1003,1006,0],[1176,1102,0],[1294,1102,1],[1650,1102,0],[1656,725,1],[1656,0,1],[1471,0,1],[1471,714,1],[1471,830,0],[1365,945,0],[1240,945,1],[1137,945,0],[1001,822,0],[990,718,1],[990,0,1],[804,0,1],[804,709,1],[804,945,0],[573,945,1],[391,945,0],[324,790,1],[324,0,1],[139,0,1],[139,1082,1]]],"components":[]},"o":{"advance":1168,"contours":[[[91,551,1],[91,710,0],[216,964,0],[439,1102,0],[582,1102,1],[803,1102,0],[1076,796,0],[1076,542,1],[1076,529,1],[1076,371,0],[955,120,0],[730,-20,0],[584,-20,1],[364,-20,0],[91,286,0],[91,538,1]],[[277,529,1],[277,349,0],[444,131,0],[584,131,1],[725,131,0],[891,352,0],[891,551,1],[891,729,0],[722,950,0],[582,950,1],[445,950,0],[277,732,0]]],"components":[]},"r":{"advance":693,"contours":[[[663,916,1],[621,923,0],[572,923,1],[390,923,0],[325,768,1],[325,0,1],[140,0,1],[140,1082,1],[320,1082,1],[323,957,1],[414,1102,0],[581,1102,1],[635,1102,0],[663,1088,1]]],"components":[]},"space":{"advance":507,"contours":[],"components":[]},"u":{"advance":1129,"contours":[[[808,107,1],[700,-20,0],[491,-20,1],[318,-20,0],[137,181,0],[136,378,1],[136,1082,1],[321,1082,1],[321,383,1],[321,137,0],[521,137,1],[733,137,0],[803,295,1],[803,1082,1],[988,1082,1],[988,0,1],[812,0,1]]],"components":[]}}};
+function toByte(light){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255+0.5);}
+function lerp3(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+function blit(ctx,pixels,pw,ph,scale,ox,oy){var img=ctx.createImageData(pw,ph);for(var i=0;i<pw*ph;i++){img.data[i*4]=pixels[i][0];img.data[i*4+1]=pixels[i][1];img.data[i*4+2]=pixels[i][2];img.data[i*4+3]=255;}var off=Plate.offcan(pw,ph);off.getContext('2d').putImageData(img,0,0);ctx.imageSmoothingEnabled=false;ctx.drawImage(off,ox,oy,pw*scale,ph*scale);}
+
+/* vectors and matrices (chapters 4 and 13) */
+function sub(a,b){return [a[0]-b[0],a[1]-b[1]];}
+function mag(v){return Math.sqrt(v[0]*v[0]+v[1]*v[1]);}
+function unit(a,b){var d=sub(b,a),m=mag(d);return [d[0]/m,d[1]/m];}
+function perp(v){return [-v[1],v[0]];}
+function crss(a,b){return a[0]*b[1]-a[1]*b[0];}
+function add(p,v,s){return [p[0]+v[0]*s,p[1]+v[1]*s];}
+function intersect(p1,d1,p2,d2){var den=crss(d1,d2);if(Math.abs(den)<1e-12)return null;var t=crss(sub(p2,p1),d2)/den;return add(p1,d1,t);}
+function arc(pts,c,a0,a1,r,steps){for(var k=0;k<=steps;k++){var a=a0+(a1-a0)*k/steps;pts.push([c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)]);}}
+function arcSteps(a0,a1){return Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/16)));}
+function angBetween(a,b){var d=((b-a)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);return d>Math.PI?d-2*Math.PI:d;}
+function mat(a,b,c,d,e,f,g,h,i){return [a,b,c,d,e,f,g,h,i];}
+function mmul(m,n){var o=[];for(var r=0;r<3;r++)for(var c=0;c<3;c++){var s=0;for(var k=0;k<3;k++)s+=m[r*3+k]*n[k*3+c];o.push(s);}return o;}
+function apply(m,p){return [m[0]*p[0]+m[1]*p[1]+m[2],m[3]*p[0]+m[4]*p[1]+m[5]];}
+function translation(x,y){return mat(1,0,x,0,1,y,0,0,1);}
+function scaling(x,y){return mat(x,0,0,0,y,0,0,0,1);}
+
+/* curves (chapter 8) */
+function lerpP(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];}
+function decasteljau(pts,t){var left=[pts[0]],right=[pts[pts.length-1]],p=pts.slice();while(p.length>1){var q=[];for(var i=0;i<p.length-1;i++)q.push(lerpP(p[i],p[i+1],t));p=q;left.push(p[0]);right.push(p[p.length-1]);}return {at:p[0],left:left,right:right.reverse()};}
+function pointAt(c,t){return decasteljau(c,t).at;}
+function flatness(c){var a=c[0],b=c[c.length-1],dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy),w=0;for(var i=1;i<c.length-1;i++){var p=c[i],d=L===0?Math.hypot(p[0]-a[0],p[1]-a[1]):Math.abs((p[0]-a[0])*dy-(p[1]-a[1])*dx)/L;w=Math.max(w,d);}return w;}
+function flattenInto(c,tol,out){if(flatness(c)<=tol)out.push(c[c.length-1]);else{var d=decasteljau(c,0.5);flattenInto(d.left,tol,out);flattenInto(d.right,tol,out);}}
+function flatten(c,tol){var out=[c[0]];flattenInto(c,tol,out);return out;}
+function flattenIntoPath(pts,c,tol){var f=flatten(c,tol);if(pts.length&&pts[pts.length-1][0]===f[0][0]&&pts[pts.length-1][1]===f[0][1])f=f.slice(1);return pts.concat(f);}
+function transformCurve(c,m){return c.map(function(p){return apply(m,p);});}
+function quadBounds(c){var xs=[c[0][0],c[2][0]],ys=[c[0][1],c[2][1]];[0,1].forEach(function(k){var den=c[0][k]-2*c[1][k]+c[2][k];if(Math.abs(den)>1e-12){var t=(c[0][k]-c[1][k])/den;if(t>0&&t<1){var q=pointAt(c,t);(k?ys:xs).push(q[k]);}}});return [Math.min.apply(null,xs),Math.min.apply(null,ys),Math.max.apply(null,xs),Math.max.apply(null,ys)];}
+
+/* chapter 16: glyphs */
+function impliedPoints(contour){var out=[],n=contour.length;for(var i=0;i<n;i++){var cur=contour[i],nxt=contour[(i+1)%n];out.push(cur);if(!cur[2]&&!nxt[2])out.push([(cur[0]+nxt[0])/2,(cur[1]+nxt[1])/2,1]);}for(var k=0;k<out.length;k++)if(out[k][2])return out.slice(k).concat(out.slice(0,k));return out;}
+function contourCurves(contour){var pts=impliedPoints(contour),curves=[],n=pts.length,i=0;while(i<n){var a=pts[i],b=pts[(i+1)%n];if(b[2]){curves.push([[a[0],a[1]],[(a[0]+b[0])/2,(a[1]+b[1])/2],[b[0],b[1]]]);i+=1;}else{var c=pts[(i+2)%n];curves.push([[a[0],a[1]],[b[0],b[1]],[c[0],c[1]]]);i+=2;}}return curves;}
+function componentMatrix(t){return mat(t[0],t[2],t[4],t[1],t[3],t[5],0,0,1);}
+function glyphOutline(font,name){var g=font.glyphs[name],out=g.contours.map(contourCurves);g.components.forEach(function(comp){var m=componentMatrix(comp.transform);glyphOutline(font,comp.glyph).forEach(function(contour){out.push(contour.map(function(c){return transformCurve(c,m);}));});});return out;}
+function glyphBounds(font,name){var boxes=[];glyphOutline(font,name).forEach(function(contour){contour.forEach(function(c){boxes.push(quadBounds(c));});});if(!boxes.length)return [0,0,0,0];return [Math.min.apply(null,boxes.map(function(b){return b[0];})),Math.min.apply(null,boxes.map(function(b){return b[1];})),Math.max.apply(null,boxes.map(function(b){return b[2];})),Math.max.apply(null,boxes.map(function(b){return b[3];}))];}
+function textMatrix(font,size,x,y){var s=size/font.units_per_em;return mmul(translation(x,y),scaling(s,-s));}
+function glyphPath(font,name,m,tol){return glyphOutline(font,name).map(function(contour){var pts=[];contour.forEach(function(c){pts=flattenIntoPath(pts,transformCurve(c,m),tol);});return pts;});}
+function glyphNameOf(font,ch){return font.cmap[String(ch.charCodeAt(0))]||'.notdef';}
+
+/* the stroker (chapter 13), for emboldening */
+function segRect(a,b,h){var d=unit(a,b),n=perp(d);return [add(a,n,h),add(b,n,h),add(b,n,-h),add(a,n,-h)];}
+function joinShape(v,din,dout,h,join,ml){var turn=crss(din,dout);if(Math.abs(turn)<1e-12)return null;var s=turn>0?-1:1,nin=perp(din).map(function(x){return x*s;}),nout=perp(dout).map(function(x){return x*s;}),a=add(v,nin,h),b=add(v,nout,h);
+  if(join==='bevel')return [v,a,b];
+  if(join==='round'){var a0=Math.atan2(a[1]-v[1],a[0]-v[0]),a1=a0+angBetween(a0,Math.atan2(b[1]-v[1],b[0]-v[0]));var p=[v];arc(p,v,a0,a1,h,arcSteps(a0,a1));return p;}
+  var m=intersect(a,din,b,dout);if(m&&mag(sub(m,v))<=ml*h)return [v,a,m,b];return [v,a,b];}
+function capShape(p,dout,h,cap){var n=perp(dout);if(cap==='butt')return null;
+  if(cap==='square'){var l=add(p,n,h),r=add(p,n,-h);return [l,add(l,dout,h),add(r,dout,h),r];}
+  var a0=Math.atan2(n[1],n[0]),d=angBetween(a0,Math.atan2(dout[1],dout[0]));var a1=a0+(d>0?Math.PI:-Math.PI),pts=[];arc(pts,p,a0,a1,h,arcSteps(a0,a1));return pts;}
+function dedupe(pts){var o=[pts[0]];for(var i=1;i<pts.length;i++)if(mag(sub(pts[i],o[o.length-1]))>1e-9)o.push(pts[i]);return o;}
+function area(sp){var s=0;for(var i=0;i<sp.length;i++){var a=sp[i],b=sp[(i+1)%sp.length];s+=a[0]*b[1]-b[0]*a[1];}return s/2;}
+function strokeToPath(pts,closed,width,cap,join,ml){var h=width/2,subs=[];pts=dedupe(pts);if(closed&&pts.length>1&&mag(sub(pts[pts.length-1],pts[0]))<=1e-9)pts.pop();
+  function emit(sp){if(!sp)return;if(area(sp)>0)sp.reverse();subs.push(sp);}
+  if(pts.length<2){if(cap==='round'){var d=[];arc(d,pts[0],0,2*Math.PI,h,48);emit(d);}else if(cap==='square'){var c=pts[0];emit([[c[0]-h,c[1]-h],[c[0]+h,c[1]-h],[c[0]+h,c[1]+h],[c[0]-h,c[1]+h]]);}return subs;}
+  var segs=[];for(var i=0;i<pts.length-1;i++)segs.push([pts[i],pts[i+1]]);if(closed)segs.push([pts[pts.length-1],pts[0]]);
+  segs.forEach(function(s){emit(segRect(s[0],s[1],h));});
+  var dirs=segs.map(function(s){return unit(s[0],s[1]);}),nj=closed?segs.length:segs.length-1;
+  for(var k=0;k<nj;k++){var v=segs[(k+1)%segs.length][0];emit(joinShape(v,dirs[k],dirs[(k+1)%segs.length],h,join,ml));}
+  if(!closed){emit(capShape(pts[0],dirs[0].map(function(x){return -x;}),h,cap));emit(capShape(pts[pts.length-1],dirs[dirs.length-1],h,cap));}
+  return subs;}
+
+/* fill a list of closed subpaths (chapter 7, nonzero) */
+function edgesOf(subs){var out=[];subs.forEach(function(sp){var n=sp.length;for(var i=0;i<n;i++)out.push([sp[i],sp[(i+1)%n]]);});return out;}
+function fillSubs(subs,w,h){var acc={area:new Array(w*h).fill(0),cover:new Array(w*h).fill(0)};edgesOf(subs).forEach(function(e){var a=e[0],b=e[1];if(a[1]===b[1])return;var sign=a[1]>b[1]?1:-1,top=a[1]>b[1]?b:a,bot=a[1]>b[1]?a:b,slope=(bot[0]-top[0])/(bot[1]-top[1]);var first=Math.max(Math.floor(top[1]),0),last=Math.min(Math.ceil(bot[1])-1,h-1);for(var row=first;row<=last;row++){var y0=Math.max(top[1],row),y1=Math.min(bot[1],row+1),x0=top[0]+(y0-top[1])*slope,x1=top[0]+(y1-top[1])*slope,xa=Math.min(x0,x1),xb=Math.max(x0,x1),ca=Math.floor(xa),cb=Math.floor(xb);function ad(x,ar,co){if(x<0){x=0;ar=co;}if(x>=w)return;var idx=row*w+x;acc.area[idx]+=ar;acc.cover[idx]+=co;}var hg=sign*(y1-y0);if(ca===cb){var xm=(xa+xb)/2-ca;ad(ca,hg*(1-xm),hg);}else{var dx=xb-xa;for(var c=ca;c<=cb;c++){var lo=Math.max(xa,c),hi=Math.min(xb,c+1),sh=hg*(hi-lo)/dx,mm=(lo+hi)/2-c;ad(c,sh*(1-mm),sh);}}}});var cov=new Array(w*h).fill(0);for(var row=0;row<h;row++){var run=0;for(var x=0;x<w;x++){var idx=row*w+x;cov[idx]=Math.min(1,Math.abs(run+acc.area[idx]));run+=acc.cover[idx];}}return cov;}
+
+/* chapter 17 */
+var SUBPIXELS=4,TAPS=[1/3,1/3,1/3];
+function subpixelOf(x){var whole=Math.floor(x),q=Math.floor((x-whole)*SUBPIXELS+0.5);return q===SUBPIXELS?[whole+1,0]:[whole,q];}
+function glyphBitmap(font,name,size,sp){var s=size/font.units_per_em,bb=glyphBounds(font,name);if(bb[0]===0&&bb[1]===0&&bb[2]===0&&bb[3]===0)return {cov:[],w:0,h:0,left:0,top:0};var dx=sp/SUBPIXELS,left=Math.floor(bb[0]*s+dx),right=Math.ceil(bb[2]*s+dx),top=Math.floor(-bb[3]*s),bottom=Math.ceil(-bb[1]*s),w=Math.max(1,right-left),h=Math.max(1,bottom-top);return {cov:fillSubs(glyphPath(font,name,textMatrix(font,size,dx-left,-top),0.1),w,h),w:w,h:h,left:left,top:top};}
+function mixColor(d,c,k,linear){if(linear)return lerp3(d,c,k);return d.map(function(v,i){var a=Plate.l2s(Math.min(1,Math.max(0,v))),b=Plate.l2s(Math.min(1,Math.max(0,c[i])));return Plate.s2l(a+(b-a)*k);});}
+function embolden(font,name,size,amount){var s=size/font.units_per_em,bb=glyphBounds(font,name),left=Math.floor(bb[0]*s)-1,top=Math.floor(-bb[3]*s)-1,w=Math.ceil(bb[2]*s)+1-left,h=Math.ceil(-bb[1]*s)+1-top,p=glyphPath(font,name,textMatrix(font,size,-left,-top),0.1),f=fillSubs(p,w,h),e=[];p.forEach(function(sp){e=e.concat(strokeToPath(sp,true,amount,'butt','round',4));});var edge=fillSubs(e,w,h);return {cov:f.map(function(v,i){return Math.min(1,v+edge[i]);}),w:w,h:h,left:left,top:top};}
+function lcdFilter(v){var n=v.length,o=[];for(var i=0;i<n;i++){var a=i>0?v[i-1]:0,b=v[i],c=i+1<n?v[i+1]:0;o.push(TAPS[0]*a+TAPS[1]*b+TAPS[2]*c);}return o;}
+function lcdCoverage(font,name,size,x,y,w,h){var raw=fillSubs(glyphPath(font,name,mmul(scaling(3,1),textMatrix(font,size,x,y)),0.1),3*w,h),out=[];for(var row=0;row<h;row++)out=out.concat(lcdFilter(raw.slice(row*3*w,(row+1)*3*w)));return out;}
+function penAdvance(font,name,size){return font.glyphs[name].advance*size/font.units_per_em;}
+
+/* a paint buffer, white paper */
+var WHITE=[1,1,1],BLACK=[0,0,0];
+function Buf(w,h,paper){this.w=w;this.h=h;this.p=[];for(var i=0;i<w*h;i++)this.p.push((paper||WHITE).slice());}
+Buf.prototype.paint=function(cov,col){for(var i=0;i<this.w*this.h;i++){var k=cov[i];if(k>0)this.p[i]=lerp3(this.p[i],col,k);}};
+Buf.prototype.bitmap=function(bm,x,y,col,linear){for(var j=0;j<bm.h;j++)for(var i=0;i<bm.w;i++){var k=bm.cov[j*bm.w+i];if(k>0){var px=x+bm.left+i,py=y+bm.top+j;if(px>=0&&py>=0&&px<this.w&&py<this.h)this.p[py*this.w+px]=mixColor(this.p[py*this.w+px],col,k,linear);}}};
+Buf.prototype.lcd=function(cov3,col){for(var y=0;y<this.h;y++)for(var x=0;x<this.w;x++){var kr=cov3[y*3*this.w+3*x],kg=cov3[y*3*this.w+3*x+1],kb=cov3[y*3*this.w+3*x+2];if(kr>0||kg>0||kb>0){var d=this.p[y*this.w+x];this.p[y*this.w+x]=[d[0]+(col[0]-d[0])*kr,d[1]+(col[1]-d[1])*kg,d[2]+(col[2]-d[2])*kb];}}};
+Buf.prototype.bytes=function(){return this.p.map(function(c){return c.map(toByte);});};
+function magnifyBytes(g,k){var o=new Array(g.w*g.h*k*k);for(var y=0;y<g.h;y++)for(var x=0;x<g.w;x++){var v=g.bytes[y*g.w+x];for(var j=0;j<k;j++)for(var i=0;i<k;i++)o[(y*k+j)*g.w*k+x*k+i]=v;}return {bytes:o,w:g.w*k,h:g.h*k};}
+function beside(a,b){var o=new Array((a.w+b.w)*a.h);for(var y=0;y<a.h;y++){for(var x=0;x<a.w;x++)o[y*(a.w+b.w)+x]=a.bytes[y*a.w+x];for(var x2=0;x2<b.w;x2++)o[y*(a.w+b.w)+a.w+x2]=b.bytes[y*b.w+x2];}return {bytes:o,w:a.w+b.w,h:a.h};}
+function drawText(b,font,text,size,x,y,col,linear){var pen=x;for(var i=0;i<text.length;i++){var name=glyphNameOf(font,text[i]),sq=subpixelOf(pen);b.bitmap(glyphBitmap(font,name,size,sq[1]),sq[0],Math.floor(y),col,linear);pen+=penAdvance(font,name,size);}return pen;}
+
+/* the renders */
+function subpixelStrip(){var f=GLYPHS,panels=[];for(var k=0;k<4;k++){var b=new Buf(10,14),sq=subpixelOf(4+k/4);b.bitmap(glyphBitmap(f,'l',11,sq[1]),sq[0],11,BLACK,true);panels.push({bytes:b.bytes(),w:10,h:14});}return magnifyBytes(beside(beside(panels[0],panels[1]),beside(panels[2],panels[3])),8);}
+function smoothingDemo(){var f=GLYPHS,b=new Buf(72,42);drawText(b,f,'Hamburg',11,2,11,BLACK,true);drawText(b,f,'Hamburg',11,2,25,BLACK,false);var pen=2;'Hamburg'.split('').forEach(function(ch){var name=glyphNameOf(f,ch),sq=subpixelOf(pen);b.bitmap(embolden(f,name,11,1/3),sq[0],39,BLACK,true);pen+=penAdvance(f,name,11);});return magnifyBytes({bytes:b.bytes(),w:72,h:42},4);}
+function lcdPlate(){var f=GLYPHS,W=24,H=16,top=new Buf(W,H),bottom=new Buf(W,H),pen=2;'ea'.split('').forEach(function(ch){var name=glyphNameOf(f,ch);top.paint(fillSubs(glyphPath(f,name,textMatrix(f,13,pen,12),0.1),W,H),BLACK);bottom.lcd(lcdCoverage(f,name,13,pen,12,W,H),BLACK);pen+=penAdvance(f,name,13);});var o={bytes:top.bytes().concat(bottom.bytes()),w:W,h:2*H};return magnifyBytes(o,6);}
+
+/* ---------- Figure 17.1 — four quarters ---------- */
+Plate.add('fig171', 0.35, function (ctx, w, h, p) {
+  var g=subpixelStrip(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,(h-g.h*sc)/2);
+});
+
+/* ---------- Figure 17.2 — shelf packing ---------- */
+Plate.add('fig172', 0.5, function (ctx, w, h, p) {
+  var S=Math.min(w,h)-40,u=S/32,ox=(w-S)/2,oy=(h-S)/2;
+  ctx.strokeStyle=p.ink3;ctx.lineWidth=1;ctx.strokeRect(ox+0.5,oy+0.5,S,S);
+  var rects=[[0,0,10,8,'(0, 0)'],[10,0,20,8,'(10, 0)'],[0,8,8,8,'(0, 8)'],[0,16,2,2,'(0, 16)'],[0,18,31,2,'(0, 18)']],cols=[p.cyan,p.magenta,p.cyan,p.magenta,p.cyan];
+  rects.forEach(function(r,i){ctx.fillStyle=cols[i];ctx.globalAlpha=0.25;ctx.fillRect(ox+r[0]*u,oy+r[1]*u,r[2]*u,r[3]*u);ctx.globalAlpha=1;ctx.strokeStyle=cols[i];ctx.strokeRect(ox+r[0]*u+0.5,oy+r[1]*u+0.5,r[2]*u,r[3]*u);if(r[3]>=5)Plate.label(ctx,r[4],ox+r[0]*u+4,oy+r[1]*u+13,p.ink,10);});
+  ctx.strokeStyle=p.ink3;ctx.setLineDash([3,3]);[8,16].forEach(function(y){ctx.beginPath();ctx.moveTo(ox,oy+y*u);ctx.lineTo(ox+S,oy+y*u);ctx.stroke();});ctx.setLineDash([]);
+  Plate.label(ctx,'40 × 5: none, wider than the atlas',ox+4,oy+S-6,p.ink2,10);
+});
+
+/* ---------- Figure 17.3 — three ways to smooth ---------- */
+Plate.add('fig173', 0.58, function (ctx, w, h, p) {
+  var g=smoothingDemo(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,(h-g.h*sc)/2);
+});
+
+/* ---------- Plate 17 ---------- */
+Plate.add('plate17', 1.333, function (ctx, w, h, p) {
+  var g=lcdPlate(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,0);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, sub, mag, unit, perp, crss, add, intersect, arc, arcSteps, angBetween, mat, mmul, apply, translation, scaling, lerpP, decasteljau, pointAt, flatness, flattenInto, flatten, flattenIntoPath, transformCurve, quadBounds, impliedPoints, contourCurves, componentMatrix, glyphOutline, glyphBounds, textMatrix, glyphPath, glyphNameOf, segRect, joinShape, capShape, dedupe, area, strokeToPath, edgesOf, fillSubs, subpixelOf, glyphBitmap, mixColor, embolden, lcdFilter, lcdCoverage, penAdvance, Buf, magnifyBytes, beside, drawText, subpixelStrip, smoothingDemo, lcdPlate].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>

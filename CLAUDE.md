@@ -244,6 +244,52 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   dash ends at the start and the first begins there they are joined (last absorbs first); one dash
   covering the loop comes back closed. Plate: `golden_spiral()` (seven quarter-circle cubics, radii
   x phi, flattened into ONE subpath) dashed [16, 10], each dash stroked 7 wide round-capped.
+- Chapter 13 (revised again while writing 17): a closed subpath whose last point equals its first
+  (every glyph contour arrives that way from `flatten_into_path` + `close`) gave the stroker a
+  zero-length closing segment and a division by zero. `stroke_to_path` now drops that last point
+  after dedupe; pinned by the square-that-ends-where-it-began scenario (`polygon_area = -84`:
+  four 10x2 rectangles plus four unit miter squares).
+- Font data: `reference/fonts/Roboto-Regular.ttf` (Apache 2.0, license alongside) is the source;
+  `tools/ttf_to_json.py` (author-side sfnt parser: head/maxp/hhea/hmtx/cmap 4+12/loca/glyf/GPOS
+  PairPos/GSUB liga) writes `reference/chapter-16/roboto.json`, 177 glyphs: printable ASCII,
+  Latin-1 letters (mostly composites), their accent components, f_i and f_l. Post format 3 has no
+  names, so glyph names come from the cmap (AGL names for punctuation and accents, the character
+  itself for letters and digits, `uniXXXX` otherwise, ligatures `f_i`). ONE schema for chapters
+  16-19 with optional sections (plan question 03): `units_per_em`, `ascender`, `descender`,
+  `line_gap`, `cmap` (string codepoint → name), `glyphs` (name → `{advance, contours: [[x, y,
+  on]...], components: [{glyph, transform: [a, b, c, d, dx, dy]}]}`), optional `kern`
+  (`[left, right, value]`, 2171 pairs, chapter 18) and `ligatures` (`[[parts], result]`, chapter
+  19). The figure JS of chapters 16+ inlines a small subset (`var GLYPHS=...`, the glyphs the
+  figures draw) because file:// pages can't fetch the JSON; regenerate it when a figure needs a
+  new glyph (the one-off in the session scratch: names reachable from "aeéRgloHmburi" + space).
+- Chapter 16 glyphs: `load_font` (Font with `glyphs[name].contours` as (x, y, on) tuples and
+  `.components` as (name, [six]) pairs, `cmap` int→name), `glyph_name` (.notdef when missing),
+  `glyph_advance`, `glyph_count`. `implied_points` inserts the midpoint between consecutive
+  off-curve points (wrapping) and rotates to start on-curve; `contour_curves` is quadratics only
+  (a straight edge is a quadratic with its control point at the chord midpoint, so every piece is
+  the same shape). `component_matrix([a,b,c,d,dx,dy]) = matrix3(a, c, dx, b, d, dy, 0, 0, 1)`
+  (TrueType's x' = a x + c y + dx). `glyph_outline` is font units, y up, components recursively
+  through their matrices; `glyph_bounds` is the union of chapter 8's tight `curve_bounds`, (0, 0,
+  0, 0) for an empty glyph. THE FLIP LIVES IN ONE PLACE: `text_matrix(font, size, x, y) =
+  translation(x, y) * scaling(s, -s)`; `glyph_path(font, name, m, tol)` transforms then flattens
+  each quadratic (chapter 8's rule) and closes each contour; `contour_path` does one. Fill nonzero.
+  After the flip TrueType's outer contours have positive `polygon_area` and counters negative;
+  `ink` of the filled o equals outer minus inner exactly. Plate: the a with its control polygon.
+- Chapter 17 rasterizing type: `subpixel_of(x)` → (whole, quarter) with round-to-nearest quarter
+  and carry; `glyph_bitmap(font, name, size, quarter)` → `Bitmap(coverage, left, top)` sized to
+  floor/ceil of the device bounds shifted by the quarter, origin at x = quarter/4 (ink identical
+  across quarters, pinned); `paint_bitmap(c, bm, x, y, col, linear)` composites through chapter
+  1's `mix` with the linear flag (the first named fudge: text stacks blend in encoded space);
+  `glyph_cache`/`cached_bitmap` (same object on a hit)/`cache_size`; `atlas`/`atlas_add` is shelf
+  packing (new shelf under the tallest so far; `none` when it doesn't fit); `embolden(font, name,
+  size, amount)` = fill + chapter 13 stroke of the outline, added and clamped, bitmap grown one
+  pixel all round (the second named fudge, stem darkening); LCD: `LCD_TAPS = (1/3, 1/3, 1/3)`,
+  `lcd_filter` (zero padding, so a row's ink is preserved), `lcd_coverage` rasterizes through
+  `scaling(3, 1) * text_matrix` into a 3w buffer and filters every row (its ink is exactly 3x the
+  gray ink), `paint_lcd` mixes each channel through its own stripe. `pen_advance` and a naive
+  `draw_text` (advance only, no kerning) exist for the renders; chapter 18 owns layout. Trap: LCD
+  assumes the physical stripe order. Hinting is deliberately absent. Runner learned
+  `paint_bitmap`/`paint_lcd` mutation steps.
 - Runner learned `≥`. Figure JS `mag` must be `sqrt(x*x+y*y)` to mirror chapter 4's `magnitude`
   (Math.hypot differs in the last bit and flipped one byte of the spiral).
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and

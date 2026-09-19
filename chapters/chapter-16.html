@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 16 · What a Glyph Is — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 16 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-15.html">← 15</a> · <a href="#plate">Plate&nbsp;16</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Sixteen</p>
+    <h1>What a Glyph Is</h1>
+    <p class="hook">Here is a font. Not a file format with a table directory and four kinds of
+      checksum, a JSON file: one number called <code>units_per_em</code>, a table from characters to
+      names, and for every name a list of loops of points, each point flagged on or off. Draw the
+      letter <em>a</em>. That's the whole chapter, and by the end of it you'll have noticed that it
+      contained no type rendering code at all. A glyph is a path. It was drawn by somebody who
+      knew what they were doing, in a coordinate system that's upside down from yours, with a
+      shorthand for its curves that you have to expand, and sometimes it's assembled out of other
+      glyphs. But it's a path, and you have been filling paths since chapter 7. The counter in the
+      <em>a</em> is a hole for exactly the reason the pentagram's centre was in chapter 5.</p>
+  </header>
+
+  <p>Part V is four chapters on type. This one is the shape of a letter. The next is what it takes
+    to make that shape look good at eleven pixels, which is a separate discipline with its own fudge
+    factors. Then a line of letters, then the honest reconnaissance of what happens when the letters
+    are Arabic. All of it stands on the renderer you have; nothing in it draws a pixel a new way.</p>
+
+  <h2><span class="sec">§ 16.1</span> The font file</h2>
+
+  <p>Real fonts are binary <code>sfnt</code> files, and parsing one is a detour: a table directory,
+    a dozen tables with names like <code>hhea</code> and <code>loca</code>, three encodings of the
+    character map, and a glyph format with flag bytes and delta-coded coordinates. It's fine work and
+    it's Appendix B. The book hands you the result instead: <code>reference/chapter-16/roboto.json</code>
+    is Roboto Regular, an Apache-licensed typeface, cut down to the 177 glyphs the type chapters use
+    and written out as JSON. Every language reads JSON. Here's the schema.</p>
+
+  <div class="note">
+    <h4>The glyph file</h4>
+    <p><code>units_per_em</code>, <code>ascender</code>, <code>descender</code>, <code>line_gap</code>:
+      numbers in font units. <code>cmap</code>: codepoint (as a string key) to glyph name.
+      <code>glyphs</code>: name to <code>{advance, contours, components}</code>, where
+      <code>contours</code> is a list of loops, each a list of <code>[x, y, on]</code> points in font
+      units with y up, and <code>components</code> is a list of <code>{glyph, transform}</code> with
+      the transform six numbers <code>[a, b, c, d, dx, dy]</code>. Two sections are optional and
+      arrive later: <code>kern</code>, a list of <code>[left, right, value]</code>, for chapter 18;
+      and <code>ligatures</code>, a list of <code>[[parts...], result]</code>, for chapter 19. One
+      loader, written once.</p>
+  </div>
+
+  <p>An <em>em</em> is the design grid: every coordinate in the file is a whole number on a grid
+    <code>units_per_em</code> across, and Roboto's is 2048. A glyph's <code>advance</code> is how far
+    the pen moves after drawing it, on the same grid. The ascender and descender are how far the font
+    reaches above and below the baseline, and the line gap is extra space between lines; chapter 18
+    uses all three. <code>load_font</code> reads the file; <code>glyph_name</code> looks a character
+    up in the cmap and answers <code>.notdef</code>, the box every font draws for a character it
+    doesn't have, when the character isn't there. The scenarios pin the file's numbers, so you'll know
+    your loader read what the book's did.</p>
+
+  <div class="test" data-feature="chapter16-font.feature">
+    <p class="label">features/chapter16-font.feature</p>
+<pre><code><span class="kw">Feature</span>: The font file
+  A font arrives as JSON. load_font(text) reads it: units_per_em, ascender,
+  descender and line_gap in font units; cmap, codepoint to glyph name; and
+  glyphs by name, each with an advance, its contours as lists of [x, y, on]
+  points in font units with y up, and its components, each another glyph's
+  name with a six-number transform. glyph_name(font, codepoint) looks a
+  character up and answers .notdef for one the font lacks; glyph_advance
+  and glyph_count read what they say. The book's font is Roboto Regular,
+  cut down to 177 glyphs.
+
+  <span class="kw">Scenario</span>: The font's vertical metrics
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  font.units_per_em = 2048
+    <span class="kw">And</span>   font.ascender = 1900
+    <span class="kw">And</span>   font.descender = -500
+    <span class="kw">And</span>   font.line_gap = 0
+    <span class="kw">And</span>   glyph_count(font) = 177
+
+  <span class="kw">Scenario</span>: Characters map to glyph names, and a missing one maps to .notdef
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  glyph_name(font, 65) = "A"
+    <span class="kw">And</span>   glyph_name(font, 233) = "eacute"
+    <span class="kw">And</span>   glyph_name(font, 64257) = "f_i"
+    <span class="kw">And</span>   glyph_name(font, 9731) = ".notdef"
+
+  <span class="kw">Scenario</span>: Advances are in font units
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  glyph_advance(font, "A") = 1336
+    <span class="kw">And</span>   glyph_advance(font, "space") = 507
+    <span class="kw">And</span>   glyph_advance(font, ".notdef") = 908
+    <span class="kw">And</span>   glyph_advance(font, "i") = 497
+
+  <span class="kw">Scenario</span>: A glyph is contours of flagged points
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  g ← font.glyphs["i"]
+    <span class="kw">Then</span>  length(g.contours) = 2
+    <span class="kw">And</span>   length(g.contours[0]) = 4
+    <span class="kw">And</span>   g.contours[0][0] = (341, 0, true)
+    <span class="kw">And</span>   length(g.contours[1]) = 9
+    <span class="kw">And</span>   g.contours[1][1] = (141, 1414, false)
+    <span class="kw">And</span>   length(g.components) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 16.2</span> Contours, and the points that aren't there</h2>
+
+  <p>A TrueType contour is a closed loop of points, and each point is flagged <em>on-curve</em> or
+    <em>off-curve</em>. On-curve points are on the outline. Off-curve points are the control points
+    of quadratic Béziers: an on-curve point, an off-curve point, the next on-curve point make one of
+    chapter 8's quadratics. Two on-curve points in a row are a straight edge. So far that's a path
+    with a curve command, and you could write it out as one. The shorthand is what happens with two
+    <em>off</em>-curve points in a row. The format doesn't allow a quadratic to have two control
+    points, so it means something else: there's an on-curve point between them, exactly at their
+    midpoint, and the file didn't bother to store it. A smooth curve through a dozen control points
+    is stored as a dozen off-curve points and nothing else, and the on-curve points are all
+    implied. The dot on Roboto's <em>i</em> is nine points, eight of them off-curve; the loop
+    wraps, so the last and first points count as consecutive too, and a loop may start on an
+    off-curve point, in which case the first thing you do is rotate it round to one that's on.</p>
+
+  <figure>
+    <canvas id="fig161" role="img" aria-label="A closed loop of points: hollow circles for off-curve control points and filled squares for on-curve points, with smaller squares at the midpoints between consecutive off-curve points where the format implies an on-curve point; the smooth curve through them drawn beneath"></canvas>
+    <figcaption><span class="fig">Figure 16.1</span> The dot of the <em>i</em>, in font units. Hollow circles are the off-curve points the file stores. Between any two of them in a row there's an on-curve point at the midpoint that it doesn't: the small squares. Make them explicit and every piece is a quadratic.</figcaption>
+  </figure>
+
+  <p><code>implied_points</code> does the expansion: walk the loop, and after every off-curve point
+    that's followed by another off-curve point, insert the midpoint flagged on; then rotate the result
+    to start on an on-curve point. <code>contour_curves</code> turns that into quadratics, and it
+    treats a straight edge as a quadratic too, with its control point at the midpoint of the edge,
+    which is the same line exactly (a Bézier with its control point on the chord is the chord). It
+    costs nothing and it means every piece of every contour is the same shape, which the next
+    section leans on. The scenarios build tiny loops by hand, where you can check the midpoints on
+    paper, then check the <em>i</em> against the file.</p>
+
+  <div class="test" data-feature="chapter16-contours.feature">
+    <p class="label">features/chapter16-contours.feature</p>
+<pre><code><span class="kw">Feature</span>: Contours, implied points and quadratics
+  A TrueType contour is a closed loop of points, each on-curve or off-curve.
+  Two off-curve points in a row imply an on-curve point at their midpoint
+  (the loop wraps, so the last and first are in a row too), and a contour
+  may start on an off-curve point. implied_points(contour) makes every
+  implied point explicit and rotates the loop to start on-curve.
+  contour_curves(contour) is the loop as quadratics, chapter 8's, from each
+  on-curve point through the off-curve point after it to the next on-curve
+  point; two on-curve points in a row are a straight edge, written as a
+  quadratic with its control point at the midpoint so every piece has the
+  same shape.
+
+  <span class="kw">Scenario</span>: A loop of off-curve points implies a midpoint between each pair
+    <span class="kw">Given</span> c ← [[0, 0, false], [10, 0, false], [10, 10, false], [0, 10, false]]
+    <span class="kw">When</span>  pts ← implied_points(c)
+    <span class="kw">Then</span>  length(pts) = 8
+    <span class="kw">And</span>   pts[0] = (5, 0, true)
+    <span class="kw">And</span>   pts[1] = (10, 0, false)
+    <span class="kw">And</span>   pts[2] = (10, 5, true)
+    <span class="kw">And</span>   pts[7] = (0, 0, false)
+    <span class="kw">And</span>   length(contour_curves(c)) = 4
+    <span class="kw">And</span>   contour_curves(c)[0].points[0] = point(5, 0)
+    <span class="kw">And</span>   contour_curves(c)[0].points[1] = point(10, 0)
+    <span class="kw">And</span>   contour_curves(c)[0].points[2] = point(10, 5)
+
+  <span class="kw">Scenario</span>: A loop that starts off-curve is rotated to start on-curve
+    <span class="kw">Given</span> c ← [[10, 0, false], [10, 10, true], [0, 10, true], [0, 0, true]]
+    <span class="kw">When</span>  pts ← implied_points(c)
+    <span class="kw">Then</span>  length(pts) = 4
+    <span class="kw">And</span>   pts[0] = (10, 10, true)
+    <span class="kw">And</span>   pts[3] = (10, 0, false)
+
+  <span class="kw">Scenario</span>: Straight edges become quadratics through their midpoints
+    <span class="kw">Given</span> c ← [[0, 0, true], [10, 0, true], [5, 8, true]]
+    <span class="kw">When</span>  curves ← contour_curves(c)
+    <span class="kw">Then</span>  length(curves) = 3
+    <span class="kw">And</span>   curves[0].points[1] = point(5, 0)
+    <span class="kw">And</span>   curves[1].points[1] = point(7.5, 4)
+    <span class="kw">And</span>   curves[2].points[0] = point(5, 8)
+    <span class="kw">And</span>   curves[2].points[2] = point(0, 0)
+
+  <span class="kw">Scenario</span>: Mixed points: on, off, off, on
+    <span class="kw">Given</span> c ← [[0, 0, true], [10, 0, false], [10, 10, false], [0, 10, true]]
+    <span class="kw">When</span>  curves ← contour_curves(c)
+    <span class="kw">Then</span>  length(implied_points(c)) = 5
+    <span class="kw">And</span>   implied_points(c)[2] = (10, 5, true)
+    <span class="kw">And</span>   length(curves) = 3
+    <span class="kw">And</span>   curves[0].points[2] = point(10, 5)
+    <span class="kw">And</span>   curves[1].points[0] = point(10, 5)
+    <span class="kw">And</span>   curves[2].points[1] = point(0, 5)
+
+  <span class="kw">Scenario</span>: The dot of the i is mostly implied
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  dot ← font.glyphs["i"].contours[1]
+    <span class="kw">Then</span>  length(dot) = 9
+    <span class="kw">And</span>   length(implied_points(dot)) = 16
+    <span class="kw">And</span>   implied_points(dot)[2] = (168.5, 1445, true)
+    <span class="kw">And</span>   length(contour_curves(dot)) = 8
+    <span class="kw">And</span>   contour_curves(dot)[1].points[0] = point(168.5, 1445)
+    <span class="kw">And</span>   contour_curves(dot)[1].points[1] = point(196, 1476)
+    <span class="kw">And</span>   contour_curves(dot)[1].points[2] = point(250, 1476)
+    <span class="kw">And</span>   length(contour_curves(font.glyphs["i"].contours[0])) = 4
+    <span class="kw">And</span>   length(contour_curves(font.glyphs["o"].contours[0])) = 12</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 16.3</span> Composites</h2>
+
+  <p>Open <code>eacute</code> in the file and there are no contours at all. There's a list of two
+    components: the glyph <code>e</code> through an identity transform, and the glyph
+    <code>acute</code> moved 340 units to the right. Half of Roboto is like this, because half of any
+    Latin font is accented letters, and drawing the accent once is how a type designer stays sane. A
+    component's transform is six numbers, and TrueType applies them as
+    <code>x' = a·x + c·y + dx</code>, <code>y' = b·x + d·y + dy</code>, which is a
+    <code>matrix3</code> with the letters in a slightly surprising order:
+    <code>component_matrix</code> builds it. <code>glyph_outline</code> is then the same thing for
+    every glyph: its own contours as quadratics, followed by each component's outline taken through
+    its matrix, recursively, since a component can itself be a composite. In font units, y up; the
+    flip hasn't happened yet.</p>
+
+  <figure>
+    <canvas id="fig163" role="img" aria-label="The glyph eacute drawn large: its e in one colour and its acute accent in another, with a thin magenta rectangle around both showing the composite's bounding box"></canvas>
+    <figcaption><span class="fig">Figure 16.3</span> A composite: <code>eacute</code> is <code>e</code> plus <code>acute</code> moved right by 340 units, each drawn in its own ink. The magenta box is <code>glyph_bounds</code>, the union of the two components' boxes.</figcaption>
+  </figure>
+
+  <p>Two things need bounds: chapter 17's bitmaps, and the check that a composite came out where
+    its parts went. <code>glyph_bounds</code> is the tight box of the outline, from chapter 8's
+    <code>curve_bounds</code> on every quadratic, not the box of the control points, which pokes out
+    past the curves. A composite's bounds are the union of its transformed components' bounds, and
+    the scenario checks that for <code>eacute</code>: the <code>e</code>'s box grown upward to the top
+    of the accent. An empty glyph (<code>space</code>) has bounds <code>(0, 0, 0, 0)</code>.</p>
+
+  <div class="test" data-feature="chapter16-composites.feature">
+    <p class="label">features/chapter16-composites.feature</p>
+<pre><code><span class="kw">Feature</span>: Composite glyphs
+  A composite glyph has no contours of its own: it is other glyphs, each
+  placed through a transform [a, b, c, d, dx, dy] that TrueType applies as
+  x' = a x + c y + dx, y' = b x + d y + dy. component_matrix(t) is that as a
+  matrix3. glyph_outline(font, name) is every contour of a glyph as
+  quadratics in font units, components included, each through its matrix,
+  recursively. glyph_bounds(font, name) is the tight box of the outline
+  from chapter 8's curve_bounds; an empty glyph's is (0, 0, 0, 0).
+
+  <span class="kw">Scenario</span>: A component transform is a matrix
+    <span class="kw">Then</span>  component_matrix([1, 0, 0, 1, 340, 0]) * point(5, 5) = point(345, 5)
+    <span class="kw">And</span>   component_matrix([2, 0, 0, 1, 10, 0]) * point(3, 4) = point(16, 4)
+    <span class="kw">And</span>   component_matrix([1, 0.5, 0, 1, 0, 0]) * point(2, 4) = point(2, 5)
+    <span class="kw">And</span>   component_matrix([1, 0, 0.5, 1, 0, 0]) * point(2, 4) = point(4, 4)
+    <span class="kw">And</span>   component_matrix([1, 0, 0, 1, 0, 0]) = identity()
+
+  <span class="kw">Scenario</span>: eacute is an e and an acute moved right
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  g ← font.glyphs["eacute"]
+    <span class="kw">Then</span>  length(g.contours) = 0
+    <span class="kw">And</span>   length(g.components) = 2
+    <span class="kw">And</span>   g.components[0][0] = "e"
+    <span class="kw">And</span>   g.components[1][0] = "acute"
+    <span class="kw">And</span>   g.components[1][1] = [1, 0, 0, 1, 340, 0]
+    <span class="kw">And</span>   length(glyph_outline(font, "eacute")) = 3
+    <span class="kw">And</span>   length(glyph_outline(font, "e")) = 2
+    <span class="kw">And</span>   length(glyph_outline(font, "acute")) = 1
+
+  <span class="kw">Scenario</span>: A composite's bounds are the union of its transformed components
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  glyph_bounds(font, "e") = (93, -20, 1011, 1102)
+    <span class="kw">And</span>   glyph_bounds(font, "acute") = (123, 1240, 540, 1534)
+    <span class="kw">And</span>   glyph_bounds(font, "eacute") = (93, -20, 1011, 1534)
+    <span class="kw">And</span>   glyph_bounds(font, "aring") = (109, -20, 1002, 1627)
+    <span class="kw">And</span>   glyph_bounds(font, "space") = (0, 0, 0, 0)
+
+  <span class="kw">Scenario</span>: Bounds are tight, not the control box
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  glyph_bounds(font, "o") = (91, -20, 1076, 1102)
+    <span class="kw">And</span>   glyph_bounds(font, "H") = (169, 0, 1288, 1456)
+
+  <span class="kw">Scenario</span>: A font can be written by hand, and a bump's bounds stop where the curve does
+    <span class="kw">Given</span> tiny ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"98": "bump"}, "glyphs": {"bump": {"advance": 300, "contours": [[[0, 0, 1], [100, 200, 0], [200, 0, 1]]], "components": []}, "twice": {"advance": 600, "contours": [], "components": [{"glyph": "bump", "transform": [1, 0, 0, 1, 0, 0]}, {"glyph": "bump", "transform": [1, 0, 0.5, 2, 300, 0]}]}}}')
+    <span class="kw">Then</span>  glyph_count(tiny) = 2
+    <span class="kw">And</span>   glyph_name(tiny, 98) = "bump"
+    <span class="kw">And</span>   length(glyph_outline(tiny, "bump")) = 1
+    <span class="kw">And</span>   length(glyph_outline(tiny, "bump")[0]) = 2
+    <span class="kw">And</span>   glyph_bounds(tiny, "bump") = (0, 0, 200, 100)
+    <span class="kw">And</span>   glyph_bounds(tiny, "twice") = (0, 0, 500, 200)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 16.4</span> The flip, in one place</h2>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>Fonts are y-up with the origin on the baseline, at the left of the glyph. Your canvas is y-down
+      with the origin at the top-left corner. Something has to turn the glyph over, and it has to
+      happen exactly once. The failure isn't forgetting it: a forgotten flip draws every letter
+      upside down, hanging below the baseline, and you'll notice (Figure 16.4 is what it looks like).
+      The failure is doing it in three places, because it's a one-liner and the loader, the path
+      builder and the renderer each seemed like the natural home, and then two of them cancel and the
+      third is wrong for composites only. Put it in <code>text_matrix</code> and nowhere else. Every
+      other function in this chapter and the next three works in font units, y up, and takes a
+      matrix when it needs to leave them.</p>
+  </div>
+
+  <p><code>text_matrix(font, size, x, y)</code> is chapter 4 doing what chapter 4 does: scale by
+    <code>size / units_per_em</code> with the y scale negated, then translate so the glyph's origin
+    lands on the baseline at <code>(x, y)</code>. Since the scale is the same in both axes, chapter 8's
+    rule about flattening after the transform is the whole reason <code>glyph_outline</code> stays
+    in font units: <code>glyph_path</code> takes every quadratic through the matrix, flattens it in
+    device pixels at the tolerance you give it, and closes each contour into a subpath. The same
+    outline at 12 pixels and at 96 gets the number of segments each size deserves.</p>
+
+  <figure>
+    <canvas id="fig164" role="img" aria-label="Two panels. Left: the letter R drawn correctly above a baseline. Right: the same R drawn through a scale that did not negate y, so it hangs upside down below the baseline, in magenta"></canvas>
+    <figcaption><span class="fig">Figure 16.4</span> The flip, done and forgotten. Left, <code>text_matrix</code>. Right, a scale with a positive y: the glyph hangs below the baseline, upside down. Obvious here; the version to worry about is the one that flips twice.</figcaption>
+  </figure>
+
+  <p>Fill the path nonzero, and the winding takes care of the rest. TrueType draws outer contours
+    clockwise in its own y-up coordinates and counters the other way, so the counter of an
+    <em>o</em> winds against its outside, and under the nonzero rule that's a hole, the same hole
+    chapter 5 found in the pentagram. The flip turns both contours over, which swaps clockwise and
+    counterclockwise, and the scenario pins the sign of each contour's <code>polygon_area</code> on
+    both sides of it. Then the check that says the counter really is a hole:
+    <code>ink</code> of the filled <em>o</em> is the outer contour's area minus the inner's, to four
+    decimal places, because chapter 7's fill is exact and holes are only areas with the opposite
+    sign.</p>
+
+  <figure>
+    <canvas id="fig165" role="img" aria-label="The letter g drawn four times on one baseline at 12, 24, 48 and 96 pixels, each smooth at its own size"></canvas>
+    <figcaption><span class="fig">Figure 16.5</span> One outline, four sizes, one tolerance. Flatten after the transform and each size gets the segments it needs.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter16-path.feature">
+    <p class="label">features/chapter16-path.feature</p>
+<pre><code><span class="kw">Feature</span>: The flip, in one place, and the path
+  Fonts are y up with the origin on the baseline; the canvas is y down with
+  the origin at the corner. text_matrix(font, size, x, y) is the one place
+  that difference lives: scale by size / units_per_em, turn y over, and put
+  the glyph's origin at (x, y). glyph_path(font, name, m, tolerance) takes
+  every quadratic of the outline through m, flattens it in device space,
+  and closes each contour; contour_path(font, name, i, m, tolerance) does
+  one contour. Fill the path nonzero. The counter of an o is a hole for
+  exactly the reason the pentagram's center was: it winds the other way.
+
+  <span class="kw">Scenario</span>: The text matrix scales and turns y over
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  m ← text_matrix(font, 2048, 100, 500)
+    <span class="kw">Then</span>  m * point(0, 0) = point(100, 500)
+    <span class="kw">And</span>   m * point(2048, 2048) = point(2148, -1548)
+    <span class="kw">And</span>   m * point(0, 1900) = point(100, -1400)
+    <span class="kw">And</span>   text_matrix(font, 16, 10, 20) * point(1024, 1024) = point(18, 12)
+
+  <span class="kw">Scenario</span>: A glyph path has one closed subpath per contour
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   m ← text_matrix(font, 200, 20, 160)
+    <span class="kw">Then</span>  length(subpaths(glyph_path(font, "o", m, 0.05))) = 2
+    <span class="kw">And</span>   subpaths(glyph_path(font, "o", m, 0.05))[0].closed = true
+    <span class="kw">And</span>   subpaths(glyph_path(font, "o", m, 0.05))[1].closed = true
+    <span class="kw">And</span>   length(subpaths(glyph_path(font, "eacute", m, 0.05))) = 3
+    <span class="kw">And</span>   length(subpaths(glyph_path(font, "i", m, 0.05))) = 2
+
+  <span class="kw">Scenario</span>: The two contours of an o wind opposite ways, and the flip turns both over
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   m ← text_matrix(font, 200, 20, 160)
+    <span class="kw">Then</span>  polygon_area(contour_path(font, "o", 0, m, 0.05)) = 8509.81 ± 0.01
+    <span class="kw">And</span>   polygon_area(contour_path(font, "o", 1, m, 0.05)) = -3894.40 ± 0.01
+    <span class="kw">And</span>   polygon_area(contour_path(font, "o", 0, identity(), 1)) ≤ 0
+    <span class="kw">And</span>   polygon_area(contour_path(font, "o", 1, identity(), 1)) ≥ 0
+
+  <span class="kw">Scenario</span>: The counter is a hole: the ink is the outer area minus the inner
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   m ← text_matrix(font, 200, 20, 160)
+    <span class="kw">When</span>  cov ← fill_path(glyph_path(font, "o", m, 0.05), "nonzero", 200, 200)
+    <span class="kw">Then</span>  ink(cov) = 4615.41 ± 0.01
+    <span class="kw">And</span>   coverage_at(cov, 35, 110) = 1
+    <span class="kw">And</span>   coverage_at(cov, 72, 100) = 0
+    <span class="kw">And</span>   coverage_at(cov, 5, 5) = 0</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>Illustrator's <em>Type → Create Outlines</em> is <code>glyph_path</code> with the scale baked
+      in: the text stops being text and becomes ordinary paths, and the anchor points it shows you are
+      the on-curve points you drew in this chapter. Turn a word into outlines and count the anchors on an
+      <em>o</em>; you'll find the implied ones.</p>
+  </aside>
+
+  <h2><span class="sec">§ 16.5</span> Putting it together</h2>
+
+  <p>The plate is the letter <em>a</em>, filled, with the file's data drawn over it: the control
+    polygon as a hairline, on-curve points as filled squares, off-curve points as hollow circles, and
+    the implied on-curve points as smaller squares. Two contours, wound in opposite directions, and
+    every curve a quadratic. Look at how few points it takes.</p>
+
+<pre><code>glyph_plate():
+  c ← canvas(320, 320), filled with paper;  font ← load_font(roboto.json)
+  m ← text_matrix(font, 300, 40, 250)
+  fill glyph_path(font, "a", m, 0.1) nonzero, in gray
+  <span class="kw">for</span> contour <span class="kw">in</span> font.glyphs["a"].contours:
+    hairline through every point of the contour, taken through m, closed          <span class="cm">// width 1</span>
+  <span class="kw">for</span> contour <span class="kw">in</span> font.glyphs["a"].contours:
+    <span class="kw">for</span> (x, y, on) <span class="kw">in</span> implied_points(contour):
+      q ← m * point(x, y)
+      <span class="kw">if</span> not on:  hollow circle at q, radius 4, in magenta       <span class="cm">// circle_path(q, 4, 24) stroked 1.5 wide</span>
+      <span class="kw">else if</span> (x, y) is a point of the file's contour:  square at q, half-side 3, in cyan
+      <span class="kw">else</span>:  square at q, half-side 2, in cyan                          <span class="cm">// an implied point</span>
+  <span class="kw">return</span> c
+
+plate_16():
+  <span class="kw">return</span> magnify(glyph_plate(), 2)</code></pre>
+
+  <div class="test" data-feature="chapter16-plate.feature">
+    <p class="label">features/chapter16-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 16
+  glyph_plate() fills Roboto's a at a 300 pixel em and draws its control
+  polygon over it: on-curve points as filled squares, off-curve points as
+  hollow circles, implied on-curve points as smaller squares; plate_16() is
+  it magnified. composite_demo() draws eacute with its two components in two
+  inks and its bounds as a hairline box. sizes() draws g at 12, 24, 48 and
+  96 pixels on one baseline. flip_trap() draws R through text_matrix on the
+  left and through a scale that forgot to turn y over on the right.
+
+  <span class="kw">Scenario</span>: The glyph and its control points
+    <span class="kw">Given</span> c ← glyph_plate()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-16/glyph.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 320
+    <span class="kw">And</span>   ppm_pixel(p6, 160, 160) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 10, 10) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 16
+    <span class="kw">Given</span> c ← plate_16()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-16/plate-16.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 640
+    <span class="kw">And</span>   c.height = 640
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: A composite in two inks
+    <span class="kw">Given</span> c ← composite_demo()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-16/composite.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 240
+    <span class="kw">And</span>   c.height = 240
+    <span class="kw">And</span>   ppm_pixel(p6, 120, 120) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 120, 30) = (124, 196, 237) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: One glyph at four sizes
+    <span class="kw">Given</span> c ← sizes()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-16/sizes.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 240
+    <span class="kw">And</span>   c.height = 120
+    <span class="kw">And</span>   ppm_pixel(p6, 95, 40) = (199, 199, 204) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 230, 110) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The flip, forgotten
+    <span class="kw">Given</span> c ← flip_trap()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-16/flip.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 240
+    <span class="kw">And</span>   c.height = 120
+    <span class="kw">And</span>   ppm_pixel(p6, 50, 40) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 170, 80) = (237, 124, 196) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 60, 100) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate16" role="img" aria-label="A large gray letter a on dark paper with its control polygon drawn over it as a thin line: filled cyan squares at on-curve points, hollow magenta circles at off-curve control points, and smaller cyan squares at the implied on-curve midpoints"></canvas>
+    <figcaption><span class="fig">Plate 16</span> One glyph, two contours, wound in opposite directions. Filled squares are on-curve; hollow circles are quadratic control points; the small squares are the on-curve points the file left out.</figcaption>
+  </figure>
+
+  <p>That's a glyph: a path somebody else drew. Chapter 17 takes it to eleven pixels, where filling
+    it correctly turns out to be the beginning of the argument rather than the end of it.</p>
+
+  <nav class="endnav">
+    <a href="chapter-15.html">← 15 · Dashes</a>
+    <span>Chapter 16 · What a Glyph Is</span>
+    <a href="chapter-17.html">Next: 17 · Rasterizing Type Well →</a>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+/* the figures draw from this subset of reference/chapter-16/roboto.json */
+var GLYPHS={"units_per_em":2048,"ascender":1900,"descender":-500,"line_gap":0,"cmap":{"32":"space","72":"H","82":"R","97":"a","98":"b","101":"e","103":"g","105":"i","108":"l","109":"m","111":"o","114":"r","117":"u","180":"acute","233":"eacute"},"glyphs":{"H":{"advance":1460,"contours":[[[1288,0,1],[1095,0,1],[1095,673,1],[361,673,1],[361,0,1],[169,0,1],[169,1456,1],[361,1456,1],[361,830,1],[1095,830,1],[1095,1456,1],[1288,1456,1]]],"components":[]},"R":{"advance":1261,"contours":[[[703,589,1],[361,589,1],[361,0,1],[168,0,1],[168,1456,1],[650,1456,1],[896,1456,0],[1161,1232,0],[1161,1018,1],[1161,882,0],[1014,680,0],[883,630,1],[1225,12,1],[1225,0,1],[1019,0,1]],[[361,746,1],[656,746,1],[799,746,0],[968,894,0],[968,1018,1],[968,1153,0],[807,1297,0],[655,1298,1],[361,1298,1]]],"components":[]},"a":{"advance":1114,"contours":[[[808,0,1],[792,32,0],[782,114,1],[653,-20,0],[474,-20,1],[314,-20,0],[109,161,0],[109,300,1],[109,469,0],[366,656,0],[599,656,1],[779,656,1],[779,741,1],[779,838,0],[663,953,0],[550,953,1],[451,953,0],[317,853,0],[317,782,1],[131,782,1],[131,863,0],[246,1014,0],[443,1102,0],[561,1102,1],[748,1102,0],[960,915,0],[964,751,1],[964,253,1],[964,104,0],[1002,16,1],[1002,0,1]],[[501,141,1],[588,141,0],[744,231,0],[779,303,1],[779,525,1],[634,525,1],[294,525,0],[294,326,1],[294,239,0],[410,141,0]]],"components":[]},"acute":{"advance":642,"contours":[[[316,1534,1],[540,1534,1],[272,1240,1],[123,1240,1]]],"components":[]},"b":{"advance":1149,"contours":[[[1056,529,1],[1056,281,0],[828,-20,0],[636,-20,1],[431,-20,0],[319,125,1],[310,0,1],[140,0,1],[140,1536,1],[325,1536,1],[325,963,1],[437,1102,0],[831,1102,0],[1056,804,0],[1056,545,1]],[[871,550,1],[871,739,0],[725,945,0],[588,945,1],[405,945,0],[325,775,1],[325,307,1],[410,137,0],[590,137,1],[723,137,0],[871,343,0]]],"components":[]},"e":{"advance":1085,"contours":[[[589,-20,1],[369,-20,0],[93,269,0],[93,511,1],[93,545,1],[93,706,0],[216,959,0],[437,1102,0],[566,1102,1],[777,1102,0],[1011,824,0],[1011,565,1],[1011,488,1],[278,488,1],[282,328,0],[461,131,0],[599,131,1],[697,131,0],[833,211,0],[884,277,1],[997,189,1],[861,-20,0]],[[566,950,1],[454,950,0],[302,787,0],[284,640,1],[826,640,1],[826,654,1],[818,795,0],[682,950,0]]],"components":[]},"eacute":{"advance":1085,"contours":[],"components":[{"glyph":"e","transform":[1.0,0.0,0.0,1.0,0.0,0.0]},{"glyph":"acute","transform":[1.0,0.0,0.0,1.0,340.0,0.0]}]},"g":{"advance":1149,"contours":[[[96,550,1],[96,803,0],[330,1102,0],[523,1102,1],[721,1102,0],[832,962,1],[841,1082,1],[1010,1082,1],[1010,26,1],[1010,-184,0],[761,-426,0],[551,-426,1],[434,-426,0],[210,-326,0],[151,-239,1],[247,-128,1],[366,-275,0],[538,-275,1],[673,-275,0],[824,-123,0],[824,15,1],[824,108,1],[713,-20,0],[521,-20,1],[331,-20,0],[96,286,0]],[[282,529,1],[282,346,0],[432,137,0],[567,137,1],[742,137,0],[824,296,1],[824,790,1],[739,945,0],[569,945,1],[434,945,0],[282,735,0]]],"components":[]},"i":{"advance":497,"contours":[[[341,0,1],[156,0,1],[156,1082,1],[341,1082,1]],[[141,1369,1],[141,1414,0],[196,1476,0],[304,1476,0],[360,1414,0],[360,1324,0],[304,1264,0],[196,1264,0],[141,1324,0]]],"components":[]},"l":{"advance":497,"contours":[[[341,0,1],[156,0,1],[156,1536,1],[341,1536,1]]],"components":[]},"m":{"advance":1795,"contours":[[[314,1082,1],[319,962,1],[438,1102,0],[640,1102,1],[867,1102,0],[949,928,1],[1003,1006,0],[1176,1102,0],[1294,1102,1],[1650,1102,0],[1656,725,1],[1656,0,1],[1471,0,1],[1471,714,1],[1471,830,0],[1365,945,0],[1240,945,1],[1137,945,0],[1001,822,0],[990,718,1],[990,0,1],[804,0,1],[804,709,1],[804,945,0],[573,945,1],[391,945,0],[324,790,1],[324,0,1],[139,0,1],[139,1082,1]]],"components":[]},"o":{"advance":1168,"contours":[[[91,551,1],[91,710,0],[216,964,0],[439,1102,0],[582,1102,1],[803,1102,0],[1076,796,0],[1076,542,1],[1076,529,1],[1076,371,0],[955,120,0],[730,-20,0],[584,-20,1],[364,-20,0],[91,286,0],[91,538,1]],[[277,529,1],[277,349,0],[444,131,0],[584,131,1],[725,131,0],[891,352,0],[891,551,1],[891,729,0],[722,950,0],[582,950,1],[445,950,0],[277,732,0]]],"components":[]},"r":{"advance":693,"contours":[[[663,916,1],[621,923,0],[572,923,1],[390,923,0],[325,768,1],[325,0,1],[140,0,1],[140,1082,1],[320,1082,1],[323,957,1],[414,1102,0],[581,1102,1],[635,1102,0],[663,1088,1]]],"components":[]},"space":{"advance":507,"contours":[],"components":[]},"u":{"advance":1129,"contours":[[[808,107,1],[700,-20,0],[491,-20,1],[318,-20,0],[137,181,0],[136,378,1],[136,1082,1],[321,1082,1],[321,383,1],[321,137,0],[521,137,1],[733,137,0],[803,295,1],[803,1082,1],[988,1082,1],[988,0,1],[812,0,1]]],"components":[]}}};
+function toByte(light){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255+0.5);}
+function lerp3(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+function blit(ctx,pixels,pw,ph,scale,ox,oy){var img=ctx.createImageData(pw,ph);for(var i=0;i<pw*ph;i++){img.data[i*4]=pixels[i][0];img.data[i*4+1]=pixels[i][1];img.data[i*4+2]=pixels[i][2];img.data[i*4+3]=255;}var off=Plate.offcan(pw,ph);off.getContext('2d').putImageData(img,0,0);ctx.imageSmoothingEnabled=false;ctx.drawImage(off,ox,oy,pw*scale,ph*scale);}
+
+/* vectors and matrices (chapters 4 and 13) */
+function sub(a,b){return [a[0]-b[0],a[1]-b[1]];}
+function mag(v){return Math.sqrt(v[0]*v[0]+v[1]*v[1]);}
+function unit(a,b){var d=sub(b,a),m=mag(d);return [d[0]/m,d[1]/m];}
+function perp(v){return [-v[1],v[0]];}
+function crss(a,b){return a[0]*b[1]-a[1]*b[0];}
+function add(p,v,s){return [p[0]+v[0]*s,p[1]+v[1]*s];}
+function intersect(p1,d1,p2,d2){var den=crss(d1,d2);if(Math.abs(den)<1e-12)return null;var t=crss(sub(p2,p1),d2)/den;return add(p1,d1,t);}
+function arc(pts,c,a0,a1,r,steps){for(var k=0;k<=steps;k++){var a=a0+(a1-a0)*k/steps;pts.push([c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)]);}}
+function arcSteps(a0,a1){return Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/16)));}
+function angBetween(a,b){var d=((b-a)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);return d>Math.PI?d-2*Math.PI:d;}
+function mat(a,b,c,d,e,f,g,h,i){return [a,b,c,d,e,f,g,h,i];}
+function mmul(m,n){var o=[];for(var r=0;r<3;r++)for(var c=0;c<3;c++){var s=0;for(var k=0;k<3;k++)s+=m[r*3+k]*n[k*3+c];o.push(s);}return o;}
+function apply(m,p){return [m[0]*p[0]+m[1]*p[1]+m[2],m[3]*p[0]+m[4]*p[1]+m[5]];}
+function translation(x,y){return mat(1,0,x,0,1,y,0,0,1);}
+function scaling(x,y){return mat(x,0,0,0,y,0,0,0,1);}
+
+/* curves (chapter 8) */
+function lerpP(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];}
+function decasteljau(pts,t){var left=[pts[0]],right=[pts[pts.length-1]],p=pts.slice();while(p.length>1){var q=[];for(var i=0;i<p.length-1;i++)q.push(lerpP(p[i],p[i+1],t));p=q;left.push(p[0]);right.push(p[p.length-1]);}return {at:p[0],left:left,right:right.reverse()};}
+function pointAt(c,t){return decasteljau(c,t).at;}
+function flatness(c){var a=c[0],b=c[c.length-1],dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy),w=0;for(var i=1;i<c.length-1;i++){var p=c[i],d=L===0?Math.hypot(p[0]-a[0],p[1]-a[1]):Math.abs((p[0]-a[0])*dy-(p[1]-a[1])*dx)/L;w=Math.max(w,d);}return w;}
+function flattenInto(c,tol,out){if(flatness(c)<=tol)out.push(c[c.length-1]);else{var d=decasteljau(c,0.5);flattenInto(d.left,tol,out);flattenInto(d.right,tol,out);}}
+function flatten(c,tol){var out=[c[0]];flattenInto(c,tol,out);return out;}
+function flattenIntoPath(pts,c,tol){var f=flatten(c,tol);if(pts.length&&pts[pts.length-1][0]===f[0][0]&&pts[pts.length-1][1]===f[0][1])f=f.slice(1);return pts.concat(f);}
+function transformCurve(c,m){return c.map(function(p){return apply(m,p);});}
+function quadBounds(c){var xs=[c[0][0],c[2][0]],ys=[c[0][1],c[2][1]];[0,1].forEach(function(k){var den=c[0][k]-2*c[1][k]+c[2][k];if(Math.abs(den)>1e-12){var t=(c[0][k]-c[1][k])/den;if(t>0&&t<1){var q=pointAt(c,t);(k?ys:xs).push(q[k]);}}});return [Math.min.apply(null,xs),Math.min.apply(null,ys),Math.max.apply(null,xs),Math.max.apply(null,ys)];}
+
+/* chapter 16: glyphs */
+function impliedPoints(contour){var out=[],n=contour.length;for(var i=0;i<n;i++){var cur=contour[i],nxt=contour[(i+1)%n];out.push(cur);if(!cur[2]&&!nxt[2])out.push([(cur[0]+nxt[0])/2,(cur[1]+nxt[1])/2,1]);}for(var k=0;k<out.length;k++)if(out[k][2])return out.slice(k).concat(out.slice(0,k));return out;}
+function contourCurves(contour){var pts=impliedPoints(contour),curves=[],n=pts.length,i=0;while(i<n){var a=pts[i],b=pts[(i+1)%n];if(b[2]){curves.push([[a[0],a[1]],[(a[0]+b[0])/2,(a[1]+b[1])/2],[b[0],b[1]]]);i+=1;}else{var c=pts[(i+2)%n];curves.push([[a[0],a[1]],[b[0],b[1]],[c[0],c[1]]]);i+=2;}}return curves;}
+function componentMatrix(t){return mat(t[0],t[2],t[4],t[1],t[3],t[5],0,0,1);}
+function glyphOutline(font,name){var g=font.glyphs[name],out=g.contours.map(contourCurves);g.components.forEach(function(comp){var m=componentMatrix(comp.transform);glyphOutline(font,comp.glyph).forEach(function(contour){out.push(contour.map(function(c){return transformCurve(c,m);}));});});return out;}
+function glyphBounds(font,name){var boxes=[];glyphOutline(font,name).forEach(function(contour){contour.forEach(function(c){boxes.push(quadBounds(c));});});if(!boxes.length)return [0,0,0,0];return [Math.min.apply(null,boxes.map(function(b){return b[0];})),Math.min.apply(null,boxes.map(function(b){return b[1];})),Math.max.apply(null,boxes.map(function(b){return b[2];})),Math.max.apply(null,boxes.map(function(b){return b[3];}))];}
+function textMatrix(font,size,x,y){var s=size/font.units_per_em;return mmul(translation(x,y),scaling(s,-s));}
+function glyphPath(font,name,m,tol){return glyphOutline(font,name).map(function(contour){var pts=[];contour.forEach(function(c){pts=flattenIntoPath(pts,transformCurve(c,m),tol);});return pts;});}
+
+/* the stroker (chapter 13), for hairlines and rings */
+function segRect(a,b,h){var d=unit(a,b),n=perp(d);return [add(a,n,h),add(b,n,h),add(b,n,-h),add(a,n,-h)];}
+function joinShape(v,din,dout,h,join,ml){var turn=crss(din,dout);if(Math.abs(turn)<1e-12)return null;var s=turn>0?-1:1,nin=perp(din).map(function(x){return x*s;}),nout=perp(dout).map(function(x){return x*s;}),a=add(v,nin,h),b=add(v,nout,h);
+  if(join==='bevel')return [v,a,b];
+  if(join==='round'){var a0=Math.atan2(a[1]-v[1],a[0]-v[0]),a1=a0+angBetween(a0,Math.atan2(b[1]-v[1],b[0]-v[0]));var p=[v];arc(p,v,a0,a1,h,arcSteps(a0,a1));return p;}
+  var m=intersect(a,din,b,dout);if(m&&mag(sub(m,v))<=ml*h)return [v,a,m,b];return [v,a,b];}
+function capShape(p,dout,h,cap){var n=perp(dout);if(cap==='butt')return null;
+  if(cap==='square'){var l=add(p,n,h),r=add(p,n,-h);return [l,add(l,dout,h),add(r,dout,h),r];}
+  var a0=Math.atan2(n[1],n[0]),d=angBetween(a0,Math.atan2(dout[1],dout[0]));var a1=a0+(d>0?Math.PI:-Math.PI),pts=[];arc(pts,p,a0,a1,h,arcSteps(a0,a1));return pts;}
+function dedupe(pts){var o=[pts[0]];for(var i=1;i<pts.length;i++)if(mag(sub(pts[i],o[o.length-1]))>1e-9)o.push(pts[i]);return o;}
+function area(sp){var s=0;for(var i=0;i<sp.length;i++){var a=sp[i],b=sp[(i+1)%sp.length];s+=a[0]*b[1]-b[0]*a[1];}return s/2;}
+function strokeToPath(pts,closed,width,cap,join,ml){var h=width/2,subs=[];pts=dedupe(pts);if(closed&&pts.length>1&&mag(sub(pts[pts.length-1],pts[0]))<=1e-9)pts.pop();
+  function emit(sp){if(!sp)return;if(area(sp)>0)sp.reverse();subs.push(sp);}
+  if(pts.length<2){if(cap==='round'){var d=[];arc(d,pts[0],0,2*Math.PI,h,48);emit(d);}else if(cap==='square'){var c=pts[0];emit([[c[0]-h,c[1]-h],[c[0]+h,c[1]-h],[c[0]+h,c[1]+h],[c[0]-h,c[1]+h]]);}return subs;}
+  var segs=[];for(var i=0;i<pts.length-1;i++)segs.push([pts[i],pts[i+1]]);if(closed)segs.push([pts[pts.length-1],pts[0]]);
+  segs.forEach(function(s){emit(segRect(s[0],s[1],h));});
+  var dirs=segs.map(function(s){return unit(s[0],s[1]);}),nj=closed?segs.length:segs.length-1;
+  for(var k=0;k<nj;k++){var v=segs[(k+1)%segs.length][0];emit(joinShape(v,dirs[k],dirs[(k+1)%segs.length],h,join,ml));}
+  if(!closed){emit(capShape(pts[0],dirs[0].map(function(x){return -x;}),h,cap));emit(capShape(pts[pts.length-1],dirs[dirs.length-1],h,cap));}
+  return subs;}
+
+/* fill a list of closed subpaths (chapter 7, nonzero) */
+function edgesOf(subs){var out=[];subs.forEach(function(sp){var n=sp.length;for(var i=0;i<n;i++)out.push([sp[i],sp[(i+1)%n]]);});return out;}
+function fillSubs(subs,w,h){var acc={area:new Array(w*h).fill(0),cover:new Array(w*h).fill(0)};edgesOf(subs).forEach(function(e){var a=e[0],b=e[1];if(a[1]===b[1])return;var sign=a[1]>b[1]?1:-1,top=a[1]>b[1]?b:a,bot=a[1]>b[1]?a:b,slope=(bot[0]-top[0])/(bot[1]-top[1]);var first=Math.max(Math.floor(top[1]),0),last=Math.min(Math.ceil(bot[1])-1,h-1);for(var row=first;row<=last;row++){var y0=Math.max(top[1],row),y1=Math.min(bot[1],row+1),x0=top[0]+(y0-top[1])*slope,x1=top[0]+(y1-top[1])*slope,xa=Math.min(x0,x1),xb=Math.max(x0,x1),ca=Math.floor(xa),cb=Math.floor(xb);function ad(x,ar,co){if(x<0){x=0;ar=co;}if(x>=w)return;var idx=row*w+x;acc.area[idx]+=ar;acc.cover[idx]+=co;}var hg=sign*(y1-y0);if(ca===cb){var xm=(xa+xb)/2-ca;ad(ca,hg*(1-xm),hg);}else{var dx=xb-xa;for(var c=ca;c<=cb;c++){var lo=Math.max(xa,c),hi=Math.min(xb,c+1),sh=hg*(hi-lo)/dx,mm=(lo+hi)/2-c;ad(c,sh*(1-mm),sh);}}}});var cov=new Array(w*h).fill(0);for(var row=0;row<h;row++){var run=0;for(var x=0;x<w;x++){var idx=row*w+x;cov[idx]=Math.min(1,Math.abs(run+acc.area[idx]));run+=acc.cover[idx];}}return cov;}
+
+/* a paint buffer */
+var PAPER=[0.02,0.02,0.025],GRAY=[0.62,0.62,0.66],DIM=[0.3,0.3,0.34],MAG=[0.85,0.2,0.55],CYAN=[0.2,0.75,0.9],INKS=[[0.9,0.55,0.1],[0.2,0.55,0.85],[0.85,0.25,0.3]];
+function Buf(w,h){this.w=w;this.h=h;this.p=[];for(var i=0;i<w*h;i++)this.p.push(PAPER.slice());}
+Buf.prototype.paint=function(cov,col){for(var i=0;i<this.w*this.h;i++){var k=cov[i];if(k>0)this.p[i]=lerp3(this.p[i],col,k);}};
+Buf.prototype.fillSubs=function(subs,col){this.paint(fillSubs(subs,this.w,this.h),col);};
+Buf.prototype.hairline=function(pts,closed,col,width){this.fillSubs(strokeToPath(pts,closed,width||1.0,'butt','round',4),col);};
+Buf.prototype.glyph=function(font,name,m,col){this.fillSubs(glyphPath(font,name,m,0.1),col);};
+Buf.prototype.bytes=function(){return this.p.map(function(c){return c.map(toByte);});};
+function circlePath(cx,cy,r,n){var p=[];for(var k=0;k<n;k++){var a=2*Math.PI*k/n;p.push([cx+r*Math.cos(a),cy+r*Math.sin(a)]);}return p;}
+function square(q,h){return [[q[0]-h,q[1]-h],[q[0]+h,q[1]-h],[q[0]+h,q[1]+h],[q[0]-h,q[1]+h]];}
+function sideBySide(a,b,w,h){var o=new Array(2*w*h);for(var y=0;y<h;y++)for(var x=0;x<w;x++){o[y*2*w+x]=a[y*w+x];o[y*2*w+w+x]=b[y*w+x];}return {bytes:o,w:2*w,h:h};}
+
+/* the renders */
+function glyphPlate(){var W=320,H=320,b=new Buf(W,H),f=GLYPHS,m=textMatrix(f,300,40,250),g=f.glyphs.a;b.glyph(f,'a',m,GRAY);
+  g.contours.forEach(function(c){b.hairline(c.map(function(p){return apply(m,[p[0],p[1]]);}),true,DIM,1.0);});
+  g.contours.forEach(function(c){var explicit={};c.forEach(function(p){explicit[p[0]+','+p[1]]=1;});impliedPoints(c).forEach(function(p){var q=apply(m,[p[0],p[1]]);if(!p[2])b.hairline(circlePath(q[0],q[1],4,24),true,MAG,1.5);else if(explicit[p[0]+','+p[1]])b.fillSubs([square(q,3)],CYAN);else b.fillSubs([square(q,2)],CYAN);});});
+  return {bytes:b.bytes(),w:W,h:H};}
+function compositeDemo(){var W=240,H=240,b=new Buf(W,H),f=GLYPHS,m=textMatrix(f,240,50,190);f.glyphs.eacute.components.forEach(function(comp,k){b.fillSubs(glyphPath(f,comp.glyph,mmul(m,componentMatrix(comp.transform)),0.1),INKS[k%3]);});
+  var bb=glyphBounds(f,'eacute'),a=apply(m,[bb[0],bb[1]]),c=apply(m,[bb[2],bb[3]]);b.hairline([[a[0],a[1]],[c[0],a[1]],[c[0],c[1]],[a[0],c[1]]],true,MAG,1.0);return {bytes:b.bytes(),w:W,h:H};}
+function sizes(){var W=240,H=120,b=new Buf(W,H),f=GLYPHS,x=8;[12,24,48,96].forEach(function(size){b.glyph(f,'g',textMatrix(f,size,x,80),GRAY);x+=f.glyphs.g.advance*size/f.units_per_em+8;});return {bytes:b.bytes(),w:W,h:H};}
+function flipTrap(){var W=120,H=120,f=GLYPHS,s=60/f.units_per_em,left=new Buf(W,H),right=new Buf(W,H);left.glyph(f,'R',textMatrix(f,60,35,60),GRAY);right.fillSubs(glyphPath(f,'R',mmul(translation(35,60),scaling(s,s)),0.1),MAG);[left,right].forEach(function(bf){bf.hairline([[0,60],[W,60]],false,DIM,1.0);});return sideBySide(left.bytes(),right.bytes(),W,H);}
+
+/* ---------- Figure 16.1 — the dot of the i ---------- */
+Plate.add('fig161', 0.5, function (ctx, w, h, p) {
+  var dot=GLYPHS.glyphs.i.contours[1],xs=dot.map(function(q){return q[0];}),ys=dot.map(function(q){return q[1];});
+  var x0=Math.min.apply(null,xs),x1=Math.max.apply(null,xs),y0=Math.min.apply(null,ys),y1=Math.max.apply(null,ys),sc=Math.min((w-80)/(x1-x0),(h-60)/(y1-y0));
+  function P(q){return [40+(q[0]-x0)*sc,h-30-(q[1]-y0)*sc];}
+  ctx.strokeStyle=p.ink3;ctx.lineWidth=1;ctx.setLineDash([3,3]);ctx.beginPath();dot.forEach(function(q,i){var r=P(q);i?ctx.lineTo(r[0],r[1]):ctx.moveTo(r[0],r[1]);});ctx.closePath();ctx.stroke();ctx.setLineDash([]);
+  ctx.strokeStyle=p.ink;ctx.lineWidth=2;ctx.beginPath();contourCurves(dot).forEach(function(c){var pts=flatten(c,0.3);pts.forEach(function(q,i){var r=P(q);i?ctx.lineTo(r[0],r[1]):ctx.moveTo(r[0],r[1]);});});ctx.closePath();ctx.stroke();
+  var explicit={};dot.forEach(function(q){explicit[q[0]+','+q[1]]=1;});
+  impliedPoints(dot).forEach(function(q){var r=P(q);if(!q[2]){ctx.strokeStyle=p.magenta;ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(r[0],r[1],4.5,0,7);ctx.stroke();}else{ctx.fillStyle=p.cyan;var s=explicit[q[0]+','+q[1]]?4:2.5;ctx.fillRect(r[0]-s,r[1]-s,2*s,2*s);}});
+  Plate.label(ctx,'hollow: off-curve, stored',40,16,p.magenta,10);Plate.label(ctx,'small squares: on-curve, implied',40,30,p.cyan,10);
+});
+
+/* ---------- Figure 16.3 — a composite ---------- */
+Plate.add('fig163', 0.5, function (ctx, w, h, p) {
+  var g=compositeDemo(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,(h-g.h*sc)/2);
+});
+
+/* ---------- Figure 16.4 — the flip, forgotten ---------- */
+Plate.add('fig164', 0.5, function (ctx, w, h, p) {
+  var g=flipTrap(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,(h-g.h*sc)/2);
+});
+
+/* ---------- Figure 16.5 — sizes ---------- */
+Plate.add('fig165', 0.5, function (ctx, w, h, p) {
+  var g=sizes(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,(h-g.h*sc)/2);
+});
+
+/* ---------- Plate 16 ---------- */
+Plate.add('plate16', 1.0, function (ctx, w, h, p) {
+  var g=glyphPlate(),sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,0);
+});
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, sub, mag, unit, perp, crss, add, intersect, arc, arcSteps, angBetween, mat, mmul, apply, translation, scaling, lerpP, decasteljau, pointAt, flatness, flattenInto, flatten, flattenIntoPath, transformCurve, quadBounds, impliedPoints, contourCurves, componentMatrix, glyphOutline, glyphBounds, textMatrix, glyphPath, segRect, joinShape, capShape, dedupe, area, strokeToPath, edgesOf, fillSubs, Buf, circlePath, square, sideBySide, glyphPlate, compositeDemo, sizes, flipTrap].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>
