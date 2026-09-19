@@ -64,7 +64,9 @@
     <figcaption><span class="fig">Figure 15.1</span> Eleven marks by parameter (left) and eleven by arc length (right) on the same curve. One handle is short and one is long, so the parameter crawls at the start and races at the end. The right-hand marks are what a dash pattern needs.</figcaption>
   </figure>
 
-  <p>Figure 15.1 is the scenarios' <code>lopsided()</code> curve: one short handle, one long one, so
+  <p>Figure 15.1 is the scenarios' <code>lopsided()</code> curve,
+    <code>cubic((15, 100), (25, 85), (100, 5), (185, 95))</code> in a 200 by 120 panel with marks of
+    radius 3 (chapter 5's circles, 24 sides): one short handle, one long one, so
     marks at equal steps of <code>t</code> are four times as far apart at the end as at the start, and
     the midpoint by parameter lands at <code>x = 71.9</code> while the midpoint by length is at
     <code>98.7</code>. The scenarios
@@ -388,7 +390,7 @@
 
   <figure>
     <canvas id="fig153" role="img" aria-label="One wavy path stroked four times in rows: solid gray; dashed twelve on six off in orange; the same pattern shifted by a phase of nine in blue; and a dotted line of round pink dots"></canvas>
-    <figcaption><span class="fig">Figure 15.3</span> One wave, four ways: solid, <code>[12, 6]</code>, the same at phase <code>9</code>, and <code>[0, 9]</code> with round caps. The dots are chapter 13's single-point subpaths. Every dash and dot is stroked by the stroker you already had.</figcaption>
+    <figcaption><span class="fig">Figure 15.3</span> One wave, <code>cubic((20, 20), (120, −20), (200, 60), (300, 20))</code> flattened at <code>0.1</code> and shifted down 40 per row, stroked 5 wide four ways: solid, <code>[12, 6]</code>, the same at phase <code>9</code>, and <code>[0, 9]</code> with round caps. The dots are chapter 13's single-point subpaths. Every dash and dot is stroked by the stroker you already had.</figcaption>
   </figure>
 
   <div class="test" data-feature="chapter15-closed.feature">

@@ -144,12 +144,12 @@ public final class Chapter15Tests {
         scenario("Length: the parameter is not the length", () -> {
             Curve c = Figures.lopsided();
             double total = Length.arcLength(c, 256);
-            assertDoubleEq("total", total, 225.8293, 0.001);
-            assertTupleEq("point_at(c, 0.5)", Curves.pointAt(c, 0.5), Tuple.point(88.75, 37.5));
+            assertDoubleEq("total", total, 198.0971, 0.001);
+            assertTupleEq("point_at(c, 0.5)", Curves.pointAt(c, 0.5), Tuple.point(71.875, 58.125));
             assertTupleEq("point_at_length(c, total / 2, 256)",
-                    Length.pointAtLength(c, total / 2, 256), Tuple.point(94.8542, 37.4727), 0.001);
+                    Length.pointAtLength(c, total / 2, 256), Tuple.point(98.7142, 52.9628), 0.001);
             assertDoubleEq("t_at_length(arc_length_table(c, 256), total / 2)",
-                    Length.tAtLength(Length.arcLengthTable(c, 256), total / 2), 0.527003, 0.0001);
+                    Length.tAtLength(Length.arcLengthTable(c, 256), total / 2), 0.635558, 0.0001);
         });
     }
 
@@ -171,12 +171,13 @@ public final class Chapter15Tests {
             assertTrue("normalize_pattern([0, 0]) = []", Dash.normalizePattern(new double[] {0, 0}).length == 0);
             assertTrue("normalize_pattern([]) = []", Dash.normalizePattern(new double[0]).length == 0);
             assertTrue("normalize_pattern([5, -5]) = []", Dash.normalizePattern(new double[] {5, -5}).length == 0);
+            assertTrue("normalize_pattern([6, -2]) = []", Dash.normalizePattern(new double[] {6, -2}).length == 0);
             Path d1 = Dash.dash(seg, new double[] {0, 0}, 0);
             assertEquals("length(subpaths(dash(seg, [0, 0], 0)))", d1.subpaths().size(), 1);
             assertTupleEq("subpaths(dash(seg, [0, 0], 0))[0].points[1]", d1.subpaths().get(0).points.get(1), Tuple.point(100, 0));
             assertEquals("length(subpaths(dash(seg, [], 0)))", Dash.dash(seg, new double[0], 0).subpaths().size(), 1);
-            assertEquals("length(subpaths(dash(seg, [5, -5], 0)))",
-                    Dash.dash(seg, new double[] {5, -5}, 0).subpaths().size(), 1);
+            assertEquals("length(subpaths(dash(seg, [6, -2], 0)))",
+                    Dash.dash(seg, new double[] {6, -2}, 0).subpaths().size(), 1);
         });
 
         scenario("Pattern: a repeated odd pattern walks as its doubled self", () -> {
@@ -378,8 +379,8 @@ public final class Chapter15Tests {
             byte[] p6 = Ppm.canvasToP6(c);
             assertEquals("c.width", c.width, 400);
             assertEquals("c.height", c.height, 120);
-            assertTriple("ppm_pixel(p6, 89, 37)", Ppm.ppmPixel(p6, 89, 37), new int[] {243, 196, 89}, 1);
-            assertTriple("ppm_pixel(p6, 295, 37)", Ppm.ppmPixel(p6, 295, 37), new int[] {124, 196, 237}, 1);
+            assertTriple("ppm_pixel(p6, 71, 58)", Ppm.ppmPixel(p6, 71, 58), new int[] {243, 196, 89}, 1);
+            assertTriple("ppm_pixel(p6, 298, 52)", Ppm.ppmPixel(p6, 298, 52), new int[] {124, 196, 237}, 1);
             assertTriple("ppm_pixel(p6, 100, 100)", Ppm.ppmPixel(p6, 100, 100), new int[] {39, 39, 44}, 1);
             assertTrue("max_channel_difference(p6, ref) <= 1", Ppm.maxChannelDifference(p6, ref) <= 1);
         });
@@ -408,7 +409,7 @@ public final class Chapter15Tests {
 
         scenario("Plate 15: the spiral, dashed", () -> {
             Canvas c = Figures.spiralDashes();
-            byte[] ref = readReference("spiral.ppm");
+            byte[] ref = readReference("spiral-dashes.ppm");
             byte[] p6 = Ppm.canvasToP6(c);
             assertEquals("c.width", c.width, 340);
             assertEquals("c.height", c.height, 340);
@@ -467,7 +468,7 @@ public final class Chapter15Tests {
         Files.createDirectories(java.nio.file.Path.of("out"));
         writeOne("even-marks.ppm", Figures.evenMarks());
         writeOne("dash-strip.ppm", Figures.dashStrip());
-        writeOne("spiral.ppm", Figures.spiralDashes());
+        writeOne("spiral-dashes.ppm", Figures.spiralDashes());
         writeOne("plate-15.ppm", Figures.plate15());
     }
 

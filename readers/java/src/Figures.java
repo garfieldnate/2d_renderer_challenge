@@ -1040,8 +1040,8 @@ public final class Figures {
         CoverageBuffer cov = Fill.fillPath(outline, "nonzero", w, h);
         Painter.paintThrough(c, cov, STROKE_GRAY);
         for (Edge e : outline.edges()) {
-            Lines.lineWu(c, (int) Numbers.roundHalfEven(e.a().x), (int) Numbers.roundHalfEven(e.a().y),
-                    (int) Numbers.roundHalfEven(e.b().x), (int) Numbers.roundHalfEven(e.b().y), STROKE_MAGENTA);
+            Lines.lineWu(c, (int) Numbers.round(e.a().x), (int) Numbers.round(e.a().y),
+                    (int) Numbers.round(e.b().x), (int) Numbers.round(e.b().y), STROKE_MAGENTA);
         }
         return c;
     }
@@ -1114,8 +1114,8 @@ public final class Figures {
         CoverageBuffer cov = Fill.fillPath(outline, rule, w, h);
         Painter.paintThrough(c, cov, STROKE_GRAY);
         for (Edge e : outline.edges()) {
-            Lines.lineWu(c, (int) Numbers.roundHalfEven(e.a().x), (int) Numbers.roundHalfEven(e.a().y),
-                    (int) Numbers.roundHalfEven(e.b().x), (int) Numbers.roundHalfEven(e.b().y), STROKE_MAGENTA);
+            Lines.lineWu(c, (int) Numbers.round(e.a().x), (int) Numbers.round(e.a().y),
+                    (int) Numbers.round(e.b().x), (int) Numbers.round(e.b().y), STROKE_MAGENTA);
         }
         return c;
     }
@@ -1200,7 +1200,7 @@ public final class Figures {
 
     /** §15.1: lopsided() -- one short handle, one long, so the parameter and the length disagree. */
     public static Curve lopsided() {
-        return Curve.cubic(Tuple.point(15, 100), Tuple.point(20, 20), Tuple.point(150, 15), Tuple.point(185, 95));
+        return Curve.cubic(Tuple.point(15, 100), Tuple.point(25, 85), Tuple.point(100, 5), Tuple.point(185, 95));
     }
 
     private static void strokeOpenAndPaint(Canvas c, Path open, double width, Color color) {

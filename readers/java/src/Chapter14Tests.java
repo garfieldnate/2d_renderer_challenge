@@ -281,6 +281,7 @@ public final class Chapter14Tests {
             assertTupleEq("pieces[3].points[3]", pieces.get(3).points().get(3), Tuple.point(1.5498, 0.118898), 0.0001);
             assertDoubleEq("distance_to_curve(q, point(2, 0))", Offset.distanceToCurve(q, Tuple.point(2, 0)), 1.732051);
             assertGe("offset_distance_error(q, -2, 0.01)", Offset.offsetDistanceError(q, -2, 0.01), 0.7);
+            assertDoubleEq("offset_distance_error(q, -2, 0.01)", Offset.offsetDistanceError(q, -2, 0.01), 0.707336, 0.0001);
         });
     }
 
@@ -295,6 +296,15 @@ public final class Chapter14Tests {
             assertTupleEq("subpaths(o)[0].points[0]", pts.get(0), Offset.offsetPoint(Figures.hairpin(), 0, 30));
             assertTupleEq("subpaths(o)[0].points[57]", pts.get(57), Offset.offsetPoint(Figures.hairpin(), 0, -30));
             assertTupleEq("subpaths(o)[0].points[0]", pts.get(0), Tuple.point(64.5435, 145.214), 0.001);
+        });
+
+        scenario("Stroke: the fold's tip lands exactly on a half, and is drawn one row down", () -> {
+            Path o = Offset.strokeCurveToPath(Figures.hairpin(), 60, "butt", 0.25);
+            List<Tuple> pts = o.subpaths().get(0).points;
+            assertTupleEq("subpaths(o)[0].points[13]", pts.get(13), Tuple.point(80, 42.5));
+            assertTupleEq("subpaths(o)[0].points[42]", pts.get(42), Tuple.point(80, -17.5));
+            assertEquals("round(42.5)", Numbers.round(42.5), 43L);
+            assertEquals("round(-17.5)", Numbers.round(-17.5), -17L);
         });
 
         scenario("Stroke: caps add their points to the same outline", () -> {

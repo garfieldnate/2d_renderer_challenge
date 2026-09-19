@@ -40,16 +40,14 @@ P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/three-filters.ppm`, `out/opacity.ppm`, `out/plate-12.ppm`,
 `out/clip-demo.ppm`, `out/joins.ppm`, `out/plate-13.ppm`, `out/caps.ppm`,
 `out/two-strokes.ppm`, `out/fold.ppm`, `out/offsets.ppm`, `out/plate-14.ppm`,
-`out/even-marks.ppm`, `out/dash-strip.ppm`, `out/spiral.ppm`, `out/plate-15.ppm`.
+`out/even-marks.ppm`, `out/dash-strip.ppm`, `out/spiral-dashes.ppm`,
+`out/plate-15.ppm`.
 
-**Name collision:** chapter 6's spiral figure and chapter 15's dashed spiral
-both write `out/spiral.ppm`. Neither chapter's tests read that file back (the
-scenarios compare freshly rendered canvases against `reference/`, never
-against `out/`), so this never affects pass/fail -- but running the whole
-suite in order leaves only chapter 15's `spiral.ppm` on disk afterward. Look
-at each chapter's `out/` files right after running that chapter if you want
-to see them, or diff against `reference/chapter-06/spiral.ppm` /
-`reference/chapter-15/spiral.ppm` explicitly.
+Chapter 15's dashed spiral render is `spiral-dashes.ppm`, not `spiral.ppm` --
+it used to share that name with chapter 6's spiral figure, which meant running
+the whole suite in order left only chapter 15's file on disk (`out/spiral.ppm`
+belonged to chapter 6, `out/spiral-dashes.ppm` to chapter 15, and the two
+never collide now).
 
 ## Chapter 3
 
@@ -452,10 +450,17 @@ tolerance)` splits `c` at its cusps, then fits, halves and refits each
 piece (`offsetInto`, recursive, capped at 16 halvings) until
 `offsetError` is within tolerance. `Offset.offsetDistanceError(c, d,
 tolerance)` walks 100 points evenly spread by piece index across the
-result and takes the worst `|distance_to_curve(c, point) - |d||` -- the
-chapter never pins an exact value for this (every scenario is `<=` or
-`>=`), so the walk's exact parameterization is this reader's choice, not a
-transcription of a spec.
+result and takes the worst `|distance_to_curve(c, point) - |d||`.
+`chapter14-curve.feature`'s own description now states the walk exactly:
+`u = i / 99` times the number of pieces for `i = 0` to `99`, each point
+taken on piece `floor(u)` at parameter `u - floor(u)`, the last point on
+the last piece at `t = 1`. `WALK_POINTS = 100` in `Offset` already matched
+that parameterization exactly, so no code changed here -- but the feature
+now also pins an exact value on the fold case (`offset_distance_error(q,
+-2, 0.01) = 0.707336 ± 0.0001`), not only a `>=` bound, so a reader whose
+walk used a different `u` (say, `i / 100`, or without clamping the last
+point to `t = 1`) would now fail a scenario instead of merely passing a
+looser one.
 
 `Offset.strokeCurveToPath(c, width, cap, tolerance)` is one closed subpath:
 the `+h` offset's pieces flattened forward, the end cap's points
@@ -476,18 +481,19 @@ hairline-thin and painted through the canvas), `offsetsPlate()`, and
 `plate14()`. All four renders (`two-strokes.ppm`, `fold.ppm`,
 `offsets.ppm`, `plate-14.ppm`) diff 0 against the reference bytes.
 
-**A rounding fix that reached back into chapter 13.** Tracing an outline's
-edges in magenta rounds each endpoint to an integer pixel first
-(`Numbers.round`, plain round-half-up). Chapter 14's hairpin is left-right
-symmetric, so its flattened outline has a vertex sitting exactly on a
-half-integer coordinate at the peak, and round-half-up there picked a
-different pixel than the reference implementation's Python-style
-round-half-to-even. Added `Numbers.roundHalfEven` (the same "round, then
-nudge down by one if the fraction was exactly a half and the naive answer
-came out odd" rule the reference implementation uses) and switched both
-`outlinePanel` (chapter 14) and `tracedPanel` (chapter 13) to it -- it only
-changes anything exactly at a `.5` tie, so chapter 13's renders, which
-never hit one, are unaffected (still diff 0).
+**Rounding an outline's traced edges.** Tracing an outline's edges in magenta
+(`outlinePanel` here, chapter 13's `tracedPanel`) rounds each endpoint to an
+integer pixel first with `Numbers.round` -- round to nearest, halves up
+(`floor(v + 0.5)`), chapter 1's rule, per chapter 13 §13.5's and chapter 14
+§14.5's pseudocode comments. Chapter 14's hairpin is left-right symmetric, so
+its flattened outline has two vertices sitting exactly on a half-integer
+coordinate at the fold's tip (`(80, 42.5)` and `(80, -17.5)`, pinned in
+`chapter14-stroke.feature`); halves-up rounds those to `43` and `-17`. An
+earlier revision of this code used round-half-to-even there instead (to match
+a since-fixed quirk in the reference implementation's rounding), which rounds
+`42.5` to `42` and `-17.5` to `-18` -- both a row off from what the book's
+own halves-up rule, and the current reference, actually draw. `Numbers` now
+has only `round` (halves up); the half-to-even helper is gone.
 
 ## Chapter 15
 
@@ -517,9 +523,11 @@ returns, the last dash absorbs the first (or, if one dash covered the
 whole loop, that single subpath is marked closed instead of duplicating
 its start point).
 
-`Figures` adds `lopsided()`, `evenMarks()`, `wave(dy)`, `dashStrip()`,
-`goldenSpiral()` (seven quarter circles, each `phi` times the radius of
-the last and tangent to it, flattened into one open subpath), and
+`Figures` adds `lopsided()` (a cubic with one short handle and one long one,
+control points `(15, 100)`, `(25, 85)`, `(100, 5)`, `(185, 95)`, so its
+parameter and its arc length disagree), `evenMarks()`, `wave(dy)`,
+`dashStrip()`, `goldenSpiral()` (seven quarter circles, each `phi` times the
+radius of the last and tangent to it, flattened into one open subpath), and
 `spiralDashes()` (the spiral stroked hairline-thin, then dashed 16-on/
 10-off and each resulting dash stroked separately, 7 wide with round
 caps, in the next of three inks -- painted one dash at a time in sequence,
@@ -527,6 +535,19 @@ matching the reference implementation's own per-dash paint calls rather
 than filling all the dashes together in one pass, which matters at the
 antialiased edges where two dashes' outlines come close). `Figures.plate15()`
 is `spiralDashes()` magnified by 2. All four renders (`even-marks.ppm`,
-`dash-strip.ppm`, `spiral.ppm`, `plate-15.ppm`) diff 0 or 1 against the
-reference bytes (`spiral.ppm` and `plate-15.ppm` differ by 1 in a
+`dash-strip.ppm`, `spiral-dashes.ppm`, `plate-15.ppm`) diff 0 or 1 against
+the reference bytes (`spiral-dashes.ppm` and `plate-15.ppm` differ by 1 in a
 handful of pixels, within the `<= 1` budget every plate scenario allows).
+
+**Catch-up: `lopsided()`'s control points changed upstream.** The chapter's
+own `lopsided()` moved its second control point from `(20, 20)` to
+`(25, 85)` and its third from `(150, 15)` to `(100, 5)` -- the middle handle
+now leans much closer to the start, so the parameter-vs-length mismatch the
+figure exists to show is more pronounced (`arc_length` went from `225.8293`
+to `198.0971`, and the parameter/length midpoints separated further). This
+reader's code had the old control points hardcoded (there's no way to derive
+them from the chapter's prose alone; they only show up in the figure's own
+JS in chapter-15.html §15.1), so `chapter15-length.feature`'s and
+`chapter15-plate.feature`'s pinned values for `even_marks()`,
+`point_at(lopsided(), 0.5)`, `point_at_length`, and `t_at_length` all had to
+be re-copied from the new figure source, not derived.

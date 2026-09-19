@@ -445,7 +445,8 @@ offset_into(c, d, tolerance, pieces, depth):
     <figcaption><span class="fig">Figure 14.3</span> The same stroke, two outlines. Left: flatten, then chapter 13: 43 pieces, 172 points, and every one of them drawn in magenta. Right: one outline from the offset curves, 58 points. The gray is the same. The little loop at the apex on the right is the fold.</figcaption>
   </figure>
 
-  <p>About that loop. The hairpin's tightest radius is about 8, and the stroke is 60 wide, so the
+  <p>About that loop. The hairpin is <code>cubic((35, 140), (65, −30), (95, −30), (125, 140))</code>
+    in a 160-pixel panel; its tightest radius is about 8, and the stroke is 60 wide, so the
     inner offset at <code>+30</code> stalls and doubles back: the outline has a swallowtail in it and
     crosses itself. What does the fill do with that? The same thing it did with chapter 5's pentagram.
     Under the nonzero rule the loop is wound, so it's inside; under even-odd it's wound twice and
