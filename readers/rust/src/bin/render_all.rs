@@ -7,14 +7,15 @@ use std::fs;
 use std::path::Path;
 
 use renderer::{
-    blend_strip, canvas_to_p6, canvas_to_ppm, caps_demo, clamp_pair, clip_demo, dash_strip,
-    disc_centers, disc_coverage, drops, even_marks, extend_strip, fan_bresenham, fan_both_orders,
-    fan_coverage, fan_wu, flower, fold_demo, gray_match, joins_plate, needles, offsets_plate,
-    opacity_plate, painted_twice, plate_01, plate_02, plate_03, plate_04, plate_05, plate_06,
-    plate_07, plate_08, plate_09, plate_10, plate_11, plate_12, plate_13, plate_14, plate_15,
-    porter_duff_table, quarter_match, ramp, seam, soft_square, spiral, spiral_dashes,
-    spiral_smooth, star_centers, star_coverage, star_exact, three_filters, three_gradients,
-    two_filters, two_strokes,
+    blend_strip, canvas_to_p6, canvas_to_ppm, caps_demo, clamp_pair, clip_demo, composite_demo,
+    dash_strip, disc_centers, disc_coverage, drops, even_marks, extend_strip, fan_bresenham,
+    fan_both_orders, fan_coverage, fan_wu, flip_trap, flower, fold_demo, glyph_plate, gray_match,
+    joins_plate, lcd_plate, needles, offsets_plate, opacity_plate, painted_twice, plate_01,
+    plate_02, plate_03, plate_04, plate_05, plate_06, plate_07, plate_08, plate_09, plate_10,
+    plate_11, plate_12, plate_13, plate_14, plate_15, plate_16, plate_17, porter_duff_table,
+    quarter_match, ramp, seam, sizes, smoothing_demo, soft_square, spiral, spiral_dashes,
+    spiral_smooth, star_centers, star_coverage, star_exact, subpixel_strip, three_filters,
+    three_gradients, two_filters, two_strokes,
 };
 
 fn write_p3(dir: &Path, name: &str, ppm: String) {
@@ -111,5 +112,18 @@ fn main() {
     write_p6(out, "spiral-dashes.ppm", canvas_to_p6(&spiral_dashes()));
     write_p6(out, "plate-15.ppm", canvas_to_p6(&plate_15()));
 
-    println!("wrote 52 renders to out/");
+    // Chapter 16: glyphs.
+    write_p6(out, "glyph.ppm", canvas_to_p6(&glyph_plate()));
+    write_p6(out, "plate-16.ppm", canvas_to_p6(&plate_16()));
+    write_p6(out, "composite.ppm", canvas_to_p6(&composite_demo()));
+    write_p6(out, "sizes.ppm", canvas_to_p6(&sizes()));
+    write_p6(out, "flip.ppm", canvas_to_p6(&flip_trap()));
+
+    // Chapter 17: rasterizing type well.
+    write_p6(out, "subpixels.ppm", canvas_to_p6(&subpixel_strip()));
+    write_p6(out, "smoothing.ppm", canvas_to_p6(&smoothing_demo()));
+    write_p6(out, "lcd.ppm", canvas_to_p6(&lcd_plate()));
+    write_p6(out, "plate-17.ppm", canvas_to_p6(&plate_17()));
+
+    println!("wrote 61 renders to out/");
 }

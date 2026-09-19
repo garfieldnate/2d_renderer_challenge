@@ -1,6 +1,9 @@
 // features/chapter13-degenerate.feature
 
-use renderer::{bounds, line_to, move_to, path, point, stroke_to_path, subpaths, tuples_eq};
+use renderer::{
+    approx_eq, bounds, close, line_to, move_to, path, point, polygon_area, stroke_to_path,
+    subpaths, tuples_eq,
+};
 
 fn assert_bounds(actual: (f64, f64, f64, f64), expected: (f64, f64, f64, f64)) {
     assert!(
@@ -22,6 +25,21 @@ fn duplicate_consecutive_points_are_dropped() {
 
     assert_eq!(subpaths(&o).len(), 1);
     assert!(tuples_eq(subpaths(&o)[0].points[0], point(0.0, 7.0)));
+}
+
+#[test]
+fn a_closed_subpath_that_ends_where_it_began_has_no_zero_length_closing_segment() {
+    let mut sq = path();
+    move_to(&mut sq, point(0.0, 0.0));
+    line_to(&mut sq, point(10.0, 0.0));
+    line_to(&mut sq, point(10.0, 10.0));
+    line_to(&mut sq, point(0.0, 10.0));
+    line_to(&mut sq, point(0.0, 0.0));
+    close(&mut sq);
+    let o = stroke_to_path(&sq, 2.0, "butt", "miter", 4.0);
+
+    assert_eq!(subpaths(&o).len(), 8);
+    assert!(approx_eq(polygon_area(&o), -84.0));
 }
 
 #[test]

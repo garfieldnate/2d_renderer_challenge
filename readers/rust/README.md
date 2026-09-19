@@ -1,11 +1,13 @@
 # The 2D Renderer Challenge — Rust
 
-Chapters 1 (`The Canvas and the Color`) through 15 (`Dashes`), stdlib only.
+Chapters 1 (`The Canvas and the Color`) through 17 (`Rasterizing Type Well`),
+stdlib only. Chapter 16 needed a small hand-written JSON reader for the font
+file (`reference/chapter-16/roboto.json`); no crate was added for it.
 
 ## Build, test, render
 
 ```
-cargo test --release   # every scenario in features/, chapters 1-15
+cargo test --release   # every scenario in features/, chapters 1-17
 cargo run --release --bin render_all   # writes all renders (P3 + P6) to out/
 ```
 
@@ -22,23 +24,30 @@ That's it — `cargo build` alone also works if you just want the library to com
   sixteen blend modes, layers, paint servers (solid, three gradients,
   images), ordered dithering, resampling filters, mip pyramids, clips,
   soft masks, groups, `stroke_to_path` and its joins/caps/miter, curve
-  offsetting and curve stroking (chapter 14), and dashing (chapter 15),
-  plus every chapter's named figures/plates.
+  offsetting and curve stroking (chapter 14), dashing (chapter 15), a
+  hand-written JSON reader plus glyphs/contours/composites/the text matrix
+  (chapter 16), and quarter-pixel bitmaps/the glyph cache and atlas/stem
+  darkening/LCD subpixel rendering (chapter 17), plus every chapter's named
+  figures/plates.
 - `src/bin/render_all.rs` — renders every figure/plate to `out/`.
 - `tests/*.rs` — one test file per `features/*.feature` file (Gherkin
   scenarios translated 1:1 into `#[test]` functions; outlines expanded per
   row).
-- `reference/chapter-0{1..9}/*.ppm` and `reference/chapter-{10..15}/*.ppm`
-  — the book's reference images, compared against with
-  `max_channel_difference`. Note: `out/two-strokes.ppm`, `fold.ppm`,
-  `offsets.ppm` and `plate-14.ppm` (chapter 14) and `even-marks.ppm`,
-  `dash-strip.ppm`, `spiral-dashes.ppm` and `plate-15.ppm` (chapter 15)
-  all land in the same flat `out/` directory as every earlier chapter's
-  renders. Chapter 15's spiral render used to be named `spiral.ppm` and
-  collide with chapter 6's `spiral()` render of the same name; it's now
-  `spiral-dashes.ppm`, so there is no longer any filename collision across
-  the fifteen chapters. Every render is checked against its own
-  `reference/chapter-NN/` directory by the tests regardless.
+- `reference/chapter-0{1..9}/*.ppm`, `reference/chapter-{10..15}/*.ppm`,
+  `reference/chapter-16/roboto.json` (the font data) and
+  `reference/chapter-{16,17}/*.ppm` — the book's reference images (and, for
+  16 on, its font), compared against with `max_channel_difference`. Note:
+  `out/two-strokes.ppm`, `fold.ppm`, `offsets.ppm` and `plate-14.ppm`
+  (chapter 14) and `even-marks.ppm`, `dash-strip.ppm`, `spiral-dashes.ppm`
+  and `plate-15.ppm` (chapter 15) all land in the same flat `out/`
+  directory as every earlier chapter's renders. Chapter 15's spiral render
+  used to be named `spiral.ppm` and collide with chapter 6's `spiral()`
+  render of the same name; it's now `spiral-dashes.ppm`. Chapters 16 and 17
+  add `glyph.ppm`, `plate-16.ppm`, `composite.ppm`, `sizes.ppm`, `flip.ppm`,
+  `subpixels.ppm`, `smoothing.ppm`, `lcd.ppm` and `plate-17.ppm`, none of
+  which collide with an earlier chapter's names either. Every render is
+  checked against its own `reference/chapter-NN/` directory by the tests
+  regardless.
 
 `--release` matters here: chapter 2's brute-force `coverage()` samples 64
 points per pixel per disc, chapter 3's `thick_line` reuses that same
@@ -466,3 +475,140 @@ feature file) and chapter 15's phase flip (silent on scenarios that don't
 exercise a nonzero phase) — both undetected only by scenarios that were
 never testing the mutated behavior in the first place, not by a gap in
 coverage.
+
+## Chapter 13 catch-up (round 3)
+
+`features/chapter13-degenerate.feature` gained a scenario since the round
+above: a closed subpath whose last point duplicates its first (the reader
+wrote an explicit line back to the start before calling `close`, which
+every glyph contour in chapter 16 does) used to build a zero-length
+closing segment on top of the real one, whose direction is `0/0`.
+`stroke_to_path` now drops that duplicate last point before building
+segments, exactly as `chapter-13.html` §13.2's pseudo-code now spells out
+("if closed and pts ends where it began, drop that end too"). `degenerate.rs`
+gained the new scenario (a stroked closed square, checked by subpath count
+and `polygon_area`); every other chapter 1-15 test was already green and
+needed no changes.
+
+## Chapter 16 notes
+
+`load_font` reads the book's JSON schema through a small hand-written
+recursive-descent parser (`Json`/`JsonParser`, private to `src/lib.rs`):
+objects, arrays, strings, numbers and booleans, nothing more. `Font` holds
+`units_per_em`/`ascender`/`descender`/`line_gap`, `cmap` (`HashMap<String,
+String>`) and `glyphs` (`HashMap<String, Glyph>`); `Glyph` is `advance` plus
+`contours` (`Vec<Vec<(f64, f64, bool)>>`, the on-curve flag) and
+`components` (`Vec<Component>`, each a glyph name and a `[f64; 6]`
+transform). One wrinkle the schema doesn't spell out: the real font file
+writes the on-curve flag as a JSON boolean, but the chapter's own
+hand-written-font scenario writes `1`/`0` instead — `Json::as_flag` accepts
+either (see **Ambiguities** below).
+
+`implied_points` walks the loop once, pushing a midpoint between every
+consecutive off-curve pair (including the wrap from last to first), then
+rotates to start on an on-curve point. `contour_curves` turns that into
+chapter 8 quadratics, treating two consecutive on-curve points as a
+straight edge through their own midpoint. `component_matrix(t)` is
+`matrix3(t[0], t[2], t[4], t[1], t[3], t[5], 0, 0, 1)` — TrueType's
+`x' = a·x + c·y + dx` read into `matrix3`'s row-by-row constructor.
+`glyph_outline` recurses through components, transforming each one's
+curves through its own matrix; `glyph_bounds` unions `curve_bounds` (not
+the control box) over every quadratic, `(0, 0, 0, 0)` for an empty glyph.
+
+`text_matrix(font, size, x, y)` is `translation(x, y) * scaling(s, -s)`
+with `s = size / units_per_em` — the one and only flip, exactly as the
+chapter insists. `glyph_path`/`contour_path` transform each quadratic,
+flatten it in device space with chapter 8's `flatten_into_path`, and close
+each contour into its own subpath; no special-casing was needed for the
+"straight edge as a degenerate quadratic" trick since chapter 8's own
+Bezier math already treats a control point sitting on the chord as a line.
+
+`glyph_plate`/`plate_16`/`composite_demo`/`sizes`/`flip_trap` are ported
+straight from the chapter's own figure JS (visible in `chapter-16.html`'s
+embedded `<script>` — see **Prose problems** below): a paint buffer, hairline
+outlines via chapter 13's `stroke_to_path` at width 1 (or 1.5 for the
+off-curve circles), and small filled squares for on-curve points. All five
+chapter 16 renders (`glyph.ppm`, `plate-16.ppm`, `composite.ppm`,
+`sizes.ppm`, `flip.ppm`) diff 0 against `reference/chapter-16/` — not
+merely within tolerance.
+
+**A bug found and fixed while building `flip_trap`.** The horizontal
+baseline hairline was first built with chapter 5's `polygon(&[a, b])` —
+which always calls `close()`. A *closed* 2-point subpath doubles back on
+itself in `stroke_to_path`: `segs` gets both the forward edge and, because
+the subpath is closed, an explicit reverse edge back to the start, so the
+line rendered twice as wide (full coverage across two pixel rows instead
+of 0.5 coverage split across the two rows straddling it). The fix was
+building the line as an *open* two-point path (`move_to`/`line_to`, no
+`close`) — the same distinction chapter 13's own `chevron()` (never closed)
+and the plate's box outline (`polygon`, closed) already draw, but easy to
+blur when reaching for the shortest helper. `max_channel_difference` on
+`flip.ppm` caught it immediately (51, not ≤ 1); no unit scenario would
+have, since nothing in `chapter16-plate.feature` pins the hairline's own
+width directly.
+
+## Chapter 17 notes
+
+`SUBPIXELS = 4`; `subpixel_of(x)` splits `x` into a whole pixel and the
+nearest quarter (`floor((x - floor(x)) * 4 + 0.5)`, carrying into the next
+whole pixel when that rounds to 4 — including for a negative `x`, which
+the scenario pins directly). `Bitmap` is `{ coverage, width, height, left,
+top }`; `glyph_bitmap` sizes its buffer from `glyph_bounds` shifted by
+`subpixel / 4`, floored/ceilinged outward to whole pixels exactly as
+§17.1 describes, and returns a `0×0` bitmap for an empty glyph (`space`)
+without going through the general "at least 1 pixel" sizing rule that
+every other glyph gets. `paint_bitmap` is chapter 1's `mix_with` under a
+new name, looped over the bitmap's own footprint with an explicit bounds
+check before touching the canvas (unlike `write_pixel`, `pixel_at` panics
+outside its bounds rather than silently ignoring the read, so the check
+has to come first here).
+
+`GlyphCache` keys on `(name, size.to_bits(), subpixel)` — `f64` isn't
+`Hash`/`Eq`, so the size's bit pattern stands in for it, which is exact
+for the identical-`f64`-in, identical-`f64`-out case every scenario uses.
+`Atlas` packs shelves: a shelf is "empty" (`cursor_x == 0 && shelf_height
+== 0`) until its first bitmap sets the shelf's height for good; a bitmap
+that doesn't fit the current shelf (either dimension) closes it and opens
+a fresh one directly below, and only *that* new, still-empty shelf gets
+one more chance before giving up — which is what lets a too-wide bitmap
+(`40 × 5` against a `32`-wide atlas) return `None` without permanently
+"skipping" the shelf a `2 × 2` bitmap fits into right after. Reconstructing
+this rule from the scenario's seven `atlas_add` calls alone (rather than
+from any pseudo-code — the chapter gives none) took the most iteration of
+anything in these two chapters; see **Ambiguities**.
+
+`embolden` grows the glyph's own bounds by a pixel all round, fills the
+glyph normally, strokes its outline (chapter 13's `stroke_to_path`, round
+join and cap, the `amount` as width) into the same buffer, and adds the
+two coverages clamped to 1 — no new geometry beyond what chapters 7 and 13
+already provide. `LCD_TAPS = (1/3, 1/3, 1/3)`; `lcd_filter` pads both ends
+with zero (not the edge value — see **Mutation results**); `lcd_coverage`
+rasterizes through `scaling(3, 1) * text_matrix(...)` into a `3w`-wide
+buffer and filters every row; `paint_lcd` mixes each of a pixel's three
+channels through its own stripe's coverage, always in linear light (no
+`linear` flag — chapter 9/1's switch never enters an LCD renderer's
+picture). `pen_advance`/`draw_text` are one-liners; `draw_text` isn't
+pinned by name in any scenario, only used inside `smoothing_demo`.
+
+All four chapter 17 renders (`subpixels.ppm`, `smoothing.ppm`, `lcd.ppm`,
+`plate-17.ppm`) diff 0 against `reference/chapter-17/` — not merely within
+tolerance. No render in this chapter exercises the atlas or the cache at
+all; both are proven correct only by their own unit scenarios (see
+**Mutation results**, chapter 17 in `FEEDBACK.md`).
+
+## Mutation testing (chapters 16-17)
+
+Six deliberate bugs, tested and reverted; details and exact numbers are in
+`FEEDBACK.md`. Two are worth calling out here because they survived every
+render and every non-synthetic scenario, caught only by one hand-built
+unit scenario apiece: `implied_points` dropping the wrap-around
+off-curve/off-curve pair (none of Roboto's own glyphs happen to have one,
+so `plate16.rs` in full stayed green) and `component_matrix` with its `b`
+and `c` columns swapped (`eacute`'s only real transform in this font has
+`b = c = 0`, so the composite figures don't move at all). A third —
+`lcd_filter` padding with the edge value instead of zero — was caught by
+the filter's own direct scenario but by nothing that renders a real glyph,
+since no glyph's ink happens to reach column 0 or the last column of its
+LCD buffer in any pinned render. See `FEEDBACK.md` for the full list,
+including the two that render-diffs alone caught immediately (the
+double-flip and the atlas that never opens a new shelf).

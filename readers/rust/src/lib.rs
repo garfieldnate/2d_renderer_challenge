@@ -7,6 +7,7 @@
 
 use std::cell::Cell;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::fs;
 use std::ops::{Add, Div, Index, Mul, Neg, Sub};
 
@@ -4314,7 +4315,16 @@ pub fn stroke_to_path(p: &Path, width: f64, cap: &str, join: &str, miter_limit: 
         if sp.points.is_empty() {
             continue;
         }
-        let pts = dedupe_points(&sp.points);
+        let mut pts = dedupe_points(&sp.points);
+        // A closed subpath that ends where it began (the reader wrote an
+        // explicit line back to the start before calling `close`) has no
+        // zero-length closing segment: `closed` already implies the edge
+        // from the last point back to the first, so an explicit duplicate
+        // of the first point at the end would otherwise become a second,
+        // zero-length closing segment with an undefined direction.
+        if sp.closed && pts.len() > 2 && magnitude(pts[pts.len() - 1] - pts[0]) <= 1e-9 {
+            pts.pop();
+        }
         if pts.len() < 2 {
             let c = pts[0];
             match cap {
@@ -5344,4 +5354,960 @@ pub fn spiral_dashes() -> Canvas {
 /// Plate 15: `spiral_dashes`, magnified by 2.
 pub fn plate_15() -> Canvas {
     magnify(&spiral_dashes(), 2)
+}
+
+// =======================================================================
+// Chapter 16: What a Glyph Is
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// A tiny hand-written JSON reader, just enough for the font schema:
+// objects, arrays, strings, numbers and booleans. Nothing in this file's
+// schema ever uses `null`, but the parser accepts it anyway since it
+// costs nothing.
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+enum Json {
+    Bool(bool),
+    Number(f64),
+    Str(String),
+    Array(Vec<Json>),
+    Object(HashMap<String, Json>),
+}
+
+impl Json {
+    fn as_f64(&self) -> f64 {
+        match self {
+            Json::Number(n) => *n,
+            other => panic!("expected a number, found {other:?}"),
+        }
+    }
+    /// A point's on-curve flag: the book's own font file writes a JSON
+    /// boolean, but a hand-written font (chapter 16's own scenario) writes
+    /// `1`/`0`, so both are accepted -- any nonzero number counts as on.
+    fn as_flag(&self) -> bool {
+        match self {
+            Json::Bool(b) => *b,
+            Json::Number(n) => *n != 0.0,
+            other => panic!("expected a bool or a 0/1 number, found {other:?}"),
+        }
+    }
+    fn as_str(&self) -> &str {
+        match self {
+            Json::Str(s) => s,
+            other => panic!("expected a string, found {other:?}"),
+        }
+    }
+    fn as_array(&self) -> &[Json] {
+        match self {
+            Json::Array(a) => a,
+            other => panic!("expected an array, found {other:?}"),
+        }
+    }
+    fn as_object(&self) -> &HashMap<String, Json> {
+        match self {
+            Json::Object(o) => o,
+            other => panic!("expected an object, found {other:?}"),
+        }
+    }
+    fn get(&self, key: &str) -> &Json {
+        self.as_object().get(key).unwrap_or_else(|| panic!("missing key {key:?}"))
+    }
+}
+
+struct JsonParser<'a> {
+    chars: std::iter::Peekable<std::str::Chars<'a>>,
+}
+
+impl<'a> JsonParser<'a> {
+    fn new(s: &'a str) -> Self {
+        JsonParser { chars: s.chars().peekable() }
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.chars.peek(), Some(c) if c.is_whitespace()) {
+            self.chars.next();
+        }
+    }
+
+    fn expect_char(&mut self, expected: char) {
+        self.skip_ws();
+        let c = self.chars.next();
+        assert_eq!(c, Some(expected), "expected {expected:?}, found {c:?}");
+    }
+
+    fn expect_lit(&mut self, lit: &str) {
+        for expected in lit.chars() {
+            let c = self.chars.next().unwrap_or_else(|| panic!("expected literal {lit:?}"));
+            assert_eq!(c, expected, "expected literal {lit:?}");
+        }
+    }
+
+    fn parse_value(&mut self) -> Json {
+        self.skip_ws();
+        match self.chars.peek() {
+            Some('{') => self.parse_object(),
+            Some('[') => self.parse_array(),
+            Some('"') => Json::Str(self.parse_string()),
+            Some('t') => {
+                self.expect_lit("true");
+                Json::Bool(true)
+            }
+            Some('f') => {
+                self.expect_lit("false");
+                Json::Bool(false)
+            }
+            Some('n') => {
+                self.expect_lit("null");
+                Json::Bool(false) // never used by this schema
+            }
+            _ => self.parse_number(),
+        }
+    }
+
+    fn parse_object(&mut self) -> Json {
+        let mut map = HashMap::new();
+        self.expect_char('{');
+        self.skip_ws();
+        if self.chars.peek() == Some(&'}') {
+            self.chars.next();
+            return Json::Object(map);
+        }
+        loop {
+            self.skip_ws();
+            let key = self.parse_string();
+            self.expect_char(':');
+            let val = self.parse_value();
+            map.insert(key, val);
+            self.skip_ws();
+            match self.chars.next() {
+                Some(',') => continue,
+                Some('}') => break,
+                other => panic!("expected ',' or '}}', found {other:?}"),
+            }
+        }
+        Json::Object(map)
+    }
+
+    fn parse_array(&mut self) -> Json {
+        let mut arr = Vec::new();
+        self.expect_char('[');
+        self.skip_ws();
+        if self.chars.peek() == Some(&']') {
+            self.chars.next();
+            return Json::Array(arr);
+        }
+        loop {
+            let val = self.parse_value();
+            arr.push(val);
+            self.skip_ws();
+            match self.chars.next() {
+                Some(',') => continue,
+                Some(']') => break,
+                other => panic!("expected ',' or ']', found {other:?}"),
+            }
+        }
+        Json::Array(arr)
+    }
+
+    fn parse_string(&mut self) -> String {
+        self.skip_ws();
+        self.expect_char('"');
+        let mut s = String::new();
+        loop {
+            match self.chars.next() {
+                Some('"') => break,
+                Some('\\') => match self.chars.next() {
+                    Some('"') => s.push('"'),
+                    Some('\\') => s.push('\\'),
+                    Some('/') => s.push('/'),
+                    Some('n') => s.push('\n'),
+                    Some('t') => s.push('\t'),
+                    Some('r') => s.push('\r'),
+                    Some('b') => s.push('\u{8}'),
+                    Some('f') => s.push('\u{c}'),
+                    Some('u') => {
+                        let hex: String = (0..4)
+                            .map(|_| self.chars.next().unwrap_or_else(|| panic!("bad \\u escape")))
+                            .collect();
+                        let code = u32::from_str_radix(&hex, 16).unwrap_or_else(|_| panic!("bad \\u escape {hex:?}"));
+                        if let Some(c) = char::from_u32(code) {
+                            s.push(c);
+                        }
+                    }
+                    other => panic!("bad escape {other:?}"),
+                },
+                Some(c) => s.push(c),
+                None => panic!("unterminated string"),
+            }
+        }
+        s
+    }
+
+    fn parse_number(&mut self) -> Json {
+        self.skip_ws();
+        let mut s = String::new();
+        if self.chars.peek() == Some(&'-') {
+            s.push(self.chars.next().unwrap());
+        }
+        while let Some(&c) = self.chars.peek() {
+            if c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-' {
+                s.push(c);
+                self.chars.next();
+            } else {
+                break;
+            }
+        }
+        Json::Number(s.parse().unwrap_or_else(|_| panic!("bad number {s:?}")))
+    }
+}
+
+fn parse_json(text: &str) -> Json {
+    let mut p = JsonParser::new(text);
+    p.parse_value()
+}
+
+// ---------------------------------------------------------------------
+// § 16.1 The font file
+// ---------------------------------------------------------------------
+
+/// One component of a composite glyph: another glyph's name, placed
+/// through a six-number transform `[a, b, c, d, dx, dy]` that TrueType
+/// applies as `x' = a*x + c*y + dx`, `y' = b*x + d*y + dy`.
+#[derive(Debug, Clone)]
+pub struct Component {
+    pub glyph: String,
+    pub transform: [f64; 6],
+}
+
+/// A glyph's own contours (each a closed loop of `(x, y, on_curve)`
+/// points in font units, y up) plus, for a composite, the other glyphs
+/// it's built from. A glyph with contours has no components and vice
+/// versa, but nothing enforces that; both are simply empty when unused.
+#[derive(Debug, Clone)]
+pub struct Glyph {
+    pub advance: f64,
+    pub contours: Vec<Vec<(f64, f64, bool)>>,
+    pub components: Vec<Component>,
+}
+
+/// A font: vertical metrics in font units, a codepoint-to-name `cmap`,
+/// and every glyph by name. `units_per_em` is the design grid every
+/// coordinate in the file is a whole number on.
+#[derive(Debug, Clone)]
+pub struct Font {
+    pub units_per_em: f64,
+    pub ascender: f64,
+    pub descender: f64,
+    pub line_gap: f64,
+    pub cmap: HashMap<String, String>,
+    pub glyphs: HashMap<String, Glyph>,
+}
+
+/// Reads the book's JSON font schema: `units_per_em`/`ascender`/
+/// `descender`/`line_gap` in font units, `cmap` (codepoint string to
+/// glyph name), and `glyphs` by name. `kern` and `ligatures` arrive in
+/// later chapters and aren't read here.
+pub fn load_font<T: AsRef<[u8]>>(data: T) -> Font {
+    let text = std::str::from_utf8(data.as_ref()).expect("font JSON is not valid UTF-8");
+    let root = parse_json(text);
+
+    let units_per_em = root.get("units_per_em").as_f64();
+    let ascender = root.get("ascender").as_f64();
+    let descender = root.get("descender").as_f64();
+    let line_gap = root.get("line_gap").as_f64();
+
+    let mut cmap = HashMap::new();
+    for (k, v) in root.get("cmap").as_object() {
+        cmap.insert(k.clone(), v.as_str().to_string());
+    }
+
+    let mut glyphs = HashMap::new();
+    for (name, g) in root.get("glyphs").as_object() {
+        let advance = g.get("advance").as_f64();
+        let mut contours = Vec::new();
+        for contour in g.get("contours").as_array() {
+            let mut pts = Vec::new();
+            for pt in contour.as_array() {
+                let arr = pt.as_array();
+                pts.push((arr[0].as_f64(), arr[1].as_f64(), arr[2].as_flag()));
+            }
+            contours.push(pts);
+        }
+        let mut components = Vec::new();
+        for comp in g.get("components").as_array() {
+            let glyph_name = comp.get("glyph").as_str().to_string();
+            let t = comp.get("transform").as_array();
+            let transform =
+                [t[0].as_f64(), t[1].as_f64(), t[2].as_f64(), t[3].as_f64(), t[4].as_f64(), t[5].as_f64()];
+            components.push(Component { glyph: glyph_name, transform });
+        }
+        glyphs.insert(name.clone(), Glyph { advance, contours, components });
+    }
+
+    Font { units_per_em, ascender, descender, line_gap, cmap, glyphs }
+}
+
+/// Looks a character up in the font's `cmap`; `.notdef` for one the font
+/// doesn't have.
+pub fn glyph_name(font: &Font, codepoint: i64) -> String {
+    font.cmap.get(&codepoint.to_string()).cloned().unwrap_or_else(|| ".notdef".to_string())
+}
+
+pub fn glyph_advance(font: &Font, name: &str) -> f64 {
+    font.glyphs.get(name).unwrap_or_else(|| panic!("no such glyph {name:?}")).advance
+}
+
+pub fn glyph_count(font: &Font) -> usize {
+    font.glyphs.len()
+}
+
+// ---------------------------------------------------------------------
+// § 16.2 Contours, and the points that aren't there
+// ---------------------------------------------------------------------
+
+/// Makes every implied on-curve point explicit -- one at the midpoint of
+/// every pair of consecutive off-curve points, the loop wrapping so the
+/// last and first count as consecutive too -- and rotates the result to
+/// start on an on-curve point.
+pub fn implied_points(contour: &[(f64, f64, bool)]) -> Vec<(f64, f64, bool)> {
+    let n = contour.len();
+    let mut out: Vec<(f64, f64, bool)> = Vec::with_capacity(n + 1);
+    for i in 0..n {
+        let cur = contour[i];
+        let nxt = contour[(i + 1) % n];
+        out.push(cur);
+        if !cur.2 && !nxt.2 {
+            out.push(((cur.0 + nxt.0) / 2.0, (cur.1 + nxt.1) / 2.0, true));
+        }
+    }
+    if let Some(k) = out.iter().position(|p| p.2) {
+        let mut rotated = out[k..].to_vec();
+        rotated.extend_from_slice(&out[..k]);
+        rotated
+    } else {
+        out
+    }
+}
+
+/// The loop as quadratics: from each on-curve point through the
+/// off-curve point after it to the next on-curve point, or -- for two
+/// on-curve points in a row -- a straight edge written as a quadratic
+/// through their own midpoint, the same line exactly.
+pub fn contour_curves(contour: &[(f64, f64, bool)]) -> Vec<Curve> {
+    let pts = implied_points(contour);
+    let n = pts.len();
+    let mut curves = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let a = pts[i];
+        let b = pts[(i + 1) % n];
+        if b.2 {
+            let mid = point((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+            curves.push(quadratic(point(a.0, a.1), mid, point(b.0, b.1)));
+            i += 1;
+        } else {
+            let c = pts[(i + 2) % n];
+            curves.push(quadratic(point(a.0, a.1), point(b.0, b.1), point(c.0, c.1)));
+            i += 2;
+        }
+    }
+    curves
+}
+
+// ---------------------------------------------------------------------
+// § 16.3 Composites
+// ---------------------------------------------------------------------
+
+/// A component's six-number transform as a `matrix3`: TrueType's
+/// `x' = a*x + c*y + dx`, `y' = b*x + d*y + dy` in the letters-by-row
+/// arrangement `matrix3` expects.
+pub fn component_matrix(t: [f64; 6]) -> Matrix3 {
+    matrix3(t[0], t[2], t[4], t[1], t[3], t[5], 0.0, 0.0, 1.0)
+}
+
+/// Every contour of a glyph as quadratics, in font units, components
+/// included: each component's own outline recursively, taken through its
+/// matrix.
+pub fn glyph_outline(font: &Font, name: &str) -> Vec<Vec<Curve>> {
+    let g = font.glyphs.get(name).unwrap_or_else(|| panic!("no such glyph {name:?}"));
+    let mut out: Vec<Vec<Curve>> = g.contours.iter().map(|c| contour_curves(c)).collect();
+    for comp in &g.components {
+        let m = component_matrix(comp.transform);
+        for contour in glyph_outline(font, &comp.glyph) {
+            out.push(contour.iter().map(|c| transform_curve(c, m)).collect());
+        }
+    }
+    out
+}
+
+/// The tight box of the outline, from `curve_bounds` on every quadratic
+/// -- not the box of the control points. An empty glyph's is
+/// `(0, 0, 0, 0)`.
+pub fn glyph_bounds(font: &Font, name: &str) -> (f64, f64, f64, f64) {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut any = false;
+    for contour in glyph_outline(font, name) {
+        for c in &contour {
+            any = true;
+            let (x0, y0, x1, y1) = curve_bounds(c);
+            min_x = min_x.min(x0);
+            min_y = min_y.min(y0);
+            max_x = max_x.max(x1);
+            max_y = max_y.max(y1);
+        }
+    }
+    if !any {
+        (0.0, 0.0, 0.0, 0.0)
+    } else {
+        (min_x, min_y, max_x, max_y)
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 16.4 The flip, in one place
+// ---------------------------------------------------------------------
+
+/// The one place fonts' y-up, baseline-origin coordinates turn into the
+/// canvas's y-down, corner-origin ones: scale by `size / units_per_em`
+/// with the y scale negated, then put the glyph's origin at `(x, y)`.
+pub fn text_matrix(font: &Font, size: f64, x: f64, y: f64) -> Matrix3 {
+    let s = size / font.units_per_em;
+    translation(x, y) * scaling(s, -s)
+}
+
+/// One contour of a glyph as a closed subpath: every quadratic through
+/// `m`, flattened in device space at `tolerance`.
+pub fn contour_path(font: &Font, name: &str, i: usize, m: Matrix3, tolerance: f64) -> Path {
+    let outline = glyph_outline(font, name);
+    let contour = &outline[i];
+    let mut p = path();
+    for c in contour {
+        let tc = transform_curve(c, m);
+        flatten_into_path(&mut p, &tc, tolerance);
+    }
+    close(&mut p);
+    p
+}
+
+/// A glyph's whole outline as a path: one closed subpath per contour.
+pub fn glyph_path(font: &Font, name: &str, m: Matrix3, tolerance: f64) -> Path {
+    let mut p = path();
+    for contour in glyph_outline(font, name) {
+        for c in &contour {
+            let tc = transform_curve(c, m);
+            flatten_into_path(&mut p, &tc, tolerance);
+        }
+        close(&mut p);
+    }
+    p
+}
+
+// ---------------------------------------------------------------------
+// § 16.5 Putting it together
+// ---------------------------------------------------------------------
+
+const CH16_PAPER: Color = Color { red: 0.02, green: 0.02, blue: 0.025 };
+const CH16_GRAY: Color = Color { red: 0.62, green: 0.62, blue: 0.66 };
+const CH16_DIM: Color = Color { red: 0.3, green: 0.3, blue: 0.34 };
+const CH16_MAGENTA: Color = Color { red: 0.85, green: 0.2, blue: 0.55 };
+const CH16_CYAN: Color = Color { red: 0.2, green: 0.75, blue: 0.9 };
+const CH16_INKS: [Color; 3] = [
+    Color { red: 0.9, green: 0.55, blue: 0.1 },
+    Color { red: 0.2, green: 0.55, blue: 0.85 },
+    Color { red: 0.85, green: 0.25, blue: 0.3 },
+];
+
+fn ch16_load_font() -> Font {
+    load_font(read_file("reference/chapter-16/roboto.json"))
+}
+
+fn paint_fill_path(c: &mut Canvas, p: &Path, rule: &str, col: Color) {
+    let cov = fill_path(p, rule, c.width, c.height);
+    paint_through(c, &cov, col);
+}
+
+fn paint_hairline(c: &mut Canvas, p: &Path, width: f64, col: Color) {
+    let outline = stroke_to_path(p, width, "butt", "round", 4.0);
+    paint_fill_path(c, &outline, "nonzero", col);
+}
+
+fn tiny_square(q: Tuple, half: f64) -> Path {
+    polygon(&[
+        point(q.x - half, q.y - half),
+        point(q.x + half, q.y - half),
+        point(q.x + half, q.y + half),
+        point(q.x - half, q.y + half),
+    ])
+}
+
+/// The plate's letter `a`, filled, with its control polygon and points
+/// drawn over it: on-curve points as filled squares, off-curve points as
+/// hollow circles, implied on-curve points as smaller squares.
+pub fn glyph_plate() -> Canvas {
+    let font = ch16_load_font();
+    let mut c = canvas(320, 320);
+    fill(&mut c, CH16_PAPER);
+    let m = text_matrix(&font, 300.0, 40.0, 250.0);
+
+    paint_fill_path(&mut c, &glyph_path(&font, "a", m, 0.1), "nonzero", CH16_GRAY);
+
+    let contours = &font.glyphs["a"].contours;
+    for contour in contours {
+        let pts: Vec<Tuple> = contour.iter().map(|&(x, y, _)| m * point(x, y)).collect();
+        let poly = polygon(&pts);
+        paint_hairline(&mut c, &poly, 1.0, CH16_DIM);
+    }
+    for contour in contours {
+        let explicit: std::collections::HashSet<(i64, i64)> =
+            contour.iter().map(|&(x, y, _)| ((x * 1000.0).round() as i64, (y * 1000.0).round() as i64)).collect();
+        for (x, y, on) in implied_points(contour) {
+            let q = m * point(x, y);
+            if !on {
+                paint_hairline(&mut c, &circle_path(q.x, q.y, 4.0, 24), 1.5, CH16_MAGENTA);
+            } else if explicit.contains(&((x * 1000.0).round() as i64, (y * 1000.0).round() as i64)) {
+                paint_fill_path(&mut c, &tiny_square(q, 3.0), "nonzero", CH16_CYAN);
+            } else {
+                paint_fill_path(&mut c, &tiny_square(q, 2.0), "nonzero", CH16_CYAN);
+            }
+        }
+    }
+    c
+}
+
+/// Plate 16: `glyph_plate`, magnified by 2.
+pub fn plate_16() -> Canvas {
+    magnify(&glyph_plate(), 2)
+}
+
+/// `eacute`'s two components, each in its own ink, with `glyph_bounds`
+/// drawn as a hairline box.
+pub fn composite_demo() -> Canvas {
+    let font = ch16_load_font();
+    let mut c = canvas(240, 240);
+    fill(&mut c, CH16_PAPER);
+    let m = text_matrix(&font, 240.0, 50.0, 190.0);
+
+    let components = font.glyphs["eacute"].components.clone();
+    for (k, comp) in components.iter().enumerate() {
+        let cm = m * component_matrix(comp.transform);
+        paint_fill_path(&mut c, &glyph_path(&font, &comp.glyph, cm, 0.1), "nonzero", CH16_INKS[k % 3]);
+    }
+
+    let bb = glyph_bounds(&font, "eacute");
+    let a = m * point(bb.0, bb.1);
+    let b = m * point(bb.2, bb.3);
+    let box_path = polygon(&[point(a.x, a.y), point(b.x, a.y), point(b.x, b.y), point(a.x, b.y)]);
+    paint_hairline(&mut c, &box_path, 1.0, CH16_MAGENTA);
+    c
+}
+
+/// `g` at 12, 24, 48 and 96 pixels on one baseline.
+pub fn sizes() -> Canvas {
+    let font = ch16_load_font();
+    let mut c = canvas(240, 120);
+    fill(&mut c, CH16_PAPER);
+    let mut x = 8.0;
+    for &size in &[12.0, 24.0, 48.0, 96.0] {
+        let m = text_matrix(&font, size, x, 80.0);
+        paint_fill_path(&mut c, &glyph_path(&font, "g", m, 0.1), "nonzero", CH16_GRAY);
+        x += glyph_advance(&font, "g") * size / font.units_per_em + 8.0;
+    }
+    c
+}
+
+/// `R` through `text_matrix` on the left, through a scale that forgot to
+/// turn y over on the right.
+pub fn flip_trap() -> Canvas {
+    let font = ch16_load_font();
+    let w = 120;
+    let h = 120;
+    let mut left = canvas(w, h);
+    fill(&mut left, CH16_PAPER);
+    let mut right = canvas(w, h);
+    fill(&mut right, CH16_PAPER);
+
+    let good = text_matrix(&font, 60.0, 35.0, 60.0);
+    paint_fill_path(&mut left, &glyph_path(&font, "R", good, 0.1), "nonzero", CH16_GRAY);
+
+    let s = 60.0 / font.units_per_em;
+    let bad = translation(35.0, 60.0) * scaling(s, s);
+    paint_fill_path(&mut right, &glyph_path(&font, "R", bad, 0.1), "nonzero", CH16_MAGENTA);
+
+    for canv in [&mut left, &mut right] {
+        let mut line = path();
+        move_to(&mut line, point(0.0, 60.0));
+        line_to(&mut line, point(w as f64, 60.0));
+        paint_hairline(canv, &line, 1.0, CH16_DIM);
+    }
+    side_by_side(&left, &right)
+}
+
+// =======================================================================
+// Chapter 17: Rasterizing Type Well
+// =======================================================================
+
+const SUBPIXELS: i64 = 4;
+
+// ---------------------------------------------------------------------
+// § 17.1 A quarter of a pixel
+// ---------------------------------------------------------------------
+
+/// Splits a pen position into a whole pixel and one of four quarters,
+/// the fraction rounded to the nearest quarter and carried into the next
+/// pixel when it rounds all the way up.
+pub fn subpixel_of(x: f64) -> (i64, i64) {
+    let whole = x.floor();
+    let frac = x - whole;
+    let q = ((frac * SUBPIXELS as f64) + 0.5).floor() as i64;
+    if q == SUBPIXELS {
+        (whole as i64 + 1, 0)
+    } else {
+        (whole as i64, q)
+    }
+}
+
+/// A glyph's coverage in a buffer of its own, no bigger than it needs,
+/// plus the buffer's top-left corner relative to the pen.
+#[derive(Debug, Clone)]
+pub struct Bitmap {
+    pub coverage: CoverageBuffer,
+    pub width: usize,
+    pub height: usize,
+    pub left: i64,
+    pub top: i64,
+}
+
+pub fn bitmap(coverage: CoverageBuffer, left: i64, top: i64) -> Bitmap {
+    let width = coverage.width;
+    let height = coverage.height;
+    Bitmap { coverage, width, height, left, top }
+}
+
+/// Renders the glyph with its origin at `x = subpixel / 4` into a
+/// coverage buffer just big enough for it: columns `floor(xmin)` to
+/// `ceil(xmax) - 1` of its device bounds shifted by that quarter, rows
+/// `floor(-ymax)` to `ceil(-ymin) - 1`.
+pub fn glyph_bitmap(font: &Font, name: &str, size: f64, subpixel: i64) -> Bitmap {
+    let s = size / font.units_per_em;
+    let bb = glyph_bounds(font, name);
+    if bb == (0.0, 0.0, 0.0, 0.0) {
+        return Bitmap { coverage: coverage_buffer(0, 0), width: 0, height: 0, left: 0, top: 0 };
+    }
+    let dx = subpixel as f64 / SUBPIXELS as f64;
+    let left = (bb.0 * s + dx).floor() as i64;
+    let right = (bb.2 * s + dx).ceil() as i64;
+    let top = (-bb.3 * s).floor() as i64;
+    let bottom = (-bb.1 * s).ceil() as i64;
+    let w = (right - left).max(1) as usize;
+    let h = (bottom - top).max(1) as usize;
+    let m = text_matrix(font, size, dx - left as f64, -(top as f64));
+    let p = glyph_path(font, name, m, 0.1);
+    let cov = fill_path(&p, "nonzero", w, h);
+    Bitmap { coverage: cov, width: w, height: h, left, top }
+}
+
+/// Composites a bitmap with its pen at whole pixel `(x, y)`: each covered
+/// pixel mixed toward `col` by that pixel's coverage, through chapter 1's
+/// switch.
+pub fn paint_bitmap(c: &mut Canvas, b: &Bitmap, x: i64, y: i64, col: Color, linear: bool) {
+    for j in 0..b.height as i64 {
+        for i in 0..b.width as i64 {
+            let k = coverage_at(&b.coverage, i, j);
+            if k > 0.0 {
+                let px = x + b.left + i;
+                let py = y + b.top + j;
+                if px >= 0 && py >= 0 && (px as usize) < c.width && (py as usize) < c.height {
+                    let old = pixel_at(c, px, py);
+                    write_pixel(c, px, py, mix_with(old, col, k, linear));
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 17.2 The cache and the atlas
+// ---------------------------------------------------------------------
+
+/// Bitmaps keyed by `(glyph name, size, subpixel)`: rendered on the first
+/// request, handed back unchanged after.
+#[derive(Debug, Clone, Default)]
+pub struct GlyphCache {
+    entries: HashMap<(String, u64, i64), Bitmap>,
+}
+
+pub fn glyph_cache() -> GlyphCache {
+    GlyphCache { entries: HashMap::new() }
+}
+
+pub fn cached_bitmap(cache: &mut GlyphCache, font: &Font, name: &str, size: f64, subpixel: i64) -> Bitmap {
+    let key = (name.to_string(), size.to_bits(), subpixel);
+    if let Some(b) = cache.entries.get(&key) {
+        return b.clone();
+    }
+    let b = glyph_bitmap(font, name, size, subpixel);
+    cache.entries.insert(key, b.clone());
+    b
+}
+
+pub fn cache_size(cache: &GlyphCache) -> usize {
+    cache.entries.len()
+}
+
+/// One big coverage buffer bitmaps are packed into, shelf by shelf:
+/// bitmaps go left to right along a shelf whose height is set by its
+/// first bitmap; when the next one doesn't fit, a new shelf opens below
+/// the one just closed.
+#[derive(Debug, Clone)]
+pub struct Atlas {
+    pub coverage: CoverageBuffer,
+    pub width: usize,
+    pub height: usize,
+    shelf_top: usize,
+    shelf_height: usize,
+    cursor_x: usize,
+}
+
+pub fn atlas(width: usize, height: usize) -> Atlas {
+    Atlas { coverage: coverage_buffer(width, height), width, height, shelf_top: 0, shelf_height: 0, cursor_x: 0 }
+}
+
+/// Copies `b`'s coverage into the atlas and answers where its top-left
+/// corner landed, or `None` when there's no room: too wide ever, or too
+/// tall for what's left below the current shelf.
+pub fn atlas_add(a: &mut Atlas, b: &Bitmap) -> Option<(usize, usize)> {
+    loop {
+        let shelf_empty = a.cursor_x == 0 && a.shelf_height == 0;
+        if shelf_empty {
+            if b.width <= a.width && a.shelf_top + b.height <= a.height {
+                let pos = (0, a.shelf_top);
+                atlas_blit(a, b, pos.0, pos.1);
+                a.shelf_height = b.height;
+                a.cursor_x = b.width;
+                return Some(pos);
+            } else {
+                return None;
+            }
+        } else if a.cursor_x + b.width <= a.width && b.height <= a.shelf_height {
+            let pos = (a.cursor_x, a.shelf_top);
+            atlas_blit(a, b, pos.0, pos.1);
+            a.cursor_x += b.width;
+            return Some(pos);
+        } else {
+            a.shelf_top += a.shelf_height;
+            a.shelf_height = 0;
+            a.cursor_x = 0;
+        }
+    }
+}
+
+fn atlas_blit(a: &mut Atlas, b: &Bitmap, x0: usize, y0: usize) {
+    for j in 0..b.height as i64 {
+        for i in 0..b.width as i64 {
+            let v = coverage_at(&b.coverage, i, j);
+            set_coverage(&mut a.coverage, x0 as i64 + i, y0 as i64 + j, v);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 17.3 The fudge, named
+// ---------------------------------------------------------------------
+
+/// Stem darkening: the glyph's fill plus chapter 13's stroke of its own
+/// outline, `amount` wide, the two coverages added and clamped to 1, in
+/// a bitmap grown a pixel all round to make room.
+pub fn embolden(font: &Font, name: &str, size: f64, amount: f64) -> Bitmap {
+    let s = size / font.units_per_em;
+    let bb = glyph_bounds(font, name);
+    let left = (bb.0 * s).floor() as i64 - 1;
+    let top = (-bb.3 * s).floor() as i64 - 1;
+    let w = ((bb.2 * s).ceil() as i64 + 1 - left) as usize;
+    let h = ((-bb.1 * s).ceil() as i64 + 1 - top) as usize;
+    let m = text_matrix(font, size, -(left as f64), -(top as f64));
+    let p = glyph_path(font, name, m, 0.1);
+    let fill_cov = fill_path(&p, "nonzero", w, h);
+    let stroked = stroke_to_path(&p, amount, "butt", "round", 4.0);
+    let edge_cov = fill_path(&stroked, "nonzero", w, h);
+    let mut cov = coverage_buffer(w, h);
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            let v = (coverage_at(&fill_cov, x, y) + coverage_at(&edge_cov, x, y)).min(1.0);
+            set_coverage(&mut cov, x, y, v);
+        }
+    }
+    Bitmap { coverage: cov, width: w, height: h, left, top }
+}
+
+// ---------------------------------------------------------------------
+// § 17.4 Three coverages per pixel
+// ---------------------------------------------------------------------
+
+pub const LCD_TAPS: (f64, f64, f64) = (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+
+/// Replaces every value with the average of itself and its two
+/// neighbors, zero beyond the ends: three taps that sum to one, so ink
+/// spreads across neighboring stripes but is never lost.
+pub fn lcd_filter(v: &[f64]) -> Vec<f64> {
+    let n = v.len();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let a = if i > 0 { v[i - 1] } else { 0.0 };
+        let b = v[i];
+        let c = if i + 1 < n { v[i + 1] } else { 0.0 };
+        out.push(LCD_TAPS.0 * a + LCD_TAPS.1 * b + LCD_TAPS.2 * c);
+    }
+    out
+}
+
+/// The glyph rasterized three times wider -- one coverage per LCD
+/// stripe -- into a buffer `3w` wide and `h` tall, every row run through
+/// `lcd_filter`.
+pub fn lcd_coverage(font: &Font, name: &str, size: f64, x: f64, y: f64, w: usize, h: usize) -> CoverageBuffer {
+    let m = scaling(3.0, 1.0) * text_matrix(font, size, x, y);
+    let p = glyph_path(font, name, m, 0.1);
+    let raw = fill_path(&p, "nonzero", 3 * w, h);
+    let mut out = coverage_buffer(3 * w, h);
+    for row in 0..h as i64 {
+        let vals: Vec<f64> = (0..(3 * w) as i64).map(|x| coverage_at(&raw, x, row)).collect();
+        let filtered = lcd_filter(&vals);
+        for (x, v) in filtered.into_iter().enumerate() {
+            set_coverage(&mut out, x as i64, row, v);
+        }
+    }
+    out
+}
+
+/// Composites a 3-wide-per-pixel coverage buffer: red through the first
+/// stripe of each pixel, green the second, blue the third, each channel
+/// mixed on its own, always in linear light.
+pub fn paint_lcd(c: &mut Canvas, cov3: &CoverageBuffer, col: Color) {
+    let w = cov3.width / 3;
+    let h = cov3.height;
+    for y in 0..h.min(c.height) as i64 {
+        for x in 0..w.min(c.width) as i64 {
+            let kr = coverage_at(cov3, 3 * x, y);
+            let kg = coverage_at(cov3, 3 * x + 1, y);
+            let kb = coverage_at(cov3, 3 * x + 2, y);
+            if kr > 0.0 || kg > 0.0 || kb > 0.0 {
+                let old = pixel_at(c, x, y);
+                let mixed = color(
+                    old.red + (col.red - old.red) * kr,
+                    old.green + (col.green - old.green) * kg,
+                    old.blue + (col.blue - old.blue) * kb,
+                );
+                write_pixel(c, x, y, mixed);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 17.5 Putting it together
+// ---------------------------------------------------------------------
+
+/// A glyph's advance in pixels, at `size`.
+pub fn pen_advance(font: &Font, name: &str, size: f64) -> f64 {
+    glyph_advance(font, name) * size / font.units_per_em
+}
+
+/// Steps the pen across `text`, each glyph painted at its nearest
+/// quarter pixel; returns the pen's final position.
+pub fn draw_text(c: &mut Canvas, font: &Font, text: &str, size: f64, x: f64, y: f64, col: Color, linear: bool) -> f64 {
+    let mut pen = x;
+    for ch in text.chars() {
+        let name = glyph_name(font, ch as i64);
+        let (whole, sub) = subpixel_of(pen);
+        let b = glyph_bitmap(font, &name, size, sub);
+        paint_bitmap(c, &b, whole, y.floor() as i64, col, linear);
+        pen += pen_advance(font, &name, size);
+    }
+    pen
+}
+
+fn ch17_load_font() -> Font {
+    load_font(read_file("reference/chapter-16/roboto.json"))
+}
+
+const CH17_WHITE: Color = Color { red: 1.0, green: 1.0, blue: 1.0 };
+const CH17_BLACK: Color = Color { red: 0.0, green: 0.0, blue: 0.0 };
+
+/// The same stem (`l`) at four quarters, side by side, magnified by 8.
+pub fn subpixel_strip() -> Canvas {
+    let font = ch17_load_font();
+    let mut panels: Vec<Canvas> = Vec::new();
+    for k in 0..4 {
+        let mut b = canvas(10, 14);
+        fill(&mut b, CH17_WHITE);
+        let (whole, sub) = subpixel_of(4.0 + (k as f64) / 4.0);
+        let bm = glyph_bitmap(&font, "l", 11.0, sub);
+        paint_bitmap(&mut b, &bm, whole, 11, CH17_BLACK, true);
+        panels.push(b);
+    }
+    let left = side_by_side(&panels[0], &panels[1]);
+    let right = side_by_side(&panels[2], &panels[3]);
+    let row = side_by_side(&left, &right);
+    magnify(&row, 8)
+}
+
+/// "Hamburg" at 11 pixels three ways: linear light, encoded-space
+/// blending, and linear light with the stems emboldened by a third of a
+/// pixel. Magnified by 4.
+pub fn smoothing_demo() -> Canvas {
+    let font = ch17_load_font();
+    let mut c = canvas(72, 42);
+    fill(&mut c, CH17_WHITE);
+    draw_text(&mut c, &font, "Hamburg", 11.0, 2.0, 11.0, CH17_BLACK, true);
+    draw_text(&mut c, &font, "Hamburg", 11.0, 2.0, 25.0, CH17_BLACK, false);
+
+    let mut pen = 2.0;
+    for ch in "Hamburg".chars() {
+        let name = glyph_name(&font, ch as i64);
+        let (whole, sub) = subpixel_of(pen);
+        let _ = sub; // embolden always renders at subpixel 0
+        let b = embolden(&font, &name, 11.0, 1.0 / 3.0);
+        paint_bitmap(&mut c, &b, whole, 39, CH17_BLACK, true);
+        pen += pen_advance(&font, &name, 11.0);
+    }
+    magnify(&c, 4)
+}
+
+/// `ea` at 13 pixels twice: grayscale above, LCD below. Magnified by 6.
+pub fn lcd_plate() -> Canvas {
+    let font = ch17_load_font();
+    let w = 24;
+    let h = 16;
+    let mut top = canvas(w, h);
+    fill(&mut top, CH17_WHITE);
+    let mut bottom = canvas(w, h);
+    fill(&mut bottom, CH17_WHITE);
+
+    let mut pen = 2.0;
+    for ch in "ea".chars() {
+        let name = glyph_name(&font, ch as i64);
+        let m = text_matrix(&font, 13.0, pen, 12.0);
+        paint_fill_path(&mut top, &glyph_path(&font, &name, m, 0.1), "nonzero", CH17_BLACK);
+        let cov3 = lcd_coverage(&font, &name, 13.0, pen, 12.0, w, h);
+        paint_lcd(&mut bottom, &cov3, CH17_BLACK);
+        pen += pen_advance(&font, &name, 13.0);
+    }
+
+    let mut stacked = canvas(w, 2 * h);
+    for y in 0..h {
+        for x in 0..w {
+            write_pixel(&mut stacked, x as i64, y as i64, pixel_at(&top, x as i64, y as i64));
+            write_pixel(&mut stacked, x as i64, (h + y) as i64, pixel_at(&bottom, x as i64, y as i64));
+        }
+    }
+    magnify(&stacked, 6)
+}
+
+/// Plate 17: `lcd_plate`, magnified by 2.
+pub fn plate_17() -> Canvas {
+    magnify(&lcd_plate(), 2)
 }
