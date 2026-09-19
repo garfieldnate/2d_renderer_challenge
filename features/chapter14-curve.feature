@@ -6,10 +6,11 @@ Feature: The offset curve
   sixteen halvings deep. offset_distance_error(c, d, tolerance) is the honest
   check: how far 100 points spread along the result stray from distance |d|
   to the curve. The points are u = i / 99 times the number of pieces for
-  i = 0 to 99, each taken on piece floor(u) at parameter u - floor(u) (the
-  last on the last piece at 1). On the outside of a bend it stays within tolerance. On the
-  inside, past the radius, the offset folds back through itself and comes
-  much closer than d: that is the fold, and it is not an error in the fit.
+  i = 0 to 99, each taken on piece floor(u) at parameter u - floor(u), the
+  last on the last piece at 1. On the outside of a bend it stays within
+  tolerance. On the inside, past the radius, the offset folds back through
+  itself and comes much closer than d: that is the fold, and it is not an
+  error in the fit.
 
   Scenario: A piece of a curve between two parameters
     Given c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
