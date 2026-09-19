@@ -179,7 +179,7 @@ def evaluate_expression(expr_str, ctx):
             'Canvas': renderer.Canvas,
             'encode': renderer.encode,
             'decode': renderer.decode,
-            'round': round,
+            'round': renderer.round_half_up,
             'length': len,
             'true': True,
             'false': False,

@@ -4354,18 +4354,18 @@ _COOL = [color(0.35, 0.8, 0.9), color(0.25, 0.6, 0.9),
 
 def _outline_panel(outline_path, rule):
     """Fill an outline path under a rule in gray and draw its edges in
-    magenta over it -- one panel of the offset plates. Endpoint pixels use
-    Python's own round-half-to-even (not chapter 1's round_half_up): the
-    swallowtail tip of a symmetric offset lands exactly on a half-integer
-    row, and that's the convention the reference render resolves the tie
-    with."""
+    magenta over it -- one panel of the offset plates. Endpoint pixels are
+    rounded to the nearest pixel with halves up (chapter 1's round_half_up,
+    floor(v + 0.5), the same rule for negative halves too): the hairpin's
+    outline has two points that land exactly on a half-integer row, and
+    that's the convention the reference render resolves the tie with."""
     c = canvas(_OFFSET_SIZE, _OFFSET_SIZE)
     fill(c, PAPER)
     cov = fill_path(outline_path, rule, _OFFSET_SIZE, _OFFSET_SIZE)
     paint_through(c, cov, _STROKE_GRAY)
     for e in edges(outline_path):
-        line_wu(c, round(e.a.x), round(e.a.y),
-                round(e.b.x), round(e.b.y), _OFFSET_MAG)
+        line_wu(c, round_half_up(e.a.x), round_half_up(e.a.y),
+                round_half_up(e.b.x), round_half_up(e.b.y), _OFFSET_MAG)
     return c
 
 
@@ -4597,7 +4597,7 @@ def lopsided():
     """A cubic with one short handle and one long one, so its parameter
     crawls at the start and races at the end -- the curve where the
     parameter lies about distance."""
-    return cubic(point(15, 100), point(20, 20), point(150, 15), point(185, 95))
+    return cubic(point(15, 100), point(25, 85), point(100, 5), point(185, 95))
 
 
 # --- Chapter 15 renders ---
