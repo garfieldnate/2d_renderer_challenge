@@ -21,7 +21,7 @@
     <h1>Dashes</h1>
     <p class="hook">Put eleven marks along a curve at <code>t = 0, 0.1, 0.2, …, 1</code> and look at
       them. They bunch up at one end and spread out at the other, and not by a little: on the curve
-      in Figure 15.1 the mark at <code>t = 0.5</code> sits six pixels short of halfway. A Bézier's
+      in Figure 15.1 the mark at <code>t = 0.5</code> sits twenty-seven pixels short of halfway. A Bézier's
       parameter is not a distance. It never was; it's a recipe for blending control points, and it
       runs fast where the handles are long and crawls where they're short. Dashes have to be measured
       in distance, because a dash that's twelve pixels long on one part of a path and nine on another
@@ -65,8 +65,9 @@
   </figure>
 
   <p>Figure 15.1 is the scenarios' <code>lopsided()</code> curve: one short handle, one long one, so
-    the parameter's speed changes by a factor of five along it, and the midpoint by parameter lands
-    at <code>x = 88.75</code> while the midpoint by length is at <code>94.85</code>. The scenarios
+    marks at equal steps of <code>t</code> are four times as far apart at the end as at the start, and
+    the midpoint by parameter lands at <code>x = 71.9</code> while the midpoint by length is at
+    <code>98.7</code>. The scenarios
     pin the table on a curve small enough to check with a ruler, the convergence of its last entry as
     <code>n</code> grows, and the interpolation at a quarter and a half of the way along.</p>
 
@@ -130,10 +131,10 @@
   <span class="kw">Scenario</span>: The parameter is not the length
     <span class="kw">Given</span> c ← lopsided()
     <span class="kw">When</span>  total ← arc_length(c, 256)
-    <span class="kw">Then</span>  total = 225.8293 ± 0.001
-    <span class="kw">And</span>   point_at(c, 0.5) = point(88.75, 37.5)
-    <span class="kw">And</span>   point_at_length(c, total / 2, 256) = point(94.8542, 37.4727) ± 0.001
-    <span class="kw">And</span>   t_at_length(arc_length_table(c, 256), total / 2) = 0.527003 ± 0.0001</code></pre>
+    <span class="kw">Then</span>  total = 198.0971 ± 0.001
+    <span class="kw">And</span>   point_at(c, 0.5) = point(71.875, 58.125)
+    <span class="kw">And</span>   point_at_length(c, total / 2, 256) = point(98.7142, 52.9628) ± 0.001
+    <span class="kw">And</span>   t_at_length(arc_length_table(c, 256), total / 2) = 0.635558 ± 0.0001</code></pre>
   </div>
 
   <h2><span class="sec">§ 15.2</span> The pattern</h2>
@@ -178,10 +179,11 @@
     <span class="kw">Then</span>  normalize_pattern([0, 0]) = []
     <span class="kw">And</span>   normalize_pattern([]) = []
     <span class="kw">And</span>   normalize_pattern([5, -5]) = []
+    <span class="kw">And</span>   normalize_pattern([6, -2]) = []
     <span class="kw">And</span>   length(subpaths(dash(seg, [0, 0], 0))) = 1
     <span class="kw">And</span>   subpaths(dash(seg, [0, 0], 0))[0].points[1] = point(100, 0)
     <span class="kw">And</span>   length(subpaths(dash(seg, [], 0))) = 1
-    <span class="kw">And</span>   length(subpaths(dash(seg, [5, -5], 0))) = 1
+    <span class="kw">And</span>   length(subpaths(dash(seg, [6, -2], 0))) = 1
 
   <span class="kw">Scenario</span>: A repeated odd pattern walks as its doubled self
     <span class="kw">Given</span> seg ← path()
@@ -504,8 +506,8 @@ plate_15():
     <span class="kw">When</span>  p6 ← canvas_to_p6(c)
     <span class="kw">Then</span>  c.width = 400
     <span class="kw">And</span>   c.height = 120
-    <span class="kw">And</span>   ppm_pixel(p6, 89, 37) = (243, 196, 89) ± 1
-    <span class="kw">And</span>   ppm_pixel(p6, 295, 37) = (124, 196, 237) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 71, 58) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 298, 52) = (124, 196, 237) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 100, 100) = (39, 39, 44) ± 1
     <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
 
@@ -653,7 +655,7 @@ Buf.prototype.dot=function(q,r,col){var pts=[];for(var k=0;k<24;k++){var a=2*Mat
 Buf.prototype.bytes=function(){return this.p.map(function(c){return c.map(toByte);});};
 function sideBySide(a,b,w,h){var o=new Array(2*w*h);for(var y=0;y<h;y++)for(var x=0;x<w;x++){o[y*2*w+x]=a[y*w+x];o[y*2*w+w+x]=b[y*w+x];}return {bytes:o,w:2*w,h:h};}
 
-function lopsided(){return [[15,100],[20,20],[150,15],[185,95]];}
+function lopsided(){return [[15,100],[25,85],[100,5],[185,95]];}
 function evenMarks(){var W=200,H=120,c=lopsided(),left=new Buf(W,H),right=new Buf(W,H),spine=[{pts:flattenIntoPath([],c,0.1),closed:false}];
   left.stroke(spine,1.5,DIM);right.stroke(spine,1.5,DIM);var L=arcLengthTable(c,256)[256];
   for(var i=0;i<=10;i++){left.dot(pointAt(c,i/10),3,INKS[0]);right.dot(pointAtLength(c,L*i/10,256),3,INKS[1]);}

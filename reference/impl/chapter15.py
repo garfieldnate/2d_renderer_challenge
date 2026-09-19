@@ -216,8 +216,9 @@ def _dot(c, q, r, col):
 
 def lopsided():
     """the marks demo's curve: one short handle, one long, so its parameter
-    crawls at the start and races at the end"""
-    return cubic(point(15, 100), point(20, 20), point(150, 15), point(185, 95))
+    crawls at the start and races at the end; marks at equal steps of t are
+    four times as far apart at the end as at the start"""
+    return cubic(point(15, 100), point(25, 85), point(100, 5), point(185, 95))
 
 
 def even_marks():

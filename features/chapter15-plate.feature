@@ -13,8 +13,8 @@ Feature: Plate 15
     When  p6 ← canvas_to_p6(c)
     Then  c.width = 400
     And   c.height = 120
-    And   ppm_pixel(p6, 89, 37) = (243, 196, 89) ± 1
-    And   ppm_pixel(p6, 295, 37) = (124, 196, 237) ± 1
+    And   ppm_pixel(p6, 71, 58) = (243, 196, 89) ± 1
+    And   ppm_pixel(p6, 298, 52) = (124, 196, 237) ± 1
     And   ppm_pixel(p6, 100, 100) = (39, 39, 44) ± 1
     And   max_channel_difference(p6, ref) ≤ 1
 

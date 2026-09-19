@@ -19,10 +19,11 @@ Feature: The pattern
     Then  normalize_pattern([0, 0]) = []
     And   normalize_pattern([]) = []
     And   normalize_pattern([5, -5]) = []
+    And   normalize_pattern([6, -2]) = []
     And   length(subpaths(dash(seg, [0, 0], 0))) = 1
     And   subpaths(dash(seg, [0, 0], 0))[0].points[1] = point(100, 0)
     And   length(subpaths(dash(seg, [], 0))) = 1
-    And   length(subpaths(dash(seg, [5, -5], 0))) = 1
+    And   length(subpaths(dash(seg, [6, -2], 0))) = 1
 
   Scenario: A repeated odd pattern walks as its doubled self
     Given seg ← path()

@@ -20,8 +20,8 @@
     <p class="num">Chapter Fourteen</p>
     <h1>Offsetting Curves</h1>
     <p class="hook">Stroke a curve with the stroker you have. The curve gets flattened on the way in,
-      chapter 13 sees a polyline of forty short segments, and what comes back is forty rectangles,
-      thirty-nine round joins and two caps: 172 points, to describe a shape whose true boundary is
+      chapter 13 sees a polyline of twenty-two short segments, and what comes back is twenty-two
+      rectangles and twenty-one round joins: 172 points, to describe a shape whose true boundary is
       two smooth curves and two flat ends. It looks right. It's also the reason Illustrator's
       <em>Offset Path</em> gives you back curves and your renderer gives you back gravel. This
       chapter builds the real thing: the curve that runs parallel to a Bézier at a fixed distance.
@@ -417,7 +417,7 @@ offset_into(c, d, tolerance, pieces, depth):
     <h4>The trap</h4>
     <p>Flattening first is not wrong. Its picture is right, and it's what this book's renderer does for
       the tiger, because a flattened path is what the fill wants anyway. The trap is treating the
-      polyline outline as the <em>geometry</em>. It's forty rectangles and thirty-nine wedges glued
+      polyline outline as the <em>geometry</em>. It's twenty-two rectangles and twenty-one wedges glued
       together at the tolerance you happened to flatten at. Scale it up later and the facets show.
       Export it and the file is enormous. Offset it again, as a font engine or a CNC toolpath does,
       and the wedges multiply. The offset curve is the thing to keep when the outline has to survive

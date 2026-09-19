@@ -56,7 +56,7 @@ Feature: Length along a path, and along a curve
   Scenario: The parameter is not the length
     Given c ← lopsided()
     When  total ← arc_length(c, 256)
-    Then  total = 225.8293 ± 0.001
-    And   point_at(c, 0.5) = point(88.75, 37.5)
-    And   point_at_length(c, total / 2, 256) = point(94.8542, 37.4727) ± 0.001
-    And   t_at_length(arc_length_table(c, 256), total / 2) = 0.527003 ± 0.0001
+    Then  total = 198.0971 ± 0.001
+    And   point_at(c, 0.5) = point(71.875, 58.125)
+    And   point_at_length(c, total / 2, 256) = point(98.7142, 52.9628) ± 0.001
+    And   t_at_length(arc_length_table(c, 256), total / 2) = 0.635558 ± 0.0001
