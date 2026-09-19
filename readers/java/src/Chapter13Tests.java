@@ -202,6 +202,19 @@ public final class Chapter13Tests {
             assertTupleEq("subpaths(o)[0].points[0]", o.subpaths().get(0).points.get(0), Tuple.point(0, 7));
         });
 
+        scenario("Degenerate: a closed subpath that ends where it began has no zero-length closing segment", () -> {
+            Path sq = new Path();
+            sq.moveTo(Tuple.point(0, 0));
+            sq.lineTo(Tuple.point(10, 0));
+            sq.lineTo(Tuple.point(10, 10));
+            sq.lineTo(Tuple.point(0, 10));
+            sq.lineTo(Tuple.point(0, 0));
+            sq.close();
+            Path o = Stroke.strokeToPath(sq, 2, "butt", "miter", 4.0);
+            assertEquals("length(subpaths(o))", o.subpaths().size(), 8);
+            assertDoubleEq("polygon_area(o)", Fill.polygonArea(o), -84, 0.0001);
+        });
+
         scenario("Degenerate: a single point with a round cap is a dot", () -> {
             Path p = new Path();
             p.moveTo(Tuple.point(20, 20));

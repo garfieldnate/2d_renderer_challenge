@@ -1,6 +1,8 @@
 # The 2D Renderer Challenge — Java
 
-Chapters 1-15, hand-rolled test runner, no JUnit, no network.
+Chapters 1-17, hand-rolled test runner, no JUnit, no network. Chapter 16's
+font file (`reference/chapter-16/roboto.json`) is read with a small
+hand-written JSON reader (`Json.java`) -- no library, as the chapter asks.
 
 ## Compile, test, render
 
@@ -23,10 +25,12 @@ java -cp classes Chapter12Tests
 java -cp classes Chapter13Tests
 java -cp classes Chapter14Tests
 java -cp classes Chapter15Tests
+java -cp classes Chapter16Tests
+java -cp classes Chapter17Tests
 ```
 
 Each run prints one `PASS`/`FAIL` line per scenario, a pass/fail total, and
-then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-15 as
+then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-17 as
 P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/plate-02.ppm`, `out/fan-bresenham.ppm`, `out/fan-wu.ppm`,
 `out/fan-coverage.ppm`, `out/plate-03.ppm`, `out/fan-both-orders.ppm`,
@@ -41,7 +45,9 @@ P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/clip-demo.ppm`, `out/joins.ppm`, `out/plate-13.ppm`, `out/caps.ppm`,
 `out/two-strokes.ppm`, `out/fold.ppm`, `out/offsets.ppm`, `out/plate-14.ppm`,
 `out/even-marks.ppm`, `out/dash-strip.ppm`, `out/spiral-dashes.ppm`,
-`out/plate-15.ppm`.
+`out/plate-15.ppm`, `out/glyph.ppm`, `out/plate-16.ppm`, `out/composite.ppm`,
+`out/sizes.ppm`, `out/flip.ppm`, `out/subpixels.ppm`, `out/smoothing.ppm`,
+`out/lcd.ppm`, `out/plate-17.ppm`.
 
 Chapter 15's dashed spiral render is `spiral-dashes.ppm`, not `spiral.ppm` --
 it used to share that name with chapter 6's spiral figure, which meant running
@@ -551,3 +557,135 @@ JS in chapter-15.html §15.1), so `chapter15-length.feature`'s and
 `chapter15-plate.feature`'s pinned values for `even_marks()`,
 `point_at(lopsided(), 0.5)`, `point_at_length`, and `t_at_length` all had to
 be re-copied from the new figure source, not derived.
+
+**Catch-up (chapter 13 revised again since the last round): a closed
+subpath that ends where it began.** A path that explicitly draws back to
+its own start point with a final `line_to` and then calls `close` (rather
+than relying on `close` alone to draw the last edge) used to grow a
+zero-length closing segment on top of the real one -- `Stroke.strokeToPath`
+built a segment rectangle from a point to itself, dividing by zero in
+`unit_dir`. `Stroke.strokeToPath` now drops a closed subpath's last point
+first when it sits within the dedupe epsilon of the first, exactly the same
+epsilon the existing duplicate-point rule already used. One new scenario in
+`chapter13-degenerate.feature` (a stroked 10x10 square drawn with an
+explicit closing `line_to`) pins `length(subpaths(o)) = 8` and
+`polygon_area(o) = -84`; it failed before the fix (dividing by zero produced
+`NaN` points and burst the subpath count and `polygon_area`) and is green
+now. All 22 chapter 13 scenarios pass and chapters 1-15's own suites are
+unaffected.
+
+## Chapter 16
+
+A font is JSON: `Json.java` is a small hand-written recursive-descent
+parser (objects, arrays, strings, numbers, booleans, null) -- exactly the
+subset chapter 16 asks for, no library. `Font` (`unitsPerEm`, `ascender`,
+`descender`, `lineGap`, `cmap`, `glyphs`), `Glyph` (`advance`, `contours`,
+`components`), `Component` (`glyph`, `transform`) and `ContourPoint` (`x`,
+`y`, `on`) are plain data classes; `Fonts.loadFont(text)` builds a `Font`
+from the parsed tree, `Fonts.glyphName`/`glyphAdvance`/`glyphCount` read
+what they say (`glyphName` answers `.notdef` for a codepoint the font
+lacks).
+
+`Contours.impliedPoints(contour)` walks a loop of `ContourPoint`s, inserting
+an on-curve midpoint between any two consecutive off-curve points (the loop
+wraps, so the last and first count as a pair too), then rotates the result
+to start on an on-curve point. `Contours.contourCurves(contour)` calls that
+internally and turns the expanded loop into chapter 8 `Curve`s: from each
+on-curve point, either straight through the next on-curve point (a
+quadratic with its control point at the edge's own midpoint) or through the
+off-curve point between them.
+
+`Glyphs.componentMatrix(t)` builds the `matrix3` for a component's six-number
+transform `[a, b, c, d, dx, dy]` (TrueType's own letters-in-a-slightly-
+surprising-order convention, `x' = a·x + c·y + dx`, `y' = b·x + d·y + dy`).
+`Glyphs.glyphOutline(font, name)` is every contour as quadratics, in font
+units, y up -- a glyph's own contours through `contourCurves`, then every
+component's own outline (recursively) taken through its matrix.
+`Glyphs.glyphBounds(font, name)` unions chapter 8's `curveBounds` over every
+quadratic, `(0, 0, 0, 0)` for an empty glyph (no contours, no components,
+e.g. `space`).
+
+`Glyphs.textMatrix(font, size, x, y)` is the one place the font's y-up,
+baseline-origin coordinates turn into the canvas's y-down, corner-origin
+ones -- `translation(x, y) * scaling(s, -s)`, `s = size / units_per_em` --
+and it is the *only* place: nothing else in `Glyphs`, `Contours`, or
+`Fonts` ever negates a y. `Glyphs.glyphPath`/`contourPath` take every
+quadratic of the outline through a matrix, flatten in device space (after
+the transform, never before, per chapter 8's own rule), and close each
+contour into its own subpath -- built directly on chapter 8's
+`Curves.transformCurve`/`flatten` and chapter 5's `Path`, with no
+deduplication of the point that repeats at each curve boundary within a
+contour (harmless: a zero-length edge contributes nothing to `Fill`'s
+accumulator or to `Winding`, so it doesn't perturb any pinned area or
+coverage value).
+
+`Figures` adds `glyphPlate()`, `plate16()`, `compositeDemo()`, `sizes()`,
+and `flipTrap()`, matching the chapter's own printed pseudocode for
+`glyph_plate()`/`plate_16()` exactly. `composite_demo()`, `sizes()` and
+`flip_trap()` have no printed pseudocode in the chapter text or a Gherkin
+table pinning their geometry -- only the feature file's one-sentence
+descriptions -- so their exact layout (canvas sizes, pen positions, ink
+colors, the hairline bounding box) was taken from the chapter's own figure
+JS (`chapter-16.html`'s embedded `compositeDemo`/`sizes`/`flipTrap`
+functions), the same source of truth the chapter's own canvas figures run
+from. See **Prose problems** in `FEEDBACK.md` for why that's worth flagging
+(chapter 12's `clip_demo()` had the identical problem). All five renders
+(`glyph.ppm`, `plate-16.ppm`, `composite.ppm`, `sizes.ppm`, `flip.ppm`) diff
+0 against the reference bytes.
+
+## Chapter 17
+
+`Subpixel` (`whole`, `quarter`) and `Bitmaps.subpixelOf(x)` split a
+fractional pen position into a whole pixel and the nearest quarter,
+carrying into the next whole pixel when the fraction rounds all the way up.
+`Bitmap` (`coverage`, `width`, `height`, `left`, `top`) is a `CoverageBuffer`
+of its own plus the two integers saying where its corner sits relative to
+the pen. `Bitmaps.glyphBitmap(font, name, size, subpixel)` takes chapter
+16's `glyphBounds`, scales and shifts them by the quarter, rounds outward
+(`floor`/`ceil`), and fills the path into a buffer exactly that size through
+a `textMatrix` whose origin is the quarter offset by the buffer's own
+corner; an empty glyph (`space`) is a zero-by-zero bitmap.
+`Bitmaps.paintBitmap(canvas, bitmap, x, y, color, linear)` mixes every
+covered pixel toward the color by its coverage, `linear` picking chapter
+1's blending lane directly (not the global switch -- an explicit parameter,
+per the feature's own wording).
+
+`GlyphCache` is a `Map` keyed by `(name, size, subpixel)`;
+`cachedBitmap`/`size()` are one line each. `Atlas` packs `Bitmap`s into one
+big `CoverageBuffer`, shelf by shelf: a shelf's height is fixed by the
+first bitmap actually placed on it (a `shelfHeight == 0` sentinel means "not
+yet fixed"), bitmaps go left to right until one doesn't fit, and then a new
+shelf opens at `shelfY + shelfHeight` below it -- even when that new shelf
+still doesn't have the room (the packing scenario's 30x20 rectangle),
+because the *next* item's shelf still opens at that same y. A bitmap wider
+than the whole atlas is rejected immediately, without ever touching shelf
+state, since no shelf, however placed, could ever hold it. `AtlasSpot`
+(`x`, `y`) or `null` (the book's "none") is what `add` answers.
+
+`Bitmaps.embolden(font, name, size, amount)` is the glyph's own fill plus
+chapter 13's stroke of every one of its (already-closed) subpaths, `amount`
+wide, `"butt"`/`"round"`, added and clamped to 1, in a bitmap grown a pixel
+all round (`floor(...) - 1` / `ceil(...) + 1`) to make room for the grown
+ink.
+
+`Lcd.LCD_TAPS` is `(1/3, 1/3, 1/3)`; `Lcd.lcdFilter(v)` replaces every value
+with the average of itself and its two neighbours, zero beyond the ends.
+`Lcd.lcdCoverage(font, name, size, x, y, w, h)` rasterizes the glyph through
+`scaling(3, 1) * textMatrix(...)` into a buffer `3w` wide, filtering every
+row. `Lcd.paintLcd(canvas, cov3, color)` mixes each of a pixel's three
+channels through its own stripe's coverage, always in linear light (the
+book doesn't give `paint_lcd` a `linear` flag the way `paint_bitmap` has
+one).
+
+`Glyphs.penAdvance(font, name, size)` is `glyph.advance * size /
+units_per_em`. `Figures` adds `subpixelStrip()`, `smoothingDemo()`,
+`lcdPlate()`, and `plate17()`, all built from the chapter's own figure JS
+(`chapter-17.html`'s `subpixelStrip`/`smoothingDemo`/`lcdPlate` functions --
+`§17.5`'s printed pseudocode covers `lcd_plate()`/`plate_17()` only).
+`smoothing_demo()`'s middle and bottom rows are drawn with a small
+`drawText` helper (pen position stepped by `penAdvance`, each glyph placed
+at its own nearest quarter via `subpixelOf`) that mirrors the book's own
+description of `draw_text` in prose, since the function itself is never
+named as something a scenario calls directly. All four renders
+(`subpixels.ppm`, `smoothing.ppm`, `lcd.ppm`, `plate-17.ppm`) diff 0 against
+the reference bytes.

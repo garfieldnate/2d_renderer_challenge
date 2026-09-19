@@ -1,5 +1,7 @@
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * §1.6, §1.8, §1.9: the five renders chapter 1 asks for, plus §2.5, §2.6,
@@ -1342,5 +1344,272 @@ public final class Figures {
     /** §15.5: plate_15() -- spiral_dashes(), magnified by 2. */
     public static Canvas plate15() {
         return Magnify.magnify(spiralDashes(), 2);
+    }
+
+    // ---------------------------------------------------------------------
+    // Chapter 16: what a glyph is.
+
+    private static final Color GLYPH_GRAY = new Color(0.62, 0.62, 0.66);
+    private static final Color GLYPH_DIM = new Color(0.3, 0.3, 0.34);
+    private static final Color GLYPH_MAGENTA = new Color(0.85, 0.2, 0.55);
+    private static final Color GLYPH_CYAN = new Color(0.2, 0.75, 0.9);
+    private static final Color[] GLYPH_INKS = {
+        new Color(0.9, 0.55, 0.1), new Color(0.2, 0.55, 0.85), new Color(0.85, 0.25, 0.3)
+    };
+
+    /** §16.1: the book's font, loaded fresh every time a render needs it. */
+    static Font robotoFont() {
+        try {
+            String text = java.nio.file.Files.readString(
+                    java.nio.file.Path.of("reference/chapter-16/roboto.json"));
+            return Fonts.loadFont(text);
+        } catch (java.io.IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static Path squarePath(Tuple q, double half) {
+        Path p = new Path();
+        p.moveTo(Tuple.point(q.x - half, q.y - half));
+        p.lineTo(Tuple.point(q.x + half, q.y - half));
+        p.lineTo(Tuple.point(q.x + half, q.y + half));
+        p.lineTo(Tuple.point(q.x - half, q.y + half));
+        p.close();
+        return p;
+    }
+
+    /** A hairline through a list of points, closed or open, in the given color -- §13's stroke, butt/round, width 1. */
+    private static void paintHairline(Canvas c, List<Tuple> pts, boolean closed, Color color, double width) {
+        Path p = new Path();
+        boolean first = true;
+        for (Tuple pt : pts) {
+            if (first) {
+                p.moveTo(pt);
+                first = false;
+            } else {
+                p.lineTo(pt);
+            }
+        }
+        if (closed) {
+            p.close();
+        }
+        Path outline = Stroke.strokeToPath(p, width, "butt", "round", 4.0);
+        Painter.paintThrough(c, Fill.fillPath(outline, "nonzero", c.width, c.height), color);
+    }
+
+    /**
+     * §16.5: glyph_plate() -- fill Roboto's a at a 300 pixel em, then draw
+     * its own file data over it: the control polygon as a hairline,
+     * on-curve points as filled squares, off-curve points as hollow
+     * circles, and the implied on-curve points as smaller squares.
+     */
+    public static Canvas glyphPlate() {
+        int w = 320, h = 320;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Font font = robotoFont();
+        Matrix m = Glyphs.textMatrix(font, 300, 40, 250);
+        Painter.paintThrough(c, Fill.fillPath(Glyphs.glyphPath(font, "a", m, 0.1), "nonzero", w, h), GLYPH_GRAY);
+
+        Glyph a = font.glyphs.get("a");
+        for (List<ContourPoint> contour : a.contours()) {
+            List<Tuple> pts = new ArrayList<>();
+            for (ContourPoint p : contour) {
+                pts.add(m.multiply(Tuple.point(p.x(), p.y())));
+            }
+            paintHairline(c, pts, true, GLYPH_DIM, 1.0);
+        }
+        for (List<ContourPoint> contour : a.contours()) {
+            Set<List<Double>> explicit = new HashSet<>();
+            for (ContourPoint p : contour) {
+                explicit.add(List.of(p.x(), p.y()));
+            }
+            for (ContourPoint p : Contours.impliedPoints(contour)) {
+                Tuple q = m.multiply(Tuple.point(p.x(), p.y()));
+                if (!p.on()) {
+                    Path circle = Paths.circlePath(q.x, q.y, 4, 24);
+                    Path outline = Stroke.strokeToPath(circle, 1.5, "butt", "round", 4.0);
+                    Painter.paintThrough(c, Fill.fillPath(outline, "nonzero", w, h), GLYPH_MAGENTA);
+                } else if (explicit.contains(List.of(p.x(), p.y()))) {
+                    Painter.paintThrough(c, Fill.fillPath(squarePath(q, 3), "nonzero", w, h), GLYPH_CYAN);
+                } else {
+                    Painter.paintThrough(c, Fill.fillPath(squarePath(q, 2), "nonzero", w, h), GLYPH_CYAN);
+                }
+            }
+        }
+        return c;
+    }
+
+    /** §16.5: plate_16() -- glyph_plate(), magnified by 2. */
+    public static Canvas plate16() {
+        return Magnify.magnify(glyphPlate(), 2);
+    }
+
+    /**
+     * §16.5: composite_demo() -- eacute drawn as its two components, each
+     * in its own ink, with glyph_bounds traced as a hairline box.
+     */
+    public static Canvas compositeDemo() {
+        int w = 240, h = 240;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Font font = robotoFont();
+        Matrix m = Glyphs.textMatrix(font, 240, 50, 190);
+        Glyph eacute = font.glyphs.get("eacute");
+        List<Component> comps = eacute.components();
+        for (int k = 0; k < comps.size(); k++) {
+            Matrix cm = m.multiply(Glyphs.componentMatrix(comps.get(k).transform()));
+            Path p = Glyphs.glyphPath(font, comps.get(k).glyph(), cm, 0.1);
+            Painter.paintThrough(c, Fill.fillPath(p, "nonzero", w, h), GLYPH_INKS[k % 3]);
+        }
+        Bounds bb = Glyphs.glyphBounds(font, "eacute");
+        Tuple lo = m.multiply(Tuple.point(bb.minX(), bb.minY()));
+        Tuple hi = m.multiply(Tuple.point(bb.maxX(), bb.maxY()));
+        List<Tuple> box = List.of(
+                Tuple.point(lo.x, lo.y), Tuple.point(hi.x, lo.y),
+                Tuple.point(hi.x, hi.y), Tuple.point(lo.x, hi.y));
+        paintHairline(c, box, true, GLYPH_MAGENTA, 1.0);
+        return c;
+    }
+
+    /** §16.5: sizes() -- the g at 12, 24, 48 and 96 pixels, on one baseline. */
+    public static Canvas sizes() {
+        int w = 240, h = 120;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Font font = robotoFont();
+        Glyph g = font.glyphs.get("g");
+        double x = 8;
+        for (int size : new int[] {12, 24, 48, 96}) {
+            Matrix m = Glyphs.textMatrix(font, size, x, 80);
+            Painter.paintThrough(c, Fill.fillPath(Glyphs.glyphPath(font, "g", m, 0.1), "nonzero", w, h), GLYPH_GRAY);
+            x += g.advance() * size / font.unitsPerEm + 8;
+        }
+        return c;
+    }
+
+    /**
+     * §16.4: flip_trap() -- R through text_matrix on the left, and through
+     * a scale that forgot to turn y over (a positive y scale) on the
+     * right: the trap's picture of what a forgotten flip looks like.
+     */
+    public static Canvas flipTrap() {
+        int w = 120, h = 120;
+        Font font = robotoFont();
+        double s = 60.0 / font.unitsPerEm;
+        Canvas left = new Canvas(w, h);
+        left.fill(PAPER);
+        Canvas right = new Canvas(w, h);
+        right.fill(PAPER);
+        Matrix mLeft = Glyphs.textMatrix(font, 60, 35, 60);
+        Painter.paintThrough(left,
+                Fill.fillPath(Glyphs.glyphPath(font, "R", mLeft, 0.1), "nonzero", w, h), GLYPH_GRAY);
+        Matrix mRight = Transforms.translation(35, 60).multiply(Transforms.scaling(s, s));
+        Painter.paintThrough(right,
+                Fill.fillPath(Glyphs.glyphPath(font, "R", mRight, 0.1), "nonzero", w, h), GLYPH_MAGENTA);
+        paintHairline(left, List.of(Tuple.point(0, 60), Tuple.point(w, 60)), false, GLYPH_DIM, 1.0);
+        paintHairline(right, List.of(Tuple.point(0, 60), Tuple.point(w, 60)), false, GLYPH_DIM, 1.0);
+        return sideBySide(left, right);
+    }
+
+    // ---------------------------------------------------------------------
+    // Chapter 17: rasterizing type well.
+
+    private static final Color TYPE_WHITE = new Color(1, 1, 1);
+    private static final Color TYPE_BLACK = new Color(0, 0, 0);
+
+    /** §17.1: pen advances by penAdvance, each glyph rendered at its nearest quarter. */
+    private static double drawText(Canvas c, Font font, String text, double size, double x, double y,
+                                    Color color, boolean linear) {
+        double pen = x;
+        for (int i = 0; i < text.length(); i++) {
+            String name = Fonts.glyphName(font, text.charAt(i));
+            Subpixel sq = Bitmaps.subpixelOf(pen);
+            Bitmaps.paintBitmap(c, Bitmaps.glyphBitmap(font, name, size, sq.quarter()),
+                    sq.whole(), (int) Math.floor(y), color, linear);
+            pen += Glyphs.penAdvance(font, name, size);
+        }
+        return pen;
+    }
+
+    private static Canvas stackVertical(Canvas top, Canvas bottom) {
+        Canvas out = new Canvas(Math.max(top.width, bottom.width), top.height + bottom.height);
+        for (int y = 0; y < top.height; y++) {
+            for (int x = 0; x < top.width; x++) {
+                out.writePixel(x, y, top.pixelAt(x, y));
+            }
+        }
+        for (int y = 0; y < bottom.height; y++) {
+            for (int x = 0; x < bottom.width; x++) {
+                out.writePixel(x, top.height + y, bottom.pixelAt(x, y));
+            }
+        }
+        return out;
+    }
+
+    /** §17.5: subpixel_strip() -- l at 11 pixels with its pen at x = 4, 4.25, 4.5, 4.75, magnified 8x. */
+    public static Canvas subpixelStrip() {
+        Font font = robotoFont();
+        Canvas[] panels = new Canvas[4];
+        for (int k = 0; k < 4; k++) {
+            Canvas panel = new Canvas(10, 14);
+            panel.fill(TYPE_WHITE);
+            Subpixel sq = Bitmaps.subpixelOf(4 + k / 4.0);
+            Bitmaps.paintBitmap(panel, Bitmaps.glyphBitmap(font, "l", 11, sq.quarter()), sq.whole(), 11,
+                    TYPE_BLACK, true);
+            panels[k] = panel;
+        }
+        Canvas row = sideBySide(sideBySide(panels[0], panels[1]), sideBySide(panels[2], panels[3]));
+        return Magnify.magnify(row, 8);
+    }
+
+    /**
+     * §17.5: smoothing_demo() -- "Hamburg" at 11 pixels three ways: linear
+     * light, encoded-space blending (the universal cheat), and linear with
+     * the stems emboldened by a third of a pixel. Magnified 4x.
+     */
+    public static Canvas smoothingDemo() {
+        Font font = robotoFont();
+        Canvas b = new Canvas(72, 42);
+        b.fill(TYPE_WHITE);
+        drawText(b, font, "Hamburg", 11, 2, 11, TYPE_BLACK, true);
+        drawText(b, font, "Hamburg", 11, 2, 25, TYPE_BLACK, false);
+        double pen = 2;
+        String word = "Hamburg";
+        for (int i = 0; i < word.length(); i++) {
+            String name = Fonts.glyphName(font, word.charAt(i));
+            Subpixel sq = Bitmaps.subpixelOf(pen);
+            Bitmaps.paintBitmap(b, Bitmaps.embolden(font, name, 11, 1.0 / 3), sq.whole(), 39, TYPE_BLACK, true);
+            pen += Glyphs.penAdvance(font, name, 11);
+        }
+        return Magnify.magnify(b, 4);
+    }
+
+    /**
+     * §17.5: lcd_plate() -- "ea" at 13 pixels twice, grayscale coverage
+     * above and LCD-filtered stripes below, magnified 6x.
+     */
+    public static Canvas lcdPlate() {
+        Font font = robotoFont();
+        int w = 24, h = 16;
+        Canvas top = new Canvas(w, h);
+        top.fill(TYPE_WHITE);
+        Canvas bottom = new Canvas(w, h);
+        bottom.fill(TYPE_WHITE);
+        double pen = 2;
+        String word = "ea";
+        for (int i = 0; i < word.length(); i++) {
+            String name = Fonts.glyphName(font, word.charAt(i));
+            Matrix m = Glyphs.textMatrix(font, 13, pen, 12);
+            Painter.paintThrough(top, Fill.fillPath(Glyphs.glyphPath(font, name, m, 0.1), "nonzero", w, h), TYPE_BLACK);
+            Lcd.paintLcd(bottom, Lcd.lcdCoverage(font, name, 13, pen, 12, w, h), TYPE_BLACK);
+            pen += Glyphs.penAdvance(font, name, 13);
+        }
+        return Magnify.magnify(stackVertical(top, bottom), 6);
+    }
+
+    /** §17.5: plate_17() -- lcd_plate(), magnified by 2. */
+    public static Canvas plate17() {
+        return Magnify.magnify(lcdPlate(), 2);
     }
 }

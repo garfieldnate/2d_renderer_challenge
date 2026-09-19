@@ -53,6 +53,14 @@ public final class Stroke {
         Path out = new Path();
         for (Subpath sp : path.subpaths()) {
             List<Tuple> pts = dedupe(sp.points);
+            // §13.4 (catch-up): a closed subpath whose last point was drawn
+            // back onto its first (line_to to the start, then close) must
+            // not grow a zero-length closing segment on top of the real
+            // one -- drop the redundant repeated start point first.
+            if (sp.closed && pts.size() > 1
+                    && pts.get(pts.size() - 1).subtract(pts.get(0)).magnitude() <= DEDUPE_EPSILON) {
+                pts = pts.subList(0, pts.size() - 1);
+            }
             for (List<Tuple> poly : strokeSubpath(pts, sp.closed, h, cap, join, miterLimit)) {
                 appendClosedSubpath(out, poly);
             }
