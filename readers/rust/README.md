@@ -1,12 +1,11 @@
 # The 2D Renderer Challenge — Rust
 
-Chapters 1 (`The Canvas and the Color`) through 13 (`Stroking is Filling`),
-stdlib only.
+Chapters 1 (`The Canvas and the Color`) through 15 (`Dashes`), stdlib only.
 
 ## Build, test, render
 
 ```
-cargo test --release   # every scenario in features/, chapters 1-13
+cargo test --release   # every scenario in features/, chapters 1-15
 cargo run --release --bin render_all   # writes all renders (P3 + P6) to out/
 ```
 
@@ -22,15 +21,24 @@ That's it — `cargo build` alone also works if you just want the library to com
   elliptical arc, premultiplied pixels, Porter-Duff compositing and the
   sixteen blend modes, layers, paint servers (solid, three gradients,
   images), ordered dithering, resampling filters, mip pyramids, clips,
-  soft masks, groups, `stroke_to_path` and its joins/caps/miter, and the
-  chapter's named figures/plates.
+  soft masks, groups, `stroke_to_path` and its joins/caps/miter, curve
+  offsetting and curve stroking (chapter 14), and dashing (chapter 15),
+  plus every chapter's named figures/plates.
 - `src/bin/render_all.rs` — renders every figure/plate to `out/`.
 - `tests/*.rs` — one test file per `features/*.feature` file (Gherkin
   scenarios translated 1:1 into `#[test]` functions; outlines expanded per
   row).
-- `reference/chapter-0{1..9}/*.ppm` and `reference/chapter-{10,11,12,13}/*.ppm`
+- `reference/chapter-0{1..9}/*.ppm` and `reference/chapter-{10..15}/*.ppm`
   — the book's reference images, compared against with
-  `max_channel_difference`.
+  `max_channel_difference`. Note: `out/two-strokes.ppm`, `fold.ppm`,
+  `offsets.ppm` and `plate-14.ppm` (chapter 14) and `even-marks.ppm`,
+  `dash-strip.ppm`, `spiral.ppm` and `plate-15.ppm` (chapter 15) all land
+  in the same flat `out/` directory as every earlier chapter's renders;
+  `spiral.ppm` collides with chapter 6's `spiral()` render of the same
+  name (chapter 6's writes first, chapter 15's overwrites it) — the only
+  filename collision across all fifteen chapters. Both renders are still
+  checked against their own `reference/chapter-NN/` directory by the
+  tests, so this only affects browsing `out/` by hand.
 
 `--release` matters here: chapter 2's brute-force `coverage()` samples 64
 points per pixel per disc, chapter 3's `thick_line` reuses that same
@@ -298,3 +306,163 @@ plate/caps renders caught (outer side, cap sweep direction) are the
 strongest argument in this project for pinning `max_channel_difference`
 on every render rather than trusting point-count scenarios alone — a
 join or cap's precise geometry is only checked end to end there.
+
+### Chapter 13 catch-up (round 2)
+
+Two more scenarios landed in `features/chapter13-stroke.feature` after the
+round above: `polygon_area` now returns a *signed* area (it used to
+`.abs()` it) so a stroke's pieces can be checked for consistent winding,
+and the round join sweeps the outer gap the short way round instead of
+picking a direction from the turn's own sign. `polygon_area` no longer
+taking the absolute value is safe for chapter 7's own scenarios only
+because every shape they use (`polygon`, `circle_path`, `star`,
+`needle_path`) already happens to be wound clockwise on screen, which is
+what makes the signed value positive there too; that's a coincidence of
+which way those shapes were authored, not a rule, and is worth knowing if
+a future chapter adds a counterclockwise-wound fixture to chapter 7's
+tests. `ang_between(from, to)` is the shared "shortest way round" helper
+`join_shape`'s round branch now uses; `u_turn()` is the nine-point hairpin
+semicircle the new self-overlap scenario strokes 40 wide. All of chapters
+1-13 are green again after the fix (`stroke.rs` fully rewritten to match
+the current feature file; `miter.rs`, `degenerate.rs` and `plate_13.rs`
+were already in sync and needed no changes, though `plate_13.rs`'s render
+comparisons only started passing once the join fix landed).
+
+## Chapter 14 notes
+
+`tangent_at`/`normal_at`/`offset_point` are one small function apiece:
+`tangent_at` normalizes `derivative`, nudging the parameter `0.0001`
+further into the curve first (`live_t`) when the derivative is exactly
+zero there (a handle sitting on its own anchor); `normal_at` is chapter
+13's `perp` on the tangent; `offset_point` steps `d` along it. `curvature`
+is `cross(v, a) / |v|^3` with `a` a new `second_derivative` (the same
+degree-reduction trick as `derivative`, run twice, so it needs no
+quadratic/cubic special case). `cusps(c, d)` finds where `1 - curvature *
+d` changes sign by sampling 64 parameters and bisecting 40 times between
+any pair that disagree. `fit_offset` solves one cubic through the two end
+offset points and the curve's own end tangents whose midpoint lands on
+the true offset at `t = 0.5`, falling back to a third of the chord per
+handle when the end tangents are parallel; `offset_error` is the worst
+miss over 17 matched parameters, and `distance_to_curve` (65 samples, 32
+rounds of ternary search) is the honest measure the whole thing is
+checked against. `offset_curve` splits at every cusp first (so no piece
+contains a stall) and then fits-and-halves each piece to tolerance,
+capped at 16 halvings; `sub_curve(c, t0, t1)` is two `split_at` calls.
+`stroke_curve_to_path` builds one closed outline directly from the `+h`
+and `-h` offsets (flattened) plus the two end caps — no new rasterizer,
+same `fill_path` nonzero as every chapter since 7 — and is deliberately
+*not* run through chapter 13's winding-orientation fix (`push_closed_subpath`),
+because it only ever produces one subpath and the scenario pins its first
+and last points by construction (the `+h` offset's start, the `-h`
+offset's start), which a blanket reorientation would silently break.
+`flatten_then_stroke` is the old way (flatten, then chapter 13 with round
+joins) kept around only so the two can be compared. `hairpin()` and
+`arch()` are the plate's two curves; `offsets_plate` reuses chapter 13's
+`stroke_to_path` + `fill_path` to draw every hairline (an offset curve is
+just another path to stroke thin and fill), which is the same trick
+`two_strokes`/`fold_demo`/`spiral_dashes` (chapter 15) all lean on.
+
+**A real bug the fold scenario found.** `two_strokes()` and `fold_demo()`
+initially failed `max_channel_difference` by a handful of pixels (up to
+82 out of 255) clustered at the exact symmetry axis of the hairpin's
+self-crossing fold. The hairpin and its offsets are symmetric about
+`x = 80`, so the offset construction lands a vertex at the *exact*
+half-integer coordinate `(80.0, 42.5)` — and chapter 13's `stroke_panel`
+(reused here for the outline overlay) was rounding that coordinate with
+Rust's `f64::round()`, which ties away from zero (`42.5 -> 43`), while
+the book's own reference figure code uses a Python-style `pyround` that
+ties to even (`42.5 -> 42`) before handing the coordinate to `line_wu`.
+The two renders agreed everywhere except the one row where that tie
+landed, which is exactly what a rounding-mode bug looks like once you go
+looking for it. Fixed by adding `round_half_to_even` and using it (only)
+for the two `line_wu`-facing panel functions (chapter 13's `stroke_panel`
+and this chapter's `outline_panel_rule`); chapter 1's `round` — used for
+channel-to-byte conversion, where the book's own convention really is
+ties-away-from-zero — is untouched. See **Failures** in `FEEDBACK.md` for
+the full diagnosis; this is the single most useful thing this chapter's
+reader round found, because chapter 13 had been shipping the wrong
+tie-break for two chapters without a single scenario or render ever
+landing on a tie.
+
+## Chapter 15 notes
+
+`path_length` sums a path's own segments, adding the closing one only for
+a subpath that's actually closed — unlike `edges`, which always treats
+every subpath as closed for filling's sake, so it can't be reused here.
+`arc_length_table(c, n)` is `n + 1` running chord lengths;
+`t_at_length` binary-searches the table and interpolates linearly inside
+the one chord that spans the target length (exact, since a chord is
+straight); `point_at_length`/`split_at_length` hand that parameter to
+chapter 8's `point_at`/`split_at`. `normalize_pattern` is three lines
+(reject negative-or-non-positive-sum as "no pattern", double an odd
+list). `dash(p, pattern, phase)` is a straight, careful port of the
+walk in the chapter's own pseudocode: one pass per subpath (pushing the
+subpath's first point onto its own end first, for a closed one, so the
+walk crosses the closing segment too), tracking which pattern entry is
+current and how much of it is left, taking `min(remaining, segment
+left)` steps and flipping on/off exactly when an entry is used up — never
+when a segment ends, which is what lets a dash cross a corner without a
+seam. The closed-subpath join (last dash absorbs first when both touch
+the subpath's start, or the single dash closes into a loop if it *is*
+the first) is a small post-pass over that subpath's own slice of dashes,
+mirroring the chapter's prose exactly. `dash_count` is just
+`subpaths(dash(...)).len()` — the chapter names it but never spells out
+a different way to compute it, and none of the pinned numbers suggested
+one. `golden_spiral()` is seven quarters, each a cubic with the usual
+`0.5522847498` handle constant, flattened into one running open subpath
+so the dash walk never resets mid-spiral; `spiral_dashes` draws the
+undashed spiral hairline-thin first, then strokes each dash of
+`dash(sp, [16, 10], 0)` separately (7 wide, round cap and join) so each
+one can take its own ink from a 3-color rotation — the same
+one-subpath-at-a-time construction chapter 14 uses for its own hairlines,
+via a small `subpath_as_path` helper.
+
+Every chapter-15 render (`even-marks.ppm`, `dash-strip.ppm`,
+`spiral.ppm`, `plate-15.ppm`) diffs 0 against `reference/chapter-15/` —
+not merely within tolerance.
+
+## Mutation testing (chapters 14-15)
+
+Six deliberate bugs, tested and reverted, three per chapter. All six were
+caught; none survived.
+
+- **Chapter 14 — offset normal on the wrong side** (`normal_at` returning
+  `-perp(tangent)` instead of `perp(tangent)`): caught immediately and
+  everywhere — all five `offset.rs` scenarios fail on the very first
+  comparison, since every offset point in the chapter is pinned by exact
+  coordinates.
+- **Chapter 14 — the cusp condition with the wrong sign** (`cusps`
+  testing `1 + curvature * d` instead of `1 - curvature * d`): caught
+  directly by both `curvature.rs` cusp scenarios (wrong cusp count and
+  wrong cusp parameters on both the quadratic and the cubic).
+- **Chapter 14 — an offset outline that doesn't split at cusps**
+  (`offset_curve` skipping the `cusps` step entirely, just fitting and
+  halving the whole curve): not caught by the two scenarios whose curves
+  never reach their stall radius (a gentle offset and the plain
+  end-to-end chaining check happen to still come out right, since halving
+  alone eventually satisfies `offset_error` even without a cusp split) —
+  but caught hard by every scenario that actually folds: the parabola's
+  fold-piece-count scenario, and all three `stroke14.rs`/`curve14.rs`
+  scenarios built on the hairpin or the folding parabola, which is
+  exactly the geometry this feature exists for.
+- **Chapter 15 — a dash walk that resets the pattern at every vertex**
+  (reinitializing `i`/`remaining`/`on` at the top of each segment's loop
+  instead of carrying them across the whole subpath): caught by 5 of 8
+  `dash15.rs` scenarios (every corner and phase scenario, since a reset
+  makes the pattern start over at each vertex) and 2 of 5 `closed15.rs`
+  scenarios.
+- **Chapter 15 — the phase applied the wrong way** (walking `-phase` into
+  the pattern instead of `phase`): caught by all three phase scenarios in
+  `dash15.rs` (the zero-phase and no-phase-given scenarios are unaffected
+  by construction, since a phase of 0 negates to 0).
+- **Chapter 15 — a closed subpath not walked around its closing segment**
+  (skipping the `pts.push(pts[0])` step for a closed subpath): caught by
+  all three `closed15.rs` scenarios that actually use a closed shape (the
+  square) — the two-open-subpaths scenario is naturally unaffected.
+
+No mutation in this round survived every scenario. The closest calls were
+chapter 14's cusp-split removal (silent on 2 of 5 scenarios in its own
+feature file) and chapter 15's phase flip (silent on scenarios that don't
+exercise a nonzero phase) — both undetected only by scenarios that were
+never testing the mutated behavior in the first place, not by a gap in
+coverage.

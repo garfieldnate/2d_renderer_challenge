@@ -7,13 +7,14 @@ use std::fs;
 use std::path::Path;
 
 use renderer::{
-    blend_strip, canvas_to_p6, canvas_to_ppm, caps_demo, clamp_pair, clip_demo, disc_centers,
-    disc_coverage, drops, extend_strip, fan_bresenham, fan_both_orders, fan_coverage, fan_wu,
-    flower, gray_match, joins_plate, needles, opacity_plate, painted_twice, plate_01, plate_02,
-    plate_03, plate_04, plate_05, plate_06, plate_07, plate_08, plate_09, plate_10, plate_11,
-    plate_12, plate_13, porter_duff_table, quarter_match, ramp, seam, soft_square, spiral,
+    blend_strip, canvas_to_p6, canvas_to_ppm, caps_demo, clamp_pair, clip_demo, dash_strip,
+    disc_centers, disc_coverage, drops, even_marks, extend_strip, fan_bresenham, fan_both_orders,
+    fan_coverage, fan_wu, flower, fold_demo, gray_match, joins_plate, needles, offsets_plate,
+    opacity_plate, painted_twice, plate_01, plate_02, plate_03, plate_04, plate_05, plate_06,
+    plate_07, plate_08, plate_09, plate_10, plate_11, plate_12, plate_13, plate_14, plate_15,
+    porter_duff_table, quarter_match, ramp, seam, soft_square, spiral, spiral_dashes,
     spiral_smooth, star_centers, star_coverage, star_exact, three_filters, three_gradients,
-    two_filters,
+    two_filters, two_strokes,
 };
 
 fn write_p3(dir: &Path, name: &str, ppm: String) {
@@ -98,5 +99,17 @@ fn main() {
     write_p6(out, "caps.ppm", canvas_to_p6(&caps_demo()));
     write_p6(out, "plate-13.ppm", canvas_to_p6(&plate_13()));
 
-    println!("wrote 44 renders to out/");
+    // Chapter 14: offsetting curves.
+    write_p6(out, "two-strokes.ppm", canvas_to_p6(&two_strokes()));
+    write_p6(out, "fold.ppm", canvas_to_p6(&fold_demo()));
+    write_p6(out, "offsets.ppm", canvas_to_p6(&offsets_plate()));
+    write_p6(out, "plate-14.ppm", canvas_to_p6(&plate_14()));
+
+    // Chapter 15: dashes.
+    write_p6(out, "even-marks.ppm", canvas_to_p6(&even_marks()));
+    write_p6(out, "dash-strip.ppm", canvas_to_p6(&dash_strip()));
+    write_p6(out, "spiral.ppm", canvas_to_p6(&spiral_dashes()));
+    write_p6(out, "plate-15.ppm", canvas_to_p6(&plate_15()));
+
+    println!("wrote 52 renders to out/");
 }

@@ -2228,16 +2228,20 @@ pub fn fill_path(p: &Path, rule: &str, width: usize, height: usize) -> CoverageB
 }
 
 /// The shoelace formula: twice the signed area is the sum, over every
-/// edge, of `a.x * b.y - b.x * a.y`. Every scenario that uses this walks
-/// a single simple polygon (or several same-oriented, non-overlapping
-/// ones, as `needle_path` does), so the sign only has to be consistent
-/// within the path -- the absolute value at the end is the area.
+/// edge, of `a.x * b.y - b.x * a.y`. The sign tells you which way the
+/// path winds: positive is clockwise on screen (the same sign convention
+/// as `cross`), negative is counterclockwise. Chapter 13 relies on the
+/// sign directly (every stroked piece must come out counterclockwise, so
+/// negative), so this returns the signed value, not its absolute value --
+/// callers from chapter 7 on that only want the area take `.abs()`
+/// themselves, and every shape those callers use is already wound
+/// clockwise, so the sign was always positive there anyway.
 pub fn polygon_area(p: &Path) -> f64 {
     let mut area = 0.0;
     for (a, b) in edges(p) {
         area += a.x * b.y - b.x * a.y;
     }
-    (area / 2.0).abs()
+    area / 2.0
 }
 
 // ---------------------------------------------------------------------
@@ -4118,6 +4122,20 @@ fn perp(v: Tuple) -> Tuple {
     vector(-v.y, v.x)
 }
 
+/// The signed angle from `from` to `to`, wrapped to `(-pi, pi]` -- the
+/// short way round, whichever direction that is.
+fn ang_between(from: f64, to: f64) -> f64 {
+    let two_pi = 2.0 * std::f64::consts::PI;
+    let mut d = (to - from) % two_pi;
+    if d > std::f64::consts::PI {
+        d -= two_pi;
+    }
+    if d <= -std::f64::consts::PI {
+        d += two_pi;
+    }
+    d
+}
+
 /// How many steps an arc from `a0` to `a1` needs, one every eighth of a
 /// radian's sixteenth-turn (`pi/16`, 11.25 degrees), at least two.
 fn arc_steps(a0: f64, a1: f64) -> usize {
@@ -4188,14 +4206,12 @@ fn join_shape(v: Tuple, din: Tuple, dout: Tuple, h: f64, join: &str, miter_limit
     match join {
         "bevel" => Some(vec![v, a, b]),
         "round" => {
+            // The arc has to cross the outer gap the short way round: the
+            // long way sweeps back across the inside of the turn and
+            // leaves a notch where the gap should have been filled.
             let a0 = (a.y - v.y).atan2(a.x - v.x);
-            let mut a1 = (b.y - v.y).atan2(b.x - v.x);
-            if s > 0.0 && a1 < a0 {
-                a1 += 2.0 * std::f64::consts::PI;
-            }
-            if s < 0.0 && a1 > a0 {
-                a1 -= 2.0 * std::f64::consts::PI;
-            }
+            let b0 = (b.y - v.y).atan2(b.x - v.x);
+            let a1 = a0 + ang_between(a0, b0);
             let mut pts = vec![v];
             arc_into(&mut pts, v, a0, a1, h, arc_steps(a0, a1));
             Some(pts)
@@ -4256,10 +4272,19 @@ fn dedupe_points(points: &[Tuple]) -> Vec<Tuple> {
 /// Appends a new closed subpath through `pts` to `out` (empty `pts`
 /// appends nothing): every piece a stroke emits -- rectangle, join,
 /// cap, dot -- fills as its own little closed shape, and nonzero winding
-/// merges the overlaps for free.
+/// merges the overlaps for free. Free on one condition: every piece has
+/// to wind the same way, or a piece wound backwards cancels its neighbour
+/// where they overlap instead of adding to it. So every piece is oriented
+/// counterclockwise on screen before it's emitted -- `polygon_area`
+/// negative -- and any piece that comes out clockwise (positive) has its
+/// points reversed first.
 fn push_closed_subpath(out: &mut Path, pts: &[Tuple]) {
     if pts.is_empty() {
         return;
+    }
+    let mut pts = pts.to_vec();
+    if polygon_area(&polygon(&pts)) > 0.0 {
+        pts.reverse();
     }
     move_to(out, pts[0]);
     for &pt in &pts[1..] {
@@ -4363,6 +4388,43 @@ pub fn chevron() -> Path {
     p
 }
 
+/// Nine points on the upper half of a circle of radius 10 about
+/// (50, 50), from 180 to 360 degrees in steps of 22.5 -- a tight hairpin
+/// bend, open, used to check that a wide stroke around a sharp turn
+/// overlaps itself solidly instead of winding into a hole.
+pub fn u_turn() -> Path {
+    let mut p = path();
+    for k in 0..9 {
+        let deg = 180.0 + k as f64 * 22.5;
+        let a = deg * std::f64::consts::PI / 180.0;
+        let q = point(50.0 + 10.0 * a.cos(), 50.0 + 10.0 * a.sin());
+        if k == 0 {
+            move_to(&mut p, q);
+        } else {
+            line_to(&mut p, q);
+        }
+    }
+    p
+}
+
+/// Rounds to the nearest integer, ties to even -- distinct from chapter
+/// 1's `round` (which ties away from zero, the right rule for a channel
+/// byte and never actually hit by a scenario there). A stroke outline's
+/// coordinates get rounded before chapter 3's `line_wu` wants integers,
+/// and a symmetric shape can land an edge exactly on a half-pixel; ties
+/// away from zero would nudge that edge a whole pixel off from the
+/// reference, which breaks the tie to even instead, matching it.
+fn round_half_to_even(x: f64) -> i64 {
+    let rounded_up = (x + 0.5).floor(); // ties toward +infinity, like JS's Math.round
+    let frac = x - x.floor();
+    let r = rounded_up as i64;
+    if (frac - 0.5).abs() < 1e-9 && r % 2 != 0 {
+        r - 1
+    } else {
+        r
+    }
+}
+
 /// A panel showing `outline`'s gray fill with its own edges traced over
 /// it in magenta (chapter 3's `line_wu`, which wants integer endpoints,
 /// so the outline's coordinates are rounded to the nearest pixel first).
@@ -4372,7 +4434,14 @@ fn stroke_panel(width: usize, height: usize, outline: &Path) -> Canvas {
     let cov = fill_path(outline, "nonzero", width, height);
     paint_through(&mut c, &cov, CH13_GRAY);
     for (a, b) in edges(outline) {
-        line_wu(&mut c, round(a.x), round(a.y), round(b.x), round(b.y), CH13_MAGENTA);
+        line_wu(
+            &mut c,
+            round_half_to_even(a.x),
+            round_half_to_even(a.y),
+            round_half_to_even(b.x),
+            round_half_to_even(b.y),
+            CH13_MAGENTA,
+        );
     }
     c
 }
@@ -4415,4 +4484,877 @@ pub fn caps_demo() -> Canvas {
         blit_panel(&mut out, &panel, i as i64 * CH13_SIZE as i64, 0);
     }
     out
+}
+
+// =======================================================================
+// Chapter 14: Offsetting Curves
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 14.1 The offset point
+// ---------------------------------------------------------------------
+
+/// `t`, nudged a hair further into the curve (`+0.0001` unless that would
+/// leave `[0, 1]`, in which case `-0.0001`) when the derivative vanishes
+/// there -- a handle sitting exactly on its anchor still leaves in a
+/// definite direction, just at zero speed, so a plain `derivative` can't
+/// be normalized there.
+fn live_t(c: &Curve, t: f64) -> f64 {
+    if magnitude(derivative(c, t)) < 1e-9 {
+        if t + 0.0001 <= 1.0 {
+            t + 0.0001
+        } else {
+            t - 0.0001
+        }
+    } else {
+        t
+    }
+}
+
+/// The unit tangent at `t`.
+pub fn tangent_at(c: &Curve, t: f64) -> Tuple {
+    normalize(derivative(c, live_t(c, t)))
+}
+
+/// The tangent turned a quarter turn toward `+y` -- on the y-down canvas
+/// that's the right-hand side of travel, the same side chapter 13's
+/// rectangles offset by `+h`.
+pub fn normal_at(c: &Curve, t: f64) -> Tuple {
+    perp(tangent_at(c, t))
+}
+
+/// The point at `t`, stepped `d` along the normal. Positive `d` is the
+/// right-hand side of travel; negative is the left.
+pub fn offset_point(c: &Curve, t: f64, d: f64) -> Tuple {
+    point_at(c, t) + normal_at(c, t) * d
+}
+
+// ---------------------------------------------------------------------
+// § 14.2 Curvature, and where the offset stalls
+// ---------------------------------------------------------------------
+
+/// The Bezier of second differences: the derivative's own derivative, one
+/// degree lower still. A quadratic's is the constant `2*(P0-2P1+P2)`; a
+/// cubic's is the straight-line blend between the two second differences
+/// of its four points. Built generically (repeat the degree-reduction a
+/// second time) so it agrees with both closed forms without special
+/// casing either.
+pub fn second_derivative(c: &Curve, t: f64) -> Tuple {
+    let n = (c.points.len() - 1) as f64;
+    let d1: Vec<Tuple> = c.points.windows(2).map(|w| (w[1] - w[0]) * n).collect();
+    if d1.len() < 2 {
+        return vector(0.0, 0.0);
+    }
+    let n2 = (d1.len() - 1) as f64;
+    let d2: Vec<Tuple> = d1.windows(2).map(|w| (w[1] - w[0]) * n2).collect();
+    de_casteljau(&d2, t).0
+}
+
+/// `cross(v, a) / |v|^3`, `v` the derivative and `a` the second
+/// derivative: signed the same way as `cross`, positive where the curve
+/// turns clockwise on screen -- the same side positive `d` points to.
+/// `1 / |curvature|` is the radius of the circle hugging the curve there.
+pub fn curvature(c: &Curve, t: f64) -> f64 {
+    let t = live_t(c, t);
+    let v = derivative(c, t);
+    let a = second_derivative(c, t);
+    let s = magnitude(v);
+    cross(v, a) / (s * s * s)
+}
+
+/// The parameters where `1 - curvature(c, t) * d` changes sign -- where
+/// the offset at distance `d` stalls and turns back on itself. Sampled at
+/// 64 evenly spaced parameters and bisected 40 times between any pair of
+/// neighbours that disagree in sign.
+pub fn cusps(c: &Curve, d: f64) -> Vec<f64> {
+    let f = |t: f64| 1.0 - curvature(c, t) * d;
+    let mut out = Vec::new();
+    let mut prev = f(0.0);
+    for i in 1..=64 {
+        let t = i as f64 / 64.0;
+        let cur = f(t);
+        if (prev < 0.0) != (cur < 0.0) {
+            let mut lo = (i as f64 - 1.0) / 64.0;
+            let mut hi = t;
+            let mut flo = prev;
+            for _ in 0..40 {
+                let mid = (lo + hi) / 2.0;
+                let fm = f(mid);
+                if (fm < 0.0) == (flo < 0.0) {
+                    lo = mid;
+                    flo = fm;
+                } else {
+                    hi = mid;
+                }
+            }
+            out.push((lo + hi) / 2.0);
+        }
+        prev = cur;
+    }
+    out
+}
+
+// ---------------------------------------------------------------------
+// § 14.3 Fitting one cubic, and admitting the miss
+// ---------------------------------------------------------------------
+
+/// One cubic through the offset's two endpoints, with the curve's own end
+/// tangents, whose midpoint lands on the true offset point at `t = 0.5`.
+/// The two handle lengths solve `a*T0 - b*T1 = R` by crossing each side
+/// with the other tangent; parallel end tangents leave no unique answer,
+/// so both handles fall back to a third of the chord.
+pub fn fit_offset(c: &Curve, d: f64) -> Curve {
+    let p0 = offset_point(c, 0.0, d);
+    let p3 = offset_point(c, 1.0, d);
+    let t0 = tangent_at(c, 0.0);
+    let t1 = tangent_at(c, 1.0);
+    let m = offset_point(c, 0.5, d);
+    let r = (m * 8.0 - p0 * 4.0 - p3 * 4.0) / 3.0;
+    let den = cross(t0, t1);
+    let (a, b) = if den.abs() < 1e-9 {
+        let v = magnitude(p3 - p0) / 3.0;
+        (v, v)
+    } else {
+        (cross(r, t1) / den, cross(r, t0) / den)
+    };
+    cubic(p0, p0 + t0 * a, p3 - t1 * b, p3)
+}
+
+/// The largest miss between the fitted cubic and the true offset, over 17
+/// matched parameters `t = i / 16`. Cheap, deterministic, and pessimistic
+/// (the two curves don't run at the same speed), but a genuine bound.
+pub fn offset_error(c: &Curve, d: f64, f: &Curve) -> f64 {
+    let mut worst = 0.0;
+    for i in 0..=16 {
+        let t = i as f64 / 16.0;
+        let miss = magnitude(point_at(f, t) - offset_point(c, t, d));
+        worst = f64::max(worst, miss);
+    }
+    worst
+}
+
+/// The distance from `p` to the nearest point on `c`: the closest of 65
+/// samples at `t = i / 64`, refined by 32 rounds of ternary search
+/// between that sample's two neighbours. There's no closed form (it's a
+/// quintic for a cubic), so this is sampling, honestly.
+pub fn distance_to_curve(c: &Curve, p: Tuple) -> f64 {
+    const N: usize = 64;
+    let mut best_i = 0usize;
+    let mut best_d = f64::INFINITY;
+    for i in 0..=N {
+        let t = i as f64 / N as f64;
+        let d = magnitude(point_at(c, t) - p);
+        if d < best_d {
+            best_d = d;
+            best_i = i;
+        }
+    }
+    let mut lo = ((best_i as f64 - 1.0) / N as f64).max(0.0);
+    let mut hi = ((best_i as f64 + 1.0) / N as f64).min(1.0);
+    for _ in 0..32 {
+        let m1 = lo + (hi - lo) / 3.0;
+        let m2 = hi - (hi - lo) / 3.0;
+        let d1 = magnitude(point_at(c, m1) - p);
+        let d2 = magnitude(point_at(c, m2) - p);
+        if d1 < d2 {
+            hi = m2;
+        } else {
+            lo = m1;
+        }
+    }
+    let t_best = (lo + hi) / 2.0;
+    magnitude(point_at(c, t_best) - p)
+}
+
+// ---------------------------------------------------------------------
+// § 14.4 The offset curve
+// ---------------------------------------------------------------------
+
+/// The piece of `c` between two parameters, by splitting twice: once at
+/// `t0` to drop everything before it, once more at the rescaled `t1` to
+/// drop everything after.
+pub fn sub_curve(c: &Curve, t0: f64, t1: f64) -> Curve {
+    let right = if t0 > 0.0 { split_at(c, t0).1 } else { c.clone() };
+    if t1 < 1.0 {
+        split_at(&right, (t1 - t0) / (1.0 - t0)).0
+    } else {
+        right
+    }
+}
+
+fn offset_into(c: &Curve, d: f64, tolerance: f64, out: &mut Vec<Curve>, depth: u32) {
+    let f = fit_offset(c, d);
+    if offset_error(c, d, &f) <= tolerance || depth >= 16 {
+        out.push(f);
+        return;
+    }
+    let (left, right) = split_at(c, 0.5);
+    offset_into(&left, d, tolerance, out, depth + 1);
+    offset_into(&right, d, tolerance, out, depth + 1);
+}
+
+/// The offset of `c` at distance `d`, as a list of cubics in order,
+/// chaining end to end from the first offset point to the last: split at
+/// every cusp so no piece contains a flip, then fit each piece, halving
+/// and re-fitting until `offset_error` is within `tolerance`, capped at
+/// sixteen halvings.
+pub fn offset_curve(c: &Curve, d: f64, tolerance: f64) -> Vec<Curve> {
+    let mut ts = vec![0.0];
+    for t in cusps(c, d) {
+        if t - ts.last().unwrap() > 1e-9 && 1.0 - t > 1e-9 {
+            ts.push(t);
+        }
+    }
+    ts.push(1.0);
+    let mut out = Vec::new();
+    for w in ts.windows(2) {
+        offset_into(&sub_curve(c, w[0], w[1]), d, tolerance, &mut out, 0);
+    }
+    out
+}
+
+/// The honest check on `offset_curve`'s result: how far 100 points spread
+/// evenly along the assembled pieces stray from distance `|d|` to `c`.
+/// Within tolerance on the outside of a bend; past the radius on the
+/// inside, the offset folds back through itself and comes much closer
+/// than `d` -- that's the fold, not an error in the fit.
+pub fn offset_distance_error(c: &Curve, d: f64, tolerance: f64) -> f64 {
+    let pieces = offset_curve(c, d, tolerance);
+    if pieces.is_empty() {
+        return 0.0;
+    }
+    let n = pieces.len() as f64;
+    let mut worst: f64 = 0.0;
+    for i in 0..100 {
+        let u = i as f64 / 99.0 * n;
+        let idx = (u.floor() as usize).min(pieces.len() - 1);
+        let local_t = (u - idx as f64).min(1.0);
+        let p = point_at(&pieces[idx], local_t);
+        let miss = (distance_to_curve(c, p) - d.abs()).abs();
+        worst = worst.max(miss);
+    }
+    worst
+}
+
+// ---------------------------------------------------------------------
+// § 14.5 Stroking a curve: one outline
+// ---------------------------------------------------------------------
+
+/// Builds an open `Path` through `pts` with no closing segment -- the
+/// input to chapter 13's stroker when what you have is a bare polyline,
+/// not a `Path` already.
+fn open_path_from_points(pts: &[Tuple]) -> Path {
+    let mut p = path();
+    if pts.is_empty() {
+        return p;
+    }
+    move_to(&mut p, pts[0]);
+    for &q in &pts[1..] {
+        line_to(&mut p, q);
+    }
+    p
+}
+
+/// The stroke of a curve as one closed subpath: the offset at `+h`
+/// flattened forward, the end cap's points, the offset at `-h` flattened
+/// backward, the start cap's points, with consecutive duplicates dropped
+/// (and the last point dropped too if it lands back on the first). Fill
+/// it nonzero -- there's no new rasterizer, same as chapter 13.
+pub fn stroke_curve_to_path(c: &Curve, width: f64, cap: &str, tolerance: f64) -> Path {
+    let h = width / 2.0;
+    let mut pts: Vec<Tuple> = Vec::new();
+
+    for piece in offset_curve(c, h, tolerance) {
+        pts.extend(flatten(&piece, tolerance));
+    }
+    if let Some(capped) = cap_shape(point_at(c, 1.0), tangent_at(c, 1.0), h, cap) {
+        pts.extend(capped);
+    }
+    for piece in offset_curve(c, -h, tolerance).iter().rev() {
+        let mut f = flatten(piece, tolerance);
+        f.reverse();
+        pts.extend(f);
+    }
+    let t0 = tangent_at(c, 0.0);
+    if let Some(capped) = cap_shape(point_at(c, 0.0), -t0, h, cap) {
+        pts.extend(capped);
+    }
+
+    let mut pts = dedupe_points(&pts);
+    if pts.len() > 1 && magnitude(*pts.last().unwrap() - pts[0]) < 1e-9 {
+        pts.pop();
+    }
+
+    let mut out = path();
+    if !pts.is_empty() {
+        move_to(&mut out, pts[0]);
+        for &p in &pts[1..] {
+            line_to(&mut out, p);
+        }
+        close(&mut out);
+    }
+    out
+}
+
+/// The way you were stroking curves until this morning: flatten at
+/// `tolerance`, then chapter 13's stroker with round joins and a miter
+/// limit of 4. Both pictures agree; only the point count gives it away.
+pub fn flatten_then_stroke(c: &Curve, width: f64, cap: &str, tolerance: f64) -> Path {
+    let pts = flatten(c, tolerance);
+    let p = open_path_from_points(&pts);
+    stroke_to_path(&p, width, cap, "round", 4.0)
+}
+
+/// The total number of points in a path, over every subpath.
+pub fn point_count(p: &Path) -> usize {
+    subpaths(p).iter().map(|sp| sp.points.len()).sum()
+}
+
+// ---------------------------------------------------------------------
+// § 14.6 Putting it together
+// ---------------------------------------------------------------------
+
+/// A cubic bending back on itself with a tightest radius of about 8;
+/// stroked 60 wide, its inner offset (at +30) folds into a loop.
+pub fn hairpin() -> Curve {
+    cubic(point(35.0, 140.0), point(65.0, -30.0), point(95.0, -30.0), point(125.0, 140.0))
+}
+
+/// The plate's arch: a cubic whose tightest radius is about 26.
+pub fn arch() -> Curve {
+    cubic(point(60.0, 250.0), point(130.0, 5.0), point(190.0, 5.0), point(260.0, 250.0))
+}
+
+/// The offset of `c` at `d`, as one flattened polyline: each piece of
+/// `offset_curve` flattened and appended, dropping a piece's first point
+/// when it repeats the point the previous piece just ended on.
+fn offset_path_points(c: &Curve, d: f64, tolerance: f64) -> Vec<Tuple> {
+    let mut pts: Vec<Tuple> = Vec::new();
+    for piece in offset_curve(c, d, tolerance) {
+        let mut f = flatten(&piece, tolerance);
+        if let Some(&last) = pts.last() {
+            if !f.is_empty() && f[0].x == last.x && f[0].y == last.y {
+                f.remove(0);
+            }
+        }
+        pts.extend(f);
+    }
+    pts
+}
+
+const CH14_WHITE: Color = Color { red: 0.9, green: 0.9, blue: 0.92 };
+const CH14_COOL: [Color; 4] = [
+    Color { red: 0.35, green: 0.8, blue: 0.9 },
+    Color { red: 0.25, green: 0.6, blue: 0.9 },
+    Color { red: 0.3, green: 0.4, blue: 0.85 },
+    Color { red: 0.45, green: 0.3, blue: 0.8 },
+];
+const CH14_WARM: [Color; 4] = [
+    Color { red: 0.95, green: 0.75, blue: 0.2 },
+    Color { red: 0.95, green: 0.55, blue: 0.15 },
+    Color { red: 0.9, green: 0.35, blue: 0.15 },
+    Color { red: 0.8, green: 0.2, blue: 0.2 },
+];
+
+/// Strokes the open polyline `pts` hairline-thin with chapter 13's
+/// stroker (butt caps, round joins) and paints the result through
+/// `color`.
+fn hairline(c: &mut Canvas, pts: &[Tuple], color: Color, width: f64) {
+    if pts.len() < 2 {
+        return;
+    }
+    let p = open_path_from_points(pts);
+    let outline = stroke_to_path(&p, width, "butt", "round", 4.0);
+    let cov = fill_path(&outline, "nonzero", c.width, c.height);
+    paint_through(c, &cov, color);
+}
+
+/// A panel showing `outline`'s fill (under `rule`) in gray with its own
+/// edges traced over it in magenta -- chapter 13's `stroke_panel`,
+/// parameterized by fill rule for the fold demo.
+fn outline_panel_rule(width: usize, height: usize, outline: &Path, rule: &str) -> Canvas {
+    let mut c = canvas(width, height);
+    fill(&mut c, CH13_PAPER);
+    let cov = fill_path(outline, rule, width, height);
+    paint_through(&mut c, &cov, CH13_GRAY);
+    for (a, b) in edges(outline) {
+        line_wu(
+            &mut c,
+            round_half_to_even(a.x),
+            round_half_to_even(a.y),
+            round_half_to_even(b.x),
+            round_half_to_even(b.y),
+            CH13_MAGENTA,
+        );
+    }
+    c
+}
+
+/// The hairpin stroked two ways, side by side: chapter 13's stroker on
+/// the flattened polyline (left), one outline from the offset curves
+/// (right), each drawn in magenta over its gray fill.
+pub fn two_strokes() -> Canvas {
+    let left = flatten_then_stroke(&hairpin(), 60.0, "butt", 0.25);
+    let right = stroke_curve_to_path(&hairpin(), 60.0, "butt", 0.25);
+    let panel_l = stroke_panel(CH13_SIZE, CH13_SIZE, &left);
+    let panel_r = stroke_panel(CH13_SIZE, CH13_SIZE, &right);
+    let mut out = canvas(2 * CH13_SIZE, CH13_SIZE);
+    blit_panel(&mut out, &panel_l, 0, 0);
+    blit_panel(&mut out, &panel_r, CH13_SIZE as i64, 0);
+    out
+}
+
+/// The offset-curve outline of the hairpin's stroke, filled nonzero
+/// (left) and even-odd (right): the fold is ink on the left and a hole on
+/// the right, exactly where the pen swept through the inside of the
+/// bend.
+pub fn fold_demo() -> Canvas {
+    let o = stroke_curve_to_path(&hairpin(), 60.0, "butt", 0.25);
+    let panel_nz = outline_panel_rule(CH13_SIZE, CH13_SIZE, &o, "nonzero");
+    let panel_eo = outline_panel_rule(CH13_SIZE, CH13_SIZE, &o, "evenodd");
+    let mut out = canvas(2 * CH13_SIZE, CH13_SIZE);
+    blit_panel(&mut out, &panel_nz, 0, 0);
+    blit_panel(&mut out, &panel_eo, CH13_SIZE as i64, 0);
+    out
+}
+
+/// The whole chapter in one picture: the arch, its offsets at 15, 30, 45
+/// and 60 on both sides (cool outside, warm on the inside where they
+/// fold), the curve itself in white, and every cusp marked with a
+/// magenta dot.
+pub fn offsets_plate() -> Canvas {
+    let w = 320usize;
+    let h = 270usize;
+    let mut c = canvas(w, h);
+    fill(&mut c, CH13_PAPER);
+    let curve = arch();
+    let ds = [15.0, 30.0, 45.0, 60.0];
+
+    for (k, &d) in ds.iter().enumerate() {
+        let pts = offset_path_points(&curve, -d, 0.1);
+        hairline(&mut c, &pts, CH14_COOL[k], 1.5);
+    }
+    for (k, &d) in ds.iter().enumerate() {
+        let pts = offset_path_points(&curve, d, 0.1);
+        hairline(&mut c, &pts, CH14_WARM[k], 1.5);
+    }
+    hairline(&mut c, &flatten(&curve, 0.1), CH14_WHITE, 2.0);
+
+    for &d in &ds {
+        for t in cusps(&curve, d) {
+            let q = offset_point(&curve, t, d);
+            let dot = circle_path(q.x, q.y, 2.5, 24);
+            let cov = fill_path(&dot, "nonzero", w, h);
+            paint_through(&mut c, &cov, CH13_MAGENTA);
+        }
+    }
+    c
+}
+
+/// Plate 14: `offsets_plate`, magnified by 2.
+pub fn plate_14() -> Canvas {
+    magnify(&offsets_plate(), 2)
+}
+
+// =======================================================================
+// Chapter 15: Dashes
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 15.1 How long is a curve
+// ---------------------------------------------------------------------
+
+/// The sum of a path's segments: every subpath's own segments, plus (for
+/// a closed one) the segment from its last point back to its first. Unlike
+/// `edges`, which treats every subpath as closed for filling's sake, an
+/// open subpath here gets no closing segment.
+pub fn path_length(p: &Path) -> f64 {
+    let mut total = 0.0;
+    for sp in subpaths(p) {
+        let pts = &sp.points;
+        if pts.len() < 2 {
+            continue;
+        }
+        for w in pts.windows(2) {
+            total += magnitude(w[1] - w[0]);
+        }
+        if sp.closed {
+            total += magnitude(pts[0] - *pts.last().unwrap());
+        }
+    }
+    total
+}
+
+/// `n + 1` running lengths of the polyline through `point_at(c, i / n)`:
+/// `table[0]` is 0 and `table[n]` is that polyline's whole length, a
+/// little short of the curve's true length because chords cut corners.
+pub fn arc_length_table(c: &Curve, n: usize) -> Vec<f64> {
+    let mut table = vec![0.0];
+    let mut prev = point_at(c, 0.0);
+    for i in 1..=n {
+        let t = i as f64 / n as f64;
+        let q = point_at(c, t);
+        let last = *table.last().unwrap();
+        table.push(last + magnitude(q - prev));
+        prev = q;
+    }
+    table
+}
+
+/// `arc_length_table(c, n)`'s last entry: the curve's length, approximated
+/// by `n` chords, more closely the bigger `n` is.
+pub fn arc_length(c: &Curve, n: usize) -> f64 {
+    *arc_length_table(c, n).last().unwrap()
+}
+
+/// The parameter where the running length in `table` reaches `s`: 0
+/// before the start, 1 past the end, and inside the table a binary search
+/// for the chord that spans `s` followed by an exact linear interpolation
+/// within that one (straight) chord.
+pub fn t_at_length(table: &[f64], s: f64) -> f64 {
+    let n = table.len() - 1;
+    if s <= 0.0 {
+        return 0.0;
+    }
+    if s >= table[n] {
+        return 1.0;
+    }
+    let mut lo = 0usize;
+    let mut hi = n;
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if table[mid] <= s {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let span = table[lo + 1] - table[lo];
+    let frac = if span > 0.0 { (s - table[lo]) / span } else { 0.0 };
+    (lo as f64 + frac) / n as f64
+}
+
+/// The point at running length `s` along `c`, approximated with `n`
+/// chords.
+pub fn point_at_length(c: &Curve, s: f64, n: usize) -> Tuple {
+    point_at(c, t_at_length(&arc_length_table(c, n), s))
+}
+
+/// Splits `c` at the parameter that reaches running length `s`,
+/// approximated with `n` chords -- `split_at` handed the parameter the
+/// arc-length table found instead of a raw `t`.
+pub fn split_at_length(c: &Curve, s: f64, n: usize) -> (Curve, Curve) {
+    split_at(c, t_at_length(&arc_length_table(c, n), s))
+}
+
+// ---------------------------------------------------------------------
+// § 15.2 The pattern
+// ---------------------------------------------------------------------
+
+/// Turns a raw dash pattern into the one the walk uses: an odd number of
+/// entries is doubled so on and off alternate the same way every cycle. A
+/// negative entry, or one that sums to zero or less, is no pattern at all
+/// -- comes back empty, which `dash` treats as "draw it solid".
+pub fn normalize_pattern(pattern: &[f64]) -> Vec<f64> {
+    let sum: f64 = pattern.iter().sum();
+    let neg = pattern.iter().any(|&v| v < 0.0);
+    if neg || sum <= 0.0 {
+        Vec::new()
+    } else if pattern.len() % 2 == 1 {
+        let mut v = pattern.to_vec();
+        v.extend_from_slice(pattern);
+        v
+    } else {
+        pattern.to_vec()
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 15.3-15.4 The walk, and closed subpaths
+// ---------------------------------------------------------------------
+
+/// Cuts `p` into dashes: a path-to-path transform, like the stroker and
+/// the offset. Every subpath starts the pattern over from `phase` (taken
+/// modulo the pattern's sum, so a negative phase wraps and a phase of the
+/// whole sum is no phase at all), and walks its own segments in order,
+/// straight through every vertex -- a dash that reaches a corner turns
+/// it. On-stretches become open subpaths of the result; a pattern that
+/// normalizes to nothing (see `normalize_pattern`) leaves `p` untouched.
+///
+/// A closed subpath is walked around its closing segment too. If the walk
+/// is still "on" when it gets back to the start, and it was "on" when it
+/// left, the last dash and the first are touching: they're joined into
+/// one dash that turns the starting corner, or, if a single dash covers
+/// the whole loop, that dash comes back closed.
+pub fn dash(p: &Path, pattern: &[f64], phase: f64) -> Path {
+    let pat = normalize_pattern(pattern);
+    if pat.is_empty() {
+        return p.clone();
+    }
+    let n = pat.len();
+    let total: f64 = pat.iter().sum();
+    let mut out = path();
+
+    for sp in subpaths(p) {
+        let mut pts = sp.points.clone();
+        if sp.closed && pts.len() > 1 {
+            pts.push(pts[0]);
+        }
+
+        let mut i = 0usize;
+        let mut remaining = pat[0];
+        let mut on = true;
+        let mut ph = ((phase % total) + total) % total;
+        while ph > 0.0 {
+            if ph >= remaining {
+                ph -= remaining;
+                i = (i + 1) % n;
+                remaining = pat[i];
+                on = !on;
+            } else {
+                remaining -= ph;
+                ph = 0.0;
+            }
+        }
+
+        let mut dashes: Vec<(Vec<Tuple>, bool)> = Vec::new();
+        let mut cur: Option<usize> = None;
+
+        if pts.len() >= 2 {
+            for k in 0..pts.len() - 1 {
+                let a = pts[k];
+                let b = pts[k + 1];
+                let seg = magnitude(b - a);
+                if seg < 1e-9 {
+                    continue;
+                }
+                let mut pos = 0.0;
+                while pos < seg {
+                    let step = remaining.min(seg - pos);
+                    if on {
+                        if cur.is_none() {
+                            dashes.push((vec![lerp_tuple(a, b, pos / seg)], false));
+                            cur = Some(dashes.len() - 1);
+                        }
+                        if step > 0.0 {
+                            dashes[cur.unwrap()].0.push(lerp_tuple(a, b, (pos + step) / seg));
+                        }
+                    }
+                    pos += step;
+                    remaining -= step;
+                    if remaining <= 1e-9 {
+                        i = (i + 1) % n;
+                        remaining = pat[i];
+                        on = !on;
+                        cur = None;
+                    }
+                }
+            }
+        }
+
+        if sp.closed && !dashes.is_empty() {
+            let head_start = dashes[0].0[0];
+            let tail_end = *dashes[dashes.len() - 1].0.last().unwrap();
+            if magnitude(head_start - pts[0]) < 1e-9 && magnitude(tail_end - pts[0]) < 1e-9 {
+                if dashes.len() == 1 {
+                    dashes[0].0.pop();
+                    dashes[0].1 = true;
+                } else {
+                    let head_rest: Vec<Tuple> = dashes[0].0[1..].to_vec();
+                    let last = dashes.len() - 1;
+                    dashes[last].0.extend(head_rest);
+                    dashes.remove(0);
+                }
+            }
+        }
+
+        for (dpts, closed) in dashes {
+            if dpts.is_empty() {
+                continue;
+            }
+            move_to(&mut out, dpts[0]);
+            for &q in &dpts[1..] {
+                line_to(&mut out, q);
+            }
+            if closed {
+                close(&mut out);
+            }
+        }
+    }
+
+    out
+}
+
+/// The number of dashes `dash(p, pattern, phase)` produces.
+pub fn dash_count(p: &Path, pattern: &[f64], phase: f64) -> usize {
+    subpaths(&dash(p, pattern, phase)).len()
+}
+
+// ---------------------------------------------------------------------
+// § 15.5 Putting it together
+// ---------------------------------------------------------------------
+
+const CH15_DIM: Color = Color { red: 0.25, green: 0.25, blue: 0.28 };
+const CH15_INKS: [Color; 3] = [
+    Color { red: 0.9, green: 0.55, blue: 0.1 },
+    Color { red: 0.2, green: 0.55, blue: 0.85 },
+    Color { red: 0.85, green: 0.25, blue: 0.3 },
+];
+
+/// The lopsided cubic Figure 15.1 uses: one short handle and one long
+/// one, so the parameter's speed changes by a factor of five along it.
+pub fn lopsided() -> Curve {
+    cubic(point(15.0, 100.0), point(20.0, 20.0), point(150.0, 15.0), point(185.0, 95.0))
+}
+
+/// Paints a filled disc of radius `r` about `q` (a 24-gon, chapter 5's
+/// `circle_path`, filled nonzero) through `color`.
+fn paint_dot(c: &mut Canvas, q: Tuple, r: f64, color: Color) {
+    let disc = circle_path(q.x, q.y, r, 24);
+    let cov = fill_path(&disc, "nonzero", c.width, c.height);
+    paint_through(c, &cov, color);
+}
+
+/// `lopsided()`, twice: eleven marks at equal steps of the parameter on
+/// the left, eleven at equal steps of arc length on the right, over the
+/// same faint spine.
+pub fn even_marks() -> Canvas {
+    let w = 200usize;
+    let h = 120usize;
+    let curve = lopsided();
+
+    let mut spine = path();
+    flatten_into_path(&mut spine, &curve, 0.1);
+    let outline = stroke_to_path(&spine, 1.5, "butt", "round", 4.0);
+    let cov = fill_path(&outline, "nonzero", w, h);
+
+    let mut left = canvas(w, h);
+    fill(&mut left, CH13_PAPER);
+    paint_through(&mut left, &cov, CH15_DIM);
+    let mut right = canvas(w, h);
+    fill(&mut right, CH13_PAPER);
+    paint_through(&mut right, &cov, CH15_DIM);
+
+    let total = arc_length(&curve, 256);
+    for i in 0..=10 {
+        let t = i as f64 / 10.0;
+        paint_dot(&mut left, point_at(&curve, t), 3.0, CH15_INKS[0]);
+        paint_dot(&mut right, point_at_length(&curve, total * t, 256), 3.0, CH15_INKS[1]);
+    }
+
+    let mut out = canvas(2 * w, h);
+    blit_panel(&mut out, &left, 0, 0);
+    blit_panel(&mut out, &right, w as i64, 0);
+    out
+}
+
+/// The flattened cubic `[(20,20+dy), (120,-20+dy), (200,60+dy),
+/// (300,20+dy)]`, as one open subpath -- the strip's wave, shifted down
+/// by `dy` for each row.
+fn wave(dy: f64) -> Path {
+    let c = cubic(
+        point(20.0, 20.0 + dy),
+        point(120.0, -20.0 + dy),
+        point(200.0, 60.0 + dy),
+        point(300.0, 20.0 + dy),
+    );
+    let mut p = path();
+    flatten_into_path(&mut p, &c, 0.1);
+    p
+}
+
+/// One wave, four ways: solid, `[12, 6]`, the same at phase 9, and `[0,
+/// 9]` with round caps -- the dots are chapter 13's single-point
+/// subpaths.
+pub fn dash_strip() -> Canvas {
+    let mut c = canvas(320, 160);
+    fill(&mut c, CH13_PAPER);
+    let rows: [(&[f64], f64, &str, Color); 4] = [
+        (&[], 0.0, "butt", CH13_GRAY),
+        (&[12.0, 6.0], 0.0, "butt", CH15_INKS[0]),
+        (&[12.0, 6.0], 9.0, "butt", CH15_INKS[1]),
+        (&[0.0, 9.0], 0.0, "round", CH15_INKS[2]),
+    ];
+    for (k, (pattern, phase, cap, color)) in rows.iter().enumerate() {
+        let w = wave(40.0 * k as f64);
+        let d = dash(&w, pattern, *phase);
+        let outline = stroke_to_path(&d, 5.0, cap, "round", 4.0);
+        let cov = fill_path(&outline, "nonzero", c.width, c.height);
+        paint_through(&mut c, &cov, *color);
+    }
+    c
+}
+
+/// Seven quarter circles, each `phi` times the radius of the last and
+/// tangent to it -- the golden spiral -- each quarter a cubic with the
+/// usual 0.5523 handles, all flattened into one open subpath so the dash
+/// walk carries the pattern from the innermost turn to the outermost
+/// without a reset.
+pub fn golden_spiral() -> Path {
+    let phi = (1.0 + 5.0_f64.sqrt()) / 2.0;
+    let kappa = 0.5522847498;
+    let mut p = path();
+    let mut r = 6.0;
+    let mut cx = 148.0;
+    let mut cy = 130.0;
+    let mut theta = std::f64::consts::PI;
+    for _ in 0..7 {
+        let a0 = theta;
+        let a1 = theta + std::f64::consts::PI / 2.0;
+        let d0 = vector(a0.cos(), a0.sin());
+        let d1 = vector(a1.cos(), a1.sin());
+        let p0 = point(cx + r * d0.x, cy + r * d0.y);
+        let p3 = point(cx + r * d1.x, cy + r * d1.y);
+        let p1 = p0 + d1 * (kappa * r);
+        let p2 = p3 + d0 * (kappa * r);
+        flatten_into_path(&mut p, &cubic(p0, p1, p2, p3), 0.05);
+        let nr = r * phi;
+        cx = p3.x - nr * d1.x;
+        cy = p3.y - nr * d1.y;
+        r = nr;
+        theta = a1;
+    }
+    p
+}
+
+/// Builds a fresh one-subpath `Path` through a subpath's own points, so
+/// each of `dash`'s results can be stroked and painted in its own color.
+fn subpath_as_path(sp: &Subpath) -> Path {
+    let mut p = path();
+    move_to(&mut p, sp.points[0]);
+    for &pt in &sp.points[1..] {
+        line_to(&mut p, pt);
+    }
+    if sp.closed {
+        close(&mut p);
+    }
+    p
+}
+
+/// The golden spiral, drawn faintly, dashed 16 on 10 off and stroked
+/// every dash 7 wide with round caps, in the next of three inks.
+pub fn spiral_dashes() -> Canvas {
+    let w = 340usize;
+    let h = 340usize;
+    let mut c = canvas(w, h);
+    fill(&mut c, CH13_PAPER);
+
+    let sp = golden_spiral();
+    let outline = stroke_to_path(&sp, 1.0, "butt", "round", 4.0);
+    let cov = fill_path(&outline, "nonzero", w, h);
+    paint_through(&mut c, &cov, CH15_DIM);
+
+    let dashed = dash(&sp, &[16.0, 10.0], 0.0);
+    for (k, one) in subpaths(&dashed).iter().enumerate() {
+        let one_path = subpath_as_path(one);
+        let outline = stroke_to_path(&one_path, 7.0, "round", "round", 4.0);
+        let cov = fill_path(&outline, "nonzero", w, h);
+        paint_through(&mut c, &cov, CH15_INKS[k % 3]);
+    }
+    c
+}
+
+/// Plate 15: `spiral_dashes`, magnified by 2.
+pub fn plate_15() -> Canvas {
+    magnify(&spiral_dashes(), 2)
 }
