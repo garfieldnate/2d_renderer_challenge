@@ -17,6 +17,13 @@ Feature: Stroking a curve is one outline
     And   subpaths(o)[0].points[57] = offset_point(hairpin(), 0, -30)
     And   subpaths(o)[0].points[0] = point(64.5435, 145.214) ± 0.001
 
+  Scenario: The fold's tip lands exactly on a half, and is drawn one row down
+    Given o ← stroke_curve_to_path(hairpin(), 60, "butt", 0.25)
+    Then  subpaths(o)[0].points[13] = point(80, 42.5)
+    And   subpaths(o)[0].points[42] = point(80, -17.5)
+    And   round(42.5) = 43
+    And   round(-17.5) = -17
+
   Scenario: Caps add their points to the same outline
     Then  point_count(stroke_curve_to_path(hairpin(), 60, "round", 0.25)) = 88
     And   point_count(stroke_curve_to_path(hairpin(), 60, "square", 0.25)) = 62
