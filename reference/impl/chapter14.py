@@ -19,7 +19,7 @@ from chapter04 import point, vector, cross, magnitude, normalize, side_by_side
 from chapter05 import path, move_to, line_to, polygon, edges, circle_path
 from chapter07 import fill_path
 from chapter08 import cubic, point_at, split_at, derivative, flatten, flatten_into_path
-from chapter13 import stroke_to_path, _cap, _dedupe
+from chapter13 import stroke_to_path, _cap, _dedupe, _px
 
 CHAPTER = 14
 FORMAT = "P6"
@@ -296,7 +296,7 @@ def _hairline(c, p, col, width=1.5):
 
 def _outline_over(c, outline, col):
     for a, b in edges(outline):
-        line_wu(c, int(round(a.x)), int(round(a.y)), int(round(b.x)), int(round(b.y)), col)
+        line_wu(c, _px(a.x), _px(a.y), _px(b.x), _px(b.y), col)
 
 
 def two_strokes():

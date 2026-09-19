@@ -218,6 +218,11 @@ MAGENTA = color(0.85, 0.2, 0.55)
 SIZE = 160
 
 
+def _px(v):
+    """an outline coordinate to a pixel: nearest, halves up, like to_byte"""
+    return int(math.floor(v + 0.5))
+
+
 def chevron():
     """a wide V, one join, to show off the three joins"""
     p = path()
@@ -249,7 +254,7 @@ def _stroke_panel(join):
     outline = stroke_to_path(chevron(), 26, "butt", join, 4.0)
     paint_through(c, fill_path(outline, "nonzero", SIZE, SIZE), GRAY)
     for a, b in edges(outline):
-        line_wu(c, int(round(a.x)), int(round(a.y)), int(round(b.x)), int(round(b.y)), MAGENTA)
+        line_wu(c, _px(a.x), _px(a.y), _px(b.x), _px(b.y), MAGENTA)
     return c
 
 
@@ -278,7 +283,7 @@ def caps_demo():
         outline = stroke_to_path(seg, 30, cap, "miter", 4.0)
         paint_through(c, fill_path(outline, "nonzero", SIZE, 80), GRAY)
         for a, b in edges(outline):
-            line_wu(c, int(round(a.x)), int(round(a.y)), int(round(b.x)), int(round(b.y)), MAGENTA)
+            line_wu(c, _px(a.x), _px(a.y), _px(b.x), _px(b.y), MAGENTA)
         return c
     return side_by_side(side_by_side(panel("butt"), panel("round")), panel("square"))
 

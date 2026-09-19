@@ -39,7 +39,7 @@ Feature: Plate 15
 
   Scenario: The spiral, dashed
     Given c ← spiral_dashes()
-    And   ref ← read_file("reference/chapter-15/spiral.ppm")
+    And   ref ← read_file("reference/chapter-15/spiral-dashes.ppm")
     When  p6 ← canvas_to_p6(c)
     Then  c.width = 340
     And   c.height = 340

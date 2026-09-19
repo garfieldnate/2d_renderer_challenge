@@ -532,7 +532,7 @@ plate_15():
 
   <span class="kw">Scenario</span>: The spiral, dashed
     <span class="kw">Given</span> c ← spiral_dashes()
-    <span class="kw">And</span>   ref ← read_file("reference/chapter-15/spiral.ppm")
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-15/spiral-dashes.ppm")
     <span class="kw">When</span>  p6 ← canvas_to_p6(c)
     <span class="kw">Then</span>  c.width = 340
     <span class="kw">And</span>   c.height = 340

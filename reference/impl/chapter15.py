@@ -308,6 +308,6 @@ def plate_15():
 RENDERS = {
     "even-marks": even_marks,
     "dash-strip": dash_strip,
-    "spiral": spiral_dashes,
+    "spiral-dashes": spiral_dashes,
     "plate-15": plate_15,
 }
