@@ -32,13 +32,13 @@ That's it — `cargo build` alone also works if you just want the library to com
   — the book's reference images, compared against with
   `max_channel_difference`. Note: `out/two-strokes.ppm`, `fold.ppm`,
   `offsets.ppm` and `plate-14.ppm` (chapter 14) and `even-marks.ppm`,
-  `dash-strip.ppm`, `spiral.ppm` and `plate-15.ppm` (chapter 15) all land
-  in the same flat `out/` directory as every earlier chapter's renders;
-  `spiral.ppm` collides with chapter 6's `spiral()` render of the same
-  name (chapter 6's writes first, chapter 15's overwrites it) — the only
-  filename collision across all fifteen chapters. Both renders are still
-  checked against their own `reference/chapter-NN/` directory by the
-  tests, so this only affects browsing `out/` by hand.
+  `dash-strip.ppm`, `spiral-dashes.ppm` and `plate-15.ppm` (chapter 15)
+  all land in the same flat `out/` directory as every earlier chapter's
+  renders. Chapter 15's spiral render used to be named `spiral.ppm` and
+  collide with chapter 6's `spiral()` render of the same name; it's now
+  `spiral-dashes.ppm`, so there is no longer any filename collision across
+  the fifteen chapters. Every render is checked against its own
+  `reference/chapter-NN/` directory by the tests regardless.
 
 `--release` matters here: chapter 2's brute-force `coverage()` samples 64
 points per pixel per disc, chapter 3's `thick_line` reuses that same
@@ -362,27 +362,27 @@ joins) kept around only so the two can be compared. `hairpin()` and
 just another path to stroke thin and fill), which is the same trick
 `two_strokes`/`fold_demo`/`spiral_dashes` (chapter 15) all lean on.
 
-**A real bug the fold scenario found.** `two_strokes()` and `fold_demo()`
-initially failed `max_channel_difference` by a handful of pixels (up to
-82 out of 255) clustered at the exact symmetry axis of the hairpin's
-self-crossing fold. The hairpin and its offsets are symmetric about
-`x = 80`, so the offset construction lands a vertex at the *exact*
-half-integer coordinate `(80.0, 42.5)` — and chapter 13's `stroke_panel`
-(reused here for the outline overlay) was rounding that coordinate with
-Rust's `f64::round()`, which ties away from zero (`42.5 -> 43`), while
-the book's own reference figure code uses a Python-style `pyround` that
-ties to even (`42.5 -> 42`) before handing the coordinate to `line_wu`.
-The two renders agreed everywhere except the one row where that tie
-landed, which is exactly what a rounding-mode bug looks like once you go
-looking for it. Fixed by adding `round_half_to_even` and using it (only)
-for the two `line_wu`-facing panel functions (chapter 13's `stroke_panel`
-and this chapter's `outline_panel_rule`); chapter 1's `round` — used for
-channel-to-byte conversion, where the book's own convention really is
-ties-away-from-zero — is untouched. See **Failures** in `FEEDBACK.md` for
-the full diagnosis; this is the single most useful thing this chapter's
-reader round found, because chapter 13 had been shipping the wrong
-tie-break for two chapters without a single scenario or render ever
-landing on a tie.
+**A rounding-mode bug, then a correction.** `two_strokes()` and
+`fold_demo()` once failed `max_channel_difference` by a handful of pixels
+(up to 82 out of 255) clustered at the exact symmetry axis of the
+hairpin's self-crossing fold: the hairpin and its offsets are symmetric
+about `x = 80`, so the offset construction lands a vertex at the *exact*
+half-integer coordinate `(80.0, 42.5)`, and Rust's `f64::round()` (ties
+away from zero, `42.5 -> 43`) disagreed with the reference at that one
+row. A prior round of this catch-up chased that down to a `pyround`
+(ties-to-even) helper and added `round_half_to_even` for the two
+`line_wu`-facing panel functions (chapter 13's `stroke_panel` and chapter
+14's `outline_panel_rule`). The book has since settled the question the
+other way: chapter 13 §13.5's pseudo-code and chapter 14 §14.5 both now
+say outline coordinates round to the nearest pixel *halves up* — the same
+`floor(v + 0.5)` rule chapter 1's byte conversion uses — and
+`chapter14-stroke.feature` pins `round(42.5) = 43`, `round(-17.5) = -17`
+directly (a negative half, which chapter 1 never exercised). That also
+exposed a second bug: chapter 1's own `round` was `x.round()`, which ties
+away from zero and gives `-17.5 -> -18`, not `-17`. Both are now
+`floor(x + 0.5)` in `round`, `round_half_to_even` is gone, and
+`stroke_panel` / `outline_panel_rule` both call chapter 1's `round`. See
+**Failures** in `FEEDBACK.md` for the full diagnosis.
 
 ## Chapter 15 notes
 

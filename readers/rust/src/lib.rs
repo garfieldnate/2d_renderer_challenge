@@ -159,10 +159,13 @@ pub fn encode(l: f64) -> f64 {
     }
 }
 
-/// Round to the nearest whole number. No scenario in this chapter lands on
-/// a half, so the tie-breaking rule doesn't matter.
+/// Round to the nearest whole number, ties up (`floor(x + 0.5)`): a half
+/// rounds toward positive infinity, not away from zero, which only
+/// differs from Rust's own `f64::round` on a negative half. No scenario in
+/// this chapter lands on a half -- chapter 14's outline coordinates are
+/// the ones that do, and pin `round(-17.5) = -17`, not -18.
 pub fn round(x: f64) -> i64 {
-    x.round() as i64
+    (x + 0.5).floor() as i64
 }
 
 // ---------------------------------------------------------------------
@@ -4407,27 +4410,11 @@ pub fn u_turn() -> Path {
     p
 }
 
-/// Rounds to the nearest integer, ties to even -- distinct from chapter
-/// 1's `round` (which ties away from zero, the right rule for a channel
-/// byte and never actually hit by a scenario there). A stroke outline's
-/// coordinates get rounded before chapter 3's `line_wu` wants integers,
-/// and a symmetric shape can land an edge exactly on a half-pixel; ties
-/// away from zero would nudge that edge a whole pixel off from the
-/// reference, which breaks the tie to even instead, matching it.
-fn round_half_to_even(x: f64) -> i64 {
-    let rounded_up = (x + 0.5).floor(); // ties toward +infinity, like JS's Math.round
-    let frac = x - x.floor();
-    let r = rounded_up as i64;
-    if (frac - 0.5).abs() < 1e-9 && r % 2 != 0 {
-        r - 1
-    } else {
-        r
-    }
-}
-
 /// A panel showing `outline`'s gray fill with its own edges traced over
 /// it in magenta (chapter 3's `line_wu`, which wants integer endpoints,
-/// so the outline's coordinates are rounded to the nearest pixel first).
+/// so the outline's coordinates are rounded to the nearest pixel first,
+/// halves up -- chapter 1's `round`, the same rule chapter 1's byte
+/// conversion uses).
 fn stroke_panel(width: usize, height: usize, outline: &Path) -> Canvas {
     let mut c = canvas(width, height);
     fill(&mut c, CH13_PAPER);
@@ -4436,10 +4423,10 @@ fn stroke_panel(width: usize, height: usize, outline: &Path) -> Canvas {
     for (a, b) in edges(outline) {
         line_wu(
             &mut c,
-            round_half_to_even(a.x),
-            round_half_to_even(a.y),
-            round_half_to_even(b.x),
-            round_half_to_even(b.y),
+            round(a.x),
+            round(a.y),
+            round(b.x),
+            round(b.y),
             CH13_MAGENTA,
         );
     }
@@ -4880,10 +4867,10 @@ fn outline_panel_rule(width: usize, height: usize, outline: &Path, rule: &str) -
     for (a, b) in edges(outline) {
         line_wu(
             &mut c,
-            round_half_to_even(a.x),
-            round_half_to_even(a.y),
-            round_half_to_even(b.x),
-            round_half_to_even(b.y),
+            round(a.x),
+            round(a.y),
+            round(b.x),
+            round(b.y),
             CH13_MAGENTA,
         );
     }
@@ -5204,7 +5191,7 @@ const CH15_INKS: [Color; 3] = [
 /// The lopsided cubic Figure 15.1 uses: one short handle and one long
 /// one, so the parameter's speed changes by a factor of five along it.
 pub fn lopsided() -> Curve {
-    cubic(point(15.0, 100.0), point(20.0, 20.0), point(150.0, 15.0), point(185.0, 95.0))
+    cubic(point(15.0, 100.0), point(25.0, 85.0), point(100.0, 5.0), point(185.0, 95.0))
 }
 
 /// Paints a filled disc of radius `r` about `q` (a 24-gon, chapter 5's

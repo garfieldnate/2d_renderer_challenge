@@ -108,7 +108,7 @@ fn main() {
     // Chapter 15: dashes.
     write_p6(out, "even-marks.ppm", canvas_to_p6(&even_marks()));
     write_p6(out, "dash-strip.ppm", canvas_to_p6(&dash_strip()));
-    write_p6(out, "spiral.ppm", canvas_to_p6(&spiral_dashes()));
+    write_p6(out, "spiral-dashes.ppm", canvas_to_p6(&spiral_dashes()));
     write_p6(out, "plate-15.ppm", canvas_to_p6(&plate_15()));
 
     println!("wrote 52 renders to out/");

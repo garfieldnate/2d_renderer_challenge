@@ -25,6 +25,7 @@ fn a_pattern_that_adds_up_to_nothing_or_has_a_negative_entry_is_no_pattern() {
     assert_pattern_eq(&normalize_pattern(&[0.0, 0.0]), &[]);
     assert_pattern_eq(&normalize_pattern(&[]), &[]);
     assert_pattern_eq(&normalize_pattern(&[5.0, -5.0]), &[]);
+    assert_pattern_eq(&normalize_pattern(&[6.0, -2.0]), &[]);
 
     let d1 = dash(&seg, &[0.0, 0.0], 0.0);
     assert_eq!(subpaths(&d1).len(), 1);
@@ -32,6 +33,7 @@ fn a_pattern_that_adds_up_to_nothing_or_has_a_negative_entry_is_no_pattern() {
 
     assert_eq!(subpaths(&dash(&seg, &[], 0.0)).len(), 1);
     assert_eq!(subpaths(&dash(&seg, &[5.0, -5.0], 0.0)).len(), 1);
+    assert_eq!(subpaths(&dash(&seg, &[6.0, -2.0], 0.0)).len(), 1);
 }
 
 #[test]

@@ -44,6 +44,18 @@ fn a_single_point_with_a_butt_cap_draws_nothing() {
 }
 
 #[test]
+fn a_square_cap_extends_a_half_width_past_the_end() {
+    let mut seg = path();
+    move_to(&mut seg, point(45.0, 40.0));
+    line_to(&mut seg, point(115.0, 40.0));
+    let o = stroke_to_path(&seg, 30.0, "square", "miter", 4.0);
+
+    assert_eq!(subpaths(&o).len(), 3);
+    assert!(tuples_eq(subpaths(&o)[2].points[1], point(130.0, 55.0)));
+    assert!(tuples_eq(subpaths(&o)[2].points[2], point(130.0, 25.0)));
+}
+
+#[test]
 fn a_single_point_with_a_square_cap_is_a_square() {
     let mut p = path();
     move_to(&mut p, point(20.0, 20.0));

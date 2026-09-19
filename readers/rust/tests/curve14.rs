@@ -71,4 +71,5 @@ fn on_the_inside_of_a_tight_bend_the_offset_folds_and_comes_closer_than_d() {
     assert!(approx_eq_eps(pieces[3].points[3].y, 0.118898, 0.0001));
     assert!(approx_eq(distance_to_curve(&q, point(2.0, 0.0)), 1.732051));
     assert!(offset_distance_error(&q, -2.0, 0.01) >= 0.7);
+    assert!(approx_eq_eps(offset_distance_error(&q, -2.0, 0.01), 0.707336, 0.0001));
 }

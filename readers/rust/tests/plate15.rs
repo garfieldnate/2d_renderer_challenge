@@ -23,8 +23,8 @@ fn marks_by_parameter_and_by_length() {
 
     assert_eq!(c.width, 400);
     assert_eq!(c.height, 120);
-    assert_pixel_within(&p6, 89, 37, (243, 196, 89), 1);
-    assert_pixel_within(&p6, 295, 37, (124, 196, 237), 1);
+    assert_pixel_within(&p6, 71, 58, (243, 196, 89), 1);
+    assert_pixel_within(&p6, 298, 52, (124, 196, 237), 1);
     assert_pixel_within(&p6, 100, 100, (39, 39, 44), 1);
     assert!(max_channel_difference(&p6, &reference) <= 1);
 }
@@ -58,7 +58,7 @@ fn the_spiral_is_one_subpath_and_it_dashes_into_seventeen() {
 #[test]
 fn the_spiral_dashed() {
     let c = spiral_dashes();
-    let reference = read_file("reference/chapter-15/spiral.ppm");
+    let reference = read_file("reference/chapter-15/spiral-dashes.ppm");
     let p6 = canvas_to_p6(&c);
 
     assert_eq!(c.width, 340);

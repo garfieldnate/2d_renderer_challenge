@@ -76,10 +76,10 @@ fn the_parameter_is_not_the_length() {
     let c = lopsided();
     let total = arc_length(&c, 256);
 
-    assert!(approx_eq_eps(total, 225.8293, 0.001));
-    assert!(tuples_eq(point_at(&c, 0.5), point(88.75, 37.5)));
+    assert!(approx_eq_eps(total, 198.0971, 0.001));
+    assert!(tuples_eq(point_at(&c, 0.5), point(71.875, 58.125)));
     let p = point_at_length(&c, total / 2.0, 256);
-    assert!(approx_eq_eps(p.x, 94.8542, 0.001));
-    assert!(approx_eq_eps(p.y, 37.4727, 0.001));
-    assert!(approx_eq_eps(t_at_length(&arc_length_table(&c, 256), total / 2.0), 0.527003, 0.0001));
+    assert!(approx_eq_eps(p.x, 98.7142, 0.001));
+    assert!(approx_eq_eps(p.y, 52.9628, 0.001));
+    assert!(approx_eq_eps(t_at_length(&arc_length_table(&c, 256), total / 2.0), 0.635558, 0.0001));
 }
