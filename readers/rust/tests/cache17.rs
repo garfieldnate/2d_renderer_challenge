@@ -46,6 +46,23 @@ fn shelf_packing_places_bitmaps_left_to_right_then_opens_a_new_shelf() {
 }
 
 #[test]
+fn a_taller_bitmap_that_fits_the_width_stays_on_the_shelf_and_raises_it() {
+    let mut a = atlas(32, 32);
+    assert_eq!(atlas_add(&mut a, &bitmap(coverage_buffer(10, 8), 0, 0)), Some((0, 0)));
+    assert_eq!(atlas_add(&mut a, &bitmap(coverage_buffer(12, 12), 0, 0)), Some((10, 0)));
+    assert_eq!(atlas_add(&mut a, &bitmap(coverage_buffer(10, 4), 0, 0)), Some((22, 0)));
+    assert_eq!(atlas_add(&mut a, &bitmap(coverage_buffer(5, 5), 0, 0)), Some((0, 12)));
+}
+
+#[test]
+fn a_bitmap_the_atlas_can_never_hold_leaves_the_shelf_alone() {
+    let mut a = atlas(32, 32);
+    assert_eq!(atlas_add(&mut a, &bitmap(coverage_buffer(10, 8), 0, 0)), Some((0, 0)));
+    assert_eq!(atlas_add(&mut a, &bitmap(coverage_buffer(40, 5), 0, 0)), None);
+    assert_eq!(atlas_add(&mut a, &bitmap(coverage_buffer(10, 8), 0, 0)), Some((10, 0)));
+}
+
+#[test]
 fn the_atlas_holds_the_bitmaps_coverage_where_it_said() {
     let f = font();
     let mut a = atlas(32, 32);

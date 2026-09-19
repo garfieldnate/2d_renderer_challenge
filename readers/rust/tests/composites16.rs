@@ -66,14 +66,14 @@ fn a_composites_bounds_are_the_union_of_its_transformed_components() {
 }
 
 #[test]
-fn bounds_are_tight_not_the_control_box() {
+fn two_more_real_glyphs_bounds() {
     let f = font();
     assert_bounds(glyph_bounds(&f, "o"), (91.0, -20.0, 1076.0, 1102.0));
     assert_bounds(glyph_bounds(&f, "H"), (169.0, 0.0, 1288.0, 1456.0));
 }
 
 #[test]
-fn a_font_can_be_written_by_hand_and_a_bumps_bounds_stop_where_the_curve_does() {
+fn bounds_are_tight_not_the_control_box_a_hand_written_bump_stops_where_its_curve_does() {
     let tiny = load_font(
         r#"{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"98": "bump"}, "glyphs": {"bump": {"advance": 300, "contours": [[[0, 0, true], [100, 200, false], [200, 0, true]]], "components": []}, "twice": {"advance": 600, "contours": [], "components": [{"glyph": "bump", "transform": [1, 0, 0, 1, 0, 0]}, {"glyph": "bump", "transform": [1, 0, 0.5, 2, 300, 0]}]}}}"#,
     );

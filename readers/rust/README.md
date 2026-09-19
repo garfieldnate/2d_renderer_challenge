@@ -568,24 +568,28 @@ has to come first here).
 `GlyphCache` keys on `(name, size.to_bits(), subpixel)` — `f64` isn't
 `Hash`/`Eq`, so the size's bit pattern stands in for it, which is exact
 for the identical-`f64`-in, identical-`f64`-out case every scenario uses.
-`Atlas` packs shelves: a shelf is "empty" (`cursor_x == 0 && shelf_height
-== 0`) until its first bitmap sets the shelf's height for good; a bitmap
-that doesn't fit the current shelf (either dimension) closes it and opens
-a fresh one directly below, and only *that* new, still-empty shelf gets
-one more chance before giving up — which is what lets a too-wide bitmap
-(`40 × 5` against a `32`-wide atlas) return `None` without permanently
-"skipping" the shelf a `2 × 2` bitmap fits into right after. This rule was
-originally reconstructed from the scenario's seven `atlas_add` calls alone,
-before `chapter-17.html` §17.2 carried any pseudo-code for it; now that the
-chapter prints pseudo-code, this implementation's outputs match it on
-every scenario, though the retry loop reaches those outputs by a different
-path in one edge case: on a bitmap wider than the atlas arriving on a
-non-empty shelf, this code closes that shelf (a wasted mutation) before
-its width-vs-atlas check fails, where the pseudo-code checks
-width-vs-atlas first and never touches shelf state. Both give `None` and
-happen to leave the same shelf position behind for the scenario's own
-numbers (see `FEEDBACK.md`, Ambiguities) — nothing currently pins the
-shelf state after a failed `atlas_add`, so this divergence is silent.
+`Atlas` packs shelves, ported straight from `chapter-17.html` §17.2's
+`atlas_add` pseudo-code, in the same order: a bitmap wider or taller than
+the whole atlas returns `None` immediately, before anything about the
+current shelf is touched; only then does a bitmap that doesn't fit the
+shelf's *width* close it (`shelf_top += shelf_height; cursor_x = 0;
+shelf_height = 0`) and open a fresh one; only then does the height check
+against the (possibly just-reset) shelf run, returning `None` if even a
+fresh shelf can't fit it; otherwise the bitmap is blit in and the shelf's
+`cursor_x`/`shelf_height` are advanced (`shelf_height` growing to fit a
+taller bitmap that still fits the shelf's *width*, rather than always
+being fixed by the shelf's first bitmap). Checking "can this ever fit"
+first is what lets a too-wide bitmap (`40 × 5` against a `32`-wide atlas)
+return `None` without disturbing the current shelf at all — a bitmap
+added right after lands back on that same shelf (see the
+chapter-17-catch-up scenario "A bitmap the atlas can never hold leaves the
+shelf alone" in `FEEDBACK.md`). An earlier version of this code
+reconstructed shelf packing from the scenario's original seven
+`atlas_add` calls alone, before the chapter printed pseudo-code for it,
+and used a retry loop that closed the shelf as soon as a bitmap failed to
+fit its width — including a too-wide-for-the-atlas bitmap — which gave
+the same answers on every scenario that existed then but failed the
+catch-up's two new ones (see **Catch-up** in `FEEDBACK.md`).
 
 `embolden` grows the glyph's own bounds by a pixel all round, fills the
 glyph normally, strokes its outline (chapter 13's `stroke_to_path`, round

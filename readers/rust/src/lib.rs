@@ -6079,32 +6079,29 @@ pub fn atlas(width: usize, height: usize) -> Atlas {
 }
 
 /// Copies `b`'s coverage into the atlas and answers where its top-left
-/// corner landed, or `None` when there's no room: too wide ever, or too
-/// tall for what's left below the current shelf.
+/// corner landed, or `None` when there's no room: too wide or tall for
+/// the atlas ever, or too tall for what's left below the current shelf.
+/// Follows chapter-17.html §17.2's `atlas_add` pseudocode order exactly:
+/// the "can never fit" check comes first and returns before touching the
+/// shelf, so a bitmap wider than the whole atlas doesn't close the
+/// current shelf on its way to failing.
 pub fn atlas_add(a: &mut Atlas, b: &Bitmap) -> Option<(usize, usize)> {
-    loop {
-        let shelf_empty = a.cursor_x == 0 && a.shelf_height == 0;
-        if shelf_empty {
-            if b.width <= a.width && a.shelf_top + b.height <= a.height {
-                let pos = (0, a.shelf_top);
-                atlas_blit(a, b, pos.0, pos.1);
-                a.shelf_height = b.height;
-                a.cursor_x = b.width;
-                return Some(pos);
-            } else {
-                return None;
-            }
-        } else if a.cursor_x + b.width <= a.width && b.height <= a.shelf_height {
-            let pos = (a.cursor_x, a.shelf_top);
-            atlas_blit(a, b, pos.0, pos.1);
-            a.cursor_x += b.width;
-            return Some(pos);
-        } else {
-            a.shelf_top += a.shelf_height;
-            a.shelf_height = 0;
-            a.cursor_x = 0;
-        }
+    if b.width > a.width || b.height > a.height {
+        return None;
     }
+    if a.cursor_x + b.width > a.width {
+        a.shelf_top += a.shelf_height;
+        a.cursor_x = 0;
+        a.shelf_height = 0;
+    }
+    if a.shelf_top + b.height.max(a.shelf_height) > a.height {
+        return None;
+    }
+    let pos = (a.cursor_x, a.shelf_top);
+    atlas_blit(a, b, pos.0, pos.1);
+    a.cursor_x += b.width;
+    a.shelf_height = a.shelf_height.max(b.height);
+    Some(pos)
 }
 
 fn atlas_blit(a: &mut Atlas, b: &Bitmap, x0: usize, y0: usize) {
