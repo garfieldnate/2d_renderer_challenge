@@ -32,7 +32,14 @@ Feature: Stroking is filling
       | join  | points |
       | miter | 4      |
       | bevel | 3      |
-      | round | 24     |
+      | round | 13     |
+
+  Scenario: The round join is an arc across the outer gap, not around the inside
+    Given o ← stroke_to_path(chevron(), 26, "butt", "round", 4.0)
+    Then  subpaths(o)[2].points[0] = point(80, 120)
+    And   subpaths(o)[2].points[6] = point(78.797, 132.944) ± 0.01
+    And   inside_nonzero(o, 80, 131) = true
+    And   inside_nonzero(o, 80, 135) = false
 
   Scenario: The miter reaches its tip at the vertex plus the miter length
     Given o ← stroke_to_path(chevron(), 26, "butt", "miter", 4.0)
@@ -44,6 +51,23 @@ Feature: Stroking is filling
     Then  subpaths(o)[2].points[0] = point(80, 120)
     And   subpaths(o)[2].points[1] = point(68.976, 126.89) ± 0.01
     And   subpaths(o)[2].points[2] = point(91.024, 126.89) ± 0.01
+
+  Scenario: Every piece winds the same way, so overlapping pieces add instead of cancelling
+    Given hat ← path()
+    When  move_to(hat, point(30, 120))
+    And   line_to(hat, point(80, 40))
+    And   line_to(hat, point(130, 120))
+    And   o ← stroke_to_path(hat, 26, "butt", "bevel", 4.0)
+    Then  polygon_area(o) = -4981.625 ± 0.01
+    And   polygon_area(stroke_to_path(chevron(), 26, "butt", "bevel", 4.0)) = -4981.625 ± 0.01
+
+  Scenario: A wide stroke around a tight bend overlaps itself and stays solid
+    Given o ← stroke_to_path(u_turn(), 40, "butt", "round", 4.0)
+    When  cov ← fill_path(o, "nonzero", 100, 100)
+    Then  length(subpaths(o)) = 15
+    And   coverage_at(cov, 50, 37) = 1
+    And   coverage_at(cov, 46, 22) = 1
+    And   coverage_at(cov, 53, 22) = 1
 
   Scenario: A closed subpath strokes to segments and joins, with no caps
     Given tri ← path()

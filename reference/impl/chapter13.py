@@ -13,7 +13,7 @@ from renderer import color, canvas, fill, pixel_at, write_pixel
 from chapter02 import paint_through, magnify
 from chapter04 import point, vector, cross, dot, magnitude, normalize
 from chapter05 import Path, Subpath, path, move_to, line_to, close, polygon, edges
-from chapter07 import fill_path
+from chapter07 import fill_path, polygon_area
 
 CHAPTER = 13
 FORMAT = "P6"
@@ -80,12 +80,10 @@ def _join(v, d_in, d_out, h, join, miter_limit):
     if join == "bevel":
         return polygon(v, a, b)
     if join == "round":
+        # sweep the short way from a to b: that is the outer gap. the long way
+        # round is the inner side, and an arc taken that way leaves a notch.
         a0 = math.atan2(a.y - v.y, a.x - v.x)
-        a1 = math.atan2(b.y - v.y, b.x - v.x)
-        if s > 0 and a1 < a0:
-            a1 += 2 * math.pi
-        if s < 0 and a1 > a0:
-            a1 -= 2 * math.pi
+        a1 = a0 + _ang_between(a0, math.atan2(b.y - v.y, b.x - v.x))
         pts = [v]
         _arc(pts, v, a0, a1, h, _arc_steps(a0, a1))
         return polygon(*pts)
@@ -161,8 +159,15 @@ def stroke_to_path(p, width, cap="butt", join="miter", miter_limit=4.0):
     out = Path()
 
     def emit(sub):
+        # every piece winds the same way, counterclockwise on screen (negative
+        # polygon_area), or two overlapping pieces cancel to zero under the
+        # nonzero rule and leave a hole. a wide stroke around a tight bend
+        # overlaps itself constantly.
         if sub is not None:
-            out.subpaths.append(sub.subpaths[0])
+            piece = sub.subpaths[0]
+            if polygon_area(sub) > 0:
+                piece.points.reverse()
+            out.subpaths.append(piece)
 
     for sp in p.subpaths:
         pts = _dedupe(sp.points)
@@ -219,6 +224,21 @@ def chevron():
     move_to(p, point(30, 40))
     line_to(p, point(80, 120))
     line_to(p, point(130, 40))
+    return p
+
+
+def u_turn():
+    """a polyline around a tight bend: nine points on the upper half of a
+    circle of radius 10 about (50, 50), from angle 180 degrees to 360 in
+    steps of 22.5. stroked 40 wide it overlaps itself all around the bend."""
+    p = path()
+    for k in range(9):
+        a = math.radians(180 + 22.5 * k)
+        q = point(50 + 10 * math.cos(a), 50 + 10 * math.sin(a))
+        if k == 0:
+            move_to(p, q)
+        else:
+            line_to(p, q)
     return p
 
 

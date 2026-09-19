@@ -52,8 +52,11 @@
 
   <p>A <em>join</em> fills the outer gap between two segments. <em>Bevel</em> is the simplest — a
     triangle straight across the gap. <em>Round</em> is an arc of radius <code>h</code> about the
-    vertex. <em>Miter</em> extends the two outer edges until they meet at a point, the sharp corner
-    you'd draw by hand. A <em>cap</em> closes an open end: <em>butt</em> stops flat at the endpoint,
+    vertex, from one outer offset point to the other, and it has to go the <em>short</em> way round:
+    the long way is the inside of the turn, and an arc swept that way leaves a notch at the corner
+    where the gap should have been filled. (The first draft of this chapter did exactly that, and
+    three readers reproduced the notch faithfully.) <em>Miter</em> extends the two outer edges until
+    they meet at a point, the sharp corner you'd draw by hand. A <em>cap</em> closes an open end: <em>butt</em> stops flat at the endpoint,
     <em>square</em> extends a half-width past it, <em>round</em> is a semicircle. Six little shapes,
     and every stroke in every vector program is made of them.</p>
 
@@ -93,7 +96,14 @@
       | join  | points |
       | miter | 4      |
       | bevel | 3      |
-      | round | 24     |
+      | round | 13     |
+
+  <span class="kw">Scenario</span>: The round join is an arc across the outer gap, not around the inside
+    <span class="kw">Given</span> o ← stroke_to_path(chevron(), 26, "butt", "round", 4.0)
+    <span class="kw">Then</span>  subpaths(o)[2].points[0] = point(80, 120)
+    <span class="kw">And</span>   subpaths(o)[2].points[6] = point(78.797, 132.944) ± 0.01
+    <span class="kw">And</span>   inside_nonzero(o, 80, 131) = true
+    <span class="kw">And</span>   inside_nonzero(o, 80, 135) = false
 
   <span class="kw">Scenario</span>: The miter reaches its tip at the vertex plus the miter length
     <span class="kw">Given</span> o ← stroke_to_path(chevron(), 26, "butt", "miter", 4.0)
@@ -105,6 +115,23 @@
     <span class="kw">Then</span>  subpaths(o)[2].points[0] = point(80, 120)
     <span class="kw">And</span>   subpaths(o)[2].points[1] = point(68.976, 126.89) ± 0.01
     <span class="kw">And</span>   subpaths(o)[2].points[2] = point(91.024, 126.89) ± 0.01
+
+  <span class="kw">Scenario</span>: Every piece winds the same way, so overlapping pieces add instead of cancelling
+    <span class="kw">Given</span> hat ← path()
+    <span class="kw">When</span>  move_to(hat, point(30, 120))
+    <span class="kw">And</span>   line_to(hat, point(80, 40))
+    <span class="kw">And</span>   line_to(hat, point(130, 120))
+    <span class="kw">And</span>   o ← stroke_to_path(hat, 26, "butt", "bevel", 4.0)
+    <span class="kw">Then</span>  polygon_area(o) = -4981.625 ± 0.01
+    <span class="kw">And</span>   polygon_area(stroke_to_path(chevron(), 26, "butt", "bevel", 4.0)) = -4981.625 ± 0.01
+
+  <span class="kw">Scenario</span>: A wide stroke around a tight bend overlaps itself and stays solid
+    <span class="kw">Given</span> o ← stroke_to_path(u_turn(), 40, "butt", "round", 4.0)
+    <span class="kw">When</span>  cov ← fill_path(o, "nonzero", 100, 100)
+    <span class="kw">Then</span>  length(subpaths(o)) = 15
+    <span class="kw">And</span>   coverage_at(cov, 50, 37) = 1
+    <span class="kw">And</span>   coverage_at(cov, 46, 22) = 1
+    <span class="kw">And</span>   coverage_at(cov, 53, 22) = 1
 
   <span class="kw">Scenario</span>: A closed subpath strokes to segments and joins, with no caps
     <span class="kw">Given</span> tri ← path()
@@ -126,6 +153,19 @@
     scenarios pin a single segment to the rectangle it must become, then check that each join style
     produces its own shape, and that the miter reaches its tip where the geometry says it should.</p>
 
+  <p>Free, on one condition: every piece has to wind the same way. Nonzero counts <em>signed</em>
+    crossings. A rectangle wound one way overlapping a wedge wound the other way sums to zero, and
+    zero is a hole, sitting exactly where two pieces overlap. So the stroker orients every piece
+    before it emits it: counterclockwise on screen, which is to say chapter 7's
+    <code>polygon_area</code> comes out negative, and any piece that comes out positive has its
+    points reversed. This is the kind of bug that hides. On a single gentle corner the only overlaps
+    are between neighbours, and neighbours happen to agree, so the chevron looks fine either way.
+    Stroke a wide line around a tight bend and rectangles from across the bend reach over the joins;
+    if the joins wind the wrong way, the fill is full of holes. That's what the <code>u_turn()</code>
+    scenario does: nine points on the upper half of a circle of radius 10 about
+    <code>(50, 50)</code>, from 180° to 360° in steps of 22.5°, stroked 40 wide, so the stroke
+    overlaps itself all the way round. Every pixel near the bend must come out fully covered.</p>
+
 <pre><code>stroke_to_path(path, width, cap, join, miter_limit):
   h ← width / 2;  out ← path()
   <span class="kw">for</span> subpath <span class="kw">in</span> path:
@@ -134,7 +174,11 @@
     <span class="kw">for</span> each segment (a, b):  emit the rectangle of half-width h on a..b
     <span class="kw">for</span> each interior vertex v:  emit join(v, dir_in, dir_out, h, join, miter_limit)
     <span class="kw">if</span> subpath is open:  emit cap at each end
-  <span class="kw">return</span> out                       <span class="cm">// fill it nonzero; that is the stroke</span></code></pre>
+  <span class="kw">return</span> out                       <span class="cm">// fill it nonzero; that is the stroke</span>
+
+emit(piece):
+  <span class="kw">if</span> polygon_area(piece) &gt; 0:  reverse its points   <span class="cm">// every piece winds the same way</span>
+  append piece to out</code></pre>
 
   <p>A closed subpath is the same, with two differences: it has a segment from the last point back to
     the first, so it gets a join at <em>every</em> vertex including that closing one, and it has no
@@ -329,7 +373,7 @@ plate_13():
   <nav class="endnav">
     <a href="chapter-12.html">← 12 · Clipping, Masks and Groups</a>
     <span>Chapter 13 · Stroking is Filling</span>
-    <span>Next: 14 · Offsetting Curves (not yet written)</span>
+    <a href="chapter-14.html">Next: 14 · Offsetting Curves →</a>
   </nav>
 
 </div>
@@ -350,24 +394,27 @@ function add(p,v,s){return [p[0]+v[0]*s,p[1]+v[1]*s];}
 function intersect(p1,d1,p2,d2){var den=crss(d1,d2);if(Math.abs(den)<1e-12)return null;var t=crss(sub(p2,p1),d2)/den;return add(p1,d1,t);}
 function arc(pts,c,a0,a1,r,steps){for(var k=0;k<=steps;k++){var a=a0+(a1-a0)*k/steps;pts.push([c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)]);}}
 function arcSteps(a0,a1){return Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/16)));}
+function angBetween(a,b){var d=((b-a)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);return d>Math.PI?d-2*Math.PI:d;}
 
 /* the stroker: returns a list of subpaths (each an array of [x,y] points) */
 function segRect(a,b,h){var d=unit(a,b),n=perp(d);return [add(a,n,h),add(b,n,h),add(b,n,-h),add(a,n,-h)];}
 function joinShape(v,din,dout,h,join,ml){var turn=crss(din,dout);if(Math.abs(turn)<1e-12)return null;var s=turn>0?-1:1,nin=perp(din).map(function(x){return x*s;}),nout=perp(dout).map(function(x){return x*s;}),a=add(v,nin,h),b=add(v,nout,h);
   if(join==='bevel')return [v,a,b];
-  if(join==='round'){var a0=Math.atan2(a[1]-v[1],a[0]-v[0]),a1=Math.atan2(b[1]-v[1],b[0]-v[0]);if(s>0&&a1<a0)a1+=2*Math.PI;if(s<0&&a1>a0)a1-=2*Math.PI;var p=[v];arc(p,v,a0,a1,h,arcSteps(a0,a1));return p;}
+  if(join==='round'){var a0=Math.atan2(a[1]-v[1],a[0]-v[0]),a1=a0+angBetween(a0,Math.atan2(b[1]-v[1],b[0]-v[0]));var p=[v];arc(p,v,a0,a1,h,arcSteps(a0,a1));return p;}
   var m=intersect(a,din,b,dout);if(m&&mag(sub(m,v))<=ml*h)return [v,a,m,b];return [v,a,b];}
 function capShape(p,dout,h,cap){var n=perp(dout);if(cap==='butt')return null;
   if(cap==='square'){var l=add(p,n,h),r=add(p,n,-h);return [l,add(l,dout,h),add(r,dout,h),r];}
-  var a0=Math.atan2(n[1],n[0]),outw=Math.atan2(dout[1],dout[0]),d=((outw-a0)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);if(d>Math.PI)d-=2*Math.PI;var a1=a0+(d>0?Math.PI:-Math.PI),pts=[];arc(pts,p,a0,a1,h,arcSteps(a0,a1));return pts;}
+  var a0=Math.atan2(n[1],n[0]),d=angBetween(a0,Math.atan2(dout[1],dout[0]));var a1=a0+(d>0?Math.PI:-Math.PI),pts=[];arc(pts,p,a0,a1,h,arcSteps(a0,a1));return pts;}
 function dedupe(pts){var o=[pts[0]];for(var i=1;i<pts.length;i++)if(mag(sub(pts[i],o[o.length-1]))>1e-9)o.push(pts[i]);return o;}
+function area(sp){var s=0;for(var i=0;i<sp.length;i++){var a=sp[i],b=sp[(i+1)%sp.length];s+=a[0]*b[1]-b[0]*a[1];}return s/2;}
 function strokeToPath(pts,closed,width,cap,join,ml){var h=width/2,subs=[];pts=dedupe(pts);
-  if(pts.length<2){if(cap==='round'){var d=[];arc(d,pts[0],0,2*Math.PI,h,48);subs.push(d);}else if(cap==='square'){var c=pts[0];subs.push([[c[0]-h,c[1]-h],[c[0]+h,c[1]-h],[c[0]+h,c[1]+h],[c[0]-h,c[1]+h]]);}return subs;}
+  function emit(sp){if(!sp)return;if(area(sp)>0)sp.reverse();subs.push(sp);} /* every piece winds the same way, or overlaps cancel */
+  if(pts.length<2){if(cap==='round'){var d=[];arc(d,pts[0],0,2*Math.PI,h,48);emit(d);}else if(cap==='square'){var c=pts[0];emit([[c[0]-h,c[1]-h],[c[0]+h,c[1]-h],[c[0]+h,c[1]+h],[c[0]-h,c[1]+h]]);}return subs;}
   var segs=[];for(var i=0;i<pts.length-1;i++)segs.push([pts[i],pts[i+1]]);if(closed)segs.push([pts[pts.length-1],pts[0]]);
-  segs.forEach(function(s){subs.push(segRect(s[0],s[1],h));});
+  segs.forEach(function(s){emit(segRect(s[0],s[1],h));});
   var dirs=segs.map(function(s){return unit(s[0],s[1]);}),nj=closed?segs.length:segs.length-1;
-  for(var k=0;k<nj;k++){var v=segs[(k+1)%segs.length][0],j=joinShape(v,dirs[k],dirs[(k+1)%segs.length],h,join,ml);if(j)subs.push(j);}
-  if(!closed){var sc=capShape(pts[0],dirs[0].map(function(x){return -x;}),h,cap);if(sc)subs.push(sc);var ec=capShape(pts[pts.length-1],dirs[dirs.length-1],h,cap);if(ec)subs.push(ec);}
+  for(var k=0;k<nj;k++){var v=segs[(k+1)%segs.length][0];emit(joinShape(v,dirs[k],dirs[(k+1)%segs.length],h,join,ml));}
+  if(!closed){emit(capShape(pts[0],dirs[0].map(function(x){return -x;}),h,cap));emit(capShape(pts[pts.length-1],dirs[dirs.length-1],h,cap));}
   return subs;}
 
 /* fill a list of subpaths (chapter 7, nonzero) into a coverage array */
@@ -417,7 +464,7 @@ Plate.add('plate13', 0.333, function (ctx, w, h, p) {
 });
 
 Plate.source(document.querySelector('#plate'), 'shared helpers',
-  [toByte, lerp3, blit, sub, mag, unit, perp, crss, add, intersect, arc, arcSteps, segRect, joinShape, capShape, dedupe, strokeToPath, edgesOf, fillSubs, Buf, chevron, strokePanel, joinsBytes, capsBytes].map(function (f) { return f.toString(); }).join('\n\n'));
+  [toByte, lerp3, blit, sub, mag, unit, perp, crss, add, intersect, arc, arcSteps, angBetween, segRect, joinShape, capShape, dedupe, area, strokeToPath, edgesOf, fillSubs, Buf, chevron, strokePanel, joinsBytes, capsBytes].map(function (f) { return f.toString(); }).join('\n\n'));
 </script>
 </body>
 </html>
