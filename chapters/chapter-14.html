@@ -416,9 +416,12 @@ offset_into(c, d, tolerance, pieces, depth):
 
   <p>Figures 14.3 and 14.4 draw each outline over its fill the way Plate 13 did: every edge with
     chapter 3's <code>line_wu</code>, its endpoints rounded to the nearest pixel, halves up, the same
-    rule chapter 1's byte conversion uses. The hairpin is symmetric and one of its outline points
-    lands exactly on a half, so a language whose rounding takes halves to even draws a different
-    picture there and misses the reference by a pixel column.</p>
+    rule chapter 1's byte conversion uses: <code>floor(v + 0.5)</code>, which takes <code>42.5</code>
+    to <code>43</code> and <code>−17.5</code> to <code>−17</code>. This is the first time the book
+    rounds a negative half, and it's the first time the rule matters at all: the hairpin is symmetric
+    and two of its outline points land exactly on a half, so a language whose rounding takes halves
+    to even, or away from zero, draws a different picture there and misses the reference by a pixel
+    column. The scenario pins both points and both roundings.</p>
 
   <p>Compare it with the way you were stroking curves until this morning. <code>flatten_then_stroke</code>
     flattens the curve at the same tolerance and hands the polyline to chapter 13 with round joins.
