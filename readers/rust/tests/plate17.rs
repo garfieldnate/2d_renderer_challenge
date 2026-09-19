@@ -1,8 +1,9 @@
 // features/chapter17-plate.feature
 
 use renderer::{
-    approx_eq_eps, canvas_to_p6, lcd_plate, load_font, max_channel_difference, pen_advance,
-    plate_17, ppm_pixel, read_file, smoothing_demo, subpixel_strip,
+    approx_eq_eps, canvas, canvas_to_p6, color, colors_eq, draw_text, fill, lcd_plate, load_font,
+    max_channel_difference, pen_advance, pixel_at, plate_17, ppm_pixel, read_file,
+    smoothing_demo, subpixel_strip,
 };
 
 fn font() -> renderer::Font {
@@ -29,6 +30,23 @@ fn the_pen_advance_in_pixels() {
     let f = font();
     assert!(approx_eq_eps(pen_advance(&f, "H", 11.0), 7.8418, 0.0001));
     assert!(approx_eq_eps(pen_advance(&f, "space", 11.0), 2.7231, 0.0001));
+}
+
+#[test]
+fn draw_text_steps_the_pen_by_each_advance_and_answers_where_it_stopped() {
+    let f = font();
+    let mut c = canvas(30, 14);
+    fill(&mut c, color(1.0, 1.0, 1.0));
+    let pen = draw_text(&mut c, &f, "Ha", 11.0, 2.0, 11.0, color(0.0, 0.0, 0.0), true);
+
+    assert!(approx_eq_eps(pen, 15.8252, 0.0001));
+    assert!(approx_eq_eps(
+        pen,
+        2.0 + pen_advance(&f, "H", 11.0) + pen_advance(&f, "a", 11.0),
+        0.0001
+    ));
+    assert!(colors_eq(pixel_at(&c, 3, 6), color(0.0331, 0.0331, 0.0331)));
+    assert!(colors_eq(pixel_at(&c, 29, 6), color(1.0, 1.0, 1.0)));
 }
 
 #[test]

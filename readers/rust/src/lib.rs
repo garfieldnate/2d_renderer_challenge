@@ -5383,9 +5383,10 @@ impl Json {
             other => panic!("expected a number, found {other:?}"),
         }
     }
-    /// A point's on-curve flag: the book's own font file writes a JSON
-    /// boolean, but a hand-written font (chapter 16's own scenario) writes
-    /// `1`/`0`, so both are accepted -- any nonzero number counts as on.
+    /// A point's on-curve flag: written as a JSON boolean everywhere in the
+    /// current schema, in both the real font file and the chapter's own
+    /// hand-written-font scenario. A bare `0`/`1` number is still accepted
+    /// as a lenient fallback (no scenario exercises it any more).
     fn as_flag(&self) -> bool {
         match self {
             Json::Bool(b) => *b,

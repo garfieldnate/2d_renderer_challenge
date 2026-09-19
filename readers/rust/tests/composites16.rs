@@ -75,7 +75,7 @@ fn bounds_are_tight_not_the_control_box() {
 #[test]
 fn a_font_can_be_written_by_hand_and_a_bumps_bounds_stop_where_the_curve_does() {
     let tiny = load_font(
-        r#"{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"98": "bump"}, "glyphs": {"bump": {"advance": 300, "contours": [[[0, 0, 1], [100, 200, 0], [200, 0, 1]]], "components": []}, "twice": {"advance": 600, "contours": [], "components": [{"glyph": "bump", "transform": [1, 0, 0, 1, 0, 0]}, {"glyph": "bump", "transform": [1, 0, 0.5, 2, 300, 0]}]}}}"#,
+        r#"{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"98": "bump"}, "glyphs": {"bump": {"advance": 300, "contours": [[[0, 0, true], [100, 200, false], [200, 0, true]]], "components": []}, "twice": {"advance": 600, "contours": [], "components": [{"glyph": "bump", "transform": [1, 0, 0, 1, 0, 0]}, {"glyph": "bump", "transform": [1, 0, 0.5, 2, 300, 0]}]}}}"#,
     );
     assert_eq!(renderer::glyph_count(&tiny), 2);
     assert_eq!(renderer::glyph_name(&tiny, 98), "bump");

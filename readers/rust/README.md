@@ -499,10 +499,12 @@ objects, arrays, strings, numbers and booleans, nothing more. `Font` holds
 String>`) and `glyphs` (`HashMap<String, Glyph>`); `Glyph` is `advance` plus
 `contours` (`Vec<Vec<(f64, f64, bool)>>`, the on-curve flag) and
 `components` (`Vec<Component>`, each a glyph name and a `[f64; 6]`
-transform). One wrinkle the schema doesn't spell out: the real font file
-writes the on-curve flag as a JSON boolean, but the chapter's own
-hand-written-font scenario writes `1`/`0` instead — `Json::as_flag` accepts
-either (see **Ambiguities** below).
+transform). The on-curve flag is a JSON boolean in the schema, and both the
+real font file and the chapter's own hand-written-font scenario write it
+that way; `Json::as_flag` also accepts a bare `0`/`1` number as a lenient
+fallback, but nothing in `features/` exercises that branch any more (an
+earlier draft of the hand-written-font scenario did, before the schema
+note in `chapter-16.html` pinned the flag as a boolean).
 
 `implied_points` walks the loop once, pushing a midpoint between every
 consecutive off-curve pair (including the wrap from last to first), then
@@ -572,10 +574,18 @@ that doesn't fit the current shelf (either dimension) closes it and opens
 a fresh one directly below, and only *that* new, still-empty shelf gets
 one more chance before giving up — which is what lets a too-wide bitmap
 (`40 × 5` against a `32`-wide atlas) return `None` without permanently
-"skipping" the shelf a `2 × 2` bitmap fits into right after. Reconstructing
-this rule from the scenario's seven `atlas_add` calls alone (rather than
-from any pseudo-code — the chapter gives none) took the most iteration of
-anything in these two chapters; see **Ambiguities**.
+"skipping" the shelf a `2 × 2` bitmap fits into right after. This rule was
+originally reconstructed from the scenario's seven `atlas_add` calls alone,
+before `chapter-17.html` §17.2 carried any pseudo-code for it; now that the
+chapter prints pseudo-code, this implementation's outputs match it on
+every scenario, though the retry loop reaches those outputs by a different
+path in one edge case: on a bitmap wider than the atlas arriving on a
+non-empty shelf, this code closes that shelf (a wasted mutation) before
+its width-vs-atlas check fails, where the pseudo-code checks
+width-vs-atlas first and never touches shelf state. Both give `None` and
+happen to leave the same shelf position behind for the scenario's own
+numbers (see `FEEDBACK.md`, Ambiguities) — nothing currently pins the
+shelf state after a failed `atlas_add`, so this divergence is silent.
 
 `embolden` grows the glyph's own bounds by a pixel all round, fills the
 glyph normally, strokes its outline (chapter 13's `stroke_to_path`, round
@@ -587,8 +597,11 @@ rasterizes through `scaling(3, 1) * text_matrix(...)` into a `3w`-wide
 buffer and filters every row; `paint_lcd` mixes each of a pixel's three
 channels through its own stripe's coverage, always in linear light (no
 `linear` flag — chapter 9/1's switch never enters an LCD renderer's
-picture). `pen_advance`/`draw_text` are one-liners; `draw_text` isn't
-pinned by name in any scenario, only used inside `smoothing_demo`.
+picture). `pen_advance`/`draw_text` are one-liners; `draw_text`'s return
+value (the pen's final position after stepping across `"Ha"`) and two of
+the pixels it painted are now pinned directly in
+`chapter17-plate.feature` (added in the chapter-17 catch-up pass), not
+just exercised indirectly through `smoothing_demo`.
 
 All four chapter 17 renders (`subpixels.ppm`, `smoothing.ppm`, `lcd.ppm`,
 `plate-17.ppm`) diff 0 against `reference/chapter-17/` — not merely within

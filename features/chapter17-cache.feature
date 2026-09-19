@@ -46,6 +46,12 @@ Feature: The cache and the atlas
     And   atlas_add(a, bitmap(coverage_buffer(10, 4), 0, 0)) = (22, 0)
     And   atlas_add(a, bitmap(coverage_buffer(5, 5), 0, 0)) = (0, 12)
 
+  Scenario: A bitmap the atlas can never hold leaves the shelf alone
+    Given a ← atlas(32, 32)
+    Then  atlas_add(a, bitmap(coverage_buffer(10, 8), 0, 0)) = (0, 0)
+    And   atlas_add(a, bitmap(coverage_buffer(40, 5), 0, 0)) = none
+    And   atlas_add(a, bitmap(coverage_buffer(10, 8), 0, 0)) = (10, 0)
+
   Scenario: The atlas holds the bitmap's coverage where it said
     Given font ← load_font(read_file("reference/chapter-16/roboto.json"))
     And   a ← atlas(32, 32)
