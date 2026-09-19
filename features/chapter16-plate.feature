@@ -2,7 +2,10 @@ Feature: Plate 16
   glyph_plate() fills Roboto's a at a 300 pixel em and draws its control
   polygon over it: on-curve points as filled squares, off-curve points as
   hollow circles, implied on-curve points as smaller squares; plate_16() is
-  it magnified. composite_demo() is a 240 by 240 canvas of paper with
+  it magnified. The chapter's inks: paper, gray and magenta as before, dim
+  = color(0.3, 0.3, 0.34), cyan = color(0.2, 0.75, 0.9). A hairline is
+  chapter 14's: the path stroked with butt caps and round joins, filled
+  nonzero, 1 wide unless said otherwise. composite_demo() is a 240 by 240 canvas of paper with
   eacute at a 240 pixel em, origin (50, 190): each component filled through
   text_matrix times its component_matrix, the first in INKS[0] and the
   second in INKS[1], then glyph_bounds taken through text_matrix and drawn

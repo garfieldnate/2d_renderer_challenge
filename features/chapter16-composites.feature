@@ -34,12 +34,12 @@ Feature: Composite glyphs
     And   glyph_bounds(font, "aring") = (109, -20, 1002, 1627)
     And   glyph_bounds(font, "space") = (0, 0, 0, 0)
 
-  Scenario: Bounds are tight, not the control box
+  Scenario: Two more real glyphs' bounds
     Given font ← load_font(read_file("reference/chapter-16/roboto.json"))
     Then  glyph_bounds(font, "o") = (91, -20, 1076, 1102)
     And   glyph_bounds(font, "H") = (169, 0, 1288, 1456)
 
-  Scenario: A font can be written by hand, and a bump's bounds stop where the curve does
+  Scenario: Bounds are tight, not the control box: a hand-written bump stops where its curve does
     Given tiny ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"98": "bump"}, "glyphs": {"bump": {"advance": 300, "contours": [[[0, 0, true], [100, 200, false], [200, 0, true]]], "components": []}, "twice": {"advance": 600, "contours": [], "components": [{"glyph": "bump", "transform": [1, 0, 0, 1, 0, 0]}, {"glyph": "bump", "transform": [1, 0, 0.5, 2, 300, 0]}]}}}')
     Then  glyph_count(tiny) = 2
     And   glyph_name(tiny, 98) = "bump"

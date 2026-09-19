@@ -1,5 +1,6 @@
 """The 2D Renderer Challenge - Chapter 1: The Canvas and the Color"""
 import math
+import json
 
 
 class Color:
@@ -3975,6 +3976,14 @@ def stroke_to_path(p, width, cap, join, miter_limit):
         pts = _dedupe_points(sp.points)
         if not pts:
             continue
+        # A closed subpath whose points already end where they began (an
+        # explicit line_to back to the start, then close) would otherwise
+        # produce a zero-length closing segment once wrapped around --
+        # drop the repeated point before treating it as closed.
+        if sp.closed and len(pts) > 1 and magnitude(pts[-1] - pts[0]) <= 1e-9:
+            pts = pts[:-1]
+        if not pts:
+            continue
         if len(pts) == 1:
             dot = _dot_points(pts[0], h, cap)
             _emit(out, dot)
@@ -4725,3 +4734,679 @@ def spiral_dashes():
 def plate_15():
     """Chapter 15's plate: the dashed spiral, magnified by 2."""
     return magnify(spiral_dashes(), 2)
+
+
+# ============================================================================
+# Chapter 16: What a Glyph Is
+# ============================================================================
+
+class Font:
+    """A font: its vertical metrics, a codepoint-to-name cmap, and every
+    glyph by name. kern and ligatures are optional sections that arrive
+    later (chapters 18 and 19); they default to empty."""
+
+    def __init__(self, units_per_em, ascender, descender, line_gap, cmap, glyphs,
+                 kern=None, ligatures=None):
+        self.units_per_em = units_per_em
+        self.ascender = ascender
+        self.descender = descender
+        self.line_gap = line_gap
+        self.cmap = cmap
+        self.glyphs = glyphs
+        self.kern = kern if kern is not None else []
+        self.ligatures = ligatures if ligatures is not None else []
+
+
+class Glyph:
+    """A glyph: its advance, its contours (each a list of (x, y, on)
+    points in font units), and its components (each another glyph's name
+    with a six-number transform)."""
+
+    def __init__(self, advance, contours, components):
+        self.advance = advance
+        self.contours = contours
+        self.components = components
+
+
+def load_font(text):
+    """Read a font from its JSON text. Every language reads JSON; this is
+    the one loader, written once."""
+    data = json.loads(text)
+    cmap = dict(data.get("cmap", {}))
+    glyphs = {}
+    for name, g in data.get("glyphs", {}).items():
+        contours = [[(pt[0], pt[1], bool(pt[2])) for pt in contour]
+                    for contour in g.get("contours", [])]
+        components = [(c["glyph"], list(c["transform"])) for c in g.get("components", [])]
+        glyphs[name] = Glyph(g.get("advance", 0), contours, components)
+    return Font(data["units_per_em"], data["ascender"], data["descender"],
+                data.get("line_gap", 0), cmap, glyphs,
+                data.get("kern"), data.get("ligatures"))
+
+
+def glyph_name(font, codepoint):
+    """The glyph name a codepoint maps to, or .notdef when the font
+    doesn't have the character."""
+    return font.cmap.get(str(codepoint), ".notdef")
+
+
+def glyph_advance(font, name):
+    """A glyph's advance, in font units."""
+    return font.glyphs[name].advance
+
+
+def glyph_count(font):
+    """How many glyphs the font holds."""
+    return len(font.glyphs)
+
+
+def implied_points(contour):
+    """Make every implied on-curve point explicit: walk the loop (which
+    wraps, so the last and first points count as a pair too), and after
+    every off-curve point followed by another off-curve point, insert
+    their midpoint flagged on. Then rotate the result to start on an
+    on-curve point, since a contour may start off-curve."""
+    pts = [tuple(p) for p in contour]
+    n = len(pts)
+    if n == 0:
+        return []
+    out = []
+    for i in range(n):
+        cur = pts[i]
+        nxt = pts[(i + 1) % n]
+        out.append(cur)
+        if not cur[2] and not nxt[2]:
+            out.append(((cur[0] + nxt[0]) / 2.0, (cur[1] + nxt[1]) / 2.0, True))
+    start = next((i for i, p in enumerate(out) if p[2]), 0)
+    return out[start:] + out[:start]
+
+
+def contour_curves(contour):
+    """A contour as quadratics: from each on-curve point through the
+    off-curve point after it (if any) to the next on-curve point. Two
+    on-curve points in a row are a straight edge, written as a quadratic
+    with its control point at the edge's midpoint, so every piece of
+    every contour is the same shape."""
+    pts = implied_points(contour)
+    n = len(pts)
+    on_indices = [i for i, p in enumerate(pts) if p[2]]
+    curves = []
+    for k in range(len(on_indices)):
+        i0 = on_indices[k]
+        i1 = on_indices[(k + 1) % len(on_indices)]
+        if i1 > i0:
+            between = pts[i0 + 1:i1]
+        else:
+            between = pts[i0 + 1:] + pts[:i1]
+        p0 = point(pts[i0][0], pts[i0][1])
+        p2 = point(pts[i1][0], pts[i1][1])
+        if between:
+            ctrl = point(between[0][0], between[0][1])
+        else:
+            ctrl = point((p0.x + p2.x) / 2.0, (p0.y + p2.y) / 2.0)
+        curves.append(quadratic(p0, ctrl, p2))
+    return curves
+
+
+def component_matrix(t):
+    """A component's six-number transform [a, b, c, d, dx, dy] as a
+    matrix3, applied the way TrueType applies it:
+    x' = a*x + c*y + dx, y' = b*x + d*y + dy."""
+    a, b, c, d, dx, dy = t
+    return Matrix3(a, c, dx, b, d, dy, 0, 0, 1)
+
+
+def glyph_outline(font, name):
+    """Every contour of a glyph as quadratics, in font units: its own
+    contours, followed by each component's outline taken through its
+    matrix, recursively. Returns a list of contours, each a list of
+    quadratics."""
+    g = font.glyphs[name]
+    contours = [contour_curves(c) for c in g.contours]
+    for comp_name, transform in g.components:
+        m = component_matrix(transform)
+        for sub_contour in glyph_outline(font, comp_name):
+            contours.append([transform_curve(c, m) for c in sub_contour])
+    return contours
+
+
+def glyph_bounds(font, name):
+    """The tight box of a glyph's outline: the union, over every
+    quadratic of every contour (including components), of chapter 8's
+    curve_bounds -- not the box of the control points. An empty glyph's
+    bounds are (0, 0, 0, 0)."""
+    xs0, ys0, xs1, ys1 = [], [], [], []
+    for contour in glyph_outline(font, name):
+        for c in contour:
+            b = curve_bounds(c)
+            xs0.append(b[0]); ys0.append(b[1])
+            xs1.append(b[2]); ys1.append(b[3])
+    if not xs0:
+        return (0.0, 0.0, 0.0, 0.0)
+    return (min(xs0), min(ys0), max(xs1), max(ys1))
+
+
+def text_matrix(font, size, x, y):
+    """The one place the y-up/y-down difference lives: scale by
+    size / units_per_em, turn y over, and put the glyph's origin on the
+    baseline at (x, y)."""
+    scale = size / font.units_per_em
+    return translation(x, y) * scaling(scale, -scale)
+
+
+def contour_path(font, name, i, m, tolerance):
+    """One contour of a glyph as a closed subpath, in device space: its
+    quadratics through m, flattened at tolerance."""
+    p = path()
+    for c in glyph_outline(font, name)[i]:
+        flatten_into_path(p, transform_curve(c, m), tolerance)
+    close(p)
+    return p
+
+
+def glyph_path(font, name, m, tolerance):
+    """A glyph's outline as a path, in device space: every quadratic
+    through m, flattened, one closed subpath per contour."""
+    p = path()
+    contours = glyph_outline(font, name)
+    for i in range(len(contours)):
+        if not contours[i]:
+            continue
+        sub = contour_path(font, name, i, m, tolerance)
+        p.subpaths.extend(sub.subpaths)
+    return p
+
+
+# --- Chapter 16 renders ---
+
+_GLYPH_GRAY = _STROKE_GRAY
+_GLYPH_MAGENTA = _STROKE_MAG
+_GLYPH_CYAN = INKS[1]
+_GLYPH_HAIRLINE = color(0.28, 0.28, 0.32)
+
+
+def _square_path(q, half_side):
+    """A small square centred on q, half_side to each side."""
+    return polygon(point(q.x - half_side, q.y - half_side),
+                   point(q.x + half_side, q.y - half_side),
+                   point(q.x + half_side, q.y + half_side),
+                   point(q.x - half_side, q.y + half_side))
+
+
+def glyph_plate():
+    """The letter a, filled, with the file's control polygon drawn over
+    it: on-curve points as filled squares, off-curve points as hollow
+    circles, implied on-curve points as smaller squares."""
+    c = canvas(320, 320)
+    fill(c, PAPER)
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    m = text_matrix(font, 300, 40, 250)
+
+    cov = fill_path(glyph_path(font, "a", m, 0.1), "nonzero", c.width, c.height)
+    paint_through(c, cov, _GLYPH_GRAY)
+
+    for contour in font.glyphs["a"].contours:
+        pts = [m * point(x, y) for (x, y, _on) in contour]
+        _stroke_path(c, _polyline_path(pts, True), 1.0, _GLYPH_HAIRLINE, "butt", "miter")
+
+    for contour in font.glyphs["a"].contours:
+        file_points = {(x, y) for (x, y, _on) in contour}
+        for (x, y, on) in implied_points(contour):
+            q = m * point(x, y)
+            if not on:
+                ring = fill_path(stroke_to_path(circle_path(q.x, q.y, 4, 24), 1.5, "butt", "round", 4.0),
+                                  "nonzero", c.width, c.height)
+                paint_through(c, ring, _GLYPH_MAGENTA)
+            elif (x, y) in file_points:
+                sq = fill_path(_square_path(q, 3), "nonzero", c.width, c.height)
+                paint_through(c, sq, _GLYPH_CYAN)
+            else:
+                sq = fill_path(_square_path(q, 2), "nonzero", c.width, c.height)
+                paint_through(c, sq, _GLYPH_CYAN)
+    return c
+
+
+def plate_16():
+    """Chapter 16's plate: the annotated a, magnified by 2."""
+    return magnify(glyph_plate(), 2)
+
+
+def composite_demo():
+    """eacute drawn as its two components, each in its own ink, with
+    glyph_bounds as a hairline box."""
+    w, h = 240, 240
+    c = canvas(w, h)
+    fill(c, PAPER)
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    m = text_matrix(font, 240, 50, 190)
+
+    g = font.glyphs["eacute"]
+    comp_inks = [INKS[0], INKS[1]]
+    for i, (comp_name, transform) in enumerate(g.components):
+        mm = m * component_matrix(transform)
+        cov = fill_path(glyph_path(font, comp_name, mm, 0.1), "nonzero", w, h)
+        paint_through(c, cov, comp_inks[i % len(comp_inks)])
+
+    x0, y0, x1, y1 = glyph_bounds(font, "eacute")
+    corners = [m * point(x0, y0), m * point(x1, y0), m * point(x1, y1), m * point(x0, y1)]
+    _stroke_path(c, _polyline_path(corners, True), 1.0, _GLYPH_MAGENTA, "butt", "round")
+    return c
+
+
+def sizes():
+    """The letter g at 12, 24, 48 and 96 pixels, on one baseline."""
+    w, h = 240, 120
+    c = canvas(w, h)
+    fill(c, PAPER)
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    baseline_y = 80
+    x = 8
+    for size in (12, 24, 48, 96):
+        m = text_matrix(font, size, x, baseline_y)
+        cov = fill_path(glyph_path(font, "g", m, 0.1), "nonzero", w, h)
+        paint_through(c, cov, _GLYPH_GRAY)
+        x += glyph_advance(font, "g") * size / font.units_per_em + 8
+    return c
+
+
+_BASELINE_LINE = color(0.16, 0.16, 0.18)
+
+
+def _flip_trap_panel(font, name, m, w, h, baseline_y, ink):
+    """One panel of flip_trap: a baseline guide line, then the glyph
+    filled in ink -- gray where the flip is right, magenta where it's
+    forgotten, so the reader can see the glyph sitting on the baseline
+    versus hanging below it."""
+    c = canvas(w, h)
+    fill(c, PAPER)
+    rect = polygon(point(0, baseline_y - 1), point(w, baseline_y - 1),
+                   point(w, baseline_y + 1), point(0, baseline_y + 1))
+    paint_through(c, fill_path(rect, "nonzero", w, h), _BASELINE_LINE)
+    cov = fill_path(glyph_path(font, name, m, 0.1), "nonzero", w, h)
+    paint_through(c, cov, ink)
+    return c
+
+
+def flip_trap():
+    """R drawn correctly through text_matrix on the left, and through a
+    scale that forgot to turn y over on the right -- the glyph hangs
+    below the baseline, upside down."""
+    w, h = 120, 120
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    baseline_y = 60
+
+    m_good = text_matrix(font, 60, 35, baseline_y)
+    left = _flip_trap_panel(font, "R", m_good, w, h, baseline_y, _GLYPH_GRAY)
+
+    scale = 60 / font.units_per_em
+    m_bad = translation(35, baseline_y) * scaling(scale, scale)
+    right = _flip_trap_panel(font, "R", m_bad, w, h, baseline_y, _GLYPH_MAGENTA)
+
+    return side_by_side(left, right)
+
+
+# ============================================================================
+# Chapter 17: Rasterizing Type Well
+# ============================================================================
+
+def subpixel_of(x):
+    """Split a fractional pen position into a whole pixel and one of four
+    quarters, the fraction rounded to the nearest quarter and carried
+    into the next pixel when it rounds all the way up to four."""
+    whole = math.floor(x)
+    frac = x - whole
+    q = round_half_up(frac * 4)
+    if q == 4:
+        whole += 1
+        q = 0
+    return (whole, q)
+
+
+class Bitmap:
+    """A glyph's coverage in a buffer of its own, plus the offset (left,
+    top) of the buffer's corner relative to the pen."""
+
+    def __init__(self, coverage, left, top):
+        self.coverage = coverage
+        self.left = left
+        self.top = top
+
+    @property
+    def width(self):
+        return self.coverage.width
+
+    @property
+    def height(self):
+        return self.coverage.height
+
+
+def bitmap(coverage, left, top):
+    """Build a bitmap from an existing coverage buffer and an offset."""
+    return Bitmap(coverage, left, top)
+
+
+_BITMAP_TOLERANCE = 0.1
+
+
+def glyph_bitmap(font, name, size, subpixel):
+    """Render a glyph at a given quarter-pixel subposition into a
+    coverage buffer just big enough for it: columns floor(xmin) to
+    ceil(xmax) - 1 of its device bounds shifted by the quarter, rows
+    floor(-ymax) to ceil(-ymin) - 1, with left/top saying where the
+    buffer's corner sits relative to the pen."""
+    scale = size / font.units_per_em
+    fx0, fy0, fx1, fy1 = glyph_bounds(font, name)
+    sx0, sx1 = fx0 * scale, fx1 * scale
+    sy0, sy1 = fy0 * scale, fy1 * scale
+    shift = subpixel / 4.0
+
+    left = math.floor(sx0 + shift)
+    right = math.ceil(sx1 + shift) - 1
+    width = max(0, right - left + 1)
+
+    top = math.floor(-sy1)
+    bottom = math.ceil(-sy0) - 1
+    height = max(0, bottom - top + 1)
+
+    if width <= 0 or height <= 0:
+        return Bitmap(coverage_buffer(max(0, width), max(0, height)), left, top)
+
+    m = text_matrix(font, size, shift - left, -top)
+    cov = fill_path(glyph_path(font, name, m, _BITMAP_TOLERANCE), "nonzero", width, height)
+    return Bitmap(cov, left, top)
+
+
+def paint_bitmap(canvas, bmp, x, y, col, linear):
+    """Composite a bitmap onto a canvas with its pen at whole pixel
+    (x, y), mixing toward col by each covered pixel's coverage. linear
+    picks chapter 1's blending lane explicitly, not the global switch."""
+    cov = bmp.coverage
+    for j in range(cov.height):
+        for i in range(cov.width):
+            c = coverage_at(cov, i, j)
+            if c <= 0:
+                continue
+            px = x + bmp.left + i
+            py = y + bmp.top + j
+            if 0 <= px < canvas.width and 0 <= py < canvas.height:
+                current = pixel_at(canvas, px, py)
+                painted = mix(current, col, c, linear)
+                write_pixel(canvas, px, py, painted)
+
+
+# --- The cache and the atlas ---
+
+def glyph_cache():
+    """An empty glyph cache: a table keyed by (name, size, subpixel)."""
+    return {}
+
+
+def cache_size(cache):
+    """How many bitmaps a cache holds."""
+    return len(cache)
+
+
+def cached_bitmap(cache, font, name, size, subpixel):
+    """Render a glyph on the first request for this key, and hand back
+    the very same bitmap on every request after."""
+    key = (name, size, subpixel)
+    if key not in cache:
+        cache[key] = glyph_bitmap(font, name, size, subpixel)
+    return cache[key]
+
+
+class Atlas:
+    """A big coverage buffer that bitmaps are packed into shelf by
+    shelf: left to right along a shelf whose height is its first
+    bitmap's, a new shelf opening below the tallest shelf so far when
+    one doesn't fit."""
+
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+        self.coverage = coverage_buffer(width, height)
+        self.shelf_y = 0
+        self.shelf_height = 0
+        self.cursor_x = 0
+
+
+def atlas(width, height):
+    """An empty atlas of the given size."""
+    return Atlas(width, height)
+
+
+def atlas_add(at, bmp):
+    """Copy a bitmap's coverage into the atlas, shelf-packed, and answer
+    where its top-left corner landed -- or none when there's no room."""
+    w, h = bmp.width, bmp.height
+    if w > at.width or h > at.height:
+        return None
+
+    if at.cursor_x + w > at.width:
+        # This bitmap doesn't fit on the current shelf: open a new one
+        # below the tallest shelf seen so far.
+        at.shelf_y += at.shelf_height
+        at.shelf_height = 0
+        at.cursor_x = 0
+
+    if at.shelf_y + h > at.height:
+        return None
+
+    x0, y0 = at.cursor_x, at.shelf_y
+    for j in range(h):
+        for i in range(w):
+            set_coverage(at.coverage, x0 + i, y0 + j, coverage_at(bmp.coverage, i, j))
+
+    at.cursor_x += w
+    at.shelf_height = max(at.shelf_height, h)
+    return (x0, y0)
+
+
+# --- The fudge, named ---
+
+def embolden(font, name, size, amount):
+    """Stem darkening: the glyph's fill plus chapter 13's stroke of its
+    outline, amount wide, the two coverages added and clamped to one, in
+    a bitmap grown a pixel all round to make room."""
+    plain = glyph_bitmap(font, name, size, 0)
+    left = plain.left - 1
+    top = plain.top - 1
+    width = plain.width + 2
+    height = plain.height + 2
+    if width <= 0 or height <= 0:
+        return Bitmap(coverage_buffer(max(0, width), max(0, height)), left, top)
+
+    m = text_matrix(font, size, -left, -top)
+    gp = glyph_path(font, name, m, _BITMAP_TOLERANCE)
+    fill_cov = fill_path(gp, "nonzero", width, height)
+    stroke_outline = stroke_to_path(gp, amount, "round", "round", 4.0)
+    stroke_cov = fill_path(stroke_outline, "nonzero", width, height)
+
+    result = coverage_buffer(width, height)
+    for j in range(height):
+        for i in range(width):
+            total = coverage_at(fill_cov, i, j) + coverage_at(stroke_cov, i, j)
+            set_coverage(result, i, j, min(1.0, total))
+    return Bitmap(result, left, top)
+
+
+# --- Three coverages per pixel (LCD) ---
+
+LCD_TAPS = (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
+
+
+def lcd_filter(values):
+    """Replace every value with the average of itself and its two
+    neighbours, zero beyond the ends: three taps that sum to one, so ink
+    spreads across neighbouring stripes but is never lost."""
+    n = len(values)
+    out = []
+    for i in range(n):
+        left = values[i - 1] if i - 1 >= 0 else 0
+        mid = values[i]
+        right = values[i + 1] if i + 1 < n else 0
+        out.append((left + mid + right) / 3.0)
+    return out
+
+
+def lcd_coverage(font, name, size, x, y, w, h):
+    """Rasterize the glyph three times wider -- one coverage per stripe
+    -- into a buffer 3w wide and h tall, with lcd_filter run along every
+    row."""
+    wide = coverage_buffer(3 * w, h)
+    scale = size / font.units_per_em
+    m = translation(3 * x, y) * scaling(3 * scale, -scale)
+    gp = glyph_path(font, name, m, _BITMAP_TOLERANCE)
+    raw = fill_path(gp, "nonzero", 3 * w, h)
+    for row in range(h):
+        values = [coverage_at(raw, col, row) for col in range(3 * w)]
+        filtered = lcd_filter(values)
+        for col in range(3 * w):
+            set_coverage(wide, col, row, filtered[col])
+    return wide
+
+
+def paint_lcd(canvas, cov3, col):
+    """Composite an LCD coverage buffer: red through the first stripe of
+    each pixel, green the second, blue the third, each channel mixed on
+    its own."""
+    w = cov3.width // 3
+    h = cov3.height
+    for y in range(h):
+        for x in range(w):
+            cr = coverage_at(cov3, 3 * x, y)
+            cg = coverage_at(cov3, 3 * x + 1, y)
+            cb = coverage_at(cov3, 3 * x + 2, y)
+            if cr <= 0 and cg <= 0 and cb <= 0:
+                continue
+            current = pixel_at(canvas, x, y)
+            painted = Color(
+                current.red + (col.red - current.red) * cr,
+                current.green + (col.green - current.green) * cg,
+                current.blue + (col.blue - current.blue) * cb,
+            )
+            write_pixel(canvas, x, y, painted)
+
+
+# --- Putting it together ---
+
+def pen_advance(font, name, size):
+    """A glyph's advance, in pixels, at a given size."""
+    return glyph_advance(font, name) * size / font.units_per_em
+
+
+def draw_text(canvas, font, text, size, x, y, col, linear=True):
+    """Step the pen across a string, drawing each glyph at its nearest
+    quarter and advancing by pen_advance."""
+    cache = glyph_cache()
+    pen = x
+    for ch in text:
+        name = glyph_name(font, ord(ch))
+        whole, q = subpixel_of(pen)
+        bmp = cached_bitmap(cache, font, name, size, q)
+        paint_bitmap(canvas, bmp, whole, y, col, linear)
+        pen += pen_advance(font, name, size)
+    return pen
+
+
+def subpixel_strip():
+    """l at 11 pixels with its pen at x = 4, 4.25, 4.5 and 4.75, in four
+    10x14 panels, black on white, magnified eight times."""
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    panels = []
+    for q in range(4):
+        c = canvas(10, 14)
+        fill(c, color(1, 1, 1))
+        bmp = glyph_bitmap(font, "l", 11, q)
+        paint_bitmap(c, bmp, 4, 11, color(0, 0, 0), True)
+        panels.append(c)
+    combined = _side_by_side_n(panels)
+    return magnify(combined, 8)
+
+
+def smoothing_demo():
+    """Hamburg at 11 pixels three ways: blended in linear light, blended
+    in encoded space, and linear with the stems emboldened by a third of
+    a pixel, magnified four times."""
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    text = "Hamburg"
+    w, h = 72, 14
+    rows = []
+
+    c1 = canvas(w, h)
+    fill(c1, color(1, 1, 1))
+    cache1 = glyph_cache()
+    pen = 2.0
+    for ch in text:
+        name = glyph_name(font, ord(ch))
+        whole, q = subpixel_of(pen)
+        bmp = cached_bitmap(cache1, font, name, 11, q)
+        paint_bitmap(c1, bmp, whole, 11, color(0, 0, 0), True)
+        pen += pen_advance(font, name, 11)
+    rows.append(c1)
+
+    c2 = canvas(w, h)
+    fill(c2, color(1, 1, 1))
+    cache2 = glyph_cache()
+    pen = 2.0
+    for ch in text:
+        name = glyph_name(font, ord(ch))
+        whole, q = subpixel_of(pen)
+        bmp = cached_bitmap(cache2, font, name, 11, q)
+        paint_bitmap(c2, bmp, whole, 11, color(0, 0, 0), False)
+        pen += pen_advance(font, name, 11)
+    rows.append(c2)
+
+    c3 = canvas(w, h)
+    fill(c3, color(1, 1, 1))
+    pen = 2.0
+    for ch in text:
+        name = glyph_name(font, ord(ch))
+        whole, q = subpixel_of(pen)
+        bmp = embolden(font, name, 11, 1.0 / 3.0)
+        paint_bitmap(c3, bmp, whole, 11, color(0, 0, 0), True)
+        pen += pen_advance(font, name, 11)
+    rows.append(c3)
+
+    total_h = sum(r.height for r in rows)
+    result = Canvas(w, total_h)
+    y_off = 0
+    for r_ in rows:
+        for y in range(r_.height):
+            for x in range(w):
+                write_pixel(result, x, y_off + y, pixel_at(r_, x, y))
+        y_off += r_.height
+    return magnify(result, 4)
+
+
+def lcd_plate():
+    """ea at 13 pixels twice: grayscale coverage above, three coverages
+    per pixel below."""
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    top = canvas(24, 16)
+    fill(top, color(1, 1, 1))
+    bottom = canvas(24, 16)
+    fill(bottom, color(1, 1, 1))
+    pen = 2.0
+    for ch in "ea":
+        name = glyph_name(font, ord(ch))
+        m = text_matrix(font, 13, pen, 12)
+        cov = fill_path(glyph_path(font, name, m, 0.1), "nonzero", 24, 16)
+        paint_through(top, cov, color(0, 0, 0))
+        cov3 = lcd_coverage(font, name, 13, pen, 12, 24, 16)
+        paint_lcd(bottom, cov3, color(0, 0, 0))
+        pen += pen_advance(font, name, 13)
+    total_h = top.height + bottom.height
+    result = Canvas(24, total_h)
+    for y in range(top.height):
+        for x in range(24):
+            write_pixel(result, x, y, pixel_at(top, x, y))
+    for y in range(bottom.height):
+        for x in range(24):
+            write_pixel(result, x, top.height + y, pixel_at(bottom, x, y))
+    return magnify(result, 6)
+
+
+def plate_17():
+    """Chapter 17's plate: the grayscale/LCD comparison, magnified by 2."""
+    return magnify(lcd_plate(), 2)

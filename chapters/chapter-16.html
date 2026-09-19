@@ -231,7 +231,11 @@
     <code>curve_bounds</code> on every quadratic, not the box of the control points, which pokes out
     past the curves. A composite's bounds are the union of its transformed components' bounds, and
     the scenario checks that for <code>eacute</code>: the <code>e</code>'s box grown upward to the top
-    of the accent. An empty glyph (<code>space</code>) has bounds <code>(0, 0, 0, 0)</code>.</p>
+    of the accent. An empty glyph (<code>space</code>) has bounds <code>(0, 0, 0, 0)</code>. One
+    thing Roboto can't test for you: a well-drawn font puts an on-curve point at every extreme, so
+    its control boxes and its tight boxes agree, and a bounds function that reads the control
+    points passes every real glyph. The last scenario writes a one-glyph font by hand, a single
+    bump whose control point sits twice as high as the curve reaches, to catch exactly that.</p>
 
   <div class="test" data-feature="chapter16-composites.feature">
     <p class="label">features/chapter16-composites.feature</p>
@@ -271,12 +275,12 @@
     <span class="kw">And</span>   glyph_bounds(font, "aring") = (109, -20, 1002, 1627)
     <span class="kw">And</span>   glyph_bounds(font, "space") = (0, 0, 0, 0)
 
-  <span class="kw">Scenario</span>: Bounds are tight, not the control box
+  <span class="kw">Scenario</span>: Two more real glyphs' bounds
     <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
     <span class="kw">Then</span>  glyph_bounds(font, "o") = (91, -20, 1076, 1102)
     <span class="kw">And</span>   glyph_bounds(font, "H") = (169, 0, 1288, 1456)
 
-  <span class="kw">Scenario</span>: A font can be written by hand, and a bump's bounds stop where the curve does
+  <span class="kw">Scenario</span>: Bounds are tight, not the control box: a hand-written bump stops where its curve does
     <span class="kw">Given</span> tiny ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"98": "bump"}, "glyphs": {"bump": {"advance": 300, "contours": [[[0, 0, true], [100, 200, false], [200, 0, true]]], "components": []}, "twice": {"advance": 600, "contours": [], "components": [{"glyph": "bump", "transform": [1, 0, 0, 1, 0, 0]}, {"glyph": "bump", "transform": [1, 0, 0.5, 2, 300, 0]}]}}}')
     <span class="kw">Then</span>  glyph_count(tiny) = 2
     <span class="kw">And</span>   glyph_name(tiny, 98) = "bump"
@@ -387,8 +391,10 @@
   <h2><span class="sec">§ 16.5</span> Putting it together</h2>
 
   <p>The plate is the letter <em>a</em>, filled, with the file's data drawn over it: the control
-    polygon as a hairline, on-curve points as filled squares, off-curve points as hollow circles, and
-    the implied on-curve points as smaller squares. Two contours, wound in opposite directions, and
+    polygon as a hairline in a dim gray, <code>color(0.3, 0.3, 0.34)</code>, on-curve points as
+    filled squares in cyan, <code>color(0.2, 0.75, 0.9)</code>, off-curve points as hollow magenta
+    circles, and the implied on-curve points as smaller cyan squares. A hairline is chapter 14's:
+    the path stroked one wide with butt caps and round joins, filled nonzero. Two contours, wound in opposite directions, and
     every curve a quadratic. Look at how few points it takes.</p>
 
 <pre><code>glyph_plate():
@@ -396,7 +402,7 @@
   m ← text_matrix(font, 300, 40, 250)
   fill glyph_path(font, "a", m, 0.1) nonzero, in gray
   <span class="kw">for</span> contour <span class="kw">in</span> font.glyphs["a"].contours:
-    hairline through every point of the contour, taken through m, closed          <span class="cm">// width 1</span>
+    hairline through every point of the contour, taken through m, closed, in dim   <span class="cm">// width 1, butt caps, round joins</span>
   <span class="kw">for</span> contour <span class="kw">in</span> font.glyphs["a"].contours:
     <span class="kw">for</span> (x, y, on) <span class="kw">in</span> implied_points(contour):
       q ← m * point(x, y)
@@ -414,7 +420,10 @@ plate_16():
   glyph_plate() fills Roboto's a at a 300 pixel em and draws its control
   polygon over it: on-curve points as filled squares, off-curve points as
   hollow circles, implied on-curve points as smaller squares; plate_16() is
-  it magnified. composite_demo() is a 240 by 240 canvas of paper with
+  it magnified. The chapter's inks: paper, gray and magenta as before, dim
+  = color(0.3, 0.3, 0.34), cyan = color(0.2, 0.75, 0.9). A hairline is
+  chapter 14's: the path stroked with butt caps and round joins, filled
+  nonzero, 1 wide unless said otherwise. composite_demo() is a 240 by 240 canvas of paper with
   eacute at a 240 pixel em, origin (50, 190): each component filled through
   text_matrix times its component_matrix, the first in INKS[0] and the
   second in INKS[1], then glyph_bounds taken through text_matrix and drawn
