@@ -2168,11 +2168,13 @@ def fill_path(p, rule, w, h):
 
 
 def polygon_area(p):
-    """The shoelace formula over every edge of every subpath, unsigned."""
+    """The shoelace formula over every edge of every subpath, signed: positive
+    for a path wound clockwise on screen (the same sign as cross), negative
+    for counterclockwise. Chapter 13 uses the sign to orient stroke pieces."""
     total = 0.0
     for e in edges(p):
         total += e.a.x * e.b.y - e.b.x * e.a.y
-    return abs(total) / 2.0
+    return total / 2.0
 
 
 # Chapter 7 renders
@@ -3898,10 +3900,10 @@ def _join_shape(v, d_in, d_out, h, join, miter_limit):
     if join == "round":
         a0 = math.atan2(a.y - v.y, a.x - v.x)
         a1 = math.atan2(b.y - v.y, b.x - v.x)
-        if s > 0 and a1 < a0:
-            a1 += 2 * math.pi
-        if s < 0 and a1 > a0:
-            a1 -= 2 * math.pi
+        # Sweep the short way round -- the long way is the inside of the
+        # turn and leaves a notch where the gap should have been filled.
+        diff = ((a1 - a0 + math.pi) % (2 * math.pi)) - math.pi
+        a1 = a0 + diff
         return [v] + _arc_points(v, a0, a1, h, _arc_steps(a0, a1))
 
     # miter, falling back to bevel past the limit
@@ -3941,6 +3943,28 @@ def _dot_points(c, h, cap):
     return None
 
 
+def _signed_polygon_area(points):
+    """The shoelace formula over a closed polygon's points -- the same sign
+    convention as polygon_area, computed directly on a bare point list."""
+    total = 0.0
+    n = len(points)
+    for i in range(n):
+        a, b = points[i], points[(i + 1) % n]
+        total += a.x * b.y - b.x * a.y
+    return total / 2.0
+
+
+def _emit(out, piece):
+    """Append a piece to the output path, oriented counterclockwise on
+    screen (negative polygon_area) so every piece winds the same way and
+    overlaps add under nonzero fill instead of cancelling."""
+    if piece is None:
+        return
+    if _signed_polygon_area(piece) > 0:
+        piece = list(reversed(piece))
+    out.subpaths.append(Subpath(piece, True))
+
+
 def stroke_to_path(p, width, cap, join, miter_limit):
     """Turn a stroked path into a fillable outline: one rectangle per
     segment, one join wedge per interior vertex, one cap shape per open
@@ -3953,8 +3977,7 @@ def stroke_to_path(p, width, cap, join, miter_limit):
             continue
         if len(pts) == 1:
             dot = _dot_points(pts[0], h, cap)
-            if dot is not None:
-                out.subpaths.append(Subpath(dot, True))
+            _emit(out, dot)
             continue
 
         segs = [(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
@@ -3962,24 +3985,19 @@ def stroke_to_path(p, width, cap, join, miter_limit):
             segs.append((pts[-1], pts[0]))
 
         for a, b in segs:
-            out.subpaths.append(Subpath(_seg_rect(a, b, h), True))
+            _emit(out, _seg_rect(a, b, h))
 
         dirs = [normalize(b - a) for a, b in segs]
         n_joins = len(segs) if sp.closed else len(segs) - 1
         for k in range(n_joins):
             v = segs[(k + 1) % len(segs)][0]
             j = _join_shape(v, dirs[k], dirs[(k + 1) % len(dirs)], h, join, miter_limit)
-            if j is not None:
-                out.subpaths.append(Subpath(j, True))
+            _emit(out, j)
 
         if not sp.closed:
             start_dir = vector(-dirs[0].x, -dirs[0].y)
-            sc = _cap_shape(pts[0], start_dir, h, cap)
-            if sc is not None:
-                out.subpaths.append(Subpath(sc, True))
-            ec = _cap_shape(pts[-1], dirs[-1], h, cap)
-            if ec is not None:
-                out.subpaths.append(Subpath(ec, True))
+            _emit(out, _cap_shape(pts[0], start_dir, h, cap))
+            _emit(out, _cap_shape(pts[-1], dirs[-1], h, cap))
     return out
 
 
@@ -3990,6 +4008,22 @@ def chevron():
     move_to(p, point(30, 40))
     line_to(p, point(80, 120))
     line_to(p, point(130, 40))
+    return p
+
+
+def u_turn():
+    """Nine points on the upper half of a circle of radius 10 about
+    (50, 50), from 180 degrees to 360 degrees in steps of 22.5 degrees --
+    a tight bend whose 40-wide stroke overlaps itself all the way round."""
+    p = path()
+    cx, cy, radius = 50.0, 50.0, 10.0
+    for k in range(9):
+        angle = math.radians(180 + 22.5 * k)
+        pt = point(cx + radius * math.cos(angle), cy + radius * math.sin(angle))
+        if k == 0:
+            move_to(p, pt)
+        else:
+            line_to(p, pt)
     return p
 
 
@@ -4058,3 +4092,636 @@ def caps_demo():
         for cap in ("butt", "round", "square")
     ]
     return _side_by_side_n(panels)
+
+
+# --- Chapter 14: Offsetting Curves ---
+
+def tangent_at(c, t):
+    """The unit tangent at parameter t. Where the derivative vanishes (a
+    handle sitting on its anchor), the direction is taken a hair further
+    into the curve instead: t + 0.0001 at the start, t - 0.0001 at the
+    end."""
+    d = derivative(c, t)
+    if magnitude(d) < 1e-9:
+        t2 = t + 0.0001 if t < 1.0 else t - 0.0001
+        d = derivative(c, t2)
+    return normalize(d)
+
+
+def normal_at(c, t):
+    """The tangent turned a quarter turn toward +y -- on the y-down
+    canvas, the right-hand side of travel, the same +h side chapter 13's
+    rectangles used."""
+    return _perp(tangent_at(c, t))
+
+
+def offset_point(c, t, d):
+    """The point at distance d along the normal at parameter t. Positive
+    d is the right of travel, negative the left."""
+    p = point_at(c, t)
+    n = normal_at(c, t)
+    return _add_scaled(p, n, d)
+
+
+def second_derivative(c, t):
+    """The curve's second derivative: a constant for a quadratic, a
+    straight-line blend of the two second differences for a cubic."""
+    pts = c.points
+    if len(pts) == 3:
+        p0, p1, p2 = pts
+        return vector(2 * (p0.x - 2 * p1.x + p2.x), 2 * (p0.y - 2 * p1.y + p2.y))
+    p0, p1, p2, p3 = pts
+    ax, ay = p0.x - 2 * p1.x + p2.x, p0.y - 2 * p1.y + p2.y
+    bx, by = p1.x - 2 * p2.x + p3.x, p1.y - 2 * p2.y + p3.y
+    return vector(6 * ((1 - t) * ax + t * bx), 6 * ((1 - t) * ay + t * by))
+
+
+def curvature(c, t):
+    """Signed curvature, cross(v, a) / |v|^3: positive where the curve
+    turns clockwise on screen, the same side positive d points to. Uses
+    the same live-tangent nudge as tangent_at where the derivative
+    vanishes."""
+    if magnitude(derivative(c, t)) < 1e-9:
+        t = t + 0.0001 if t < 1.0 else t - 0.0001
+    v = derivative(c, t)
+    a = second_derivative(c, t)
+    s = magnitude(v)
+    return cross(v, a) / (s ** 3)
+
+
+def cusps(c, d):
+    """The parameters where 1 - curvature(c, t) * d changes sign: 64
+    evenly spaced samples, bisected 40 times between any pair that
+    disagree."""
+    n = 64
+
+    def f(t):
+        return 1 - curvature(c, t) * d
+
+    out = []
+    prev_t, prev_f = 0.0, f(0.0)
+    for i in range(1, n + 1):
+        t, fv = i / n, f(i / n)
+        if (prev_f < 0) != (fv < 0):
+            lo, hi, flo = prev_t, t, prev_f
+            for _ in range(40):
+                mid = (lo + hi) / 2
+                fm = f(mid)
+                if (fm < 0) == (flo < 0):
+                    lo, flo = mid, fm
+                else:
+                    hi = mid
+            out.append((lo + hi) / 2)
+        prev_t, prev_f = t, fv
+    return out
+
+
+def fit_offset(c, d):
+    """One cubic through the two offset endpoints with the curve's own
+    end tangents, its handle lengths solved so it passes through the
+    offset point at t = 0.5 when its own t is 0.5."""
+    p0 = offset_point(c, 0, d)
+    p3 = offset_point(c, 1, d)
+    t0 = tangent_at(c, 0)
+    t1 = tangent_at(c, 1)
+    m = offset_point(c, 0.5, d)
+    r = vector((8 * m.x - 4 * p0.x - 4 * p3.x) / 3.0,
+               (8 * m.y - 4 * p0.y - 4 * p3.y) / 3.0)
+    den = cross(t0, t1)
+    if abs(den) < 1e-9:
+        a = b = magnitude(p3 - p0) / 3.0
+    else:
+        a = cross(r, t1) / den
+        b = cross(r, t0) / den
+    return cubic(p0, _add_scaled(p0, t0, a), _add_scaled(p3, t1, -b), p3)
+
+
+def offset_error(c, d, fitted):
+    """The largest miss between the fitted cubic and the true offset, at
+    17 matched parameters t = i / 16."""
+    worst = 0.0
+    for i in range(17):
+        t = i / 16.0
+        worst = max(worst, magnitude(point_at(fitted, t) - offset_point(c, t, d)))
+    return worst
+
+
+def distance_to_curve(c, p):
+    """The honest distance from a point to a curve: the nearest of 65
+    samples at t = i / 64, refined by 32 rounds of ternary search between
+    that sample's two neighbours."""
+    n = 64
+    ts = [i / n for i in range(n + 1)]
+
+    def d(t):
+        return magnitude(point_at(c, t) - p)
+
+    best_i = min(range(n + 1), key=lambda i: d(ts[i]))
+    lo = ts[max(0, best_i - 1)]
+    hi = ts[min(n, best_i + 1)]
+    for _ in range(32):
+        m1 = lo + (hi - lo) / 3.0
+        m2 = hi - (hi - lo) / 3.0
+        if d(m1) < d(m2):
+            hi = m2
+        else:
+            lo = m1
+    return min(d(lo), d((lo + hi) / 2.0), d(hi))
+
+
+def sub_curve(c, t0, t1):
+    """The piece of a curve between two parameters, by splitting twice."""
+    right = split_at(c, t0)[1] if t0 > 0 else c
+    if t1 < 1:
+        tt = (t1 - t0) / (1 - t0) if t0 < 1 else 1.0
+        return split_at(right, tt)[0]
+    return right
+
+
+def _offset_into(c, d, tolerance, pieces, depth):
+    fitted = fit_offset(c, d)
+    if offset_error(c, d, fitted) <= tolerance or depth >= 16:
+        pieces.append(fitted)
+    else:
+        left, right = split_at(c, 0.5)
+        _offset_into(left, d, tolerance, pieces, depth + 1)
+        _offset_into(right, d, tolerance, pieces, depth + 1)
+
+
+def offset_curve(c, d, tolerance):
+    """The offset as a list of cubics in order: the curve is split at its
+    cusps, and each piece is fitted, halved and fitted again until
+    offset_error is within tolerance, at most sixteen halvings deep."""
+    ts = [0.0]
+    for t in cusps(c, d):
+        if t - ts[-1] > 1e-9 and 1 - t > 1e-9:
+            ts.append(t)
+    ts.append(1.0)
+    pieces = []
+    for i in range(len(ts) - 1):
+        _offset_into(sub_curve(c, ts[i], ts[i + 1]), d, tolerance, pieces, 0)
+    return pieces
+
+
+def offset_distance_error(c, d, tolerance):
+    """The honest check: how far 100 points spread along the offset
+    curve stray from distance |d| to the original curve."""
+    pieces = offset_curve(c, d, tolerance)
+    n = 100
+    worst = 0.0
+    for i in range(n):
+        u = i / (n - 1) * len(pieces)
+        idx = min(int(u), len(pieces) - 1)
+        local_t = u - idx
+        p = point_at(pieces[idx], local_t)
+        worst = max(worst, abs(distance_to_curve(c, p) - abs(d)))
+    return worst
+
+
+def offset_path(c, d, tolerance):
+    """The offset curve, flattened and stitched into one polyline (a
+    list of points) with no duplicate joints between pieces."""
+    pts = []
+    for piece in offset_curve(c, d, tolerance):
+        f = flatten(piece, tolerance)
+        if pts and magnitude(pts[-1] - f[0]) < 1e-9:
+            f = f[1:]
+        pts.extend(f)
+    return pts
+
+
+def stroke_curve_to_path(c, width, cap, tolerance):
+    """The stroke of a curve as one closed subpath: the offset at +h
+    flattened forward, the end cap's points, the offset at -h flattened
+    backward, the start cap's points, with consecutive duplicates
+    dropped. Fill it nonzero."""
+    h = width / 2.0
+    pts = []
+    for piece in offset_curve(c, h, tolerance):
+        pts.extend(flatten(piece, tolerance))
+    end_cap = _cap_shape(point_at(c, 1), tangent_at(c, 1), h, cap)
+    if end_cap is not None:
+        pts.extend(end_cap)
+    for piece in reversed(offset_curve(c, -h, tolerance)):
+        pts.extend(list(reversed(flatten(piece, tolerance))))
+    t0 = tangent_at(c, 0)
+    start_cap = _cap_shape(point_at(c, 0), vector(-t0.x, -t0.y), h, cap)
+    if start_cap is not None:
+        pts.extend(start_cap)
+    pts = _dedupe_points(pts)
+    if len(pts) > 1 and magnitude(pts[-1] - pts[0]) < 1e-9:
+        pts = pts[:-1]
+    out = path()
+    out.subpaths.append(Subpath(pts, True))
+    return out
+
+
+def flatten_then_stroke(c, width, cap, tolerance):
+    """Chapter 13's way: flatten the curve, then stroke the polyline with
+    round joins."""
+    p = path()
+    flatten_into_path(p, c, tolerance)
+    return stroke_to_path(p, width, cap, "round", 4.0)
+
+
+def point_count(p):
+    """The total number of points across every subpath of a path."""
+    return sum(len(sp.points) for sp in subpaths(p))
+
+
+def hairpin():
+    """A cubic that bends back on itself with a tightest radius of about
+    8, used to show off the fold in the inner offset of a wide stroke."""
+    return cubic(point(35, 140), point(65, -30), point(95, -30), point(125, 140))
+
+
+def arch():
+    """A cubic arch, tightest radius about 26, used for the offsets
+    plate."""
+    return cubic(point(60, 250), point(130, 5), point(190, 5), point(260, 250))
+
+
+# --- Chapter 14 renders ---
+
+_OFFSET_MAG = color(0.85, 0.2, 0.55)
+_OFFSET_WHITE = color(0.9, 0.9, 0.92)
+_OFFSET_SIZE = 160
+_WARM = [color(0.95, 0.75, 0.2), color(0.95, 0.55, 0.15),
+         color(0.9, 0.35, 0.15), color(0.8, 0.2, 0.2)]
+_COOL = [color(0.35, 0.8, 0.9), color(0.25, 0.6, 0.9),
+         color(0.3, 0.4, 0.85), color(0.45, 0.3, 0.8)]
+
+
+def _outline_panel(outline_path, rule):
+    """Fill an outline path under a rule in gray and draw its edges in
+    magenta over it -- one panel of the offset plates. Endpoint pixels use
+    Python's own round-half-to-even (not chapter 1's round_half_up): the
+    swallowtail tip of a symmetric offset lands exactly on a half-integer
+    row, and that's the convention the reference render resolves the tie
+    with."""
+    c = canvas(_OFFSET_SIZE, _OFFSET_SIZE)
+    fill(c, PAPER)
+    cov = fill_path(outline_path, rule, _OFFSET_SIZE, _OFFSET_SIZE)
+    paint_through(c, cov, _STROKE_GRAY)
+    for e in edges(outline_path):
+        line_wu(c, round(e.a.x), round(e.a.y),
+                round(e.b.x), round(e.b.y), _OFFSET_MAG)
+    return c
+
+
+def two_strokes():
+    """The hairpin stroked twice, 60 wide with butt caps: flattened and
+    stroked with chapter 13's stroker on the left, one outline from the
+    offset curves on the right."""
+    left = _outline_panel(flatten_then_stroke(hairpin(), 60, "butt", 0.25), "nonzero")
+    right = _outline_panel(stroke_curve_to_path(hairpin(), 60, "butt", 0.25), "nonzero")
+    return side_by_side(left, right)
+
+
+def fold_demo():
+    """The offset-curve outline filled nonzero on the left and even-odd
+    on the right -- the fold becomes a hole under even-odd."""
+    o = stroke_curve_to_path(hairpin(), 60, "butt", 0.25)
+    left = _outline_panel(o, "nonzero")
+    right = _outline_panel(o, "evenodd")
+    return side_by_side(left, right)
+
+
+def _hairline(c, pts, col, width=1.5):
+    """Stroke an open polyline hairline-thin with chapter 13 and paint
+    it onto a canvas."""
+    if not pts:
+        return
+    p = path()
+    move_to(p, pts[0])
+    for pt in pts[1:]:
+        line_to(p, pt)
+    outline = stroke_to_path(p, width, "butt", "round", 4.0)
+    cov = fill_path(outline, "nonzero", c.width, c.height)
+    paint_through(c, cov, col)
+
+
+def offsets_plate():
+    """An arch with its offsets at 15, 30, 45 and 60 on both sides, warm
+    on the inside where they fold, cool outside, the curve in white and
+    every cusp a magenta dot."""
+    w, h = 320, 270
+    c = canvas(w, h)
+    fill(c, PAPER)
+    curve = arch()
+    ds = [15, 30, 45, 60]
+    for k, d in enumerate(ds):
+        _hairline(c, offset_path(curve, -d, 0.1), _COOL[k])
+    for k, d in enumerate(ds):
+        _hairline(c, offset_path(curve, d, 0.1), _WARM[k])
+    _hairline(c, flatten(curve, 0.1), _OFFSET_WHITE, 2.0)
+    for d in ds:
+        for t in cusps(curve, d):
+            q = offset_point(curve, t, d)
+            cov = fill_path(circle_path(q.x, q.y, 2.5, 24), "nonzero", w, h)
+            paint_through(c, cov, _OFFSET_MAG)
+    return c
+
+
+def plate_14():
+    """Chapter 14's plate: the offsets plate, magnified by 2."""
+    return magnify(offsets_plate(), 2)
+
+
+# --- Chapter 15: Dashes ---
+
+def path_length(p):
+    """The total length of a path: every subpath's segments, plus the
+    closing segment for a subpath that was closed."""
+    total = 0.0
+    for sp in subpaths(p):
+        pts = sp.points
+        for i in range(len(pts) - 1):
+            total += magnitude(pts[i + 1] - pts[i])
+        if sp.closed and len(pts) > 1:
+            total += magnitude(pts[0] - pts[-1])
+    return total
+
+
+def arc_length_table(c, n):
+    """n + 1 running lengths of the polyline through point_at(c, i / n),
+    i = 0 .. n: table[i] is the distance along the chords from the start
+    to that point."""
+    table = [0.0]
+    prev = point_at(c, 0)
+    for i in range(1, n + 1):
+        cur = point_at(c, i / n)
+        table.append(table[-1] + magnitude(cur - prev))
+        prev = cur
+    return table
+
+
+def arc_length(c, n):
+    """The curve's length at this chord count: the arc-length table's
+    last entry."""
+    return arc_length_table(c, n)[n]
+
+
+def t_at_length(table, s):
+    """The parameter where the running length reaches s, by linear
+    interpolation inside the chord that spans it: 0 before the start, 1
+    past the end."""
+    n = len(table) - 1
+    if s <= 0:
+        return 0.0
+    if s >= table[n]:
+        return 1.0
+    lo, hi = 0, n
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if table[mid] <= s:
+            lo = mid
+        else:
+            hi = mid
+    span = table[lo + 1] - table[lo]
+    frac = (s - table[lo]) / span if span > 0 else 0.0
+    return (lo + frac) / n
+
+
+def point_at_length(c, s, n):
+    """The point at running length s along the curve, found through its
+    n-chord arc-length table."""
+    return point_at(c, t_at_length(arc_length_table(c, n), s))
+
+
+def split_at_length(c, s, n):
+    """Split the curve at the parameter that running length s maps to,
+    through its n-chord arc-length table."""
+    return split_at(c, t_at_length(arc_length_table(c, n), s))
+
+
+def normalize_pattern(pattern):
+    """The list a dash walk actually uses: an odd count is repeated so
+    on/off alternate the same way every cycle. A pattern with a negative
+    entry, or that sums to nothing, is no pattern and comes back empty."""
+    total = 0.0
+    negative = False
+    for v in pattern:
+        total += v
+        if v < 0:
+            negative = True
+    if negative or total <= 0:
+        return []
+    pat = list(pattern)
+    return pat + pat if len(pat) % 2 else pat
+
+
+def _lerp_point(a, b, t):
+    return point(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
+
+
+def dash(p, pattern, phase):
+    """Walk every subpath from its start by arc length, on for
+    pattern[0], off for pattern[1], and so on around the pattern; every
+    on-stretch becomes an open subpath of the result. A closed subpath is
+    walked around its closing segment too, and a last dash that runs back
+    into the first is joined into one, turning the starting corner."""
+    pat = normalize_pattern(pattern)
+    if not pat:
+        out = path()
+        for sp in subpaths(p):
+            out.subpaths.append(Subpath(list(sp.points), sp.closed))
+        return out
+
+    n = len(pat)
+    total = sum(pat)
+    out = path()
+    for sp in subpaths(p):
+        pts = list(sp.points)
+        if sp.closed and len(pts) > 1:
+            pts = pts + [pts[0]]
+
+        i = 0
+        remaining = pat[0]
+        on = True
+        ph = phase % total
+        while ph > 0:
+            if ph >= remaining:
+                ph -= remaining
+                i = (i + 1) % n
+                remaining = pat[i]
+                on = not on
+            else:
+                remaining -= ph
+                ph = 0
+
+        first_idx = len(out.subpaths)
+        cur = None
+        for k in range(len(pts) - 1):
+            a, b = pts[k], pts[k + 1]
+            seg_len = magnitude(b - a)
+            if seg_len < 1e-9:
+                continue
+            pos = 0.0
+            while pos < seg_len:
+                step = min(remaining, seg_len - pos)
+                if on:
+                    if cur is None:
+                        cur = Subpath([_lerp_point(a, b, pos / seg_len)], False)
+                        out.subpaths.append(cur)
+                    if step > 0:
+                        cur.points.append(_lerp_point(a, b, (pos + step) / seg_len))
+                pos += step
+                remaining -= step
+                if remaining <= 1e-9:
+                    i = (i + 1) % n
+                    remaining = pat[i]
+                    on = not on
+                    cur = None
+
+        dashes = out.subpaths[first_idx:]
+        if sp.closed and dashes:
+            head, tail = dashes[0], dashes[-1]
+            if (magnitude(head.points[0] - pts[0]) < 1e-9 and
+                    magnitude(tail.points[-1] - pts[0]) < 1e-9):
+                if head is tail:
+                    tail.points.pop()
+                    tail.closed = True
+                else:
+                    tail.points.extend(head.points[1:])
+                    del out.subpaths[first_idx]
+    return out
+
+
+def dash_count(p, pattern, phase):
+    """How many dashes result -- the number of subpaths dash produces."""
+    return len(subpaths(dash(p, pattern, phase)))
+
+
+def lopsided():
+    """A cubic with one short handle and one long one, so its parameter
+    crawls at the start and races at the end -- the curve where the
+    parameter lies about distance."""
+    return cubic(point(15, 100), point(20, 20), point(150, 15), point(185, 95))
+
+
+# --- Chapter 15 renders ---
+
+_DASH_DIM = color(0.25, 0.25, 0.28)
+_DASH_INKS = [color(0.9, 0.55, 0.1), color(0.2, 0.55, 0.85), color(0.85, 0.25, 0.3)]
+_PHI = (1 + math.sqrt(5)) / 2
+_SPIRAL_KAPPA = 0.5522847498
+
+
+def _polyline_path(pts, closed=False):
+    """An open (or closed) path built by walking straight through a list
+    of points."""
+    p = path()
+    if not pts:
+        return p
+    move_to(p, pts[0])
+    for pt in pts[1:]:
+        line_to(p, pt)
+    if closed:
+        close(p)
+    return p
+
+
+def _stroke_path(c, path_obj, width, col, cap="butt", join="round"):
+    """Stroke every subpath of a path (chapter 13) and paint it onto a
+    canvas in one fill."""
+    outline = stroke_to_path(path_obj, width, cap, join, 4.0)
+    cov = fill_path(outline, "nonzero", c.width, c.height)
+    paint_through(c, cov, col)
+
+
+def _dot(c, q, r, col):
+    """A small filled circle, used to mark a point on a plate."""
+    cov = fill_path(circle_path(q.x, q.y, r, 24), "nonzero", c.width, c.height)
+    paint_through(c, cov, col)
+
+
+def even_marks():
+    """lopsided() drawn twice with eleven marks: at equal steps of the
+    parameter on the left, at equal steps of arc length on the right."""
+    w, h = 200, 120
+    c = lopsided()
+    left = canvas(w, h)
+    fill(left, PAPER)
+    right = canvas(w, h)
+    fill(right, PAPER)
+    spine = _polyline_path(flatten(c, 0.1))
+    _stroke_path(left, spine, 1.5, _DASH_DIM)
+    _stroke_path(right, spine, 1.5, _DASH_DIM)
+    total = arc_length(c, 256)
+    for i in range(11):
+        _dot(left, point_at(c, i / 10), 3, _DASH_INKS[0])
+        _dot(right, point_at_length(c, total * i / 10, 256), 3, _DASH_INKS[1])
+    return side_by_side(left, right)
+
+
+def wave(dy):
+    """The one wavy curve the strip demo strokes four different ways,
+    offset vertically by dy."""
+    curve = cubic(point(20, 20 + dy), point(120, -20 + dy),
+                  point(200, 60 + dy), point(300, 20 + dy))
+    return _polyline_path(flatten(curve, 0.1))
+
+
+def dash_strip():
+    """One wave stroked four ways: solid, 12 on 6 off, the same at phase
+    9, and dots (0 on 9 off with round caps)."""
+    w, h = 320, 160
+    c = canvas(w, h)
+    fill(c, PAPER)
+    rows = [
+        ([], 0, "butt", _STROKE_GRAY),
+        ([12, 6], 0, "butt", _DASH_INKS[0]),
+        ([12, 6], 9, "butt", _DASH_INKS[1]),
+        ([0, 9], 0, "round", _DASH_INKS[2]),
+    ]
+    for k, (pattern, phase, cap, col) in enumerate(rows):
+        d = dash(wave(40 * k), pattern, phase)
+        _stroke_path(c, d, 5, col, cap, "round")
+    return c
+
+
+def golden_spiral():
+    """Seven quarter circles, each phi times the radius of the last and
+    tangent to it, flattened into one open subpath."""
+    p = path()
+    r = 6.0
+    cx, cy = 148.0, 130.0
+    theta = math.pi
+    for _ in range(7):
+        a0, a1 = theta, theta + math.pi / 2
+        d0 = vector(math.cos(a0), math.sin(a0))
+        d1 = vector(math.cos(a1), math.sin(a1))
+        p0 = point(cx + r * d0.x, cy + r * d0.y)
+        p3 = point(cx + r * d1.x, cy + r * d1.y)
+        p1 = _add_scaled(p0, d1, _SPIRAL_KAPPA * r)
+        p2 = _add_scaled(p3, d0, _SPIRAL_KAPPA * r)
+        flatten_into_path(p, cubic(p0, p1, p2, p3), 0.05)
+        nr = r * _PHI
+        cx = p3.x - nr * d1.x
+        cy = p3.y - nr * d1.y
+        r = nr
+        theta = a1
+    return p
+
+
+def spiral_dashes():
+    """The golden spiral dashed 16 on 10 off, every dash stroked 7 wide
+    with round caps in the next of three inks, the spiral itself drawn
+    faintly underneath."""
+    w, h = 340, 340
+    c = canvas(w, h)
+    fill(c, PAPER)
+    sp = golden_spiral()
+    _stroke_path(c, sp, 1.0, _DASH_DIM)
+    d = dash(sp, [16, 10], 0)
+    for k, sub in enumerate(subpaths(d)):
+        one = path()
+        one.subpaths.append(Subpath(list(sub.points), sub.closed))
+        _stroke_path(c, one, 7, _DASH_INKS[k % 3], "round", "round")
+    return c
+
+
+def plate_15():
+    """Chapter 15's plate: the dashed spiral, magnified by 2."""
+    return magnify(spiral_dashes(), 2)
