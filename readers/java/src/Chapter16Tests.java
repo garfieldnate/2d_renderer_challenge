@@ -242,13 +242,13 @@ public final class Chapter16Tests {
             assertBounds("glyph_bounds(font, \"space\")", Glyphs.glyphBounds(f, "space"), 0, 0, 0, 0);
         });
 
-        scenario("Composites: bounds are tight, not the control box", () -> {
+        scenario("Composites: two more real glyphs' bounds", () -> {
             Font f = font();
             assertBounds("glyph_bounds(font, \"o\")", Glyphs.glyphBounds(f, "o"), 91, -20, 1076, 1102);
             assertBounds("glyph_bounds(font, \"H\")", Glyphs.glyphBounds(f, "H"), 169, 0, 1288, 1456);
         });
 
-        scenario("Composites: a font can be written by hand, and a bump's bounds stop where the curve does", () -> {
+        scenario("Composites: bounds are tight, not the control box: a hand-written bump stops where its curve does", () -> {
             String json = "{\"units_per_em\": 1000, \"ascender\": 800, \"descender\": -200, \"line_gap\": 0, "
                     + "\"cmap\": {\"98\": \"bump\"}, \"glyphs\": {\"bump\": {\"advance\": 300, "
                     + "\"contours\": [[[0, 0, true], [100, 200, false], [200, 0, true]]], \"components\": []}, "

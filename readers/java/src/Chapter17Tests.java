@@ -183,6 +183,28 @@ public final class Chapter17Tests {
                     a.add(new Bitmap(new CoverageBuffer(31, 2), 0, 0)), new AtlasSpot(0, 18));
         });
 
+        scenario("Cache: a taller bitmap that fits the width stays on the shelf and raises it", () -> {
+            Atlas a = new Atlas(32, 32);
+            assertEquals("atlas_add(a, bitmap(coverage_buffer(10, 8), 0, 0))",
+                    a.add(new Bitmap(new CoverageBuffer(10, 8), 0, 0)), new AtlasSpot(0, 0));
+            assertEquals("atlas_add(a, bitmap(coverage_buffer(12, 12), 0, 0))",
+                    a.add(new Bitmap(new CoverageBuffer(12, 12), 0, 0)), new AtlasSpot(10, 0));
+            assertEquals("atlas_add(a, bitmap(coverage_buffer(10, 4), 0, 0))",
+                    a.add(new Bitmap(new CoverageBuffer(10, 4), 0, 0)), new AtlasSpot(22, 0));
+            assertEquals("atlas_add(a, bitmap(coverage_buffer(5, 5), 0, 0))",
+                    a.add(new Bitmap(new CoverageBuffer(5, 5), 0, 0)), new AtlasSpot(0, 12));
+        });
+
+        scenario("Cache: a bitmap the atlas can never hold leaves the shelf alone", () -> {
+            Atlas a = new Atlas(32, 32);
+            assertEquals("atlas_add(a, bitmap(coverage_buffer(10, 8), 0, 0))",
+                    a.add(new Bitmap(new CoverageBuffer(10, 8), 0, 0)), new AtlasSpot(0, 0));
+            assertEquals("atlas_add(a, bitmap(coverage_buffer(40, 5), 0, 0))",
+                    a.add(new Bitmap(new CoverageBuffer(40, 5), 0, 0)), null);
+            assertEquals("atlas_add(a, bitmap(coverage_buffer(10, 8), 0, 0))",
+                    a.add(new Bitmap(new CoverageBuffer(10, 8), 0, 0)), new AtlasSpot(10, 0));
+        });
+
         scenario("Cache: the atlas holds the bitmap's coverage where it said", () -> {
             Font f = font();
             Atlas a = new Atlas(32, 32);

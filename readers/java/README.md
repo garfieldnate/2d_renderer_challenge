@@ -691,3 +691,21 @@ the chapter's own figure JS (`chapter-17.html`'s
 pseudocode covers `lcd_plate()`/`plate_17()` only). All four renders
 (`subpixels.ppm`, `smoothing.ppm`, `lcd.ppm`, `plate-17.ppm`) diff 0 against
 the reference bytes.
+
+**Catch-up: two new atlas scenarios in `chapter17-cache.feature`, both
+already true of `Atlas`.** "A taller bitmap that fits the width stays on
+the shelf and raises it" and "A bitmap the atlas can never hold leaves the
+shelf alone" are now pinned. `Atlas.add`'s existing logic already handles
+both: a bitmap too wide for the whole atlas returns `null` before touching
+`shelfY`/`currentX`/`shelfHeight` at all, so a rejected too-wide bitmap
+never disturbs the current shelf, and `shelfHeight = max(shelfHeight,
+bm.height)` already lets a taller-but-narrow-enough bitmap grow the shelf
+in place rather than bump to a new one. Only `Chapter17Tests.java` changed
+-- two scenarios translated, both green on the first run, no bug found.
+Separately, `chapter16-composites.feature` renamed two scenarios (the
+tight-bounds claim now belongs to the hand-written bump scenario, and the
+`o`/`H` bounds check is now "Two more real glyphs' bounds"); the test
+names in `Chapter16Tests.java` are updated to match, with no change to
+their bodies. All 23 chapter 16 scenarios and all 22 chapter 17 scenarios
+are green, and every chapter 16/17 render still diffs 0 against
+`reference/`.
