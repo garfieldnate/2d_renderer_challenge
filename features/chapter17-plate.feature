@@ -9,13 +9,24 @@ Feature: Plate 17
   magnified four times. lcd_plate() sets ea at 13
   pixels twice, grayscale above and LCD below, magnified six times;
   plate_17() is it magnified again. pen_advance(font, name, size) is a
-  glyph's advance in pixels, and draw_text steps the pen by it, each glyph
-  at its nearest quarter.
+  glyph's advance in pixels, and draw_text(canvas, font, text, size, x, y,
+  color, linear) steps the pen by it, each glyph at its nearest quarter,
+  and answers the pen's final position.
 
   Scenario: The pen advance in pixels
     Given font ← load_font(read_file("reference/chapter-16/roboto.json"))
     Then  pen_advance(font, "H", 11) = 7.8418 ± 0.0001
     And   pen_advance(font, "space", 11) = 2.7231 ± 0.0001
+
+  Scenario: draw_text steps the pen by each advance and answers where it stopped
+    Given font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    And   c ← canvas(30, 14)
+    When  fill(c, color(1, 1, 1))
+    And   pen ← draw_text(c, font, "Ha", 11, 2, 11, color(0, 0, 0), true)
+    Then  pen = 15.8252 ± 0.0001
+    And   pen = 2 + pen_advance(font, "H", 11) + pen_advance(font, "a", 11)
+    And   pixel_at(c, 3, 6) = color(0.0331, 0.0331, 0.0331)
+    And   pixel_at(c, 29, 6) = color(1, 1, 1)
 
   Scenario: The same stem at four quarters
     Given c ← subpixel_strip()

@@ -143,6 +143,15 @@
     room. The scenario packs four rectangles by hand so you can draw the shelves on paper, then two
     real glyphs.</p>
 
+<pre><code>atlas_add(atlas, bitmap):
+  <span class="kw">if</span> bitmap.width &gt; atlas.width <span class="kw">or</span> bitmap.height &gt; atlas.height:  <span class="kw">return</span> none
+  <span class="kw">if</span> shelf_x + bitmap.width &gt; atlas.width:            <span class="cm">// no room on this shelf: open one below</span>
+    shelf_y ← shelf_y + shelf_h;  shelf_x ← 0;  shelf_h ← 0
+  <span class="kw">if</span> shelf_y + max(bitmap.height, shelf_h) &gt; atlas.height:  <span class="kw">return</span> none
+  copy the bitmap's coverage into the atlas at (shelf_x, shelf_y)
+  corner ← (shelf_x, shelf_y);  shelf_x ← shelf_x + bitmap.width;  shelf_h ← max(shelf_h, bitmap.height)
+  <span class="kw">return</span> corner                 <span class="cm">// shelf_x, shelf_y and shelf_h start at 0</span></code></pre>
+
   <figure>
     <canvas id="fig172" role="img" aria-label="A square atlas with rectangles of different sizes packed left to right in rows, each row as tall as its first rectangle, with a new row starting under the tallest so far; each rectangle labelled with the point where it was placed"></canvas>
     <figcaption><span class="fig">Figure 17.2</span> Shelf packing, the scenario's four rectangles. Left to right along a shelf; a new shelf opens under the tallest so far when one doesn't fit. The 40-wide one is wider than the atlas and comes back <code>none</code>.</figcaption>
@@ -400,13 +409,24 @@ plate_17():
   magnified four times. lcd_plate() sets ea at 13
   pixels twice, grayscale above and LCD below, magnified six times;
   plate_17() is it magnified again. pen_advance(font, name, size) is a
-  glyph's advance in pixels, and draw_text steps the pen by it, each glyph
-  at its nearest quarter.
+  glyph's advance in pixels, and draw_text(canvas, font, text, size, x, y,
+  color, linear) steps the pen by it, each glyph at its nearest quarter,
+  and answers the pen's final position.
 
   <span class="kw">Scenario</span>: The pen advance in pixels
     <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
     <span class="kw">Then</span>  pen_advance(font, "H", 11) = 7.8418 ± 0.0001
     <span class="kw">And</span>   pen_advance(font, "space", 11) = 2.7231 ± 0.0001
+
+  <span class="kw">Scenario</span>: draw_text steps the pen by each advance and answers where it stopped
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   c ← canvas(30, 14)
+    <span class="kw">When</span>  fill(c, color(1, 1, 1))
+    <span class="kw">And</span>   pen ← draw_text(c, font, "Ha", 11, 2, 11, color(0, 0, 0), true)
+    <span class="kw">Then</span>  pen = 15.8252 ± 0.0001
+    <span class="kw">And</span>   pen = 2 + pen_advance(font, "H", 11) + pen_advance(font, "a", 11)
+    <span class="kw">And</span>   pixel_at(c, 3, 6) = color(0.0331, 0.0331, 0.0331)
+    <span class="kw">And</span>   pixel_at(c, 29, 6) = color(1, 1, 1)
 
   <span class="kw">Scenario</span>: The same stem at four quarters
     <span class="kw">Given</span> c ← subpixel_strip()

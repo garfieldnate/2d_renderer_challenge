@@ -40,7 +40,7 @@ Feature: Composite glyphs
     And   glyph_bounds(font, "H") = (169, 0, 1288, 1456)
 
   Scenario: A font can be written by hand, and a bump's bounds stop where the curve does
-    Given tiny ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"98": "bump"}, "glyphs": {"bump": {"advance": 300, "contours": [[[0, 0, 1], [100, 200, 0], [200, 0, 1]]], "components": []}, "twice": {"advance": 600, "contours": [], "components": [{"glyph": "bump", "transform": [1, 0, 0, 1, 0, 0]}, {"glyph": "bump", "transform": [1, 0, 0.5, 2, 300, 0]}]}}}')
+    Given tiny ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"98": "bump"}, "glyphs": {"bump": {"advance": 300, "contours": [[[0, 0, true], [100, 200, false], [200, 0, true]]], "components": []}, "twice": {"advance": 600, "contours": [], "components": [{"glyph": "bump", "transform": [1, 0, 0, 1, 0, 0]}, {"glyph": "bump", "transform": [1, 0, 0.5, 2, 300, 0]}]}}}')
     Then  glyph_count(tiny) = 2
     And   glyph_name(tiny, 98) = "bump"
     And   length(glyph_outline(tiny, "bump")) = 1

@@ -50,7 +50,7 @@
       numbers in font units. <code>cmap</code>: codepoint (as a string key) to glyph name.
       <code>glyphs</code>: name to <code>{advance, contours, components}</code>, where
       <code>contours</code> is a list of loops, each a list of <code>[x, y, on]</code> points in font
-      units with y up, and <code>components</code> is a list of <code>{glyph, transform}</code> with
+      units with y up and <code>on</code> a JSON boolean, and <code>components</code> is a list of <code>{glyph, transform}</code> with
       the transform six numbers <code>[a, b, c, d, dx, dy]</code>. Two sections are optional and
       arrive later: <code>kern</code>, a list of <code>[left, right, value]</code>, for chapter 18;
       and <code>ligatures</code>, a list of <code>[[parts...], result]</code>, for chapter 19. One
@@ -277,7 +277,7 @@
     <span class="kw">And</span>   glyph_bounds(font, "H") = (169, 0, 1288, 1456)
 
   <span class="kw">Scenario</span>: A font can be written by hand, and a bump's bounds stop where the curve does
-    <span class="kw">Given</span> tiny ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"98": "bump"}, "glyphs": {"bump": {"advance": 300, "contours": [[[0, 0, 1], [100, 200, 0], [200, 0, 1]]], "components": []}, "twice": {"advance": 600, "contours": [], "components": [{"glyph": "bump", "transform": [1, 0, 0, 1, 0, 0]}, {"glyph": "bump", "transform": [1, 0, 0.5, 2, 300, 0]}]}}}')
+    <span class="kw">Given</span> tiny ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"98": "bump"}, "glyphs": {"bump": {"advance": 300, "contours": [[[0, 0, true], [100, 200, false], [200, 0, true]]], "components": []}, "twice": {"advance": 600, "contours": [], "components": [{"glyph": "bump", "transform": [1, 0, 0, 1, 0, 0]}, {"glyph": "bump", "transform": [1, 0, 0.5, 2, 300, 0]}]}}}')
     <span class="kw">Then</span>  glyph_count(tiny) = 2
     <span class="kw">And</span>   glyph_name(tiny, 98) = "bump"
     <span class="kw">And</span>   length(glyph_outline(tiny, "bump")) = 1
