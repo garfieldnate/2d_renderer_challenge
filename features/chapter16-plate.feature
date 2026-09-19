@@ -2,10 +2,17 @@ Feature: Plate 16
   glyph_plate() fills Roboto's a at a 300 pixel em and draws its control
   polygon over it: on-curve points as filled squares, off-curve points as
   hollow circles, implied on-curve points as smaller squares; plate_16() is
-  it magnified. composite_demo() draws eacute with its two components in two
-  inks and its bounds as a hairline box. sizes() draws g at 12, 24, 48 and
-  96 pixels on one baseline. flip_trap() draws R through text_matrix on the
-  left and through a scale that forgot to turn y over on the right.
+  it magnified. composite_demo() is a 240 by 240 canvas of paper with
+  eacute at a 240 pixel em, origin (50, 190): each component filled through
+  text_matrix times its component_matrix, the first in INKS[0] and the
+  second in INKS[1], then glyph_bounds taken through text_matrix and drawn
+  as a magenta hairline rectangle 1 wide. sizes() is 240 by 120, paper, g
+  at 12, 24, 48 and 96 pixels in gray on the baseline y = 80, the first at
+  x = 8 and each next one 8 past the previous advance. flip_trap() is two
+  120 by 120 panels side by side, R at a 60 pixel em with origin (35, 60):
+  through text_matrix in gray on the left; through translation(35, 60) *
+  scaling(s, s), s = 60 / units_per_em, in magenta on the right; each with
+  a dim hairline along y = 60. Every glyph is flattened at 0.1.
 
   Scenario: The glyph and its control points
     Given c ← glyph_plate()

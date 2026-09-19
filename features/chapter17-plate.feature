@@ -1,9 +1,12 @@
 Feature: Plate 17
   subpixel_strip() draws l at 11 pixels with its pen at x = 4, 4.25, 4.5
   and 4.75 in four 10 by 14 panels, black on white, magnified eight times.
-  smoothing_demo() sets Hamburg at 11 pixels three ways, blended in linear
-  light, blended in encoded space, and linear with the stems emboldened by
-  a third of a pixel, magnified four times. lcd_plate() sets ea at 13
+  smoothing_demo() is a 72 by 42 white canvas: Hamburg at 11 pixels in
+  black, pen starting at x = 2, three times: on the baseline y = 11 with
+  paint_bitmap linear; on y = 25 with linear = false; on y = 39 with every
+  glyph's embolden(font, name, 11, 1/3) bitmap painted linear; each glyph
+  at its nearest quarter and the pen stepped by pen_advance; the whole
+  magnified four times. lcd_plate() sets ea at 13
   pixels twice, grayscale above and LCD below, magnified six times;
   plate_17() is it magnified again. pen_advance(font, name, size) is a
   glyph's advance in pixels, and draw_text steps the pen by it, each glyph
