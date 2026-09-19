@@ -240,7 +240,8 @@
     to. The honest measure is the distance from a point to the curve, and you'll want that anyway.
     <code>distance_to_curve(c, p)</code> has no closed form either (it's a quintic for a cubic), so
     it's sampling again: the nearest of 65 samples at <code>t = i/64</code>, then 32 rounds of ternary
-    search between that sample's two neighbours, which narrows the bracket to a millionth. The
+    search on the bracket from the sample before it to the sample after it (clamped to
+    <code>0</code> and <code>1</code> at the ends), which narrows the bracket to a millionth. The
     scenarios pin it on a straight line, where the answer is a perpendicular; past the end of a line,
     where it's the distance to the endpoint; and below a parabola's vertex, where the nearest point is
     not the vertex, and the answer happens to be <code>√3</code>.</p>
@@ -255,7 +256,8 @@
   handles are a third of the chord. offset_error(c, d, fitted) is the
   largest miss over 17 matched parameters t = i / 16. distance_to_curve(c, p)
   is the honest measure of anything: the nearest of 65 samples at t = i / 64,
-  refined by 32 rounds of ternary search between that sample's neighbours.
+  refined by 32 rounds of ternary search on the bracket from the sample
+  before it to the sample after it, clamped to 0 and 1 at the ends.
 
   <span class="kw">Scenario</span>: The fit of a straight curve is exact
     <span class="kw">Given</span> line ← cubic(point(0, 0), point(1, 1), point(2, 2), point(3, 3))
@@ -322,7 +324,9 @@ offset_into(c, d, tolerance, pieces, depth):
     <code>distance_to_curve</code> how far each one is from the original. On the outside of a bend,
     every one is <code>|d|</code> away to within the tolerance, which is the property the whole
     construction exists to deliver, and <code>offset_distance_error</code> reports the worst
-    miss.</p>
+    miss. The hundred points are spread by piece: <code>u = i/99</code> times the number of
+    pieces, on piece <code>floor(u)</code> at parameter <code>u − floor(u)</code>, so the scenario
+    can pin its value on a fold as well as bound it.</p>
 
   <p>On the inside of a tight bend it isn't, and this is the point of §14.2 arriving in the
     scenarios. Offset the parabola by <code>−2</code>, past its vertex radius of <code>1</code>, and
@@ -342,7 +346,9 @@ offset_into(c, d, tolerance, pieces, depth):
   halved and fitted again until offset_error is within tolerance, at most
   sixteen halvings deep. offset_distance_error(c, d, tolerance) is the honest
   check: how far 100 points spread along the result stray from distance |d|
-  to the curve. On the outside of a bend it stays within tolerance. On the
+  to the curve. The points are u = i / 99 times the number of pieces for
+  i = 0 to 99, each taken on piece floor(u) at parameter u - floor(u) (the
+  last on the last piece at 1). On the outside of a bend it stays within tolerance. On the
   inside, past the radius, the offset folds back through itself and comes
   much closer than d: that is the fold, and it is not an error in the fit.
 
@@ -385,7 +391,8 @@ offset_into(c, d, tolerance, pieces, depth):
     <span class="kw">And</span>   pieces[2].points[3] = point(2, 0)
     <span class="kw">And</span>   pieces[3].points[3] = point(1.5498, 0.118898) ± 0.0001
     <span class="kw">And</span>   distance_to_curve(q, point(2, 0)) = 1.732051
-    <span class="kw">And</span>   offset_distance_error(q, -2, 0.01) ≥ 0.7</code></pre>
+    <span class="kw">And</span>   offset_distance_error(q, -2, 0.01) ≥ 0.7
+    <span class="kw">And</span>   offset_distance_error(q, -2, 0.01) = 0.707336 ± 0.0001</code></pre>
   </div>
 
   <h2><span class="sec">§ 14.5</span> Stroking a curve: one outline</h2>

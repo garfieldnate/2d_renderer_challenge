@@ -6,7 +6,8 @@ Feature: Fitting a cubic to the offset
   handles are a third of the chord. offset_error(c, d, fitted) is the
   largest miss over 17 matched parameters t = i / 16. distance_to_curve(c, p)
   is the honest measure of anything: the nearest of 65 samples at t = i / 64,
-  refined by 32 rounds of ternary search between that sample's neighbours.
+  refined by 32 rounds of ternary search on the bracket from the sample
+  before it to the sample after it, clamped to 0 and 1 at the ends.
 
   Scenario: The fit of a straight curve is exact
     Given line ← cubic(point(0, 0), point(1, 1), point(2, 2), point(3, 3))

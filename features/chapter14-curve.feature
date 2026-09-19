@@ -5,7 +5,9 @@ Feature: The offset curve
   halved and fitted again until offset_error is within tolerance, at most
   sixteen halvings deep. offset_distance_error(c, d, tolerance) is the honest
   check: how far 100 points spread along the result stray from distance |d|
-  to the curve. On the outside of a bend it stays within tolerance. On the
+  to the curve. The points are u = i / 99 times the number of pieces for
+  i = 0 to 99, each taken on piece floor(u) at parameter u - floor(u) (the
+  last on the last piece at 1). On the outside of a bend it stays within tolerance. On the
   inside, past the radius, the offset folds back through itself and comes
   much closer than d: that is the fold, and it is not an error in the fit.
 
@@ -49,3 +51,4 @@ Feature: The offset curve
     And   pieces[3].points[3] = point(1.5498, 0.118898) ± 0.0001
     And   distance_to_curve(q, point(2, 0)) = 1.732051
     And   offset_distance_error(q, -2, 0.01) ≥ 0.7
+    And   offset_distance_error(q, -2, 0.01) = 0.707336 ± 0.0001

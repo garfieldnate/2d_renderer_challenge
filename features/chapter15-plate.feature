@@ -5,7 +5,8 @@ Feature: Plate 15
   phase 9, and dots (0 on 9 off with round caps). golden_spiral() is seven
   quarter circles, each phi times the radius of the last, flattened into one
   open subpath; spiral_dashes() dashes it 16 on 10 off and strokes every
-  dash 7 wide with round caps; plate_15() is it magnified.
+  dash 7 wide with round caps; plate_15() is it magnified. dash_count(p,
+  pattern, phase) is the number of subpaths dash returns.
 
   Scenario: Marks by parameter and by length
     Given c ← even_marks()
