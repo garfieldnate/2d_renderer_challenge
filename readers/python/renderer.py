@@ -4743,10 +4743,13 @@ def plate_15():
 class Font:
     """A font: its vertical metrics, a codepoint-to-name cmap, and every
     glyph by name. kern and ligatures are optional sections that arrive
-    later (chapters 18 and 19); they default to empty."""
+    in chapter 18; joining, forms, marks and anchors are optional
+    sections the Arabic font in chapter 19 carries. All default to
+    empty."""
 
     def __init__(self, units_per_em, ascender, descender, line_gap, cmap, glyphs,
-                 kern=None, ligatures=None):
+                 kern=None, ligatures=None, joining=None, forms=None,
+                 marks=None, anchors=None):
         self.units_per_em = units_per_em
         self.ascender = ascender
         self.descender = descender
@@ -4755,6 +4758,10 @@ class Font:
         self.glyphs = glyphs
         self.kern = kern if kern is not None else []
         self.ligatures = ligatures if ligatures is not None else []
+        self.joining = joining if joining is not None else {}
+        self.forms = forms if forms is not None else {}
+        self.marks = marks if marks is not None else {}
+        self.anchors = anchors if anchors is not None else {}
 
 
 class Glyph:
@@ -4779,9 +4786,17 @@ def load_font(text):
                     for contour in g.get("contours", [])]
         components = [(c["glyph"], list(c["transform"])) for c in g.get("components", [])]
         glyphs[name] = Glyph(g.get("advance", 0), contours, components)
+    marks = None
+    if "marks" in data:
+        marks = {name: tuple(v) for name, v in data["marks"].items()}
+    anchors = None
+    if "anchors" in data:
+        anchors = {name: {cls: tuple(pt) for cls, pt in classes.items()}
+                   for name, classes in data["anchors"].items()}
     return Font(data["units_per_em"], data["ascender"], data["descender"],
                 data.get("line_gap", 0), cmap, glyphs,
-                data.get("kern"), data.get("ligatures"))
+                data.get("kern"), data.get("ligatures"),
+                data.get("joining"), data.get("forms"), marks, anchors)
 
 
 def glyph_name(font, codepoint):
@@ -5406,3 +5421,774 @@ def lcd_plate():
 def plate_17():
     """Chapter 17's plate: the grayscale/LCD comparison, magnified by 2."""
     return magnify(lcd_plate(), 2)
+
+
+# ============================================================================
+# Chapter 18: Setting a Line of Text
+# ============================================================================
+
+class Placement:
+    """Where one character's glyph goes: its name and the fractional
+    pixel position of its origin on the baseline."""
+
+    def __init__(self, name, x, y):
+        self.name = name
+        self.x = x
+        self.y = y
+
+    def __repr__(self):
+        return f"Placement({self.name!r}, {self.x!r}, {self.y!r})"
+
+
+def ascent(font, size):
+    """How far the font reaches above the baseline, in pixels."""
+    return font.ascender * size / font.units_per_em
+
+
+def descent(font, size):
+    """How far the font reaches below the baseline, in pixels -- a
+    positive number, even though the file stores the descender as a
+    negative one."""
+    return -font.descender * size / font.units_per_em
+
+
+def line_height(font, size):
+    """The distance from one baseline to the next, in pixels: ascent
+    plus descent plus the file's line gap."""
+    return (font.ascender - font.descender + font.line_gap) * size / font.units_per_em
+
+
+def kern(font, left, right):
+    """The font's kerning adjustment for a pair of glyph names, in font
+    units: 0 for a pair the font doesn't list. The order matters."""
+    table = getattr(font, "_kern_table", None)
+    if table is None:
+        table = {}
+        for entry in font.kern:
+            l, r, v = entry[0], entry[1], entry[2]
+            table[(l, r)] = v
+        font._kern_table = table
+    return table.get((left, right), 0)
+
+
+def _run_walk(font, text, size, kerning):
+    """Walk the pen across a string, returning a list of (name, pen)
+    pairs -- the glyph placed at each pen position -- and the final pen
+    position after the last glyph's advance. Kerning, when on, moves the
+    pen by the pair's value before placing each glyph after the first."""
+    entries = []
+    pen = 0.0
+    prev_name = None
+    for ch in text:
+        name = glyph_name(font, ord(ch))
+        if kerning and prev_name is not None:
+            pen += kern(font, prev_name, name) * size / font.units_per_em
+        entries.append((name, pen))
+        pen += pen_advance(font, name, size)
+        prev_name = name
+    return entries, pen
+
+
+def layout_run(font, text, size, x, y, kerning):
+    """One placement per character of text, in order: the first at
+    (x, y), each next one a glyph advance further along (and, with
+    kerning on, adjusted by the pair before it)."""
+    entries, _ = _run_walk(font, text, size, kerning)
+    return [Placement(name, x + pen, y) for name, pen in entries]
+
+
+def run_advance(font, text, size, kerning):
+    """How far the pen moved in all, laying out text."""
+    _, total = _run_walk(font, text, size, kerning)
+    return total
+
+
+def break_lines(font, text, size, measure, kerning):
+    """Break text into lines no wider than measure, greedily: each word
+    (a run of non-space characters) joins the current line if doing so
+    still fits, otherwise it starts a new line. A word wider than the
+    measure on its own sits alone and overflows."""
+    words = text.split()
+    lines = []
+    current = ""
+    for word in words:
+        candidate = word if current == "" else current + " " + word
+        if current != "" and run_advance(font, candidate, size, kerning) > measure:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current != "":
+        lines.append(current)
+    return lines
+
+
+def layout_line(font, text, size, x, y, measure, align, kerning):
+    """Lay out one line inside a measure that starts at x. "left" leaves
+    the slack on the right, "right" puts it on the left, "center" splits
+    it, and "justify" spreads it over the line's spaces (each gap
+    growing by slack / spaces) -- unless the line has no space, in which
+    case it's laid out left."""
+    run = layout_run(font, text, size, x, y, kerning)
+    slack = measure - run_advance(font, text, size, kerning)
+    num_spaces = text.count(" ")
+    if align == "justify" and num_spaces > 0:
+        extra = slack / num_spaces
+        spaces_seen = 0
+        out = []
+        for ch, placement in zip(text, run):
+            out.append(Placement(placement.name, placement.x + extra * spaces_seen, placement.y))
+            if ch == " ":
+                spaces_seen += 1
+        return out
+    if align == "right":
+        shift = slack
+    elif align == "center":
+        shift = slack / 2.0
+    else:
+        shift = 0.0
+    return [Placement(p.name, p.x + shift, p.y) for p in run]
+
+
+def layout_paragraph(font, text, size, x, y, measure, align, kerning):
+    """Break text into lines and lay out every line with the same
+    alignment, the first baseline at y and each next one line_height
+    below. A justified paragraph's last line is laid out left. Answers
+    one flat list of placements."""
+    lines = break_lines(font, text, size, measure, kerning)
+    lh = line_height(font, size)
+    out = []
+    for i, line in enumerate(lines):
+        line_align = "left" if (align == "justify" and i == len(lines) - 1) else align
+        ly = y + i * lh
+        out.extend(layout_line(font, line, size, x, ly, measure, line_align, kerning))
+    return out
+
+
+def draw_run(canvas, font, run, size, col, linear):
+    """The seam between layout and rendering: hand every placement to
+    chapter 17. Its x is split by subpixel_of into a whole pixel and a
+    quarter; the glyph's bitmap for that quarter is painted with the pen
+    at that pixel. The baseline rounds to the nearest whole pixel row,
+    halves up."""
+    cache = glyph_cache()
+    for p in run:
+        whole, q = subpixel_of(p.x)
+        row = round_half_up(p.y)
+        bmp = cached_bitmap(cache, font, p.name, size, q)
+        paint_bitmap(canvas, bmp, whole, row, col, linear)
+
+
+# --- Chapter 18 renders ---
+
+THROUGH_LINE = ("Rasterization computes coverage. Painting composites "
+                 "paint through coverage. Once you hold a coverage buffer, "
+                 "a stroke is a fill of a different outline, a clip is a "
+                 "multiplication of two buffers, and a glyph is a path "
+                 "somebody else drew.")
+
+
+def _hairline_seg(c, a, b, col, width=1.0):
+    """A single straight hairline segment, stroked butt-capped."""
+    _hairline(c, [a, b], col, width)
+
+
+def kern_demo():
+    """TAVERN at a 64 pixel em, kerned on one baseline and not on the
+    next, with tick marks at every placement and a magenta bracket
+    across the five pixels the kerning saved."""
+    w, h = 320, 190
+    c = canvas(w, h)
+    fill(c, PAPER)
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    size = 64
+    x0 = 12
+    rows = [(70, True, _GLYPH_CYAN), (160, False, _GLYPH_DIM)]
+    ends = []
+    for baseline, kerning, tick_col in rows:
+        run = layout_run(font, "TAVERN", size, x0, baseline, kerning)
+        end_x = x0 + run_advance(font, "TAVERN", size, kerning)
+        draw_run(c, font, run, size, _GLYPH_GRAY, True)
+        _hairline_seg(c, point(4, baseline), point(316, baseline), _GLYPH_DIM)
+        for p in run:
+            _hairline_seg(c, point(p.x, baseline + 3), point(p.x, baseline + 12), tick_col)
+        _hairline_seg(c, point(end_x, baseline + 3), point(end_x, baseline + 12), tick_col)
+        ends.append(end_x)
+    for end_x in ends:
+        _hairline_seg(c, point(end_x, 84), point(end_x, 180), _GLYPH_MAGENTA)
+    _hairline_seg(c, point(ends[0], 180), point(ends[1], 180), _GLYPH_MAGENTA)
+    return c
+
+
+def break_demo():
+    """The through-line broken into a 300 pixel measure, left aligned,
+    with cyan hairlines marking the measure's edges."""
+    w, h = 340, 150
+    c = canvas(w, h)
+    fill(c, PAPER)
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    x, y, size, measure = 20, 30, 16, 300
+    run = layout_paragraph(font, THROUGH_LINE, size, x, y, measure, "left", True)
+    draw_run(c, font, run, size, _GLYPH_GRAY, True)
+    _hairline_seg(c, point(x, 10), point(x, 140), _GLYPH_CYAN)
+    _hairline_seg(c, point(x + measure, 10), point(x + measure, 140), _GLYPH_CYAN)
+    return c
+
+
+def _rounded_run(font, text, size, x, y):
+    """The trap: place each glyph, then round the pen to a whole pixel
+    before placing the next one. The errors don't cancel. The run's end
+    is where the pen physically lands after the last glyph's advance --
+    the rounding only ever decided where the *next* glyph would go, and
+    the last glyph has no next."""
+    out = []
+    pen = float(x)
+    chars = list(text)
+    for i, ch in enumerate(chars):
+        name = glyph_name(font, ord(ch))
+        out.append(Placement(name, pen, y))
+        pen += pen_advance(font, name, size)
+        if i < len(chars) - 1:
+            pen = round_half_up(pen)
+    return out, pen
+
+
+def drift_demo():
+    """The same line set twice at 11 pixels: the pen kept fractional
+    above, rounded to a whole pixel after every glyph below. The magenta
+    bracket is the accumulated drift."""
+    w, h = 260, 44
+    c = canvas(w, h)
+    fill(c, color(1, 1, 1))
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    text = "little illicit lilies fill the hill until it is still"
+    size = 11
+    x = 6
+
+    exact_run = layout_run(font, text, size, x, 14, False)
+    exact_end = x + run_advance(font, text, size, False)
+    draw_run(c, font, exact_run, size, color(0, 0, 0), True)
+
+    rounded_run, rounded_end = _rounded_run(font, text, size, x, 34)
+    draw_run(c, font, rounded_run, size, color(0, 0, 0), True)
+
+    _hairline_seg(c, point(exact_end, 3), point(exact_end, 18), _GLYPH_CYAN, 2.0)
+    _hairline_seg(c, point(exact_end, 23), point(exact_end, 38), _GLYPH_CYAN, 2.0)
+    _hairline_seg(c, point(rounded_end, 23), point(rounded_end, 38), _GLYPH_MAGENTA, 2.0)
+    _hairline_seg(c, point(exact_end, 40), point(rounded_end, 40), _GLYPH_MAGENTA, 2.0)
+
+    return magnify(c, 3)
+
+
+def alignment_plate():
+    """One paragraph, set four ways: left, right, center, and justify,
+    each with hairlines marking its baselines and measure."""
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    w, h = 660, 236
+    c = canvas(w, h)
+    fill(c, PAPER)
+    text = THROUGH_LINE
+    size = 14
+    measure = 300
+    aligns = ["left", "right", "center", "justify"]
+    lh = line_height(font, size)
+    for k, align in enumerate(aligns):
+        x = 20 + (k % 2) * 320
+        y = 24 + (k // 2) * 108
+        run = layout_paragraph(font, text, size, x, y, measure, align, True)
+        n = len(break_lines(font, text, size, measure, True))
+        for i in range(n):
+            baseline = y + i * lh
+            _hairline_seg(c, point(x, baseline), point(x + measure, baseline), _GLYPH_DIM, 0.5)
+        first_baseline = y
+        last_baseline = y + (n - 1) * lh
+        _hairline_seg(c, point(x, first_baseline - 14), point(x, last_baseline + 5), _GLYPH_CYAN, 0.5)
+        _hairline_seg(c, point(x + measure, first_baseline - 14), point(x + measure, last_baseline + 5), _GLYPH_CYAN, 0.5)
+        draw_run(c, font, run, size, _GLYPH_GRAY, True)
+    return c
+
+
+def plate_18():
+    """Chapter 18's plate: the through-line set four ways."""
+    return alignment_plate()
+
+
+
+# ============================================================================
+# Chapter 19: Shaping, a Field Guide
+# ============================================================================
+
+class Item:
+    """One run of a string: one script, one direction. start/end are
+    character indices into the original text (end exclusive)."""
+
+    def __init__(self, start, end, text, script, direction):
+        self.start = start
+        self.end = end
+        self.text = text
+        self.script = script
+        self.direction = direction
+
+    def __repr__(self):
+        return f"Item({self.start!r}, {self.end!r}, {self.text!r}, {self.script!r}, {self.direction!r})"
+
+
+def script_of(codepoint):
+    """"arabic" for U+0600-U+06FF, "latin" for A-Z, a-z and U+00C0-U+024F,
+    "common" for everything else (spaces, digits, punctuation)."""
+    if 0x0600 <= codepoint <= 0x06FF:
+        return "arabic"
+    if 65 <= codepoint <= 90 or 97 <= codepoint <= 122 or 0x00C0 <= codepoint <= 0x024F:
+        return "latin"
+    return "common"
+
+
+def itemize(text):
+    """Cut text into runs of one script and one direction. A common
+    character joins the run before it; common characters at the very
+    start join the first run, and text of nothing but common characters
+    is one Latin run."""
+    n = len(text)
+    if n == 0:
+        return []
+    raw = [script_of(ord(ch)) for ch in text]
+    resolved = [None] * n
+    last_definite = None
+    for i in range(n):
+        if raw[i] != "common":
+            resolved[i] = raw[i]
+            last_definite = raw[i]
+        else:
+            resolved[i] = last_definite
+    first_definite = next((s for s in raw if s != "common"), "latin")
+    for i in range(n):
+        if resolved[i] is None:
+            resolved[i] = first_definite
+
+    items = []
+    start = 0
+    for i in range(1, n + 1):
+        if i == n or resolved[i] != resolved[start]:
+            script = resolved[start]
+            direction = "rtl" if script == "arabic" else "ltr"
+            items.append(Item(start, i, text[start:i], script, direction))
+            start = i
+    return items
+
+
+class GlyphEntry:
+    """One entry of a glyph buffer: a glyph name, the cluster (character
+    index) it came from, and a mark's offset from its base, in font
+    units (zero for anything that isn't a positioned mark)."""
+
+    def __init__(self, glyph, cluster, dx=0.0, dy=0.0):
+        self.glyph = glyph
+        self.cluster = cluster
+        self.dx = dx
+        self.dy = dy
+
+    def __repr__(self):
+        return f"GlyphEntry({self.glyph!r}, {self.cluster!r}, {self.dx!r}, {self.dy!r})"
+
+
+def glyph_buffer(font, text):
+    """The starting buffer: one entry per character, straight through
+    the cmap, each carrying the index of the character it came from."""
+    return [GlyphEntry(glyph_name(font, ord(ch)), i) for i, ch in enumerate(text)]
+
+
+def clusters(buffer):
+    """The distinct clusters a buffer holds, in the order they appear."""
+    seen = set()
+    out = []
+    for e in buffer:
+        if e.cluster not in seen:
+            seen.add(e.cluster)
+            out.append(e.cluster)
+    return out
+
+
+def apply_ligatures(font, buffer):
+    """Walk the buffer from the left. At each position try the font's
+    ligature rules, longest first; a match is replaced by its result,
+    which takes the first part's cluster. The result is never fed back
+    into another rule."""
+    rules = sorted(font.ligatures, key=lambda r: -len(r[0]))
+    out = []
+    i = 0
+    n = len(buffer)
+    while i < n:
+        matched = False
+        for parts, result in rules:
+            L = len(parts)
+            if L == 0 or i + L > n:
+                continue
+            if all(buffer[i + k].glyph == parts[k] for k in range(L)):
+                out.append(GlyphEntry(result, buffer[i].cluster))
+                i += L
+                matched = True
+                break
+        if not matched:
+            out.append(buffer[i])
+            i += 1
+    return out
+
+
+def joining_type(font, codepoint):
+    """A codepoint's Unicode joining type: "dual", "right", "transparent"
+    or "none" -- "none" for a character the table doesn't list."""
+    return font.joining.get(str(codepoint), "none")
+
+
+def arabic_forms(font, text):
+    """A positional form for every character of text: a letter joins
+    backward when it's dual or right-joining and the nearest
+    non-transparent character before it is dual; it joins forward when
+    it's dual and the nearest non-transparent character after it is
+    dual or right-joining. Both is "medi", backward alone "fina",
+    forward alone "init", neither "isol"."""
+    n = len(text)
+    types = [joining_type(font, ord(ch)) for ch in text]
+
+    def nearest_before(i):
+        j = i - 1
+        while j >= 0 and types[j] == "transparent":
+            j -= 1
+        return types[j] if j >= 0 else None
+
+    def nearest_after(i):
+        j = i + 1
+        while j < n and types[j] == "transparent":
+            j += 1
+        return types[j] if j < n else None
+
+    forms = []
+    for i in range(n):
+        t = types[i]
+        joins_back = t in ("dual", "right") and nearest_before(i) == "dual"
+        joins_fwd = t == "dual" and nearest_after(i) in ("dual", "right")
+        if joins_back and joins_fwd:
+            forms.append("medi")
+        elif joins_back:
+            forms.append("fina")
+        elif joins_fwd:
+            forms.append("init")
+        else:
+            forms.append("isol")
+    return forms
+
+
+def apply_forms(font, text, buffer):
+    """Swap each entry's glyph for its positional form's glyph when the
+    font's forms table has one for it, and leave it alone otherwise."""
+    forms = arabic_forms(font, text)
+    out = []
+    for i, e in enumerate(buffer):
+        form = forms[i] if i < len(forms) else "isol"
+        glyph_forms = font.forms.get(e.glyph)
+        name = glyph_forms[form] if glyph_forms and form in glyph_forms else e.glyph
+        out.append(GlyphEntry(name, e.cluster, e.dx, e.dy))
+    return out
+
+
+def is_mark(font, name):
+    """Whether a glyph name is in the font's marks table."""
+    return name in font.marks
+
+
+def attach_marks(font, buffer):
+    """Find each mark's base -- the nearest non-mark before it -- and
+    set the mark's offset to the base's anchor of the mark's class minus
+    the mark's own anchor, so the two coincide; the mark takes the
+    base's cluster. A mark whose base has no anchor of its class, or
+    with no base before it at all, stays at offset (0, 0)."""
+    out = []
+    base_index = None
+    for e in buffer:
+        if is_mark(font, e.glyph):
+            dx, dy, cluster = 0.0, 0.0, e.cluster
+            mark_info = font.marks.get(e.glyph)
+            if mark_info is not None and base_index is not None:
+                mclass, max_, may_ = mark_info
+                base = out[base_index]
+                base_anchors = font.anchors.get(base.glyph)
+                if base_anchors is not None and mclass in base_anchors:
+                    bax, bay = base_anchors[mclass]
+                    dx = bax - max_
+                    dy = bay - may_
+                    cluster = base.cluster
+            out.append(GlyphEntry(e.glyph, cluster, dx, dy))
+        else:
+            out.append(GlyphEntry(e.glyph, e.cluster, e.dx, e.dy))
+            base_index = len(out) - 1
+    return out
+
+
+def shape(font, text):
+    """The pipeline for one run: the buffer, then forms when the font
+    has a forms table, then ligatures, then marks when the font has a
+    marks table."""
+    buffer = glyph_buffer(font, text)
+    if font.forms:
+        buffer = apply_forms(font, text, buffer)
+    buffer = apply_ligatures(font, buffer)
+    if font.marks:
+        buffer = attach_marks(font, buffer)
+    return buffer
+
+
+def buffer_advance(font, buffer, size, kerning):
+    """The pen's total movement laying out a buffer: every non-mark's
+    advance, plus the kern pair between consecutive non-marks."""
+    scale = size / font.units_per_em
+    total = 0.0
+    prev_glyph = None
+    for e in buffer:
+        if is_mark(font, e.glyph):
+            continue
+        if kerning and prev_glyph is not None:
+            total += kern(font, prev_glyph, e.glyph) * scale
+        total += pen_advance(font, e.glyph, size)
+        prev_glyph = e.glyph
+    return total
+
+
+def position(font, buffer, size, x, y, direction, kerning):
+    """Turn a shaped buffer into chapter 18's placements, one per entry,
+    in the buffer's own order. "ltr" walks the pen right from x, exactly
+    as layout_run does. "rtl" starts the pen at x plus the buffer's
+    advance and walks left, subtracting each advance (and kern pair)
+    before placing the glyph, so the first entry lands at the right end.
+    A mark never moves the pen: it is placed at its base's origin plus
+    its offset, scaled to pixels with dy turned over."""
+    scale = size / font.units_per_em
+    if direction == "rtl":
+        pen = x + buffer_advance(font, buffer, size, kerning)
+    else:
+        pen = x
+    placements = [None] * len(buffer)
+    prev_glyph = None
+    base_origin = (pen, y)
+    for i, e in enumerate(buffer):
+        if is_mark(font, e.glyph):
+            bx, by = base_origin
+            placements[i] = Placement(e.glyph, bx + e.dx * scale, by - e.dy * scale)
+            continue
+        if direction == "rtl":
+            if kerning and prev_glyph is not None:
+                pen -= kern(font, prev_glyph, e.glyph) * scale
+            pen -= pen_advance(font, e.glyph, size)
+            placements[i] = Placement(e.glyph, pen, y)
+        else:
+            if kerning and prev_glyph is not None:
+                pen += kern(font, prev_glyph, e.glyph) * scale
+            placements[i] = Placement(e.glyph, pen, y)
+            pen += pen_advance(font, e.glyph, size)
+        base_origin = (placements[i].x, y)
+        prev_glyph = e.glyph
+    return placements
+
+
+def caret_offsets(buffer, length):
+    """The character offsets a cursor may stand at: every cluster
+    start, in order, then the text's length."""
+    return clusters(buffer) + [length]
+
+
+def caret_positions(font, buffer, length, size, x, direction, kerning):
+    """The x of each caret offset, in the same order: the pen where
+    each cluster's first glyph is placed, then the pen after the last
+    glyph. For "rtl" the first position is the run's right end and the
+    last is x."""
+    scale = size / font.units_per_em
+    if direction == "rtl":
+        pen = x + buffer_advance(font, buffer, size, kerning)
+    else:
+        pen = x
+    checkpoints = []
+    prev_glyph = None
+    last_cluster = None
+    for e in buffer:
+        if is_mark(font, e.glyph):
+            continue
+        if e.cluster != last_cluster:
+            checkpoints.append(pen)
+            last_cluster = e.cluster
+        if direction == "rtl":
+            if kerning and prev_glyph is not None:
+                pen -= kern(font, prev_glyph, e.glyph) * scale
+            pen -= pen_advance(font, e.glyph, size)
+        else:
+            if kerning and prev_glyph is not None:
+                pen += kern(font, prev_glyph, e.glyph) * scale
+            pen += pen_advance(font, e.glyph, size)
+        prev_glyph = e.glyph
+    checkpoints.append(pen)
+    return checkpoints
+
+
+# --- Chapter 19 renders ---
+
+ARABIC_KITAB = "كِتاب"  # kaf, kasra, teh, alef, beh
+
+
+def _caret_ticks(c, font, buffer, length, size, x, y, direction, kerning, col, lo=4, hi=16):
+    for cx in caret_positions(font, buffer, length, size, x, direction, kerning):
+        _hairline_seg(c, point(cx, y + lo), point(cx, y + hi), col)
+
+
+def ligature_demo():
+    """office shaped and positioned, the f_i glyph in magenta, the rest
+    gray, with caret ticks marking where the cursor may stand."""
+    w, h = 260, 100
+    c = canvas(w, h)
+    fill(c, PAPER)
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    text = "office"
+    size = 64
+    x, y = 20, 70
+    buffer = shape(font, text)
+    run = position(font, buffer, size, x, y, "ltr", True)
+    _hairline_seg(c, point(4, y), point(256, y), _GLYPH_DIM)
+    for e, p in zip(buffer, run):
+        col = _GLYPH_MAGENTA if e.glyph == "f_i" else _GLYPH_GRAY
+        draw_run(c, font, [p], size, col, True)
+    _caret_ticks(c, font, buffer, len(text), size, x, y, "ltr", True, _GLYPH_CYAN)
+    return c
+
+
+def forms_demo():
+    """One letter, beh, in its four positional forms, each labelled in
+    Roboto below it."""
+    w, h = 320, 110
+    c = canvas(w, h)
+    fill(c, PAPER)
+    ar = load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    lat = load_font(read_file("reference/chapter-16/roboto.json"))
+    glyphs = ["beh", "beh.init", "beh.medi", "beh.fina"]
+    labels = ["isol", "init", "medi", "fina"]
+    size = 64
+    for k in range(4):
+        ox = 16 + 76 * k
+        oy = 60
+        _hairline_seg(c, point(ox - 4, oy), point(ox + 68, oy), _GLYPH_DIM)
+        draw_run(c, ar, [Placement(glyphs[k], ox, oy)], size, _GLYPH_GRAY, True)
+        label_run = layout_run(lat, labels[k], 11, ox, 90, True)
+        draw_run(c, lat, label_run, 11, _GLYPH_CYAN, True)
+    return c
+
+
+def word_demo():
+    """kitab, with its kasra, shaped and positioned right to left. The
+    letters are gray, the mark magenta."""
+    w, h = 260, 100
+    c = canvas(w, h)
+    fill(c, PAPER)
+    font = load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    text = ARABIC_KITAB
+    size = 64
+    x, y = 20, 64
+    buffer = shape(font, text)
+    run = position(font, buffer, size, x, y, "rtl", False)
+    _hairline_seg(c, point(4, y), point(256, y), _GLYPH_DIM)
+    for e, p in zip(buffer, run):
+        col = _GLYPH_MAGENTA if is_mark(font, e.glyph) else _GLYPH_GRAY
+        draw_run(c, font, [p], size, col, True)
+    _caret_ticks(c, font, buffer, len(text), size, x, y, "rtl", False, _GLYPH_CYAN)
+    return c
+
+
+def mixed_demo():
+    """"Book: " + kitab + ", again." itemized, each item shaped and
+    positioned in its own script's font and direction, one after the
+    other."""
+    w, h = 300, 60
+    c = canvas(w, h)
+    fill(c, PAPER)
+    lat = load_font(read_file("reference/chapter-16/roboto.json"))
+    ar = load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    text = "Book: " + ARABIC_KITAB + ", again."
+    size = 28
+    y = 40
+    cur_x = 12
+    _hairline_seg(c, point(4, y), point(296, y), _GLYPH_DIM)
+    for item in itemize(text):
+        font = lat if item.script == "latin" else ar
+        buffer = shape(font, item.text)
+        run = position(font, buffer, size, cur_x, y, item.direction, True)
+        _hairline_seg(c, point(cur_x, y + 3), point(cur_x, y + 10), _GLYPH_CYAN)
+        for e, p in zip(buffer, run):
+            col = _GLYPH_MAGENTA if is_mark(font, e.glyph) else _GLYPH_GRAY
+            draw_run(c, font, [p], size, col, True)
+        cur_x += buffer_advance(font, buffer, size, True)
+    return c
+
+
+def cluster_plate():
+    """The chapter's whole argument: characters in on the top row,
+    glyphs out on the bottom row, and a line from each character to the
+    cluster it ended up in."""
+    lat = load_font(read_file("reference/chapter-16/roboto.json"))
+    ar = load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    w, h = 540, 210
+    c = canvas(w, h)
+    fill(c, PAPER)
+    size = 52
+
+    for font, text, direction, x0 in ((lat, "office", "ltr", 20), (ar, ARABIC_KITAB, "rtl", 290)):
+        scale = size / font.units_per_em
+        raw = glyph_buffer(font, text)
+
+        pen = x0
+        centers = []
+        for e in raw:
+            adv = glyph_advance(font, e.glyph) * scale
+            wbox = max(adv, 12)
+            _stroke_path(c, _polyline_path(
+                [point(pen, 34), point(pen + wbox, 34),
+                 point(pen + wbox, 92), point(pen, 92)], True),
+                1.0, _GLYPH_DIM, "butt", "round")
+            gx = pen + (wbox - adv) / 2.0
+            draw_run(c, font, [Placement(e.glyph, gx, 80)], size, _GLYPH_GRAY, True)
+            centers.append(pen + wbox / 2.0)
+            pen += wbox + 14
+
+        buffer = shape(font, text)
+        run = position(font, buffer, size, x0, 180, direction, True)
+
+        box_bounds = {}
+        for e, p in zip(buffer, run):
+            if is_mark(font, e.glyph):
+                continue
+            adv = glyph_advance(font, e.glyph) * scale
+            lo, hi = p.x, p.x + adv
+            if e.cluster in box_bounds:
+                blo, bhi = box_bounds[e.cluster]
+                box_bounds[e.cluster] = (min(blo, lo), max(bhi, hi))
+            else:
+                box_bounds[e.cluster] = (lo, hi)
+
+        for e, p in zip(buffer, run):
+            raw_name = glyph_name(font, ord(text[e.cluster])) if e.cluster < len(text) else None
+            changed = is_mark(font, e.glyph) or e.glyph != raw_name
+            col = _GLYPH_MAGENTA if changed else _GLYPH_GRAY
+            draw_run(c, font, [p], size, col, True)
+
+        for lo, hi in box_bounds.values():
+            _stroke_path(c, _polyline_path(
+                [point(lo, 134), point(hi, 134), point(hi, 192), point(lo, 192)], True),
+                1.0, _GLYPH_CYAN, "butt", "round")
+
+        cluster_starts = sorted(box_bounds.keys())
+        for i in range(len(text)):
+            start = max((s for s in cluster_starts if s <= i), default=cluster_starts[0])
+            lo, hi = box_bounds[start]
+            mid_bottom = (lo + hi) / 2.0
+            _hairline_seg(c, point(centers[i], 92), point(mid_bottom, 134), _GLYPH_MAGENTA, 0.75)
+
+    return c
+
+
+def plate_19():
+    """Chapter 19's plate: characters in, glyphs out, clusters joined."""
+    return cluster_plate()

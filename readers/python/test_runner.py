@@ -50,8 +50,15 @@ def parse_features(feature_file):
                     break
                 if step_line.startswith('Given') or step_line.startswith('When') or \
                    step_line.startswith('Then') or step_line.startswith('And'):
-                    keyword = step_line.split()[0]
-                    step_text = ' '.join(step_line.split()[1:])
+                    # Split only on the first run of whitespace, so a
+                    # string literal later in the step (e.g. "  two
+                    # spaces ") keeps its internal spacing exactly --
+                    # collapsing it with a naive split()/' '.join() was
+                    # corrupting any scenario that pins whitespace inside
+                    # a quoted string (chapter 19's itemize scenarios do).
+                    parts = step_line.split(None, 1)
+                    keyword = parts[0]
+                    step_text = parts[1] if len(parts) > 1 else ""
 
                     # Handle multi-line steps with docstrings or tables
                     docstring = None
@@ -505,6 +512,48 @@ def evaluate_expression(expr_str, ctx):
             'smoothing_demo': renderer.smoothing_demo,
             'lcd_plate': renderer.lcd_plate,
             'plate_17': renderer.plate_17,
+            # Chapter 18
+            'Placement': renderer.Placement,
+            'ascent': renderer.ascent,
+            'descent': renderer.descent,
+            'line_height': renderer.line_height,
+            'kern': renderer.kern,
+            'layout_run': renderer.layout_run,
+            'run_advance': renderer.run_advance,
+            'break_lines': renderer.break_lines,
+            'layout_line': renderer.layout_line,
+            'layout_paragraph': renderer.layout_paragraph,
+            'draw_run': renderer.draw_run,
+            'THROUGH_LINE': renderer.THROUGH_LINE,
+            'kern_demo': renderer.kern_demo,
+            'break_demo': renderer.break_demo,
+            'drift_demo': renderer.drift_demo,
+            'alignment_plate': renderer.alignment_plate,
+            'plate_18': renderer.plate_18,
+            # Chapter 19
+            'Item': renderer.Item,
+            'script_of': renderer.script_of,
+            'itemize': renderer.itemize,
+            'GlyphEntry': renderer.GlyphEntry,
+            'glyph_buffer': renderer.glyph_buffer,
+            'clusters': renderer.clusters,
+            'apply_ligatures': renderer.apply_ligatures,
+            'joining_type': renderer.joining_type,
+            'arabic_forms': renderer.arabic_forms,
+            'apply_forms': renderer.apply_forms,
+            'is_mark': renderer.is_mark,
+            'attach_marks': renderer.attach_marks,
+            'shape': renderer.shape,
+            'buffer_advance': renderer.buffer_advance,
+            'position': renderer.position,
+            'caret_offsets': renderer.caret_offsets,
+            'caret_positions': renderer.caret_positions,
+            'ligature_demo': renderer.ligature_demo,
+            'forms_demo': renderer.forms_demo,
+            'word_demo': renderer.word_demo,
+            'mixed_demo': renderer.mixed_demo,
+            'cluster_plate': renderer.cluster_plate,
+            'plate_19': renderer.plate_19,
         }
         namespace.update(ctx.variables)
 
