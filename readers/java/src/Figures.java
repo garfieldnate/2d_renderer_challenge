@@ -1,7 +1,9 @@
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * §1.6, §1.8, §1.9: the five renders chapter 1 asks for, plus §2.5, §2.6,
@@ -1614,5 +1616,384 @@ public final class Figures {
     /** §17.5: plate_17() -- lcd_plate(), magnified by 2. */
     public static Canvas plate17() {
         return Magnify.magnify(lcdPlate(), 2);
+    }
+
+    // ---------------------------------------------------------------------
+    // Chapter 18: setting a line of text.
+
+    static final String THROUGH_LINE =
+            "Rasterization computes coverage. Painting composites paint through coverage. "
+                    + "Once you hold a coverage buffer, a stroke is a fill of a different outline, "
+                    + "a clip is a multiplication of two buffers, and a glyph is a path somebody else drew.";
+
+    private static void vline(Canvas c, double x, double y0, double y1, Color color, double width) {
+        paintHairline(c, List.of(Tuple.point(x, y0), Tuple.point(x, y1)), false, color, width);
+    }
+
+    private static void hline(Canvas c, double x0, double x1, double y, Color color, double width) {
+        paintHairline(c, List.of(Tuple.point(x0, y), Tuple.point(x1, y)), false, color, width);
+    }
+
+    /**
+     * §18.6, the trap: the shortcut a reader might take instead of keeping
+     * the pen fractional -- round each glyph's own advance to a whole
+     * pixel and step by that. NOT part of the book's API; it exists only
+     * to draw the wrong half of Figure 18.4.
+     */
+    private static List<Placement> layoutRunRounded(Font font, String text, double size, double x, double y) {
+        List<Placement> out = new ArrayList<>();
+        double pen = x;
+        for (int i = 0; i < text.length(); i++) {
+            String name = Fonts.glyphName(font, text.charAt(i));
+            out.add(new Placement(name, pen, y));
+            pen += Numbers.round(Glyphs.penAdvance(font, name, size));
+        }
+        return out;
+    }
+
+    /**
+     * §18.2: kern_demo() -- TAVERN at a 64 pixel em from x = 12, kerned on
+     * the baseline y = 70 and unkerned on y = 160, both in GLYPH_GRAY. A
+     * dim hairline along each baseline, a tick at every placement and at
+     * each run's end (cyan on the kerned row, dim on the other), and a
+     * magenta bracket between the two runs' ends showing what the font's
+     * kern pairs saved.
+     */
+    public static Canvas kernDemo() {
+        int w = 320, h = 190;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Font font = robotoFont();
+        double size = 64, x = 12, kernedY = 70, unkernedY = 160;
+
+        List<Placement> kerned = Layout.layoutRun(font, "TAVERN", size, x, kernedY, true);
+        List<Placement> unkerned = Layout.layoutRun(font, "TAVERN", size, x, unkernedY, false);
+        double kernedEnd = x + Layout.runAdvance(font, "TAVERN", size, true);
+        double unkernedEnd = x + Layout.runAdvance(font, "TAVERN", size, false);
+
+        Layout.drawRun(c, font, kerned, size, GLYPH_GRAY, true);
+        Layout.drawRun(c, font, unkerned, size, GLYPH_GRAY, true);
+
+        hline(c, 4, 316, kernedY, GLYPH_DIM, 1.0);
+        hline(c, 4, 316, unkernedY, GLYPH_DIM, 1.0);
+
+        for (Placement p : kerned) {
+            vline(c, p.x(), kernedY + 3, kernedY + 12, GLYPH_CYAN, 1.0);
+        }
+        vline(c, kernedEnd, kernedY + 3, kernedY + 12, GLYPH_CYAN, 1.0);
+        for (Placement p : unkerned) {
+            vline(c, p.x(), unkernedY + 3, unkernedY + 12, GLYPH_DIM, 1.0);
+        }
+        vline(c, unkernedEnd, unkernedY + 3, unkernedY + 12, GLYPH_DIM, 1.0);
+
+        vline(c, kernedEnd, 84, 180, GLYPH_MAGENTA, 1.0);
+        vline(c, unkernedEnd, 84, 180, GLYPH_MAGENTA, 1.0);
+        hline(c, kernedEnd, unkernedEnd, 180, GLYPH_MAGENTA, 1.0);
+        return c;
+    }
+
+    /**
+     * §18.3: break_demo() -- the through-line as a left paragraph at 16
+     * pixels from (20, 30) in a 300 measure, with cyan hairlines marking
+     * the measure's edges.
+     */
+    public static Canvas breakDemo() {
+        int w = 340, h = 150;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Font font = robotoFont();
+        double size = 16, x = 20, y = 30, measure = 300;
+
+        List<Placement> run = Layout.layoutParagraph(font, THROUGH_LINE, size, x, y, measure, "left", true);
+        Layout.drawRun(c, font, run, size, GLYPH_GRAY, true);
+
+        vline(c, x, 10, 140, GLYPH_CYAN, 1.0);
+        vline(c, x + measure, 10, 140, GLYPH_CYAN, 1.0);
+        return c;
+    }
+
+    /**
+     * §18.6, the trap: drift_demo() -- one line set twice at 11 pixels,
+     * the pen fractional on y = 14 and rounded to a whole pixel after
+     * every glyph on y = 34. Cyan brackets the exact run; magenta shows
+     * where the rounded one actually stopped, fifteen pixels later.
+     */
+    public static Canvas driftDemo() {
+        int w = 260, h = 44;
+        Canvas c = new Canvas(w, h);
+        c.fill(new Color(1, 1, 1));
+        Font font = robotoFont();
+        String text = "little illicit lilies fill the hill until it is still";
+        double size = 11, x = 6, exactY = 14, roundedY = 34;
+
+        List<Placement> exact = Layout.layoutRun(font, text, size, x, exactY, false);
+        List<Placement> rounded = layoutRunRounded(font, text, size, x, roundedY);
+        double exactEnd = x + Layout.runAdvance(font, text, size, false);
+        Placement lastRounded = rounded.get(rounded.size() - 1);
+        double roundedEnd = lastRounded.x() + Glyphs.penAdvance(font, lastRounded.name(), size);
+
+        Layout.drawRun(c, font, exact, size, new Color(0, 0, 0), true);
+        Layout.drawRun(c, font, rounded, size, new Color(0, 0, 0), true);
+
+        vline(c, exactEnd, 3, 18, GLYPH_CYAN, 2.0);
+        vline(c, exactEnd, 23, 38, GLYPH_CYAN, 2.0);
+        vline(c, roundedEnd, 23, 38, GLYPH_MAGENTA, 2.0);
+        hline(c, exactEnd, roundedEnd, 40, GLYPH_MAGENTA, 2.0);
+        return Magnify.magnify(c, 3);
+    }
+
+    /**
+     * §18.6: alignment_plate() -- one paragraph, four alignments, guide
+     * hairlines drawn first and the glyphs painted over them.
+     */
+    public static Canvas alignmentPlate() {
+        int w = 660, h = 236;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Font font = robotoFont();
+        double size = 14, measure = 300;
+        String[] aligns = {"left", "right", "center", "justify"};
+        for (int k = 0; k < aligns.length; k++) {
+            String align = aligns[k];
+            double x = 20 + (k % 2) * 320;
+            double y = 24 + (k / 2) * 108;
+            List<Placement> run = Layout.layoutParagraph(font, THROUGH_LINE, size, x, y, measure, align, true);
+            int n = Layout.breakLines(font, THROUGH_LINE, size, measure, true).size();
+            double lineHeight = Layout.lineHeight(font, size);
+            for (int i = 0; i < n; i++) {
+                hline(c, x, x + measure, y + i * lineHeight, GLYPH_DIM, 0.5);
+            }
+            vline(c, x, y - 14, y + (n - 1) * lineHeight + 5, GLYPH_CYAN, 0.5);
+            vline(c, x + measure, y - 14, y + (n - 1) * lineHeight + 5, GLYPH_CYAN, 0.5);
+            Layout.drawRun(c, font, run, size, GLYPH_GRAY, true);
+        }
+        return c;
+    }
+
+    /** §18.6: plate_18() -- alignment_plate(). */
+    public static Canvas plate18() {
+        return alignmentPlate();
+    }
+
+    // ---------------------------------------------------------------------
+    // Chapter 19: shaping, a field guide.
+
+    /** the book's Arabic word, kaf kasra teh alef beh -- kitab, "book". */
+    static final String KITAB = "كِتاب";
+
+    static Font dejavuArabicFont() {
+        try {
+            String text = java.nio.file.Files.readString(
+                    java.nio.file.Path.of("reference/chapter-19/dejavu-arabic.json"));
+            return Fonts.loadFont(text);
+        } catch (java.io.IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static void box(Canvas c, double x0, double y0, double x1, double y1, Color color, double width) {
+        paintHairline(c, List.of(
+                Tuple.point(x0, y0), Tuple.point(x1, y0), Tuple.point(x1, y1), Tuple.point(x0, y1)),
+                true, color, width);
+    }
+
+    /**
+     * §19.3: ligature_demo() -- office shaped in Roboto, positioned ltr at
+     * a 64 pixel em from (20, 70) with kerning, f_i in magenta and the
+     * rest gray, a dim baseline and a cyan tick at every caret position.
+     */
+    public static Canvas ligatureDemo() {
+        int w = 260, h = 100;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Font font = robotoFont();
+        String text = "office";
+        double size = 64, x = 20, y = 70;
+        List<GlyphEntry> buffer = Shaping.shape(font, text);
+        List<Placement> run = Shaping.position(font, buffer, size, x, y, "ltr", true);
+        hline(c, 4, w - 4, y, GLYPH_DIM, 1.0);
+        for (int i = 0; i < buffer.size(); i++) {
+            Color col = buffer.get(i).glyph().equals("f_i") ? GLYPH_MAGENTA : GLYPH_GRAY;
+            Layout.drawRun(c, font, List.of(run.get(i)), size, col, true);
+        }
+        for (double cp : Shaping.caretPositions(font, buffer, text.length(), size, x, "ltr", true)) {
+            vline(c, cp, y + 4, y + 16, GLYPH_CYAN, 1.0);
+        }
+        return c;
+    }
+
+    /**
+     * §19.4: forms_demo() -- beh, beh.init, beh.medi, beh.fina at a 64
+     * pixel em in gray, each with its own dim baseline segment, and its
+     * form's name set in Roboto at 11 pixels in cyan below it.
+     */
+    public static Canvas formsDemo() {
+        int w = 320, h = 110;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Font ar = dejavuArabicFont();
+        Font lat = robotoFont();
+        double size = 64, y = 60;
+        String[] names = {"beh", "beh.init", "beh.medi", "beh.fina"};
+        String[] labels = {"isol", "init", "medi", "fina"};
+        for (int k = 0; k < names.length; k++) {
+            double x = 16 + k * 76;
+            hline(c, x - 4, x + 68, y, GLYPH_DIM, 1.0);
+            Layout.drawRun(c, ar, List.of(new Placement(names[k], x, y)), size, GLYPH_GRAY, true);
+            Layout.drawRun(c, lat, Layout.layoutRun(lat, labels[k], 11, x, y + 30, true), 11, GLYPH_CYAN, true);
+        }
+        return c;
+    }
+
+    /**
+     * §19.5: word_demo() -- kitab with its kasra shaped in DejaVu Sans and
+     * positioned rtl at a 64 pixel em from (20, 64) without kerning, the
+     * letters gray and the mark magenta.
+     */
+    public static Canvas wordDemo() {
+        int w = 260, h = 100;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Font font = dejavuArabicFont();
+        String text = KITAB;
+        double size = 64, x = 20, y = 64;
+        List<GlyphEntry> buffer = Shaping.shape(font, text);
+        List<Placement> run = Shaping.position(font, buffer, size, x, y, "rtl", false);
+        hline(c, 4, w - 4, y, GLYPH_DIM, 1.0);
+        for (int i = 0; i < buffer.size(); i++) {
+            Color col = Fonts.isMark(font, buffer.get(i).glyph()) ? GLYPH_MAGENTA : GLYPH_GRAY;
+            Layout.drawRun(c, font, List.of(run.get(i)), size, col, true);
+        }
+        for (double cp : Shaping.caretPositions(font, buffer, text.length(), size, x, "rtl", false)) {
+            vline(c, cp, y + 4, y + 16, GLYPH_CYAN, 1.0);
+        }
+        return c;
+    }
+
+    /**
+     * §19.7: mixed_demo() -- "Book: " + kitab + ", again." itemized, each
+     * item shaped in its own script's font and positioned in its own
+     * direction, one after another. The comma after kitab goes with the
+     * Arabic item and comes out on its left: that's the trap, not a bug
+     * here.
+     */
+    public static Canvas mixedDemo() {
+        int w = 300, h = 60;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Font lat = robotoFont();
+        Font ar = dejavuArabicFont();
+        double size = 28, y = 40;
+        String text = "Book: " + KITAB + ", again.";
+        double pen = 12;
+        hline(c, 4, w - 4, y, GLYPH_DIM, 1.0);
+        for (Item item : Shaping.itemize(text)) {
+            Font font = item.script().equals("arabic") ? ar : lat;
+            List<GlyphEntry> buffer = Shaping.shape(font, item.text());
+            vline(c, pen, y + 3, y + 10, GLYPH_CYAN, 1.0);
+            List<Placement> run = Shaping.position(font, buffer, size, pen, y, item.direction(), true);
+            for (int i = 0; i < buffer.size(); i++) {
+                Color col = Fonts.isMark(font, buffer.get(i).glyph()) ? GLYPH_MAGENTA : GLYPH_GRAY;
+                Layout.drawRun(c, font, List.of(run.get(i)), size, col, true);
+            }
+            pen += Shaping.bufferAdvance(font, buffer, size, true);
+        }
+        return c;
+    }
+
+    /**
+     * §19.8: cluster_plate() -- characters in on the top row, one glyph
+     * each straight from the cmap; glyphs out on the bottom row, shaped
+     * and positioned; a line from each character to the cluster it ended
+     * up in.
+     */
+    public static Canvas clusterPlate() {
+        int w = 540, h = 210;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        double size = 52;
+        Font lat = robotoFont();
+        Font ar = dejavuArabicFont();
+        Object[][] bands = {
+            {lat, "office", "ltr", 20.0},
+            {ar, KITAB, "rtl", 290.0}
+        };
+        double yTop = 80, yBot = 180;
+        for (Object[] band : bands) {
+            Font font = (Font) band[0];
+            String text = (String) band[1];
+            String direction = (String) band[2];
+            double x = (double) band[3];
+
+            List<GlyphEntry> raw = Shaping.glyphBuffer(font, text);
+            double pen = x;
+            List<Double> centers = new ArrayList<>();
+            for (GlyphEntry e : raw) {
+                double adv = Glyphs.penAdvance(font, e.glyph(), size);
+                double wBox = Math.max(adv, 12);
+                box(c, pen, yTop - 46, pen + wBox, yTop + 12, GLYPH_DIM, 1.0);
+                Layout.drawRun(c, font, List.of(new Placement(e.glyph(), pen + (wBox - adv) / 2, yTop)), size,
+                        GLYPH_GRAY, true);
+                centers.add(pen + wBox / 2);
+                pen += wBox + 14;
+            }
+
+            List<GlyphEntry> buffer = Shaping.shape(font, text);
+            List<Placement> run = Shaping.position(font, buffer, size, x, yBot, direction, true);
+
+            Map<Integer, double[]> boxes = new TreeMap<>();
+            for (int i = 0; i < buffer.size(); i++) {
+                GlyphEntry e = buffer.get(i);
+                if (Fonts.isMark(font, e.glyph())) {
+                    continue;
+                }
+                double adv = Glyphs.penAdvance(font, e.glyph(), size);
+                double lo = run.get(i).x();
+                double hi = lo + adv;
+                double[] cur = boxes.get(e.cluster());
+                if (cur == null) {
+                    boxes.put(e.cluster(), new double[] {lo, hi});
+                } else {
+                    cur[0] = Math.min(cur[0], lo);
+                    cur[1] = Math.max(cur[1], hi);
+                }
+            }
+
+            Set<String> rawNames = new HashSet<>();
+            for (GlyphEntry e : raw) {
+                rawNames.add(e.glyph());
+            }
+            for (int i = 0; i < buffer.size(); i++) {
+                GlyphEntry e = buffer.get(i);
+                boolean magenta = Fonts.isMark(font, e.glyph()) || !rawNames.contains(e.glyph());
+                Layout.drawRun(c, font, List.of(run.get(i)), size, magenta ? GLYPH_MAGENTA : GLYPH_GRAY, true);
+            }
+
+            for (double[] b : boxes.values()) {
+                box(c, b[0], 134, b[1], 192, GLYPH_CYAN, 1.0);
+            }
+
+            List<Integer> clusterKeys = new ArrayList<>(boxes.keySet());
+            for (int i = 0; i < text.length(); i++) {
+                int best = clusterKeys.get(0);
+                for (int ck : clusterKeys) {
+                    if (ck <= i) {
+                        best = ck;
+                    } else {
+                        break;
+                    }
+                }
+                double[] b = boxes.get(best);
+                double midX = (b[0] + b[1]) / 2;
+                paintHairline(c, List.of(Tuple.point(centers.get(i), yTop + 12), Tuple.point(midX, 134)),
+                        false, GLYPH_MAGENTA, 0.75);
+            }
+        }
+        return c;
+    }
+
+    /** §19.8: plate_19() -- cluster_plate(). */
+    public static Canvas plate19() {
+        return clusterPlate();
     }
 }

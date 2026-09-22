@@ -379,8 +379,9 @@
 
   <div class="trap">
     <h4>The trap</h4>
-    <p>The obvious shortcut is to round the pen to a whole pixel after every glyph, so the bitmap
-      for quarter zero is the only one you ever need. Each rounding is off by at most half a pixel,
+    <p>The obvious shortcut is to round the pen to a whole pixel after every glyph (the pen plus
+      the advance, rounded halves up, which since the pen is already whole is the same as rounding
+      each advance on its own), so the bitmap for quarter zero is the only one you ever need. Each rounding is off by at most half a pixel,
       which sounds harmless. It isn't, because the errors don't cancel: an <em>i</em> at 11 pixels
       advances by 2.67, and rounded it advances by 3, every time, so twenty of them drift six and a
       half pixels. Figure 18.4 sets a line chosen to be mean about it. The rounded version is
@@ -426,19 +427,24 @@ plate_18():
   pixels draws exactly what chapter 17's draw_text drew. The renders use
   chapter 16's inks (paper, gray, dim, magenta, cyan) and its hairlines
   (butt caps, round joins, 1 wide unless said), and kerning is on unless
-  said. kern_demo() is 320 by 190 paper: TAVERN at a 64 pixel em from x
+  said. Every hairline below is its own stroke, painted in the order
+  written; in kern_demo, break_demo and drift_demo the glyphs are drawn
+  first and the hairlines over them, and in alignment_plate the hairlines
+  are drawn first and the glyphs over them. kern_demo() is 320 by 190 paper: TAVERN at a 64 pixel em from x
   = 12, kerned on the baseline y = 70 and unkerned on y = 160, a dim
   hairline along each baseline from x = 4 to 316, a tick from 3 to 12
   below the baseline at every placement's x and at the run's end, cyan on
-  the kerned row and dim on the other, and magenta hairlines from y = 84
-  to 180 at both runs' ends joined along y = 180. break_demo() is 340 by
+  the kerned row and dim on the other, and three magenta hairlines: down from y = 84
+  to 180 at each run's end, and along y = 180 between the two ends. break_demo() is 340 by
   150 paper: the through-line, THROUGH_LINE below, as a left paragraph at
   16 pixels from (20, 30) in a 300 measure, and cyan hairlines down x = 20
   and x = 320 from y = 10 to 140. drift_demo() is a 260 by 44 white canvas
   magnified three times: the line "little illicit lilies fill the hill
   until it is still" at 11 pixels from x = 6, black, unkerned, on the
   baseline y = 14 as layout_run lays it out and on y = 34 with the pen
-  rounded to a whole pixel after every glyph; hairlines 2 wide: cyan from
+  rounded to a whole pixel after every glyph (pen ← round(pen + advance),
+  halves up; the pen is whole after each step, so this is also each
+  advance rounded on its own); hairlines 2 wide: cyan from
   y = 3 to 18 and 23 to 38 at the exact run's end, magenta from 23 to 38
   at the rounded run's end, and magenta along y = 40 between the two ends.
   alignment_plate() is 660 by 236 paper: THROUGH_LINE at 14 pixels in a

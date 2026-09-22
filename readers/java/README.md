@@ -1,7 +1,8 @@
 # The 2D Renderer Challenge — Java
 
-Chapters 1-17, hand-rolled test runner, no JUnit, no network. Chapter 16's
-font file (`reference/chapter-16/roboto.json`) is read with a small
+Chapters 1-19, hand-rolled test runner, no JUnit, no network. Chapter 16's
+font file (`reference/chapter-16/roboto.json`) and chapter 19's Arabic font
+(`reference/chapter-19/dejavu-arabic.json`) are read with a small
 hand-written JSON reader (`Json.java`) -- no library, as the chapter asks.
 
 ## Compile, test, render
@@ -27,10 +28,12 @@ java -cp classes Chapter14Tests
 java -cp classes Chapter15Tests
 java -cp classes Chapter16Tests
 java -cp classes Chapter17Tests
+java -cp classes Chapter18Tests
+java -cp classes Chapter19Tests
 ```
 
 Each run prints one `PASS`/`FAIL` line per scenario, a pass/fail total, and
-then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-17 as
+then writes that chapter's renders to `out/` (chapter 1 as P3, chapters 2-19 as
 P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/plate-02.ppm`, `out/fan-bresenham.ppm`, `out/fan-wu.ppm`,
 `out/fan-coverage.ppm`, `out/plate-03.ppm`, `out/fan-both-orders.ppm`,
@@ -47,7 +50,9 @@ P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/even-marks.ppm`, `out/dash-strip.ppm`, `out/spiral-dashes.ppm`,
 `out/plate-15.ppm`, `out/glyph.ppm`, `out/plate-16.ppm`, `out/composite.ppm`,
 `out/sizes.ppm`, `out/flip.ppm`, `out/subpixels.ppm`, `out/smoothing.ppm`,
-`out/lcd.ppm`, `out/plate-17.ppm`.
+`out/lcd.ppm`, `out/plate-17.ppm`, `out/kerning.ppm`, `out/breaking.ppm`,
+`out/drift.ppm`, `out/plate-18.ppm`, `out/ligature.ppm`, `out/forms.ppm`,
+`out/word.ppm`, `out/mixed.ppm`, `out/plate-19.ppm`.
 
 Chapter 15's dashed spiral render is `spiral-dashes.ppm`, not `spiral.ppm` --
 it used to share that name with chapter 6's spiral figure, which meant running
@@ -709,3 +714,137 @@ names in `Chapter16Tests.java` are updated to match, with no change to
 their bodies. All 23 chapter 16 scenarios and all 22 chapter 17 scenarios
 are green, and every chapter 16/17 render still diffs 0 against
 `reference/`.
+
+## Chapter 18
+
+`Font` and `Fonts.loadFont` gained an optional `kern` section, a `(left,
+right) -> font units` map (`Map<List<String>, Double>`, missing pairs read
+as 0 via `Fonts.kern(font, left, right)`) and an optional `ligatures`
+section (`List<Ligature>`, a `(parts, result)` record) that chapter 18
+doesn't use yet but chapter 16's own note said would arrive.
+
+`Placement` (`name`, `x`, `y`) is one glyph's spot in a run. `Layout` is
+the whole chapter: `ascent`/`descent`/`line_height` turn the font's
+ascender, descender (stored negative, `descent` negates it) and line gap
+into pixels. `layoutRun(font, text, size, x, y, kerning)` walks the pen
+one glyph at a time -- with kerning on, the pair's kern (scaled to pixels)
+is added *before* the glyph after the first is placed, per the pseudocode's
+own wording, and `run_advance` is the same walk without building the list.
+`breakLines(font, text, size, measure, kerning)` is greedy: words are runs
+of `\S+`; a word joins the current line unless the candidate's
+`run_advance` exceeds the measure, in which case the line closes and the
+word starts the next one; a lone word wider than the measure still sits on
+its own line and overflows. `layoutLine(font, text, size, x, y, measure,
+align, kerning)` is `layoutRun` plus one of `"left"`/`"right"`/`"center"`/
+`"justify"`; justify only fires when the text has a space, spreading the
+slack as `extra * (spaces before this placement)` over every placement
+after each space -- a line with no space falls through to the `else`
+branch, where `"left"`'s shift of 0 makes it identical to leaving it alone.
+`layoutParagraph` breaks the text, stacks each line by `line_height`, and
+forces the *last* line of a justified paragraph to `"left"` -- see the
+mutation-testing note below for why that specific rule needs its own
+probe. `Layout.drawRun(canvas, font, run, size, color, linear)` is the
+seam into chapter 17: each placement's `x` goes through `Bitmaps.subpixelOf`,
+and the baseline row is `Numbers.round(y)` (halves up), reusing chapter 1's
+existing round-half-up helper rather than writing a new one.
+
+`Figures` adds `kernDemo()`, `breakDemo()`, `driftDemo()` (which also
+defines a private, deliberately-wrong `layoutRunRounded` -- the pen steps
+by `round(pen_advance(...))` per glyph, the "obvious shortcut" the chapter's
+trap warns against, used only to draw the wrong half of Figure 18.4), and
+`alignmentPlate()`/`plate18()`. All four renders (`kerning.ppm`,
+`breaking.ppm`, `drift.ppm`, `plate-18.ppm`) diff 0 against the reference
+bytes.
+
+**A drawing-order trap the prose doesn't spell out.** None of the four
+render functions has printed pseudocode (only the `Feature:` prose in
+`chapter18-plate.feature`), and that prose doesn't say whether a render's
+annotations (baselines, ticks, the magenta bracket) paint before or after
+the glyphs. `alignmentPlate()`'s pseudocode (which chapter 18 *does* print)
+draws its hairlines first and `draw_run` last; `kernDemo()`/`breakDemo()`/
+`driftDemo()` turned out to need the opposite order (glyphs first, then
+hairlines/ticks/bracket on top) to match the reference bytes -- confirmed
+by rendering both orders and diffing against `reference/chapter-18/*.ppm`
+pixel by pixel. Getting this wrong doesn't fail any scenario's named pixel
+probes in most cases (see below); only the whole-image
+`max_channel_difference(...) <= 1` check catches it reliably. See
+`FEEDBACK.md`'s Prose problems section.
+
+## Chapter 19
+
+`Font` gained four more optional sections, all present in
+`reference/chapter-19/dejavu-arabic.json` and absent from Roboto: `joining`
+(`Map<Integer, String>`, codepoint to Unicode joining type, `Fonts.joiningType`
+defaults missing codepoints to `"none"`), `forms` (`Map<String, Map<String,
+String>>`, glyph to form to glyph), `marks` (`Map<String, MarkAnchor>`, a
+`(anchorClass, x, y)` record), and `anchors` (`Map<String, Map<String,
+double[]>>`, base glyph to anchor class to point). `Fonts.isMark(font,
+name)` is `font.marks.containsKey(name)`.
+
+`GlyphEntry` (`glyph`, `cluster`, `dx`, `dy`) is one entry of a glyph
+buffer; `Item` (`start`, `end`, `text`, `script`, `direction`) is one
+itemized run. `Shaping` is the whole chapter:
+
+- `scriptOf(codepoint)` / `itemize(text)` (§19.1): cuts a string into runs
+  of one script, common characters (no script of their own) joining the
+  run before them; a string of nothing but common characters is one
+  `"latin"`/`"ltr"` run.
+- `glyphBuffer(font, text)` / `clusters(buffer)` (§19.2): one entry per
+  character, `cluster = index`; `clusters` is the distinct cluster values,
+  sorted ascending (clusters never actually go backwards along a buffer,
+  but the reference figure JS sorts explicitly, so this does too).
+- `applyLigatures(font, buffer)` (§19.3): walks left to right, the font's
+  rules tried longest-part-count first at each position; a match's result
+  takes the first part's cluster and the walk resumes *after* it -- the
+  result is never re-examined against the rules.
+- `arabicForms(font, text)` / `applyForms(font, text, buffer)` (§19.4):
+  each character's form comes from its own joining type and its nearest
+  non-transparent neighbours on each side (both dual/right neighbour rules
+  checked independently); `applyForms` swaps a glyph for `font.forms[glyph][form]`
+  when that entry exists, unchanged otherwise.
+- `attachMarks(font, buffer)` (§19.5): each mark's base is the nearest
+  preceding non-mark; if the base has an anchor of the mark's class, the
+  mark's offset becomes `base anchor - mark's own anchor` and the mark
+  takes the base's cluster, otherwise the mark keeps its own cluster and a
+  zero offset. `shape(font, text)` is the pipeline: buffer, forms if the
+  font has a forms table, ligatures always, marks if the font has a marks
+  table.
+- `position(font, buffer, size, x, y, direction, kerning)` /
+  `bufferAdvance(...)` (§19.6): `"ltr"` walks the pen right from `x` exactly
+  as `Layout.layoutRun` does (kern pairs between consecutive non-marks
+  included); `"rtl"` starts at `x + bufferAdvance(...)` and, per glyph,
+  subtracts the kern pair and then the glyph's own advance *before* placing
+  it, so the run still spans `x` to `x + advance` either way. A mark is
+  placed at `lastBase.x + dx * scale, lastBase.y - dy * scale` (dy turned
+  over for the font's y-up to the canvas's y-down) regardless of direction,
+  since by the time a mark is reached its base has already been placed.
+- `caretOffsets(buffer, length)` is `clusters(buffer)` plus the text
+  length; `caretPositions(...)` is, per cluster, the pen where its first
+  non-mark glyph was placed for `"ltr"`, or that glyph's own right edge
+  (`origin + its own advance`, deliberately *not* adjusted by any kern from
+  the glyph after it -- see below) for `"rtl"`, falling back to an
+  unattached mark's own placement when a cluster has no non-mark member;
+  the final entry is the pen after the last glyph either way.
+
+`Figures` adds `KITAB` (kaf, kasra, teh, alef, beh -- "kitab", "book"),
+`dejavuArabicFont()`, `ligatureDemo()`, `formsDemo()`, `wordDemo()`,
+`mixedDemo()`, and `clusterPlate()`/`plate19()`. All five renders
+(`ligature.ppm`, `forms.ppm`, `word.ppm`, `mixed.ppm`, `plate-19.ppm`) diff
+0 against the reference bytes.
+
+**`caretPositions`'s rtl formula was derived twice, and the two answers
+disagreed.** A first pass recorded, while walking the pen backward, the
+pen value *before* subtracting each glyph's own kern-and-advance (i.e. the
+raw "entry point" into that glyph, including any kern pull from the pair
+before it). Every scenario in `chapter19-position.feature` uses `kerning =
+false` for its one `"rtl"` case, so that pass matched every scenario
+number exactly. It's still wrong: reconstructing the reference figure JS's
+actual `caretPositions` (which the book doesn't print as pseudocode, only
+as prose) shows it computes each rtl caret as `run[i].x + glyph's own
+advance` -- deliberately *not* subtracting the kern from the glyph after
+it, so a caret sits at its own glyph's box edge regardless of how far a
+kern pair pulled the *next* glyph toward it. The two formulas are
+identical whenever `kerning = false`, which is exactly the blind spot
+every existing scenario shares. Implemented the second (correct) formula
+directly from that reconstruction rather than trusting the first pass's
+green scenarios. See `FEEDBACK.md`.

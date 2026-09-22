@@ -32,7 +32,73 @@ public final class Fonts {
             glyphs.put(e.getKey(), readGlyph(Json.asObject(e.getValue())));
         }
 
-        return new Font(unitsPerEm, ascender, descender, lineGap, cmap, glyphs);
+        Map<List<String>, Double> kern = new LinkedHashMap<>();
+        if (root.containsKey("kern")) {
+            for (Object rawTriple : Json.asArray(root.get("kern"))) {
+                List<Object> triple = Json.asArray(rawTriple);
+                String left = Json.asString(triple.get(0));
+                String right = Json.asString(triple.get(1));
+                double value = Json.asNumber(triple.get(2));
+                kern.put(List.of(left, right), value);
+            }
+        }
+
+        List<Ligature> ligatures = new ArrayList<>();
+        if (root.containsKey("ligatures")) {
+            for (Object rawRule : Json.asArray(root.get("ligatures"))) {
+                List<Object> rule = Json.asArray(rawRule);
+                List<String> parts = new ArrayList<>();
+                for (Object part : Json.asArray(rule.get(0))) {
+                    parts.add(Json.asString(part));
+                }
+                String result = Json.asString(rule.get(1));
+                ligatures.add(new Ligature(parts, result));
+            }
+        }
+
+        Map<Integer, String> joining = new LinkedHashMap<>();
+        if (root.containsKey("joining")) {
+            for (Map.Entry<String, Object> e : Json.asObject(root.get("joining")).entrySet()) {
+                joining.put(Integer.valueOf(e.getKey()), Json.asString(e.getValue()));
+            }
+        }
+
+        Map<String, Map<String, String>> forms = new LinkedHashMap<>();
+        if (root.containsKey("forms")) {
+            for (Map.Entry<String, Object> e : Json.asObject(root.get("forms")).entrySet()) {
+                Map<String, String> perGlyph = new LinkedHashMap<>();
+                for (Map.Entry<String, Object> f : Json.asObject(e.getValue()).entrySet()) {
+                    perGlyph.put(f.getKey(), Json.asString(f.getValue()));
+                }
+                forms.put(e.getKey(), perGlyph);
+            }
+        }
+
+        Map<String, MarkAnchor> marks = new LinkedHashMap<>();
+        if (root.containsKey("marks")) {
+            for (Map.Entry<String, Object> e : Json.asObject(root.get("marks")).entrySet()) {
+                List<Object> triple = Json.asArray(e.getValue());
+                String anchorClass = Json.asString(triple.get(0));
+                double ax = Json.asNumber(triple.get(1));
+                double ay = Json.asNumber(triple.get(2));
+                marks.put(e.getKey(), new MarkAnchor(anchorClass, ax, ay));
+            }
+        }
+
+        Map<String, Map<String, double[]>> anchors = new LinkedHashMap<>();
+        if (root.containsKey("anchors")) {
+            for (Map.Entry<String, Object> e : Json.asObject(root.get("anchors")).entrySet()) {
+                Map<String, double[]> perGlyph = new LinkedHashMap<>();
+                for (Map.Entry<String, Object> a : Json.asObject(e.getValue()).entrySet()) {
+                    List<Object> pair = Json.asArray(a.getValue());
+                    perGlyph.put(a.getKey(), new double[] {Json.asNumber(pair.get(0)), Json.asNumber(pair.get(1))});
+                }
+                anchors.put(e.getKey(), perGlyph);
+            }
+        }
+
+        return new Font(unitsPerEm, ascender, descender, lineGap, cmap, glyphs, kern, ligatures,
+                joining, forms, marks, anchors);
     }
 
     private static Glyph readGlyph(Map<String, Object> obj) {
@@ -77,5 +143,22 @@ public final class Fonts {
 
     public static int glyphCount(Font font) {
         return font.glyphs.size();
+    }
+
+    /** §18.2: kern(font, left, right) -- font units to pull the pair together, 0 for pairs the font doesn't list. */
+    public static double kern(Font font, String left, String right) {
+        Double v = font.kern.get(List.of(left, right));
+        return v != null ? v : 0.0;
+    }
+
+    /** §19.4: joining_type(font, codepoint) -- Unicode's joining type, "none" for a character not listed. */
+    public static String joiningType(Font font, int codepoint) {
+        String t = font.joining.get(codepoint);
+        return t != null ? t : "none";
+    }
+
+    /** §19.5: is_mark(font, name) -- whether a glyph is in the font's marks table. */
+    public static boolean isMark(Font font, String name) {
+        return font.marks.containsKey(name);
     }
 }

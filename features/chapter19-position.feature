@@ -11,9 +11,11 @@ Feature: Positioning, in either direction, and where the cursor may stand
   pair between consecutive non-marks. caret_offsets(buffer, length) lists
   the character offsets a cursor may stand at: every cluster start, then
   the text's length. caret_positions(font, buffer, length, size, x,
-  direction, kerning) is the x of each, in the same order: the pen where
-  each cluster's first glyph is placed, then the pen after the last glyph.
-  For rtl the first position is the run's right end and the last is x.
+  direction, kerning) is the x of each, in the same order: for ltr the
+  origin of each cluster's first glyph, then the pen after the last glyph;
+  for rtl the RIGHT edge of each cluster's first glyph, its origin plus its
+  advance, then x. Either way a caret sits on the kerned edge of the
+  glyph, so the first position is the run's start and the last its end.
 
   Scenario: A buffer straight from the cmap positions exactly as layout_run lays it out
     Given font ← load_font(read_file("reference/chapter-16/roboto.json"))
@@ -93,3 +95,6 @@ Feature: Positioning, in either direction, and where the cursor may stand
     And   run[1].y = 43
     And   run[2].x = 15
     And   run[2].y = 50
+    And   caret_positions(toy, b, 3, 10, 10, "ltr", true) = [10, 15, 21]
+    And   caret_positions(toy, b, 3, 10, 10, "rtl", true) = [21, 16, 10]
+    And   caret_positions(toy, b, 3, 10, 10, "rtl", false) = [22, 16, 10]
