@@ -3,6 +3,7 @@
 Turn a TrueType font into the book's glyphs.json.
 
     ./tools/ttf_to_json.py reference/fonts/Roboto-Regular.ttf reference/chapter-16/roboto.json
+    ./tools/ttf_to_json.py --arabic reference/fonts/DejaVuSans.ttf reference/chapter-19/dejavu-arabic.json
 
 Author-side only: readers get the JSON, never the .ttf (parsing sfnt is
 Appendix B). Reads head, maxp, hhea, hmtx, cmap (formats 4 and 12), loca,
@@ -20,6 +21,18 @@ The schema (chapter 16 prints it):
             components [ { glyph, transform: [a, b, c, d, dx, dy] }, ... ]
   kern      [ [left, right, value], ... ]       optional, chapter 18
   ligatures [ [ [component names...], result ], ... ]   optional, chapter 19
+  joining   { "1603": "dual" | "right" | "none" | "transparent" }   optional, chapter 19:
+            Unicode's joining type (ArabicShaping.txt) for each codepoint in cmap
+  forms     { name: { "init": name, "medi": name, "fina": name } }  optional, chapter 19:
+            GSUB's init/medi/fina single substitutions
+  marks     { name: [class, x, y] }              optional, chapter 19: a mark glyph's
+            anchor class ("above" or "below") and its own anchor, font units
+  anchors   { name: { class: [x, y] } }          optional, chapter 19: a base glyph's
+            anchor per class; a mark lands with its anchor on the base's
+
+The --arabic profile keeps the Arabic letters, tatweel, the eight harakat, space,
+the Arabic comma and question mark and the ASCII punctuation a mixed line needs,
+every positional form GSUB reaches from them, the lam-alef ligatures (rlig and liga), and the mark-to-base anchors.
 """
 
 import json
@@ -388,6 +401,125 @@ class Font:
                         out.append(([cov[i]] + rest, gid))
         return out
 
+    # --- generic: the lookups a feature tag references, by table and script
+    def feature_lookups(self, table, tag, script=None):
+        """(lookup type, subtable offset) pairs for every lookup the feature
+        references; when a script is given, only the features that script's
+        default language system lists. Extension lookups are unwrapped."""
+        if table not in self.tables:
+            return []
+        base = self.tables[table][0]
+        script_list = base + self.u16(base + 4)
+        feat_list = base + self.u16(base + 6)
+        lookup_list = base + self.u16(base + 8)
+        ext = 7 if table == "GSUB" else 9
+        allowed = None
+        if script is not None:
+            allowed = set()
+            n = self.u16(script_list)
+            for i in range(n):
+                stag = self.d[script_list + 2 + 6 * i:script_list + 6 + 6 * i]
+                if stag != script:
+                    continue
+                so = script_list + self.u16(script_list + 6 + 6 * i)
+                dflt = self.u16(so)
+                if dflt:
+                    ls = so + dflt
+                    cnt = self.u16(ls + 4)
+                    allowed.update(self.u16(ls + 6 + 2 * k) for k in range(cnt))
+        wanted = []
+        nf = self.u16(feat_list)
+        for i in range(nf):
+            ftag = self.d[feat_list + 2 + 6 * i:feat_list + 6 + 6 * i]
+            if ftag != tag or (allowed is not None and i not in allowed):
+                continue
+            f = feat_list + self.u16(feat_list + 6 + 6 * i)
+            cnt = self.u16(f + 2)
+            for k in range(cnt):
+                li = self.u16(f + 4 + 2 * k)
+                if li not in wanted:
+                    wanted.append(li)
+        out = []
+        for li in wanted:
+            lk = lookup_list + self.u16(lookup_list + 2 + 2 * li)
+            ltype, nsub = self.u16(lk), self.u16(lk + 4)
+            for s in range(nsub):
+                st = lk + self.u16(lk + 6 + 2 * s)
+                t = ltype
+                if t == ext:
+                    t = self.u16(st + 2)
+                    st = st + self.u32(st + 4)
+                out.append((t, st))
+        return out
+
+    # --- GSUB single substitution, lookup type 1 (init, medi, fina)
+    def single_subst(self, tag, script):
+        m = {}
+        for t, st in self.feature_lookups("GSUB", tag, script):
+            if t != 1:
+                continue
+            fmt = self.u16(st)
+            cov = self.coverage(st + self.u16(st + 2))
+            if fmt == 1:
+                delta = self.s16(st + 4)
+                for g in cov:
+                    m.setdefault(g, (g + delta) & 0xFFFF)
+            else:
+                for i, g in enumerate(cov):
+                    m.setdefault(g, self.u16(st + 6 + 2 * i))
+        return m
+
+    # --- GSUB ligature substitution, lookup type 4, for any feature tag
+    def ligature_subst(self, tag, script):
+        out = []
+        for t, st in self.feature_lookups("GSUB", tag, script):
+            if t != 4:
+                continue
+            cov = self.coverage(st + self.u16(st + 2))
+            n = self.u16(st + 4)
+            for i in range(n):
+                ls = st + self.u16(st + 6 + 2 * i)
+                cnt = self.u16(ls)
+                for k in range(cnt):
+                    lig = ls + self.u16(ls + 2 + 2 * k)
+                    gid = self.u16(lig)
+                    ncomp = self.u16(lig + 2)
+                    rest = [self.u16(lig + 4 + 2 * j) for j in range(ncomp - 1)]
+                    out.append(([cov[i]] + rest, gid))
+        return out
+
+    # --- GPOS mark-to-base, lookup type 4: one (marks, bases) pair per subtable
+    def anchor(self, o):
+        return (self.s16(o + 2), self.s16(o + 4))
+
+    def mark_base(self, script):
+        """[(marks {gid: (class index, (x, y))}, bases {gid: {class index: (x, y)}})]
+        for every MarkBasePos subtable the mark feature references"""
+        out = []
+        for t, st in self.feature_lookups("GPOS", b"mark", script):
+            if t != 4:
+                continue
+            mcov = self.coverage(st + self.u16(st + 2))
+            bcov = self.coverage(st + self.u16(st + 4))
+            classes = self.u16(st + 6)
+            ma = st + self.u16(st + 8)
+            ba = st + self.u16(st + 10)
+            marks = {}
+            for i in range(self.u16(ma)):
+                cl, ao = self.u16(ma + 2 + 4 * i), self.u16(ma + 4 + 4 * i)
+                marks[mcov[i]] = (cl, self.anchor(ma + ao))
+            bases = {}
+            for i in range(self.u16(ba)):
+                rec = ba + 2 + i * 2 * classes
+                anchors = {}
+                for c in range(classes):
+                    ao = self.u16(rec + 2 * c)
+                    if ao:
+                        anchors[c] = self.anchor(ba + ao)
+                bases[bcov[i]] = anchors
+            out.append((marks, bases))
+        return out
+
 
 def convert(ttf_path):
     f = Font(open(ttf_path, "rb").read())
@@ -443,13 +575,153 @@ def convert(ttf_path):
     }
 
 
+# --------------------------------------------------------------------------
+# the Arabic subset, for chapter 19
+# --------------------------------------------------------------------------
+ARABIC_NAMES = {
+    0x0621: "hamza", 0x0622: "alefmadda", 0x0623: "alefhamzaabove", 0x0624: "wawhamza",
+    0x0625: "alefhamzabelow", 0x0626: "yehhamza", 0x0627: "alef", 0x0628: "beh",
+    0x0629: "tehmarbuta", 0x062A: "teh", 0x062B: "theh", 0x062C: "jeem", 0x062D: "hah",
+    0x062E: "khah", 0x062F: "dal", 0x0630: "thal", 0x0631: "reh", 0x0632: "zain",
+    0x0633: "seen", 0x0634: "sheen", 0x0635: "sad", 0x0636: "dad", 0x0637: "tah",
+    0x0638: "zah", 0x0639: "ain", 0x063A: "ghain", 0x0640: "tatweel", 0x0641: "feh",
+    0x0642: "qaf", 0x0643: "kaf", 0x0644: "lam", 0x0645: "meem", 0x0646: "noon",
+    0x0647: "heh", 0x0648: "waw", 0x0649: "alefmaksura", 0x064A: "yeh",
+    0x064B: "fathatan", 0x064C: "dammatan", 0x064D: "kasratan", 0x064E: "fatha",
+    0x064F: "damma", 0x0650: "kasra", 0x0651: "shadda", 0x0652: "sukun",
+    0x060C: "arabiccomma", 0x061F: "arabicquestion", 0x0020: "space",
+    0x002C: "comma", 0x002E: "period", 0x003A: "colon", 0x003B: "semicolon",
+    0x0021: "exclam", 0x003F: "question", 0x0028: "parenleft", 0x0029: "parenright",
+    0x002D: "hyphen",
+}
+
+# Unicode's joining types (ArabicShaping.txt) for the letters above. R joins
+# only to the letter before it; D joins both ways; U never joins; T is
+# transparent, invisible to the letters either side of it. Tatweel is
+# Unicode's C, join-causing, which for shaping behaves as D with one form.
+JOINING = {}
+for _cp in (0x0622, 0x0623, 0x0624, 0x0625, 0x0627, 0x0629, 0x062F, 0x0630, 0x0631, 0x0632,
+            0x0648, 0x0649):
+    JOINING[_cp] = "right"
+for _cp in (0x0626, 0x0628, 0x062A, 0x062B, 0x062C, 0x062D, 0x062E, 0x0633, 0x0634, 0x0635,
+            0x0636, 0x0637, 0x0638, 0x0639, 0x063A, 0x0640, 0x0641, 0x0642, 0x0643, 0x0644,
+            0x0645, 0x0646, 0x0647, 0x064A):
+    JOINING[_cp] = "dual"
+for _cp in range(0x064B, 0x0653):
+    JOINING[_cp] = "transparent"
+for _cp in (0x0621, 0x060C, 0x061F, 0x0020, 0x002C, 0x002E, 0x003A, 0x003B, 0x0021, 0x003F,
+            0x0028, 0x0029, 0x002D):
+    JOINING[_cp] = "none"
+
+ANCHOR_CLASSES = {(512, 0): "below", (512, 1200): "above"}
+
+
+def convert_arabic(ttf_path):
+    f = Font(open(ttf_path, "rb").read())
+    script = b"arab"
+    names = {0: ".notdef"}
+    keep = set([0])
+    for cp, name in ARABIC_NAMES.items():
+        if cp in f.cmap:
+            names[f.cmap[cp]] = name
+            keep.add(f.cmap[cp])
+    # positional forms: the init/medi/fina single substitutions
+    forms = {}
+    for form in ("init", "medi", "fina"):
+        m = f.single_subst(form.encode("ascii"), script)
+        for src, dst in m.items():
+            if src in keep and src in names:
+                forms.setdefault(names[src], {})[form] = names[src] + "." + form
+                names[dst] = names[src] + "." + form
+    form_gids = set()
+    for form in ("init", "medi", "fina"):
+        for src, dst in f.single_subst(form.encode("ascii"), script).items():
+            if src in keep:
+                form_gids.add(dst)
+    keep |= form_gids
+    # ligatures whose parts are all letters or forms we keep: rlig, then liga
+    ligs = []
+    seen = set()
+    for tag in (b"rlig", b"liga"):
+        for comps, gid in f.ligature_subst(tag, script):
+            if all(c in keep and c in names for c in comps) and gid not in seen:
+                if any(names[c].split(".")[0] in ("space",) or names[c] in JOINING_MARK_NAMES for c in comps):
+                    continue
+                seen.add(gid)
+                base = "_".join(names[c].split(".")[0] for c in comps)
+                first = names[comps[0]].split(".")[1:]
+                if first == ["medi"] or first == ["fina"]:          # lam.medi + alef.fina -> lam_alef.fina
+                    base += ".fina"
+                names[gid] = base
+                keep.add(gid)
+                ligs.append((comps, gid))
+    # mark attachment: class names from the marks' own anchors
+    marks, anchors = {}, {}
+    for mtable, btable in f.mark_base(script):
+        class_names = {}
+        for gid, (cl, anchor) in mtable.items():
+            if gid in keep and anchor in ANCHOR_CLASSES:
+                class_names[cl] = ANCHOR_CLASSES[anchor]
+        if not class_names:
+            continue
+        for gid, (cl, anchor) in mtable.items():
+            if gid in keep and cl in class_names:
+                marks[names[gid]] = [class_names[cl], anchor[0], anchor[1]]
+        for gid, table in btable.items():
+            if gid in keep:
+                for cl, anchor in table.items():
+                    if cl in class_names:
+                        anchors.setdefault(names[gid], {})[class_names[cl]] = [anchor[0], anchor[1]]
+    # components, transitively
+    todo = list(keep)
+    while todo:
+        gid = todo.pop()
+        _, comps = f.outline(gid)
+        for cg, _ in comps:
+            if cg not in keep:
+                keep.add(cg)
+                todo.append(cg)
+    for gid in keep:
+        if gid not in names:
+            names[gid] = "g%d" % gid
+    glyphs = {}
+    for gid in sorted(keep):
+        contours, comps = f.outline(gid)
+        glyphs[names[gid]] = {
+            "advance": f.advance(gid),
+            "contours": contours,
+            "components": [{"glyph": names[cg], "transform": t} for cg, t in comps],
+        }
+    cmap = {str(cp): names[f.cmap[cp]] for cp in sorted(ARABIC_NAMES) if cp in f.cmap}
+    joining = {str(cp): JOINING[cp] for cp in sorted(ARABIC_NAMES) if cp in f.cmap}
+    return {
+        "family": "DejaVu Sans", "style": "Book", "license": "Bitstream Vera / public domain",
+        "units_per_em": f.upem, "ascender": f.ascender, "descender": f.descender,
+        "line_gap": f.line_gap,
+        "cmap": cmap,
+        "glyphs": glyphs,
+        "kern": [],
+        "ligatures": [[[names[c] for c in comps], names[gid]] for comps, gid in ligs],
+        "joining": joining,
+        "forms": {k: forms[k] for k in sorted(forms)},
+        "marks": {k: marks[k] for k in sorted(marks)},
+        "anchors": {k: {c: anchors[k][c] for c in sorted(anchors[k])} for k in sorted(anchors)},
+    }
+
+
+JOINING_MARK_NAMES = set(ARABIC_NAMES[cp] for cp in range(0x064B, 0x0653))
+
+
 def main(argv):
-    src, dst = argv
-    data = convert(src)
+    arabic = "--arabic" in argv
+    src, dst = [a for a in argv if not a.startswith("--")]
+    data = convert_arabic(src) if arabic else convert(src)
     text = json.dumps(data, separators=(",", ":"))
     open(dst, "w").write(text + "\n")
-    print("%s: %d glyphs, %d kern pairs, %d ligatures, %.0f KB" % (
-        dst, len(data["glyphs"]), len(data["kern"]), len(data["ligatures"]), len(text) / 1024))
+    print("%s: %d glyphs, %d kern pairs, %d ligatures, %d forms, %d marks, %d anchored bases, %.0f KB" % (
+        dst, len(data["glyphs"]), len(data["kern"]), len(data["ligatures"]),
+        len(data.get("forms", {})), len(data.get("marks", {})), len(data.get("anchors", {})),
+        len(text) / 1024))
 
 
 if __name__ == "__main__":

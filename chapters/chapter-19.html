@@ -1,0 +1,871 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 19 · Shaping, a Field Guide — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 19 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-18.html">← 18</a> · <a href="#plate">Plate&nbsp;19</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Nineteen</p>
+    <h1>Shaping, a Field Guide</h1>
+    <p class="hook">Set the word <em>office</em> with chapter 18 and look at the two f's. The
+      first is fine. The second collides with the dot of the <em>i</em>, because the f's hook
+      reaches over into the next glyph's space and the i's dot is exactly there. Roboto knows about
+      this too: it has a glyph called <code>f_i</code>, drawn as one piece with the dot absorbed
+      into the hook, and a rule that says when an f is followed by an i, use it. Chapter 18's
+      <code>layout_run</code> never asked, because it went from characters to glyphs with a single
+      lookup in the cmap, one in and one out. That lookup is a lie the Latin alphabet lets you get
+      away with. For the word <em>book</em> in Arabic, the same four letters change shape depending
+      on their neighbours, one of them refuses to connect to the letter after it, a vowel mark sits
+      under the first letter without taking up any width, and the whole thing reads from the right.
+      The step between a string and a list of glyph names is called <em>shaping</em>, and this
+      chapter builds a small, honest one.</p>
+  </header>
+
+  <p>Honest means scoped. The general shaper is HarfBuzz, it's the work of a lifetime, and every
+    browser and operating system you own carries a copy. This chapter builds the shape of it: a
+    pipeline of small steps over a buffer of glyphs, each step driven by a rule table from the font,
+    with the one idea that makes any of it usable, the <em>cluster</em>, carried through from start
+    to finish. You'll shape one Latin ligature and one Arabic word correctly, from real tables, and
+    know exactly what you left out.</p>
+
+  <h2><span class="sec">§ 19.1</span> Itemizing</h2>
+
+  <p>A string isn't one run. <em>Book: كِتاب.</em> is two: a Latin run in Roboto that reads left
+    to right and an Arabic run in a different font that reads right to left, and each has its own
+    rules. Cutting a string into runs of one script and one direction is <em>itemizing</em>, and
+    it comes before everything else. <code>script_of(codepoint)</code> answers <code>"arabic"</code>
+    for the Arabic block, <code>"latin"</code> for the Latin letters, and <code>"common"</code> for
+    everything with no script of its own: spaces, digits, punctuation. <code>itemize(text)</code>
+    cuts where the script changes, and the common characters go with the run before them, since a
+    comma after an Arabic word belongs to that word. Each item knows its <code>start</code>, its
+    <code>end</code>, its <code>text</code>, its <code>script</code> and its <code>direction</code>,
+    which is <code>"rtl"</code> for Arabic and <code>"ltr"</code> otherwise.</p>
+
+  <figure>
+    <canvas id="fig191" role="img" aria-label="The string Book: kitab. shown as a row of character boxes, cut into two items: the first six characters bracketed as latin, left to right, and the rest bracketed as arabic, right to left; the space and colon after Book are inside the first bracket and the full stop is inside the second"></canvas>
+    <figcaption><span class="fig">Figure 19.1</span> Two items. The colon and the space belong to the Latin run before them; the full stop belongs to the Arabic run before it. What that does to the full stop is the trap at the end of the chapter.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter19-itemize.feature">
+    <p class="label">features/chapter19-itemize.feature</p>
+<pre><code><span class="kw">Feature</span>: Itemizing: runs of one script and one direction
+  A string is not one run. Before anything is shaped it is cut into items,
+  each in one script and one direction, because each script has its own
+  font and its own rules and Arabic reads right to left. script_of(codepoint)
+  answers "arabic" for the Arabic block (U+0600 to U+06FF), "latin" for
+  the Latin letters A to Z, a to z and U+00C0 to U+024F, and "common" for
+  everything else: spaces, digits and punctuation, which have no script of
+  their own. itemize(text) cuts where the script changes; a common
+  character joins the run before it, common characters at the very start
+  join the first run, and text of nothing but common characters is one
+  latin run. Each item has start, end (exclusive), text, script, and a
+  direction: "rtl" for arabic, "ltr" otherwise.
+
+  <span class="kw">Scenario</span>: Letters have a script; spaces and punctuation don't
+    <span class="kw">Then</span>  script_of(65) = "latin"
+    <span class="kw">And</span>   script_of(233) = "latin"
+    <span class="kw">And</span>   script_of(1603) = "arabic"
+    <span class="kw">And</span>   script_of(32) = "common"
+    <span class="kw">And</span>   script_of(44) = "common"
+    <span class="kw">And</span>   script_of(51) = "common"
+
+  <span class="kw">Scenario</span>: A Latin run and an Arabic run, the punctuation going with the run before it
+    <span class="kw">When</span>  items ← itemize("Book: كِتاب.")
+    <span class="kw">Then</span>  length(items) = 2
+    <span class="kw">And</span>   items[0].start = 0
+    <span class="kw">And</span>   items[0].end = 6
+    <span class="kw">And</span>   items[0].text = "Book: "
+    <span class="kw">And</span>   items[0].script = "latin"
+    <span class="kw">And</span>   items[0].direction = "ltr"
+    <span class="kw">And</span>   items[1].start = 6
+    <span class="kw">And</span>   items[1].end = 12
+    <span class="kw">And</span>   items[1].text = "كِتاب."
+    <span class="kw">And</span>   items[1].script = "arabic"
+    <span class="kw">And</span>   items[1].direction = "rtl"
+
+  <span class="kw">Scenario</span>: One script is one item, and common characters alone are Latin
+    <span class="kw">Then</span>  length(itemize("كِتاب")) = 1
+    <span class="kw">And</span>   itemize("كِتاب")[0].direction = "rtl"
+    <span class="kw">And</span>   length(itemize("  12 ")) = 1
+    <span class="kw">And</span>   itemize("  12 ")[0].script = "latin"
+    <span class="kw">And</span>   itemize("  12 ")[0].end = 5
+    <span class="kw">And</span>   length(itemize("")) = 0
+    <span class="kw">And</span>   length(itemize("aكِتابb")) = 3
+    <span class="kw">And</span>   itemize("aكِتابb")[2].text = "b"
+    <span class="kw">And</span>   itemize("aكِتابb")[2].start = 6</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 19.2</span> The glyph buffer, and clusters</h2>
+
+  <p>Shaping doesn't work on the string. It works on a <em>buffer</em> of glyphs that starts out as
+    the string's characters looked up in the cmap, one each, and gets rewritten step by step until
+    it's the glyphs to draw. <code>glyph_buffer(font, text)</code> makes the starting buffer. Each
+    entry has a glyph name and a <em>cluster</em>: the index of the character it came from. Right
+    now that's boring, entry <em>i</em> has cluster <em>i</em>. The rest of the chapter is what
+    happens to the clusters when the entries stop lining up with the characters, and the rule is
+    always the same: when several things become one, the one keeps the smallest cluster of the
+    several. A cluster boundary is a place the cursor is allowed to stand, and every text bug you
+    have ever seen in an app, the cursor that lands in the middle of a letter, the selection that
+    highlights half a glyph, the backspace that eats two characters, is somebody having lost track
+    of them.</p>
+
+  <div class="test" data-feature="chapter19-buffer.feature">
+    <p class="label">features/chapter19-buffer.feature</p>
+<pre><code><span class="kw">Feature</span>: The glyph buffer and its clusters
+  Shaping works on a buffer of glyphs, not on the string. glyph_buffer(font,
+  text) is the starting point: one entry per character through the cmap,
+  each carrying its cluster, the index of the character it came from.
+  Every later step keeps the clusters honest: when two characters become
+  one glyph the glyph takes the first one's cluster, and when a mark
+  attaches to a base it takes the base's. clusters(buffer) lists the
+  distinct clusters in order. A cluster boundary is where a cursor may
+  stand, and that is the whole reason the buffer carries them.
+
+  <span class="kw">Scenario</span>: One entry per character, each its own cluster
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  b ← glyph_buffer(font, "office")
+    <span class="kw">Then</span>  length(b) = 6
+    <span class="kw">And</span>   b[0].glyph = "o"
+    <span class="kw">And</span>   b[0].cluster = 0
+    <span class="kw">And</span>   b[3].glyph = "i"
+    <span class="kw">And</span>   b[3].cluster = 3
+    <span class="kw">And</span>   clusters(b) = [0, 1, 2, 3, 4, 5]
+    <span class="kw">And</span>   glyph_buffer(font, "a☃")[1].glyph = ".notdef"
+    <span class="kw">And</span>   length(glyph_buffer(font, "")) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 19.3</span> Ligatures: substitution</h2>
+
+  <p>Now the f and the i. Roboto's file has two ligature rules, <code>f i → f_i</code> and
+    <code>f l → f_l</code>, in the <code>ligatures</code> section chapter 16 told you to expect,
+    each a list of parts and a result. <code>apply_ligatures(font, buffer)</code> walks the buffer
+    from the left. At each position it tries the rules, longest first, and if the glyphs there match
+    a rule's parts it replaces them with the result, which takes the first part's cluster, then
+    steps past the result and carries on. A result is never fed back into another rule, and
+    the walk is greedy: in <em>office</em> the first f looks at the second f, finds no rule, and is
+    left alone, and it's the second f that ligates with the i. The buffer comes out five glyphs long
+    with clusters 0, 1, 2, 4, 5. Character 3, the i, has no cluster of its own any more, and that's
+    correct: there is no longer anywhere between the f and the i for a cursor to be.</p>
+
+  <p>In the real format this is one lookup type of a table called GSUB, the glyph substitution
+    table, which has half a dozen more: single substitutions, one glyph for another; alternates;
+    and contextual rules that apply a substitution only when the glyphs around it match a pattern.
+    The next section uses the single kind. The contextual kind is where the lifetime goes.</p>
+
+  <figure>
+    <canvas id="fig192" role="img" aria-label="The word office at 64 pixels, the fi drawn as a single ligature glyph in magenta and the other letters in gray, with a small cyan tick below the baseline at each of the six places a cursor may stand; there is no tick between the f and the i"></canvas>
+    <figcaption><span class="fig">Figure 19.2</span> Six characters, five glyphs, six cursor positions. The magenta glyph is <code>f_i</code>, and there is no tick inside it.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter19-ligatures.feature">
+    <p class="label">features/chapter19-ligatures.feature</p>
+<pre><code><span class="kw">Feature</span>: Ligatures: substitution
+  A font's ligatures are rules: these glyphs in a row become that glyph.
+  apply_ligatures(font, buffer) walks the buffer from the start; at each
+  position it tries the font's rules, longest first, and when the glyphs
+  there match a rule's parts it replaces them with the result, which takes
+  the first part's cluster, then moves on past the result. The result is
+  never fed back into another rule. Roboto's file has two rules, f i to
+  f_i and f l to f_l, so office comes out as five glyphs, and the cursor
+  can no longer stand between the f and the i.
+
+  <span class="kw">Scenario</span>: f + i produces one glyph with a two-character cluster
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  b ← apply_ligatures(font, glyph_buffer(font, "office"))
+    <span class="kw">Then</span>  length(b) = 5
+    <span class="kw">And</span>   b[1].glyph = "f"
+    <span class="kw">And</span>   b[1].cluster = 1
+    <span class="kw">And</span>   b[2].glyph = "f_i"
+    <span class="kw">And</span>   b[2].cluster = 2
+    <span class="kw">And</span>   b[3].glyph = "c"
+    <span class="kw">And</span>   b[3].cluster = 4
+    <span class="kw">And</span>   clusters(b) = [0, 1, 2, 4, 5]
+
+  <span class="kw">Scenario</span>: The walk is greedy from the left and a result is not fed back in
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  apply_ligatures(font, glyph_buffer(font, "waffle"))[3].glyph = "f_l"
+    <span class="kw">And</span>   apply_ligatures(font, glyph_buffer(font, "waffle"))[3].cluster = 3
+    <span class="kw">And</span>   clusters(apply_ligatures(font, glyph_buffer(font, "waffle"))) = [0, 1, 2, 3, 5]
+    <span class="kw">And</span>   apply_ligatures(font, glyph_buffer(font, "fig"))[0].glyph = "f_i"
+    <span class="kw">And</span>   apply_ligatures(font, glyph_buffer(font, "fig"))[0].cluster = 0
+    <span class="kw">And</span>   apply_ligatures(font, glyph_buffer(font, "fig"))[1].cluster = 2
+    <span class="kw">And</span>   length(apply_ligatures(font, glyph_buffer(font, "off"))) = 3
+
+  <span class="kw">Scenario</span>: A ligature is narrower than its parts
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  glyph_advance(font, "f_i") = 1134
+    <span class="kw">And</span>   glyph_advance(font, "f") + glyph_advance(font, "i") = 1208</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 19.4</span> Arabic: joining, and the four forms</h2>
+
+  <p>Arabic is cursive. Most letters connect to their neighbours, and a letter has a different
+    shape depending on whether it connects to the one before it, the one after it, both, or
+    neither: its <em>isolated</em>, <em>initial</em>, <em>medial</em> and <em>final</em> forms. The
+    font has a glyph for each form, and which one to use is not the font's decision. It's a
+    property of the characters, published by Unicode as a table of <em>joining types</em>: a
+    <em>dual</em> letter joins on both sides; a <em>right</em>-joining letter (alef, dal, reh, waw
+    and a few others) joins only to the letter before it, and so can never be initial or medial; a
+    <em>non</em>-joining character never joins; and a <em>transparent</em> character, which is what
+    the vowel marks are, is invisible to the letters either side of it. The book's Arabic font is
+    DejaVu Sans, cut down to its Arabic in <code>reference/chapter-19/dejavu-arabic.json</code>, and
+    its file carries three optional sections chapter 16's loader reads when they're present. The
+    first is <code>joining</code>, Unicode's table copied for the characters in the file, so you
+    don't have to ship the Unicode database to read one word.</p>
+
+  <p>The rule, then. A letter <em>joins backward</em> when it's dual or right-joining and the nearest
+    non-transparent character before it is dual. It <em>joins forward</em> when it's dual and the
+    nearest non-transparent character after it is dual or right-joining. Both is medial, backward
+    alone is final, forward alone is initial, neither is isolated. <code>arabic_forms(font,
+    text)</code> answers a form for every character of the text. Take كتاب, <em>kitab</em>, a book:
+    kaf, teh, alef, beh. The kaf is initial. The teh joins both ways: medial. The alef joins
+    backward but, being right-joining, never forward: final. And the beh, though it's dual, has an
+    alef before it that won't connect, so it's isolated in the middle of a word. Put a kasra under
+    the kaf and nothing changes, because the kasra is transparent and the kaf still sees the teh
+    through it.</p>
+
+  <p>The second section is <code>forms</code>: for each glyph, the names of its initial, medial and
+    final glyphs, which in the real format is GSUB's single substitution under the feature tags
+    <code>init</code>, <code>medi</code> and <code>fina</code>. <code>apply_forms(font, text,
+    buffer)</code> swaps each glyph for its form's glyph when the table has one and leaves it alone
+    otherwise: alef has only a final form, marks have none. Then the ligatures run, because Arabic
+    has a mandatory one: lam followed by alef is written as a single glyph, and DejaVu's rules say so
+    in terms of the <em>forms</em>, <code>lam.medi alef.fina → lam_alef.fina</code>. Order matters.
+    Forms first, then ligatures, on the glyphs the forms produced.</p>
+
+  <figure>
+    <canvas id="fig193" role="img" aria-label="The Arabic letter beh in its four forms at 64 pixels, side by side on short baseline segments, labelled in small cyan text isol, init, medi and fina; the initial and medial forms have connecting strokes and the isolated and final forms end in a bowl"></canvas>
+    <figcaption><span class="fig">Figure 19.3</span> One letter, beh, four glyphs. The labels are set in Roboto by chapter 18, which is the first time the renderer has captioned its own figure.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter19-arabic.feature">
+    <p class="label">features/chapter19-arabic.feature</p>
+<pre><code><span class="kw">Feature</span>: Arabic: joining, and the positional forms
+  An Arabic letter has up to four shapes, and which one you draw depends
+  on its neighbours. The font file for this chapter is DejaVu Sans, cut
+  down to its Arabic, reference/chapter-19/dejavu-arabic.json, with three
+  optional sections the loader from chapter 16 reads when they're there.
+  joining is Unicode's joining type per codepoint: "dual" letters join on
+  both sides, "right" letters (alef, dal, reh, waw and their kin) join
+  only to the letter before them, "none" never joins, and "transparent"
+  characters (the vowel marks) are invisible to the letters either side.
+  joining_type(font, codepoint) reads it, "none" for a character not
+  listed. arabic_forms(font, text) answers each character's form: it joins
+  backward when it is dual or right and the nearest non-transparent
+  character before it is dual; forward when it is dual and the nearest
+  non-transparent character after it is dual or right; both is "medi",
+  backward alone "fina", forward alone "init", neither "isol". forms is
+  GSUB's init, medi and fina substitutions, forms[glyph][form], and
+  apply_forms(font, text, buffer) swaps each glyph for its form's when the
+  table has one; a glyph with no entry for its form keeps its name.
+
+  <span class="kw">Scenario</span>: The joining types
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    <span class="kw">Then</span>  joining_type(font, 1603) = "dual"
+    <span class="kw">And</span>   joining_type(font, 1575) = "right"
+    <span class="kw">And</span>   joining_type(font, 1616) = "transparent"
+    <span class="kw">And</span>   joining_type(font, 1569) = "none"
+    <span class="kw">And</span>   joining_type(font, 1600) = "dual"
+    <span class="kw">And</span>   joining_type(font, 32) = "none"
+    <span class="kw">And</span>   joining_type(font, 65) = "none"
+
+  <span class="kw">Scenario</span>: An Arabic letter selects its form by its neighbours
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    <span class="kw">Then</span>  arabic_forms(font, "ب") = ["isol"]
+    <span class="kw">And</span>   arabic_forms(font, "بب") = ["init", "fina"]
+    <span class="kw">And</span>   arabic_forms(font, "ببب") = ["init", "medi", "fina"]
+    <span class="kw">And</span>   arabic_forms(font, "باب") = ["init", "fina", "isol"]
+    <span class="kw">And</span>   arabic_forms(font, "ب ب") = ["isol", "isol", "isol"]
+    <span class="kw">And</span>   arabic_forms(font, "سلام") = ["init", "medi", "fina", "isol"]
+
+  <span class="kw">Scenario</span>: A vowel mark is transparent: the letters join across it
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    <span class="kw">Then</span>  arabic_forms(font, "كِتاب") = ["init", "isol", "medi", "fina", "isol"]
+    <span class="kw">And</span>   arabic_forms(font, "كتاب") = ["init", "medi", "fina", "isol"]
+
+  <span class="kw">Scenario</span>: The forms table swaps glyphs, and leaves alone what it has no form for
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    <span class="kw">And</span>   text ← "كِتاب"
+    <span class="kw">When</span>  b ← apply_forms(font, text, glyph_buffer(font, text))
+    <span class="kw">Then</span>  b[0].glyph = "kaf.init"
+    <span class="kw">And</span>   b[1].glyph = "kasra"
+    <span class="kw">And</span>   b[2].glyph = "teh.medi"
+    <span class="kw">And</span>   b[3].glyph = "alef.fina"
+    <span class="kw">And</span>   b[4].glyph = "beh"
+    <span class="kw">And</span>   b[4].cluster = 4
+    <span class="kw">And</span>   font.forms["kaf"]["medi"] = "kaf.medi"
+    <span class="kw">And</span>   font.forms["alef"]["fina"] = "alef.fina"
+    <span class="kw">And</span>   glyph_advance(font, "kaf") = 1688
+    <span class="kw">And</span>   glyph_advance(font, "kaf.init") = 975
+
+  <span class="kw">Scenario</span>: Lam and alef ligate after their forms are chosen
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    <span class="kw">And</span>   text ← "سلام"
+    <span class="kw">When</span>  b ← apply_ligatures(font, apply_forms(font, text, glyph_buffer(font, text)))
+    <span class="kw">Then</span>  length(b) = 3
+    <span class="kw">And</span>   b[0].glyph = "seen.init"
+    <span class="kw">And</span>   b[1].glyph = "lam_alef.fina"
+    <span class="kw">And</span>   b[1].cluster = 1
+    <span class="kw">And</span>   b[2].glyph = "meem"
+    <span class="kw">And</span>   b[2].cluster = 3
+    <span class="kw">And</span>   font.ligatures[1] = (("lam.medi", "alef.fina"), "lam_alef.fina")</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 19.5</span> Marks: positioning</h2>
+
+  <p>The kasra is a short stroke under the letter it belongs to. It has an advance of zero, so the
+    pen doesn't move for it, and it has no place of its own: it sits wherever the letter says. The
+    third section is how the letter says it. Every mark glyph has an <em>anchor</em>, a point in
+    font units, and an anchor <em>class</em>, <code>"above"</code> or <code>"below"</code>; every
+    base glyph has an anchor per class. Attaching a mark means moving it so that its anchor lands
+    on the base's anchor of the same class. That's the whole of the real format's mark-to-base
+    positioning, a table called GPOS, minus the parts where marks stack on other marks.
+    <code>attach_marks(font, buffer)</code> finds each mark's base, the nearest non-mark before it,
+    sets the mark's offset to the base's anchor minus the mark's anchor, and gives the mark the
+    base's cluster: the letter and its vowel are one thing as far as the cursor is concerned. A
+    mark whose base has no anchor of its class, or with no base before it at all, stays where it is
+    with an offset of zero.</p>
+
+  <p><code>shape(font, text)</code> is the pipeline for one run: the buffer, then forms if the font
+    has a forms table, then ligatures, then marks if it has a marks table. Roboto has neither, so
+    shaping Latin comes down to the ligature pass, and the same function does both scripts.</p>
+
+  <figure>
+    <canvas id="fig194" role="img" aria-label="The Arabic word kitab at 64 pixels reading right to left, its letters in gray connected into one stroke except the last, and a small magenta kasra mark under the first letter at the right; cyan ticks below the baseline mark the five cursor positions, none of them under the mark"></canvas>
+    <figcaption><span class="fig">Figure 19.4</span> Five characters, five glyphs, five cursor positions: the kasra shares the kaf's cluster. The alef refused to join the beh after it, so the beh is isolated.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter19-marks.feature">
+    <p class="label">features/chapter19-marks.feature</p>
+<pre><code><span class="kw">Feature</span>: Marks: positioning
+  A vowel mark has no width and no place of its own: it rides on the
+  letter before it. The file's marks section gives each mark glyph an
+  anchor class, "above" or "below", and its own anchor point in font
+  units; the anchors section gives each base glyph an anchor per class.
+  attach_marks(font, buffer) finds every mark's base, the nearest non-mark
+  before it, and sets the mark's offset dx, dy to the base's anchor of the
+  mark's class minus the mark's anchor, so the two anchors coincide; the
+  mark joins the base's cluster. A mark whose base has no anchor of its
+  class, or with no base before it, keeps its cluster at offset (0, 0).
+  is_mark(font, name) says whether a glyph is in the marks table. shape(
+  font, text) is the pipeline for one run: the buffer, then forms when
+  the font has them, then ligatures, then marks when the font has them.
+  Roboto has neither forms nor marks, so shaping Latin is ligatures alone.
+
+  <span class="kw">Scenario</span>: The anchors, in font units
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    <span class="kw">Then</span>  font.marks["kasra"] = ("below", 512, 0)
+    <span class="kw">And</span>   font.marks["fatha"] = ("above", 512, 1200)
+    <span class="kw">And</span>   font.anchors["kaf.init"]["below"] = (300, -150)
+    <span class="kw">And</span>   font.anchors["kaf.init"]["above"] = (250, 1550)
+    <span class="kw">And</span>   font.anchors["beh"]["above"] = (900, 1000)
+    <span class="kw">And</span>   glyph_advance(font, "kasra") = 0
+    <span class="kw">And</span>   is_mark(font, "kasra") = true
+    <span class="kw">And</span>   is_mark(font, "kaf") = false
+
+  <span class="kw">Scenario</span>: A mark's anchor lands on its base's, and it joins the base's cluster
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    <span class="kw">When</span>  b ← shape(font, "كِتاب")
+    <span class="kw">Then</span>  length(b) = 5
+    <span class="kw">And</span>   b[0].glyph = "kaf.init"
+    <span class="kw">And</span>   b[0].cluster = 0
+    <span class="kw">And</span>   b[1].glyph = "kasra"
+    <span class="kw">And</span>   b[1].cluster = 0
+    <span class="kw">And</span>   b[1].dx = -212
+    <span class="kw">And</span>   b[1].dy = -150
+    <span class="kw">And</span>   b[2].glyph = "teh.medi"
+    <span class="kw">And</span>   b[2].cluster = 2
+    <span class="kw">And</span>   b[2].dx = 0
+    <span class="kw">And</span>   clusters(b) = [0, 2, 3, 4]
+
+  <span class="kw">Scenario</span>: Two marks on one base both take its anchor; a mark with no base stays put
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    <span class="kw">When</span>  b ← shape(font, "بَّ")
+    <span class="kw">Then</span>  length(b) = 3
+    <span class="kw">And</span>   b[1].glyph = "fatha"
+    <span class="kw">And</span>   b[1].dx = 388
+    <span class="kw">And</span>   b[1].dy = -200
+    <span class="kw">And</span>   b[2].glyph = "shadda"
+    <span class="kw">And</span>   b[2].dx = 388
+    <span class="kw">And</span>   b[2].dy = -200
+    <span class="kw">And</span>   b[2].cluster = 0
+    <span class="kw">And</span>   shape(font, "ِب")[0].glyph = "kasra"
+    <span class="kw">And</span>   shape(font, "ِب")[0].cluster = 0
+    <span class="kw">And</span>   shape(font, "ِب")[0].dx = 0
+    <span class="kw">And</span>   shape(font, "ِب")[1].cluster = 1
+
+  <span class="kw">Scenario</span>: Shaping Latin is ligatures alone
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  b ← shape(font, "office")
+    <span class="kw">Then</span>  length(b) = 5
+    <span class="kw">And</span>   b[2].glyph = "f_i"
+    <span class="kw">And</span>   b[2].cluster = 2
+    <span class="kw">And</span>   is_mark(font, "f_i") = false</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 19.6</span> Positioning, in either direction</h2>
+
+  <p>The buffer is done. <code>position(font, buffer, size, x, y, direction, kerning)</code> turns
+    it into chapter 18's placements, one per entry, in the buffer's own order. For left to right
+    the pen starts at <code>x</code> and walks right, exactly as <code>layout_run</code>'s did, kern
+    pairs and all, and a buffer straight from the cmap positions to the same numbers. For right to
+    left the pen starts at <code>x</code> plus the buffer's total advance and walks <em>left</em>,
+    subtracting each advance before placing the glyph, so the first entry lands at the right end and
+    the run still occupies <code>x</code> to <code>x + advance</code>. Marks never move the pen:
+    a mark is placed at its base's origin plus its offset, scaled to pixels with <code>dy</code>
+    turned over, which works the same in either direction because the base is wherever the pen put
+    it. HarfBuzz reverses the buffer for right-to-left runs instead and lets the pen always walk
+    right; either way the picture is the same, and the placements go to <code>draw_run</code>
+    unchanged, which is the seam from chapter 18 doing its job.</p>
+
+  <p>Two things fall out. <code>caret_offsets(buffer, length)</code> is the list of character
+    offsets a cursor may stand at: every cluster start, and the end. <code>caret_positions</code> is
+    the <code>x</code> of each, the pen where each cluster's first glyph was placed and then the pen
+    after the last glyph. For <em>office</em> that's six positions for six characters, none of them
+    between the f and the i. For كِتاب it's five positions that run from right to left, the first at
+    the run's right end and the last at <code>x</code>, and none of them under the kasra.</p>
+
+  <div class="test" data-feature="chapter19-position.feature">
+    <p class="label">features/chapter19-position.feature</p>
+<pre><code><span class="kw">Feature</span>: Positioning, in either direction, and where the cursor may stand
+  position(font, buffer, size, x, y, direction, kerning) turns a shaped
+  buffer into chapter 18's placements, one per entry in the buffer's own
+  order. For "ltr" the pen starts at x and walks right, exactly as
+  layout_run's does, kern pairs included. For "rtl" the pen starts at x
+  plus the buffer's advance and walks left, so the first entry lands at
+  the right end and the run still occupies x to x + advance. A mark never
+  moves the pen: it is placed at its base's origin plus its offset scaled
+  to pixels, dy turned over. buffer_advance(font, buffer, size, kerning)
+  is the pen's total movement: every non-mark's advance, plus the kern
+  pair between consecutive non-marks. caret_offsets(buffer, length) lists
+  the character offsets a cursor may stand at: every cluster start, then
+  the text's length. caret_positions(font, buffer, length, size, x,
+  direction, kerning) is the x of each, in the same order: the pen where
+  each cluster's first glyph is placed, then the pen after the last glyph.
+  For rtl the first position is the run's right end and the last is x.
+
+  <span class="kw">Scenario</span>: A buffer straight from the cmap positions exactly as layout_run lays it out
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  run ← position(font, glyph_buffer(font, "TAVERN"), 64, 12, 70, "ltr", true)
+    <span class="kw">Then</span>  length(run) = 6
+    <span class="kw">And</span>   run[1].name = "A"
+    <span class="kw">And</span>   run[1].x = layout_run(font, "TAVERN", 64, 12, 70, true)[1].x
+    <span class="kw">And</span>   run[5].x = 203.25
+    <span class="kw">And</span>   buffer_advance(font, glyph_buffer(font, "TAVERN"), 64, true) = run_advance(font, "TAVERN", 64, true)
+
+  <span class="kw">Scenario</span>: A shaped Latin run is narrower by the ligature
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  b ← shape(font, "office")
+    <span class="kw">And</span>   run ← position(font, b, 64, 20, 70, "ltr", true)
+    <span class="kw">Then</span>  buffer_advance(font, b, 64, true) = 161.5625
+    <span class="kw">And</span>   run_advance(font, "office", 64, true) = 163.875
+    <span class="kw">And</span>   run[2].name = "f_i"
+    <span class="kw">And</span>   run[2].x = 78.7188 ± 0.0001
+    <span class="kw">And</span>   run[4].x = 147.6563 ± 0.0001
+
+  <span class="kw">Scenario</span>: Right to left, the first glyph lands at the right end
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    <span class="kw">When</span>  b ← shape(font, "كِتاب")
+    <span class="kw">And</span>   run ← position(font, b, 64, 20, 64, "rtl", false)
+    <span class="kw">Then</span>  buffer_advance(font, b, 64, false) = 129.5313 ± 0.0001
+    <span class="kw">And</span>   run[0].name = "kaf.init"
+    <span class="kw">And</span>   run[0].x = 119.0625
+    <span class="kw">And</span>   run[0].y = 64
+    <span class="kw">And</span>   run[2].name = "teh.medi"
+    <span class="kw">And</span>   run[2].x = 99.75
+    <span class="kw">And</span>   run[3].x = 80.25
+    <span class="kw">And</span>   run[4].name = "beh"
+    <span class="kw">And</span>   run[4].x = 20
+    <span class="kw">And</span>   run[0].x + pen_advance(font, "kaf.init", 64) = 20 + buffer_advance(font, b, 64, false)
+
+  <span class="kw">Scenario</span>: A mark sits at its base's origin plus its offset, whichever way the pen walks
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    <span class="kw">When</span>  b ← shape(font, "كِتاب")
+    <span class="kw">And</span>   rtl ← position(font, b, 64, 20, 64, "rtl", false)
+    <span class="kw">And</span>   ltr ← position(font, b, 64, 20, 64, "ltr", false)
+    <span class="kw">Then</span>  rtl[1].name = "kasra"
+    <span class="kw">And</span>   rtl[1].x = 112.4375
+    <span class="kw">And</span>   rtl[1].y = 68.6875
+    <span class="kw">And</span>   rtl[1].x = rtl[0].x - 212 * 64 / 2048
+    <span class="kw">And</span>   ltr[0].x = 20
+    <span class="kw">And</span>   ltr[1].x = 13.375
+    <span class="kw">And</span>   ltr[1].y = 68.6875
+    <span class="kw">And</span>   ltr[2].x = 50.4688 ± 0.0001
+    <span class="kw">And</span>   ltr[4].x = 89.2813 ± 0.0001
+
+  <span class="kw">Scenario</span>: The cursor may stand at cluster boundaries and nowhere else
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  b ← shape(font, "office")
+    <span class="kw">Then</span>  caret_offsets(b, 6) = [0, 1, 2, 4, 5, 6]
+    <span class="kw">And</span>   caret_positions(font, b, 6, 64, 20, "ltr", true) = [20, 56.5, 78.7188, 114.1563, 147.6563, 181.5625] ± 0.0001
+
+  <span class="kw">Scenario</span>: Cursor positions in a right-to-left run run from right to left
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    <span class="kw">When</span>  b ← shape(font, "كِتاب")
+    <span class="kw">Then</span>  caret_offsets(b, 5) = [0, 2, 3, 4, 5]
+    <span class="kw">And</span>   caret_positions(font, b, 5, 64, 20, "rtl", false) = [149.5313, 119.0625, 99.75, 80.25, 20] ± 0.0001
+    <span class="kw">And</span>   caret_positions(font, b, 5, 64, 20, "rtl", false)[0] = 20 + buffer_advance(font, b, 64, false)</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>InDesign's OpenType menu, under the Character panel's flyout, is a checkbox per GSUB feature
+      tag: <em>Standard Ligatures</em> is <code>liga</code>, <em>Discretionary Ligatures</em> is
+      <code>dlig</code>, <em>Contextual Alternates</em> is <code>calt</code>. CSS exposes the same
+      set through <code>font-feature-settings: "liga" 0</code>, which turns the f_i back into an f
+      and an i.</p>
+  </aside>
+
+  <h2><span class="sec">§ 19.7</span> What was left out</h2>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>Figure 19.5 sets <em>Book: كِتاب, again.</em> by itemizing it, shaping each item in its own
+      font and placing the items one after another. Look at the comma. It followed the Arabic word,
+      so <code>itemize</code> gave it to the Arabic run, the run reads right to left, and the comma
+      came out on the word's <em>left</em>, where it separates the wrong two words. Nothing in this
+      chapter is wrong; something is missing. Deciding which way a comma between two directions
+      faces is the <em>bidirectional algorithm</em>, Unicode Annex 9, which resolves every neutral
+      character to a direction from its context, nests runs inside runs (an English word in an
+      Arabic sentence in an English paragraph), and reorders them for display. It's longer than
+      this chapter. So are Annex 29, which says where the boundaries between user-perceived
+      characters are when the string itself has combining marks and emoji sequences (this chapter
+      got away with clusters because one font's rule tables decided them), and Annex 14, which is
+      where you may break a line when the text has no spaces or has hyphens, dashes and quotation
+      marks with opinions. Chapter 18's <code>break_lines</code> is what Annex 14 looks like with
+      every rule but one removed. All three are implemented, well, in ICU and in the libraries that
+      wrap it, and the right thing to build here is the knowledge of what they're for.</p>
+  </div>
+
+  <figure>
+    <canvas id="fig195" role="img" aria-label="One line of text at 28 pixels mixing a Latin run, an Arabic run and another Latin run on a single baseline, with a small cyan tick where each run begins; the comma that should follow the Arabic word sits on its left instead"></canvas>
+    <figcaption><span class="fig">Figure 19.5</span> Two scripts on one baseline, each run shaped and placed in its own direction. The comma went with the Arabic run and came out on its left: that's bidi, not shaping, and this chapter doesn't do it.</figcaption>
+  </figure>
+
+  <h2><span class="sec">§ 19.8</span> Putting it together</h2>
+
+  <p>The plate is the chapter's whole argument in one picture: characters in on the top row, one
+    glyph each straight from the cmap; glyphs out on the bottom row, shaped and positioned; and a
+    line from each character to the cluster it ended up in. On the left the lines converge where two
+    characters became one glyph. On the right they cross, because the run reads the other way,
+    and the kasra's line joins the kaf's.</p>
+
+<pre><code>cluster_plate():
+  lat ← load_font(roboto.json);  ar ← load_font(dejavu-arabic.json)
+  c ← canvas(540, 210) filled with paper;  size ← 52
+  <span class="kw">for</span> font, text, direction, x <span class="kw">in</span> (lat, "office", "ltr", 20), (ar, kitab, "rtl", 290):
+    s ← size / font.units_per_em;  raw ← glyph_buffer(font, text)
+    pen ← x;  centers ← []                                    <span class="cm">// top row, baseline 80</span>
+    <span class="kw">for</span> e <span class="kw">in</span> raw:
+      w ← max(advance(e.glyph) × s, 12)
+      dim box from (pen, 34) to (pen + w, 92);  draw e.glyph gray, its origin at pen + (w − advance × s) / 2 on 80
+      append pen + w / 2 to centers;  pen ← pen + w + 14
+    buffer ← shape(font, text);  run ← position(font, buffer, size, x, 180, direction, true)
+    boxes ← {}                                                 <span class="cm">// bottom row, baseline 180</span>
+    <span class="kw">for</span> e, p <span class="kw">in</span> buffer, run <span class="kw">if</span> e is not a mark:
+      widen boxes[e.cluster] to cover p.x .. p.x + advance(e.glyph) × s
+    <span class="kw">for</span> e, p <span class="kw">in</span> buffer, run:
+      draw_run(c, font, [p], size, magenta <span class="kw">if</span> e is a mark <span class="kw">or</span> e.glyph is not in raw <span class="kw">else</span> gray, true)
+    <span class="kw">for</span> lo, hi <span class="kw">in</span> boxes: cyan box from (lo, 134) to (hi, 192)
+    <span class="kw">for</span> i <span class="kw">in</span> 0 .. length(text) − 1:
+      lo, hi ← boxes[the largest cluster start ≤ i]
+      magenta hairline 0.75 wide from (centers[i], 92) to ((lo + hi) / 2, 134)
+  <span class="kw">return</span> c
+
+plate_19():
+  <span class="kw">return</span> cluster_plate()</code></pre>
+
+  <div class="test" data-feature="chapter19-plate.feature">
+    <p class="label">features/chapter19-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 19
+  The renders use chapter 16's inks and hairlines (butt caps, round
+  joins, 1 wide unless said), every glyph drawn through chapter 18's
+  draw_run, and the Arabic font is reference/chapter-19/dejavu-arabic.json.
+  ligature_demo() is 260 by 100 paper: office shaped in Roboto and
+  positioned ltr at a 64 pixel em from (20, 70) with kerning, the f_i in
+  magenta and the rest gray, a dim hairline along the baseline from x = 4
+  to 256, and a cyan hairline from 4 to 16 below the baseline at every
+  caret position. forms_demo() is 320 by 110 paper: the glyphs beh,
+  beh.init, beh.medi and beh.fina at a 64 pixel em in gray, the k-th
+  (from 0) with its origin at (16 + 76 k, 60), a dim hairline along y =
+  60 from 4 left of the origin to 68 right of it, and the words isol,
+  init, medi and fina set in Roboto at 11 pixels in cyan by layout_run
+  from (16 + 76 k, 90) with kerning. word_demo() is 260 by 100 paper:
+  kitab with its kasra shaped in DejaVu Sans and positioned rtl at a 64
+  pixel em from (20, 64) without kerning, the letters gray and the mark
+  magenta, a dim baseline from x = 4 to 256, and cyan carets from 4 to 16
+  below the baseline. mixed_demo() is 300 by 60 paper: the text "Book: "
+  + kitab + ", again." itemized, each item shaped in its script's font
+  (Roboto for latin, DejaVu Sans for arabic) and positioned in its own
+  direction at a 28 pixel em with kerning on the baseline y = 40, the
+  first from x = 12 and each next from where the one before it ended (x
+  plus its buffer_advance); a dim baseline from x = 4 to 296 and a cyan
+  hairline from 3 to 10 below the baseline where each item begins; marks
+  magenta. cluster_plate() is 540 by 210 paper, two bands: office in
+  Roboto with its run from x = 20, and kitab with its kasra in DejaVu
+  Sans, rtl, with its run from x = 290, both at a 52 pixel em. In a band
+  the top row's baseline is y = 80: each character's glyph from the cmap
+  alone sits in a dim box from 46 above the baseline to 12 below, as wide
+  as the glyph's advance or 12 if that is less, the glyph centered in the
+  box, the first box at the band's x and each next box 14 past the one
+  before it. The bottom row's baseline is y = 180: the run shaped and
+  positioned with kerning, one cyan box per cluster spanning from its
+  first non-mark glyph's origin to its last one's origin plus advance,
+  the same heights; glyphs whose names changed from the top row, and
+  marks, are magenta, the rest gray; and a magenta hairline 0.75 wide
+  runs from the bottom center of each character's box to the top center
+  of the box of the cluster that character belongs to (the largest
+  cluster start not past its index). plate_19() is cluster_plate().
+
+  <span class="kw">Scenario</span>: The ligature and where the cursor may stand
+    <span class="kw">Given</span> c ← ligature_demo()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-19/ligature.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 260
+    <span class="kw">And</span>   c.height = 100
+    <span class="kw">And</span>   ppm_pixel(p6, 106, 50) = (237, 124, 196) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 120, 50) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 56, 80) = (124, 225, 243) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 5, 5) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: One letter, four forms
+    <span class="kw">Given</span> c ← forms_demo()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-19/forms.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 110
+    <span class="kw">And</span>   ppm_pixel(p6, 50, 55) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 180, 55) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 5, 5) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: A word, right to left, with its mark attached
+    <span class="kw">Given</span> c ← word_demo()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-19/word.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 260
+    <span class="kw">And</span>   c.height = 100
+    <span class="kw">And</span>   ppm_pixel(p6, 88, 50) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 133, 72) = (237, 124, 196) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 5, 5) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Two scripts on one line, and the comma that jumped
+    <span class="kw">Given</span> c ← mixed_demo()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-19/mixed.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 300
+    <span class="kw">And</span>   c.height = 60
+    <span class="kw">And</span>   ppm_pixel(p6, 24, 30) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 155, 30) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 191, 30) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 5, 5) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 19
+    <span class="kw">Given</span> c ← plate_19()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-19/plate-19.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 540
+    <span class="kw">And</span>   c.height = 210
+    <span class="kw">And</span>   ppm_pixel(p6, 24, 165) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 75, 165) = (237, 124, 196) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 296, 165) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 345, 165) = (237, 124, 196) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 5, 5) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate19" role="img" aria-label="Two panels. Left: the six characters of office in a row of dim boxes above, the five shaped glyphs in cyan boxes below with the fi ligature in magenta, and magenta lines from each character down to its glyph, two of them meeting at the ligature. Right: the five characters of the Arabic word kitab with its kasra in boxes above, and the shaped word below reading right to left, its changed glyphs and the mark in magenta, with the connecting lines crossing each other"></canvas>
+    <figcaption><span class="fig">Plate 19</span> Characters in, glyphs out. The mapping isn't one-to-one, and on the right it isn't even in the same order. Cluster boundaries are where the cursor is allowed to stand.</figcaption>
+  </figure>
+
+  <p>That ends Part V. Chapter 20 reads an SVG file, and the tiger it contains has text in it:
+    every letter arrives as a path somebody else drew, which is where Part V started.</p>
+
+  <nav class="endnav">
+    <a href="chapter-18.html">← 18 · Setting a Line of Text</a>
+    <span>Chapter 19 · Shaping, a Field Guide</span>
+    <span>Next: 20 · Reading SVG (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+/* the figures draw from these subsets of reference/chapter-16/roboto.json and reference/chapter-19/dejavu-arabic.json */
+var GLYPHS={"units_per_em":2048,"ascender":1900,"descender":-500,"line_gap":0,"cmap":{"32":"space","44":"comma","46":"period","58":"colon","66":"B","97":"a","99":"c","100":"d","101":"e","102":"f","103":"g","105":"i","107":"k","108":"l","109":"m","110":"n","111":"o","115":"s","116":"t","119":"w","64257":"f_i","64258":"f_l"},"glyphs":{".notdef":{"advance":908,"contours":[[[808,0,true],[100,0,true],[100,1456,true],[808,1456,true]],[[754,84,true],[754,1371,true],[480,728,true]],[[154,1359,true],[154,96,true],[422,728,true]],[[194,54,true],[709,54,true],[451,660,true]],[[451,796,true],[709,1402,true],[194,1402,true]]],"components":[]},"B":{"advance":1275,"contours":[[[169,0,true],[169,1456,true],[645,1456,true],[882,1456,false],[1121,1260,false],[1121,1068,true],[1121,966,false],[1005,809,false],[905,766,true],[1023,733,false],[1160,548,false],[1160,420,true],[1160,224,false],[906,0,false],[674,0,true]],[[361,681,true],[361,157,true],[678,157,true],[812,157,false],[967,296,false],[967,418,true],[967,681,false],[681,681,true]],[[361,835,true],[651,835,true],[777,835,false],[928,961,false],[928,1069,true],[928,1189,false],[788,1298,false],[645,1298,true],[361,1298,true]]],"components":[]},"a":{"advance":1114,"contours":[[[808,0,true],[792,32,false],[782,114,true],[653,-20,false],[474,-20,true],[314,-20,false],[109,161,false],[109,300,true],[109,469,false],[366,656,false],[599,656,true],[779,656,true],[779,741,true],[779,838,false],[663,953,false],[550,953,true],[451,953,false],[317,853,false],[317,782,true],[131,782,true],[131,863,false],[246,1014,false],[443,1102,false],[561,1102,true],[748,1102,false],[960,915,false],[964,751,true],[964,253,true],[964,104,false],[1002,16,true],[1002,0,true]],[[501,141,true],[588,141,false],[744,231,false],[779,303,true],[779,525,true],[634,525,true],[294,525,false],[294,326,true],[294,239,false],[410,141,false]]],"components":[]},"c":{"advance":1072,"contours":[[[574,131,true],[673,131,false],[821,251,false],[829,341,true],[1004,341,true],[999,248,false],[881,80,false],[684,-20,false],[574,-20,true],[353,-20,false],[92,275,false],[92,531,true],[92,562,true],[92,720,false],[208,966,false],[425,1102,false],[573,1102,true],[755,1102,false],[996,884,false],[1004,710,true],[829,710,true],[821,815,false],[678,950,false],[573,950,true],[432,950,false],[277,747,false],[277,555,true],[277,520,true],[277,333,false],[431,131,false]]],"components":[]},"colon":{"advance":496,"contours":[],"components":[{"glyph":"period","transform":[1.0,0.0,0.0,1.0,-10.0,0.0]},{"glyph":"period","transform":[1.0,0.0,0.0,1.0,-9.0,883.0]}]},"comma":{"advance":402,"contours":[[[134,-290,true],[29,-218,true],[123,-87,false],[127,52,true],[127,219,true],[308,219,true],[308,74,true],[308,-27,false],[209,-229,false]]],"components":[]},"d":{"advance":1155,"contours":[[[95,550,true],[95,799,false],[331,1102,false],[522,1102,true],[712,1102,false],[823,972,true],[823,1536,true],[1008,1536,true],[1008,0,true],[838,0,true],[829,116,true],[718,-20,false],[520,-20,true],[332,-20,false],[95,288,false],[95,536,true]],[[280,529,true],[280,345,false],[432,137,false],[566,137,true],[742,137,false],[823,295,true],[823,792,true],[740,945,false],[568,945,true],[432,945,false],[280,735,false]]],"components":[]},"e":{"advance":1085,"contours":[[[589,-20,true],[369,-20,false],[93,269,false],[93,511,true],[93,545,true],[93,706,false],[216,959,false],[437,1102,false],[566,1102,true],[777,1102,false],[1011,824,false],[1011,565,true],[1011,488,true],[278,488,true],[282,328,false],[461,131,false],[599,131,true],[697,131,false],[833,211,false],[884,277,true],[997,189,true],[861,-20,false]],[[566,950,true],[454,950,false],[302,787,false],[284,640,true],[826,640,true],[826,654,true],[818,795,false],[682,950,false]]],"components":[]},"f":{"advance":711,"contours":[[[231,0,true],[231,939,true],[60,939,true],[60,1082,true],[231,1082,true],[231,1193,true],[231,1367,false],[417,1557,false],[587,1557,true],[651,1557,false],[714,1540,true],[704,1390,true],[657,1399,false],[604,1399,true],[514,1399,false],[416,1294,false],[416,1196,true],[416,1082,true],[647,1082,true],[647,939,true],[416,939,true],[416,0,true]]],"components":[]},"f_i":{"advance":1134,"contours":[[[202,0,true],[202,939,true],[31,939,true],[31,1082,true],[202,1082,true],[202,1174,true],[202,1355,false],[409,1557,false],[598,1557,true],[710,1557,false],[881,1496,true],[850,1340,true],[725,1390,false],[612,1390,true],[493,1390,false],[388,1283,false],[388,1176,true],[388,1082,true],[609,1082,true],[609,939,true],[388,939,true],[388,0,true]],[[973,0,true],[787,0,true],[787,1082,true],[973,1082,true]]],"components":[]},"f_l":{"advance":1163,"contours":[[[816,1379,true],[692,1399,false],[616,1399,true],[416,1399,false],[416,1189,true],[416,1082,true],[647,1082,true],[647,939,true],[416,939,true],[416,0,true],[231,0,true],[231,939,true],[60,939,true],[60,1082,true],[231,1082,true],[231,1200,true],[232,1373,false],[424,1557,false],[601,1557,true],[702,1557,false],[1001,1496,true],[1001,0,true],[816,0,true]]],"components":[]},"g":{"advance":1149,"contours":[[[96,550,true],[96,803,false],[330,1102,false],[523,1102,true],[721,1102,false],[832,962,true],[841,1082,true],[1010,1082,true],[1010,26,true],[1010,-184,false],[761,-426,false],[551,-426,true],[434,-426,false],[210,-326,false],[151,-239,true],[247,-128,true],[366,-275,false],[538,-275,true],[673,-275,false],[824,-123,false],[824,15,true],[824,108,true],[713,-20,false],[521,-20,true],[331,-20,false],[96,286,false]],[[282,529,true],[282,346,false],[432,137,false],[567,137,true],[742,137,false],[824,296,true],[824,790,true],[739,945,false],[569,945,true],[434,945,false],[282,735,false]]],"components":[]},"i":{"advance":497,"contours":[[[341,0,true],[156,0,true],[156,1082,true],[341,1082,true]],[[141,1369,true],[141,1414,false],[196,1476,false],[304,1476,false],[360,1414,false],[360,1324,false],[304,1264,false],[196,1264,false],[141,1324,false]]],"components":[]},"k":{"advance":1038,"contours":[[[442,501,true],[326,380,true],[326,0,true],[141,0,true],[141,1536,true],[326,1536,true],[326,607,true],[425,726,true],[762,1082,true],[987,1082,true],[566,630,true],[1036,0,true],[819,0,true]]],"components":[]},"l":{"advance":497,"contours":[[[341,0,true],[156,0,true],[156,1536,true],[341,1536,true]]],"components":[]},"m":{"advance":1795,"contours":[[[314,1082,true],[319,962,true],[438,1102,false],[640,1102,true],[867,1102,false],[949,928,true],[1003,1006,false],[1176,1102,false],[1294,1102,true],[1650,1102,false],[1656,725,true],[1656,0,true],[1471,0,true],[1471,714,true],[1471,830,false],[1365,945,false],[1240,945,true],[1137,945,false],[1001,822,false],[990,718,true],[990,0,true],[804,0,true],[804,709,true],[804,945,false],[573,945,true],[391,945,false],[324,790,true],[324,0,true],[139,0,true],[139,1082,true]]],"components":[]},"n":{"advance":1130,"contours":[[[315,1082,true],[321,946,true],[445,1102,false],[645,1102,true],[988,1102,false],[991,715,true],[991,0,true],[806,0,true],[806,716,true],[805,833,false],[700,945,false],[589,945,true],[499,945,false],[363,849,false],[325,771,true],[325,0,true],[140,0,true],[140,1082,true]]],"components":[]},"o":{"advance":1168,"contours":[[[91,551,true],[91,710,false],[216,964,false],[439,1102,false],[582,1102,true],[803,1102,false],[1076,796,false],[1076,542,true],[1076,529,true],[1076,371,false],[955,120,false],[730,-20,false],[584,-20,true],[364,-20,false],[91,286,false],[91,538,true]],[[277,529,true],[277,349,false],[444,131,false],[584,131,true],[725,131,false],[891,352,false],[891,551,true],[891,729,false],[722,950,false],[582,950,true],[445,950,false],[277,732,false]]],"components":[]},"period":{"advance":539,"contours":[[[144,97,true],[144,145,false],[201,209,false],[315,209,false],[374,145,false],[374,97,true],[374,51,false],[315,-11,false],[201,-11,false],[144,51,false]]],"components":[]},"s":{"advance":1056,"contours":[[[770,287,true],[770,362,false],[657,445,false],[376,505,false],[211,589,false],[132,705,false],[132,785,true],[132,918,false],[357,1102,false],[532,1102,true],[716,1102,false],[945,912,false],[945,764,true],[759,764,true],[759,840,false],[630,950,false],[532,950,true],[431,950,false],[317,862,false],[317,791,true],[317,724,false],[423,656,false],[700,594,false],[872,508,false],[955,387,false],[955,300,true],[955,155,false],[723,-20,false],[538,-20,true],[408,-20,false],[208,72,false],[95,237,false],[95,333,true],[280,333,true],[285,240,false],[424,131,false],[538,131,true],[643,131,false],[770,216,false]]],"components":[]},"space":{"advance":507,"contours":[],"components":[]},"t":{"advance":669,"contours":[[[391,1344,true],[391,1082,true],[593,1082,true],[593,939,true],[391,939,true],[391,268,true],[391,203,false],[445,138,false],[510,138,true],[542,138,false],[598,150,true],[598,0,true],[525,-20,false],[456,-20,true],[332,-20,false],[206,130,false],[206,268,true],[206,939,true],[9,939,true],[9,1082,true],[206,1082,true],[206,1344,true]]],"components":[]},"w":{"advance":1539,"contours":[[[1098,255,true],[1306,1082,true],[1491,1082,true],[1176,0,true],[1026,0,true],[763,820,true],[507,0,true],[357,0,true],[43,1082,true],[227,1082,true],[440,272,true],[692,1082,true],[841,1082,true]]],"components":[]}},"kern":[["f","c",-24],["f","d",-24],["f","e",-24],["f","g",-24],["k","c",-20],["k","d",-20],["k","e",-20],["k","g",-20],["t","o",-20],["w","comma",-124],["w","period",-124]],"ligatures":[[["f","i"],"f_i"],[["f","l"],"f_l"]]};
+var ARABIC={"units_per_em":2048,"ascender":1901,"descender":-483,"line_gap":0,"cmap":{"32":"space","44":"comma","1575":"alef","1576":"beh","1578":"teh","1603":"kaf","1616":"kasra"},"glyphs":{".notdef":{"advance":1229,"contours":[[[102,-362,true],[102,1444,true],[1126,1444,true],[1126,-362,true]],[[217,-248,true],[1012,-248,true],[1012,1329,true],[217,1329,true]]],"components":[]},"alef":{"advance":569,"contours":[[[193,1556,true],[377,1556,true],[377,0,true],[193,0,true]]],"components":[]},"alef.fina":{"advance":624,"contours":[[[193,371,true],[193,1556,true],[377,1556,true],[377,383,true],[377,277,false],[426,228,true],[470,184,false],[569,184,true],[644,184,true],[644,0,true],[514,0,true],[360,0,false],[280,92,true],[193,193,false]]],"components":[]},"alefmaksura.init":{"advance":570,"contours":[[[299,86,true],[227,0,false],[70,0,true],[-20,0,true],[-20,184,true],[15,184,true],[114,184,false],[158,228,true],[207,277,false],[207,383,true],[207,600,true],[391,600,true],[391,383,true],[391,196,false]]],"components":[]},"alefmaksura.medi":{"advance":618,"contours":[[[299,86,true],[222,0,false],[70,0,true],[-20,0,true],[-20,184,true],[15,184,true],[114,184,false],[158,228,true],[207,277,false],[207,383,true],[207,600,true],[391,600,true],[391,383,true],[391,277,false],[440,228,true],[484,184,false],[583,184,true],[638,184,true],[638,0,true],[528,0,true],[378,0,false]]],"components":[]},"beh":{"advance":1928,"contours":[],"components":[{"glyph":"g1422","transform":[1.0,0.0,0.0,1.0,0.0,0.0]},{"glyph":"g5828","transform":[1.0,0.0,0.0,1.0,825.0,-350.0]}]},"beh.fina":{"advance":2011,"contours":[],"components":[{"glyph":"g5834","transform":[1.0,0.0,0.0,1.0,0.0,0.0]},{"glyph":"g5828","transform":[1.0,0.0,0.0,1.0,825.0,-350.0]}]},"beh.init":{"advance":570,"contours":[],"components":[{"glyph":"g5835","transform":[1.0,0.0,0.0,1.0,0.0,0.0]},{"glyph":"g5828","transform":[1.0,0.0,0.0,1.0,224.0,-300.0]}]},"beh.medi":{"advance":618,"contours":[],"components":[{"glyph":"g5836","transform":[1.0,0.0,0.0,1.0,0.0,0.0]},{"glyph":"g5828","transform":[1.0,0.0,0.0,1.0,224.0,-300.0]}]},"comma":{"advance":651,"contours":[[[240,254,true],[451,254,true],[451,82,true],[287,-238,true],[158,-238,true],[240,82,true]]],"components":[]},"g1422":{"advance":1928,"contours":[[[1756,669,true],[1771,579,false],[1771,509,true],[1771,374,false],[1695,273,true],[1567,102,false],[1250,38,true],[965,-20,false],[780,-20,true],[589,-20,false],[460,18,true],[130,115,false],[130,383,true],[130,521,false],[193,613,true],[377,613,true],[312,519,false],[312,383,true],[312,258,false],[515,191,true],[619,157,false],[770,157,true],[955,157,false],[1220,214,true],[1475,268,false],[1542,381,true],[1597,474,false],[1597,549,true],[1597,608,false],[1572,669,true]]],"components":[]},"g5828":{"advance":150,"contours":[[[0,150,true],[150,150,true],[150,0,true],[0,0,true]]],"components":[]},"g5829":{"advance":400,"contours":[[[250,150,true],[400,150,true],[400,0,true],[250,0,true]],[[0,150,true],[150,150,true],[150,0,true],[0,0,true]]],"components":[]},"g5834":{"advance":2011,"contours":[[[1775,504,true],[1775,296,false],[1845,237,true],[1908,184,false],[1971,184,true],[2031,184,true],[2031,0,true],[1929,0,true],[1813,0,false],[1742,73,true],[1662,156,false],[1638,222,true],[1483,91,false],[1250,38,true],[991,-20,false],[780,-20,true],[584,-20,false],[460,18,true],[131,119,false],[130,383,true],[129,521,false],[193,613,true],[377,613,true],[312,519,false],[312,383,true],[312,258,false],[515,191,true],[619,157,false],[770,157,true],[1030,159,false],[1220,214,true],[1419,272,false],[1542,381,true],[1601,433,false],[1601,552,true],[1601,614,false],[1572,669,true],[1756,669,true],[1775,594,false]]],"components":[]},"g5835":{"advance":570,"contours":[],"components":[{"glyph":"alefmaksura.init","transform":[1.0,0.0,0.0,1.0,0.0,0.0]}]},"g5836":{"advance":618,"contours":[],"components":[{"glyph":"alefmaksura.medi","transform":[1.0,0.0,0.0,1.0,0.0,0.0]}]},"kaf":{"advance":1688,"contours":[[[976,1135,true],[976,1053,true],[902,1049,false],[864,1035,true],[784,1005,false],[784,972,true],[784,944,false],[798,926,true],[810,910,false],[878,900,true],[980,885,false],[980,797,true],[980,687,false],[892,645,true],[810,606,false],[732,606,true],[666,606,false],[610,617,true],[610,705,true],[678,695,false],[723,695,true],[783,695,false],[840,721,true],[900,747,false],[900,777,true],[900,815,false],[822,832,true],[748,848,false],[730,876,true],[698,923,false],[699,969,true],[701,1050,false],[776,1088,true],[861,1131,false]],[[1219,281,true],[1295,354,false],[1295,611,true],[1295,1556,true],[1479,1556,true],[1479,611,true],[1479,284,false],[1369,161,true],[1220,-6,false],[999,-37,true],[863,-56,false],[745,-55,true],[538,-53,false],[437,-23,true],[144,65,false],[144,260,true],[144,335,false],[160,388,true],[344,388,true],[330,330,false],[330,286,true],[332,194,false],[492,148,true],[613,113,false],[740,113,true],[880,113,false],[969,140,true],[1121,187,false]]],"components":[]},"kaf.init":{"advance":975,"contours":[[[310,0,true],[-20,0,true],[-20,184,true],[290,184,true],[438,184,false],[483,288,true],[499,324,false],[499,360,true],[499,429,false],[445,495,true],[135,875,true],[85,936,false],[85,1017,true],[85,1052,false],[95,1085,true],[126,1203,false],[230,1246,true],[975,1556,true],[975,1370,true],[380,1120,true],[309,1090,false],[288,1050,true],[282,1039,false],[282,1014,true],[282,982,false],[313,945,true],[588,615,true],[690,492,false],[690,369,true],[690,256,false],[628,155,true],[533,0,false]]],"components":[]},"kasra":{"advance":0,"contours":[[[220,-280,true],[220,-170,true],[804,-40,true],[804,-150,true]]],"components":[]},"space":{"advance":651,"contours":[],"components":[]},"teh":{"advance":1928,"contours":[],"components":[{"glyph":"g1422","transform":[1.0,0.0,0.0,1.0,0.0,0.0]},{"glyph":"g5829","transform":[1.0,0.0,0.0,1.0,700.0,650.0]}]},"teh.medi":{"advance":618,"contours":[],"components":[{"glyph":"g5836","transform":[1.0,0.0,0.0,1.0,0.0,0.0]},{"glyph":"g5829","transform":[1.0,0.0,0.0,1.0,99.0,850.0]}]}},"kern":[],"ligatures":[],"joining":{"32":"none","44":"none","1575":"right","1576":"dual","1578":"dual","1603":"dual","1616":"transparent"},"forms":{"alef":{"fina":"alef.fina"},"beh":{"init":"beh.init","medi":"beh.medi","fina":"beh.fina"},"kaf":{"init":"kaf.init"},"teh":{"medi":"teh.medi"}},"marks":{"kasra":["below",512,0]},"anchors":{"alef":{"above":[285,1650],"below":[285,-100]},"alef.fina":{"above":[285,1650],"below":[285,-100]},"alefmaksura.init":{"above":[299,1000],"below":[299,-100]},"alefmaksura.medi":{"above":[299,1000],"below":[299,-100]},"beh":{"above":[900,1000],"below":[900,-400]},"beh.fina":{"above":[900,1000],"below":[900,-400]},"beh.init":{"above":[299,1000],"below":[299,-350]},"beh.medi":{"above":[299,1000],"below":[299,-350]},"kaf":{"above":[700,1500],"below":[800,-200]},"kaf.init":{"above":[250,1550],"below":[300,-150]},"teh":{"above":[900,850],"below":[900,-150]},"teh.medi":{"above":[299,1050],"below":[299,-100]}}};
+function toByte(light){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255+0.5);}
+function lerp3(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+function blit(ctx,pixels,pw,ph,scale,ox,oy){var img=ctx.createImageData(pw,ph);for(var i=0;i<pw*ph;i++){img.data[i*4]=pixels[i][0];img.data[i*4+1]=pixels[i][1];img.data[i*4+2]=pixels[i][2];img.data[i*4+3]=255;}var off=Plate.offcan(pw,ph);off.getContext('2d').putImageData(img,0,0);ctx.imageSmoothingEnabled=false;ctx.drawImage(off,ox,oy,pw*scale,ph*scale);}
+
+/* vectors and matrices (chapters 4 and 13) */
+function sub(a,b){return [a[0]-b[0],a[1]-b[1]];}
+function mag(v){return Math.sqrt(v[0]*v[0]+v[1]*v[1]);}
+function unit(a,b){var d=sub(b,a),m=mag(d);return [d[0]/m,d[1]/m];}
+function perp(v){return [-v[1],v[0]];}
+function crss(a,b){return a[0]*b[1]-a[1]*b[0];}
+function add(p,v,s){return [p[0]+v[0]*s,p[1]+v[1]*s];}
+function intersect(p1,d1,p2,d2){var den=crss(d1,d2);if(Math.abs(den)<1e-12)return null;var t=crss(sub(p2,p1),d2)/den;return add(p1,d1,t);}
+function arc(pts,c,a0,a1,r,steps){for(var k=0;k<=steps;k++){var a=a0+(a1-a0)*k/steps;pts.push([c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)]);}}
+function arcSteps(a0,a1){return Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/16)));}
+function angBetween(a,b){var d=((b-a)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);return d>Math.PI?d-2*Math.PI:d;}
+function mat(a,b,c,d,e,f,g,h,i){return [a,b,c,d,e,f,g,h,i];}
+function mmul(m,n){var o=[];for(var r=0;r<3;r++)for(var c=0;c<3;c++){var s=0;for(var k=0;k<3;k++)s+=m[r*3+k]*n[k*3+c];o.push(s);}return o;}
+function apply(m,p){return [m[0]*p[0]+m[1]*p[1]+m[2],m[3]*p[0]+m[4]*p[1]+m[5]];}
+function translation(x,y){return mat(1,0,x,0,1,y,0,0,1);}
+function scaling(x,y){return mat(x,0,0,0,y,0,0,0,1);}
+
+/* curves (chapter 8) */
+function lerpP(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];}
+function decasteljau(pts,t){var left=[pts[0]],right=[pts[pts.length-1]],p=pts.slice();while(p.length>1){var q=[];for(var i=0;i<p.length-1;i++)q.push(lerpP(p[i],p[i+1],t));p=q;left.push(p[0]);right.push(p[p.length-1]);}return {at:p[0],left:left,right:right.reverse()};}
+function pointAt(c,t){return decasteljau(c,t).at;}
+function flatness(c){var a=c[0],b=c[c.length-1],dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy),w=0;for(var i=1;i<c.length-1;i++){var p=c[i],d=L===0?Math.hypot(p[0]-a[0],p[1]-a[1]):Math.abs((p[0]-a[0])*dy-(p[1]-a[1])*dx)/L;w=Math.max(w,d);}return w;}
+function flattenInto(c,tol,out){if(flatness(c)<=tol)out.push(c[c.length-1]);else{var d=decasteljau(c,0.5);flattenInto(d.left,tol,out);flattenInto(d.right,tol,out);}}
+function flatten(c,tol){var out=[c[0]];flattenInto(c,tol,out);return out;}
+function flattenIntoPath(pts,c,tol){var f=flatten(c,tol);if(pts.length&&pts[pts.length-1][0]===f[0][0]&&pts[pts.length-1][1]===f[0][1])f=f.slice(1);return pts.concat(f);}
+function transformCurve(c,m){return c.map(function(p){return apply(m,p);});}
+function quadBounds(c){var xs=[c[0][0],c[2][0]],ys=[c[0][1],c[2][1]];[0,1].forEach(function(k){var den=c[0][k]-2*c[1][k]+c[2][k];if(Math.abs(den)>1e-12){var t=(c[0][k]-c[1][k])/den;if(t>0&&t<1){var q=pointAt(c,t);(k?ys:xs).push(q[k]);}}});return [Math.min.apply(null,xs),Math.min.apply(null,ys),Math.max.apply(null,xs),Math.max.apply(null,ys)];}
+
+/* chapter 16: glyphs */
+function impliedPoints(contour){var out=[],n=contour.length;for(var i=0;i<n;i++){var cur=contour[i],nxt=contour[(i+1)%n];out.push(cur);if(!cur[2]&&!nxt[2])out.push([(cur[0]+nxt[0])/2,(cur[1]+nxt[1])/2,1]);}for(var k=0;k<out.length;k++)if(out[k][2])return out.slice(k).concat(out.slice(0,k));return out;}
+function contourCurves(contour){var pts=impliedPoints(contour),curves=[],n=pts.length,i=0;while(i<n){var a=pts[i],b=pts[(i+1)%n];if(b[2]){curves.push([[a[0],a[1]],[(a[0]+b[0])/2,(a[1]+b[1])/2],[b[0],b[1]]]);i+=1;}else{var c=pts[(i+2)%n];curves.push([[a[0],a[1]],[b[0],b[1]],[c[0],c[1]]]);i+=2;}}return curves;}
+function componentMatrix(t){return mat(t[0],t[2],t[4],t[1],t[3],t[5],0,0,1);}
+function glyphOutline(font,name){var g=font.glyphs[name],out=g.contours.map(contourCurves);g.components.forEach(function(comp){var m=componentMatrix(comp.transform);glyphOutline(font,comp.glyph).forEach(function(contour){out.push(contour.map(function(c){return transformCurve(c,m);}));});});return out;}
+function glyphBounds(font,name){var boxes=[];glyphOutline(font,name).forEach(function(contour){contour.forEach(function(c){boxes.push(quadBounds(c));});});if(!boxes.length)return [0,0,0,0];return [Math.min.apply(null,boxes.map(function(b){return b[0];})),Math.min.apply(null,boxes.map(function(b){return b[1];})),Math.max.apply(null,boxes.map(function(b){return b[2];})),Math.max.apply(null,boxes.map(function(b){return b[3];}))];}
+function textMatrix(font,size,x,y){var s=size/font.units_per_em;return mmul(translation(x,y),scaling(s,-s));}
+function glyphPath(font,name,m,tol){return glyphOutline(font,name).map(function(contour){var pts=[];contour.forEach(function(c){pts=flattenIntoPath(pts,transformCurve(c,m),tol);});return pts;});}
+function glyphNameOf(font,ch){return font.cmap[String(ch.charCodeAt(0))]||'.notdef';}
+
+/* the stroker (chapter 13), for emboldening */
+function segRect(a,b,h){var d=unit(a,b),n=perp(d);return [add(a,n,h),add(b,n,h),add(b,n,-h),add(a,n,-h)];}
+function joinShape(v,din,dout,h,join,ml){var turn=crss(din,dout);if(Math.abs(turn)<1e-12)return null;var s=turn>0?-1:1,nin=perp(din).map(function(x){return x*s;}),nout=perp(dout).map(function(x){return x*s;}),a=add(v,nin,h),b=add(v,nout,h);
+  if(join==='bevel')return [v,a,b];
+  if(join==='round'){var a0=Math.atan2(a[1]-v[1],a[0]-v[0]),a1=a0+angBetween(a0,Math.atan2(b[1]-v[1],b[0]-v[0]));var p=[v];arc(p,v,a0,a1,h,arcSteps(a0,a1));return p;}
+  var m=intersect(a,din,b,dout);if(m&&mag(sub(m,v))<=ml*h)return [v,a,m,b];return [v,a,b];}
+function capShape(p,dout,h,cap){var n=perp(dout);if(cap==='butt')return null;
+  if(cap==='square'){var l=add(p,n,h),r=add(p,n,-h);return [l,add(l,dout,h),add(r,dout,h),r];}
+  var a0=Math.atan2(n[1],n[0]),d=angBetween(a0,Math.atan2(dout[1],dout[0]));var a1=a0+(d>0?Math.PI:-Math.PI),pts=[];arc(pts,p,a0,a1,h,arcSteps(a0,a1));return pts;}
+function dedupe(pts){var o=[pts[0]];for(var i=1;i<pts.length;i++)if(mag(sub(pts[i],o[o.length-1]))>1e-9)o.push(pts[i]);return o;}
+function area(sp){var s=0;for(var i=0;i<sp.length;i++){var a=sp[i],b=sp[(i+1)%sp.length];s+=a[0]*b[1]-b[0]*a[1];}return s/2;}
+function strokeToPath(pts,closed,width,cap,join,ml){var h=width/2,subs=[];pts=dedupe(pts);if(closed&&pts.length>1&&mag(sub(pts[pts.length-1],pts[0]))<=1e-9)pts.pop();
+  function emit(sp){if(!sp)return;if(area(sp)>0)sp.reverse();subs.push(sp);}
+  if(pts.length<2){if(cap==='round'){var d=[];arc(d,pts[0],0,2*Math.PI,h,48);emit(d);}else if(cap==='square'){var c=pts[0];emit([[c[0]-h,c[1]-h],[c[0]+h,c[1]-h],[c[0]+h,c[1]+h],[c[0]-h,c[1]+h]]);}return subs;}
+  var segs=[];for(var i=0;i<pts.length-1;i++)segs.push([pts[i],pts[i+1]]);if(closed)segs.push([pts[pts.length-1],pts[0]]);
+  segs.forEach(function(s){emit(segRect(s[0],s[1],h));});
+  var dirs=segs.map(function(s){return unit(s[0],s[1]);}),nj=closed?segs.length:segs.length-1;
+  for(var k=0;k<nj;k++){var v=segs[(k+1)%segs.length][0];emit(joinShape(v,dirs[k],dirs[(k+1)%segs.length],h,join,ml));}
+  if(!closed){emit(capShape(pts[0],dirs[0].map(function(x){return -x;}),h,cap));emit(capShape(pts[pts.length-1],dirs[dirs.length-1],h,cap));}
+  return subs;}
+
+/* fill a list of closed subpaths (chapter 7, nonzero) */
+function edgesOf(subs){var out=[];subs.forEach(function(sp){var n=sp.length;for(var i=0;i<n;i++)out.push([sp[i],sp[(i+1)%n]]);});return out;}
+function fillSubs(subs,w,h){var acc={area:new Array(w*h).fill(0),cover:new Array(w*h).fill(0)};edgesOf(subs).forEach(function(e){var a=e[0],b=e[1];if(a[1]===b[1])return;var sign=a[1]>b[1]?1:-1,top=a[1]>b[1]?b:a,bot=a[1]>b[1]?a:b,slope=(bot[0]-top[0])/(bot[1]-top[1]);var first=Math.max(Math.floor(top[1]),0),last=Math.min(Math.ceil(bot[1])-1,h-1);for(var row=first;row<=last;row++){var y0=Math.max(top[1],row),y1=Math.min(bot[1],row+1),x0=top[0]+(y0-top[1])*slope,x1=top[0]+(y1-top[1])*slope,xa=Math.min(x0,x1),xb=Math.max(x0,x1),ca=Math.floor(xa),cb=Math.floor(xb);function ad(x,ar,co){if(x<0){x=0;ar=co;}if(x>=w)return;var idx=row*w+x;acc.area[idx]+=ar;acc.cover[idx]+=co;}var hg=sign*(y1-y0);if(ca===cb){var xm=(xa+xb)/2-ca;ad(ca,hg*(1-xm),hg);}else{var dx=xb-xa;for(var c=ca;c<=cb;c++){var lo=Math.max(xa,c),hi=Math.min(xb,c+1),sh=hg*(hi-lo)/dx,mm=(lo+hi)/2-c;ad(c,sh*(1-mm),sh);}}}});var cov=new Array(w*h).fill(0);for(var row=0;row<h;row++){var run=0;for(var x=0;x<w;x++){var idx=row*w+x;cov[idx]=Math.min(1,Math.abs(run+acc.area[idx]));run+=acc.cover[idx];}}return cov;}
+
+/* chapter 17 */
+var SUBPIXELS=4,TAPS=[1/3,1/3,1/3];
+function subpixelOf(x){var whole=Math.floor(x),q=Math.floor((x-whole)*SUBPIXELS+0.5);return q===SUBPIXELS?[whole+1,0]:[whole,q];}
+function glyphBitmap(font,name,size,sp){var s=size/font.units_per_em,bb=glyphBounds(font,name);if(bb[0]===0&&bb[1]===0&&bb[2]===0&&bb[3]===0)return {cov:[],w:0,h:0,left:0,top:0};var dx=sp/SUBPIXELS,left=Math.floor(bb[0]*s+dx),right=Math.ceil(bb[2]*s+dx),top=Math.floor(-bb[3]*s),bottom=Math.ceil(-bb[1]*s),w=Math.max(1,right-left),h=Math.max(1,bottom-top);return {cov:fillSubs(glyphPath(font,name,textMatrix(font,size,dx-left,-top),0.1),w,h),w:w,h:h,left:left,top:top};}
+function mixColor(d,c,k,linear){if(linear)return lerp3(d,c,k);return d.map(function(v,i){var a=Plate.l2s(Math.min(1,Math.max(0,v))),b=Plate.l2s(Math.min(1,Math.max(0,c[i])));return Plate.s2l(a+(b-a)*k);});}
+function penAdvance(font,name,size){return font.glyphs[name].advance*size/font.units_per_em;}
+/* a paint buffer, white paper */
+var WHITE=[1,1,1],BLACK=[0,0,0];
+function Buf(w,h,paper){this.w=w;this.h=h;this.p=[];for(var i=0;i<w*h;i++)this.p.push((paper||WHITE).slice());}
+Buf.prototype.paint=function(cov,col){for(var i=0;i<this.w*this.h;i++){var k=cov[i];if(k>0)this.p[i]=lerp3(this.p[i],col,k);}};
+Buf.prototype.bitmap=function(bm,x,y,col,linear){for(var j=0;j<bm.h;j++)for(var i=0;i<bm.w;i++){var k=bm.cov[j*bm.w+i];if(k>0){var px=x+bm.left+i,py=y+bm.top+j;if(px>=0&&py>=0&&px<this.w&&py<this.h)this.p[py*this.w+px]=mixColor(this.p[py*this.w+px],col,k,linear);}}};
+Buf.prototype.lcd=function(cov3,col){for(var y=0;y<this.h;y++)for(var x=0;x<this.w;x++){var kr=cov3[y*3*this.w+3*x],kg=cov3[y*3*this.w+3*x+1],kb=cov3[y*3*this.w+3*x+2];if(kr>0||kg>0||kb>0){var d=this.p[y*this.w+x];this.p[y*this.w+x]=[d[0]+(col[0]-d[0])*kr,d[1]+(col[1]-d[1])*kg,d[2]+(col[2]-d[2])*kb];}}};
+Buf.prototype.bytes=function(){return this.p.map(function(c){return c.map(toByte);});};
+function magnifyBytes(g,k){var o=new Array(g.w*g.h*k*k);for(var y=0;y<g.h;y++)for(var x=0;x<g.w;x++){var v=g.bytes[y*g.w+x];for(var j=0;j<k;j++)for(var i=0;i<k;i++)o[(y*k+j)*g.w*k+x*k+i]=v;}return {bytes:o,w:g.w*k,h:g.h*k};}
+
+/* chapter 18: layout, the parts used here */
+var PAPER=[0.02,0.02,0.025],GRAY=[0.62,0.62,0.66],DIM=[0.3,0.3,0.34],MAGENTA=[0.85,0.2,0.55],CYAN=[0.2,0.75,0.9];
+var KITAB='كِتاب';
+function roundHalfUp(v){return Math.floor(v+0.5);}
+function kernOf(font,a,b){if(!font.kernMap){font.kernMap={};font.kern.forEach(function(k){font.kernMap[k[0]+'\u0001'+k[1]]=k[2];});}return font.kernMap[a+'\u0001'+b]||0;}
+function layoutRun(font,text,size,x,y,kerning){var s=size/font.units_per_em,out=[],pen=x,prev=null;for(var i=0;i<text.length;i++){var name=glyphNameOf(font,text[i]);if(kerning&&prev!==null)pen+=kernOf(font,prev,name)*s;out.push({name:name,x:pen,y:y});pen+=font.glyphs[name].advance*s;prev=name;}return out;}
+function drawRun(b,font,run,size,col){run.forEach(function(p){var sq=subpixelOf(p.x);b.bitmap(glyphBitmap(font,p.name,size,sq[1]),sq[0],roundHalfUp(p.y),col,true);});}
+function hairline(b,pts,closed,col,width){b.paint(fillSubs(strokeToPath(pts,closed,width||1,'butt','round',4),b.w,b.h),col);}
+function vline(b,x,y0,y1,col,width){hairline(b,[[x,y0],[x,y1]],false,col,width);}
+function hline(b,x0,x1,y,col,width){hairline(b,[[x0,y],[x1,y]],false,col,width);}
+function box(b,x0,y0,x1,y1,col,width){hairline(b,[[x0,y0],[x1,y0],[x1,y1],[x0,y1]],true,col,width);}
+
+/* chapter 19: shaping */
+function scriptOf(cp){if(cp>=0x600&&cp<=0x6FF)return 'arabic';if((cp>=0x41&&cp<=0x5A)||(cp>=0x61&&cp<=0x7A)||(cp>=0xC0&&cp<=0x24F))return 'latin';return 'common';}
+function itemize(text){var items=[],start=0,script=null;for(var i=0;i<text.length;i++){var s=scriptOf(text.charCodeAt(i));if(s==='common')continue;if(script===null)script=s;else if(s!==script){items.push({start:start,end:i,text:text.slice(start,i),script:script,direction:script==='arabic'?'rtl':'ltr'});start=i;script=s;}}if(text.length){script=script||'latin';items.push({start:start,end:text.length,text:text.slice(start),script:script,direction:script==='arabic'?'rtl':'ltr'});}return items;}
+function glyphBuffer(font,text){var out=[];for(var i=0;i<text.length;i++)out.push({glyph:glyphNameOf(font,text[i]),cluster:i,dx:0,dy:0});return out;}
+function isMark(font,name){return !!(font.marks&&font.marks[name]);}
+function applyLigatures(font,buffer){var rules=(font.ligatures||[]).slice().sort(function(a,b){return b[0].length-a[0].length;}),out=[],i=0;while(i<buffer.length){var hit=null;for(var r=0;r<rules.length&&!hit;r++){var parts=rules[r][0],ok=parts.length<=buffer.length-i;for(var k=0;k<parts.length&&ok;k++)if(buffer[i+k].glyph!==parts[k])ok=false;if(ok)hit=rules[r];}if(hit){out.push({glyph:hit[1],cluster:buffer[i].cluster,dx:0,dy:0});i+=hit[0].length;}else{out.push(buffer[i]);i++;}}return out;}
+function joiningType(font,cp){return (font.joining&&font.joining[String(cp)])||'none';}
+function formOf(types,i){var t=types[i];if(t==='none'||t==='transparent')return 'isol';var j=i-1;while(j>=0&&types[j]==='transparent')j--;var back=(t==='dual'||t==='right')&&j>=0&&types[j]==='dual';var k=i+1;while(k<types.length&&types[k]==='transparent')k++;var fwd=t==='dual'&&k<types.length&&(types[k]==='dual'||types[k]==='right');return back&&fwd?'medi':back?'fina':fwd?'init':'isol';}
+function arabicForms(font,text){var types=[];for(var i=0;i<text.length;i++)types.push(joiningType(font,text.charCodeAt(i)));return types.map(function(_,i){return formOf(types,i);});}
+function applyForms(font,text,buffer){var forms=arabicForms(font,text);return buffer.map(function(e){var t=(font.forms||{})[e.glyph]||{};return {glyph:t[forms[e.cluster]]||e.glyph,cluster:e.cluster,dx:e.dx,dy:e.dy};});}
+function attachMarks(font,buffer){var out=[],base=null;buffer.forEach(function(e){if(isMark(font,e.glyph)){var m=font.marks[e.glyph],anc=base&&font.anchors[base.glyph]&&font.anchors[base.glyph][m[0]];if(anc)out.push({glyph:e.glyph,cluster:base.cluster,dx:anc[0]-m[1],dy:anc[1]-m[2]});else out.push({glyph:e.glyph,cluster:e.cluster,dx:0,dy:0});}else{base=e;out.push({glyph:e.glyph,cluster:e.cluster,dx:0,dy:0});}});return out;}
+function shapeRun(font,text){var b=glyphBuffer(font,text);if(font.forms&&Object.keys(font.forms).length)b=applyForms(font,text,b);b=applyLigatures(font,b);if(font.marks&&Object.keys(font.marks).length)b=attachMarks(font,b);return b;}
+function bufferAdvance(font,buffer,size,kerning){var s=size/font.units_per_em,total=0,prev=null;buffer.forEach(function(e){if(isMark(font,e.glyph))return;if(kerning&&prev!==null)total+=kernOf(font,prev,e.glyph)*s;total+=font.glyphs[e.glyph].advance*s;prev=e.glyph;});return total;}
+function positionRun(font,buffer,size,x,y,direction,kerning){var s=size/font.units_per_em,out=[],pen=direction==='ltr'?x:x+bufferAdvance(font,buffer,size,kerning),prev=null,baseX=x;buffer.forEach(function(e){if(isMark(font,e.glyph)){out.push({name:e.glyph,x:baseX+e.dx*s,y:y-e.dy*s});return;}var adv=font.glyphs[e.glyph].advance*s,k=(kerning&&prev!==null)?kernOf(font,prev,e.glyph)*s:0;if(direction==='ltr'){pen+=k;baseX=pen;pen+=adv;}else{pen-=k;pen-=adv;baseX=pen;}out.push({name:e.glyph,x:baseX,y:y});prev=e.glyph;});return out;}
+function clustersOf(buffer){var out=[];buffer.forEach(function(e){if(out.indexOf(e.cluster)<0)out.push(e.cluster);});return out.sort(function(a,b){return a-b;});}
+function caretPositions(font,buffer,length,size,x,direction,kerning){var run=positionRun(font,buffer,size,x,0,direction,kerning),s=size/font.units_per_em,out=[];clustersOf(buffer).forEach(function(cl){for(var i=0;i<buffer.length;i++)if(buffer[i].cluster===cl&&!isMark(font,buffer[i].glyph)){out.push(direction==='ltr'?run[i].x:run[i].x+font.glyphs[buffer[i].glyph].advance*s);return;}for(var j=0;j<buffer.length;j++)if(buffer[j].cluster===cl){out.push(run[j].x);return;}});var total=bufferAdvance(font,buffer,size,kerning);out.push(direction==='ltr'?x+total:x);return out;}
+function clusterOfChar(buffer,i){var best=null;buffer.forEach(function(e){if(e.cluster<=i&&(best===null||e.cluster>best))best=e.cluster;});return best;}
+function drawShaped(b,font,buffer,size,x,y,direction,kerning,col,markCol){var run=positionRun(font,buffer,size,x,y,direction,kerning);buffer.forEach(function(e,i){drawRun(b,font,[run[i]],size,markCol&&isMark(font,e.glyph)?markCol:col);});return run;}
+function carets(b,font,buffer,size,x,direction,kerning,length,y0,y1,col){caretPositions(font,buffer,length,size,x,direction,kerning).forEach(function(cx){vline(b,cx,y0,y1,col);});}
+
+/* the renders */
+function ligatureDemo(){var f=GLYPHS,W=260,H=100,b=new Buf(W,H,PAPER),size=64,x=20,y=70,text='office',buffer=shapeRun(f,text),run=positionRun(f,buffer,size,x,y,'ltr',true);hline(b,4,W-4,y,DIM);buffer.forEach(function(e,i){drawRun(b,f,[run[i]],size,e.glyph==='f_i'?MAGENTA:GRAY);});carets(b,f,buffer,size,x,'ltr',true,text.length,y+4,y+16,CYAN);return {bytes:b.bytes(),w:W,h:H};}
+function formsDemo(){var ar=ARABIC,lat=GLYPHS,W=320,H=110,b=new Buf(W,H,PAPER),size=64,y=60,names=['beh','beh.init','beh.medi','beh.fina'],labels=['isol','init','medi','fina'];names.forEach(function(name,k){var x=16+k*76;hline(b,x-4,x+68,y,DIM);drawRun(b,ar,[{name:name,x:x,y:y}],size,GRAY);drawRun(b,lat,layoutRun(lat,labels[k],11,x,y+30,true),11,CYAN);});return {bytes:b.bytes(),w:W,h:H};}
+function wordDemo(){var f=ARABIC,W=260,H=100,b=new Buf(W,H,PAPER),size=64,x=20,y=64,buffer=shapeRun(f,KITAB);hline(b,4,W-4,y,DIM);drawShaped(b,f,buffer,size,x,y,'rtl',false,GRAY,MAGENTA);carets(b,f,buffer,size,x,'rtl',false,KITAB.length,y+4,y+16,CYAN);return {bytes:b.bytes(),w:W,h:H};}
+function mixedDemo(){var lat=GLYPHS,ar=ARABIC,W=300,H=60,b=new Buf(W,H,PAPER),size=28,y=40,text='Book: '+KITAB+', again.',pen=12;hline(b,4,W-4,y,DIM);itemize(text).forEach(function(item){var font=item.script==='arabic'?ar:lat,buffer=shapeRun(font,item.text);vline(b,pen,y+3,y+10,CYAN);drawShaped(b,font,buffer,size,pen,y,item.direction,true,GRAY,MAGENTA);pen+=bufferAdvance(font,buffer,size,true);});return {bytes:b.bytes(),w:W,h:H};}
+function clusterPlate(){var lat=GLYPHS,ar=ARABIC,W=540,H=210,b=new Buf(W,H,PAPER),size=52;[[lat,'office','ltr',20],[ar,KITAB,'rtl',290]].forEach(function(band){var font=band[0],text=band[1],direction=band[2],x=band[3],yTop=80,yBot=180,s=size/font.units_per_em,raw=glyphBuffer(font,text),centers=[],pen=x;
+  raw.forEach(function(e){var adv=font.glyphs[e.glyph].advance*s,w=Math.max(adv,12);box(b,pen,yTop-46,pen+w,yTop+12,DIM);drawRun(b,font,[{name:e.glyph,x:pen+(w-adv)/2,y:yTop}],size,GRAY);centers.push(pen+w/2);pen+=w+14;});
+  var buffer=shapeRun(font,text),run=positionRun(font,buffer,size,x,yBot,direction,true),boxes={};
+  buffer.forEach(function(e,i){if(isMark(font,e.glyph))return;var adv=font.glyphs[e.glyph].advance*s,p=run[i],cur=boxes[e.cluster]||[p.x,p.x+adv];boxes[e.cluster]=[Math.min(cur[0],p.x),Math.max(cur[1],p.x+adv)];});
+  var rawNames=raw.map(function(e){return e.glyph;});
+  buffer.forEach(function(e,i){drawRun(b,font,[run[i]],size,(isMark(font,e.glyph)||rawNames.indexOf(e.glyph)<0)?MAGENTA:GRAY);});
+  Object.keys(boxes).map(Number).sort(function(p,q){return p-q;}).forEach(function(cl){box(b,boxes[cl][0],yBot-46,boxes[cl][1],yBot+12,CYAN);});
+  for(var i=0;i<text.length;i++){var bx=boxes[clusterOfChar(buffer,i)];hairline(b,[[centers[i],yTop+12],[(bx[0]+bx[1])/2,yBot-46]],false,MAGENTA,0.75);}
+});return {bytes:b.bytes(),w:W,h:H};}
+
+function fit(ctx,g,w,h,top){var sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,top?0:(h-g.h*sc)/2);}
+
+/* ---------- Figure 19.1 — itemizing ---------- */
+Plate.add('fig191', 0.3, function (ctx, w, h, p) {
+  var text='Book: '+KITAB+'.',items=itemize(text),n=text.length,bw=Math.min(34,(w-40)/n),bh=bw*1.2,x0=(w-n*bw)/2,y0=h*0.22;
+  for(var i=0;i<n;i++){var it=items[0].end>i?0:1,col=it?p.magenta:p.cyan;ctx.fillStyle=Plate.rgba(col,0.1);ctx.fillRect(x0+i*bw,y0,bw,bh);ctx.strokeStyle=col;ctx.lineWidth=1;ctx.strokeRect(x0+i*bw+0.5,y0+0.5,bw-1,bh-1);ctx.fillStyle=p.ink;ctx.font=Math.round(bh*0.55)+'px Charter, Georgia, serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(text[i],x0+(i+0.5)*bw,y0+bh*0.55);ctx.textAlign='left';ctx.textBaseline='alphabetic';}
+  items.forEach(function(it,k){var col=k?p.magenta:p.cyan,a=x0+it.start*bw+2,bb=x0+it.end*bw-2,y=y0+bh+10;ctx.strokeStyle=col;ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(a,y-4);ctx.lineTo(a,y);ctx.lineTo(bb,y);ctx.lineTo(bb,y-4);ctx.stroke();Plate.label(ctx,it.script.toUpperCase()+' · '+it.direction.toUpperCase()+' · '+it.start+'–'+it.end,(a+bb)/2,y+14,col,9.5,'center');});
+  Plate.label(ctx,'itemize("'+text+'")',x0,y0-10,p.ink3,10);
+});
+
+/* ---------- Figure 19.2 — the ligature ---------- */
+Plate.add('fig192', 0.385, function (ctx, w, h, p) { fit(ctx,ligatureDemo(),w,h); });
+
+/* ---------- Figure 19.3 — four forms ---------- */
+Plate.add('fig193', 0.344, function (ctx, w, h, p) { fit(ctx,formsDemo(),w,h); });
+
+/* ---------- Figure 19.4 — the word ---------- */
+Plate.add('fig194', 0.385, function (ctx, w, h, p) { fit(ctx,wordDemo(),w,h); });
+
+/* ---------- Figure 19.5 — two scripts ---------- */
+Plate.add('fig195', 0.2, function (ctx, w, h, p) { fit(ctx,mixedDemo(),w,h); });
+
+/* ---------- Plate 19 ---------- */
+Plate.add('plate19', 0.389, function (ctx, w, h, p) { fit(ctx,clusterPlate(),w,h,true); });
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, sub, mag, unit, perp, crss, add, intersect, arc, arcSteps, angBetween, mat, mmul, apply, translation, scaling, lerpP, decasteljau, pointAt, flatness, flattenInto, flatten, flattenIntoPath, transformCurve, quadBounds, impliedPoints, contourCurves, componentMatrix, glyphOutline, glyphBounds, textMatrix, glyphPath, glyphNameOf, segRect, joinShape, capShape, dedupe, area, strokeToPath, edgesOf, fillSubs, subpixelOf, glyphBitmap, mixColor, penAdvance, Buf, magnifyBytes, roundHalfUp, kernOf, layoutRun, drawRun, hairline, vline, hline, box, scriptOf, itemize, glyphBuffer, isMark, applyLigatures, joiningType, formOf, arabicForms, applyForms, attachMarks, shapeRun, bufferAdvance, positionRun, clustersOf, caretPositions, clusterOfChar, drawShaped, carets, ligatureDemo, formsDemo, wordDemo, mixedDemo, clusterPlate, fit].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>

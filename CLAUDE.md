@@ -290,6 +290,47 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   `draw_text` (advance only, no kerning) exist for the renders; chapter 18 owns layout. Trap: LCD
   assumes the physical stripe order. Hinting is deliberately absent. Runner learned
   `paint_bitmap`/`paint_lcd` mutation steps.
+- Chapter 18 layout: a `Placement` is `(name, x, y)` in fractional pixels; `layout_run(font, text,
+  size, x, y, kerning)` places EVERY character (spaces, `.notdef`), the pen moving by the kern pair
+  BEFORE each glyph after the first; `run_advance` is the total. `kern(font, l, r)` is font units, 0
+  when absent, order matters. `ascent`/`descent` (positive)/`line_height` = (asc − desc + gap)·s.
+  `break_lines` is greedy on spaces: a candidate fits when `run_advance ≤ measure` (pinned exactly
+  on the boundary), a word wider than the measure sits alone and overflows, runs of spaces collapse.
+  `layout_line(..., align, kerning)` with `"left" | "right" | "center" | "justify"`; justify spreads
+  the slack over the spaces and a line with no space is laid out left; `layout_paragraph` stacks
+  baselines by `line_height` from y and lays a justified paragraph's last line left, answering one
+  flat list. `draw_run` goes through chapter 17 (`subpixel_of` + `glyph_bitmap` + `paint_bitmap`)
+  with the baseline rounded halves-up to a row; it equals `draw_text` at whole pixels (pinned diff
+  0). The kerning flag is always passed explicitly in scenarios (no default-argument scenarios, for
+  readers in languages without them). Trap: `layout_run_rounded` (pen rounded per glyph) drifts 15
+  px over one 11 px line of i's and l's. Plate: THROUGH_LINE four ways. Runner learned `draw_run`.
+- Chapter 19 shaping: font data for Arabic is DejaVu Sans (Bitstream Vera licence, redistributable,
+  `reference/fonts/DejaVuSans.ttf` + `DejaVu-LICENSE.txt`), converted by `tools/ttf_to_json.py
+  --arabic` into `reference/chapter-19/dejavu-arabic.json` (170 glyphs: letters, tatweel, 8 harakat,
+  space, Arabic and ASCII punctuation, every init/medi/fina form, lam-alef ligatures). Chosen over
+  Noto/Amiri because its init/medi/fina are plain GSUB single substitutions and its mark attachment
+  is one above and one below anchor class; the Noto fonts decompose letters into skeleton + dots
+  (multiple substitution), which is not a field guide. Three optional schema sections, read by the
+  chapter 16 loader: `joining` (codepoint string → dual/right/none/transparent; Unicode's table
+  copied into the file; tatweel recorded as dual), `forms` (glyph → {init, medi, fina} names),
+  `marks` (mark → [class, x, y]) and `anchors` (base → {class: [x, y]}). Glyph names are `beh`,
+  `beh.init`, `lam_alef.fina`, `kasra`; component skeletons keep `gNNNN`. Pipeline per run:
+  `glyph_buffer` (one `Shaped(glyph, cluster, dx, dy)` per character) → `apply_forms(font, text,
+  buffer)` (form_of: joins backward when dual/right and the nearest non-transparent before is dual;
+  forward when dual and the nearest non-transparent after is dual/right) → `apply_ligatures`
+  (greedy left to right, longest rule first, result takes the FIRST part's cluster, never fed back)
+  → `attach_marks` (base = nearest non-mark before; offset = base anchor − mark anchor; mark takes
+  the base's cluster; no anchor → (0, 0) and its own cluster; no mark-to-mark stacking, said so).
+  `shape` runs forms/marks only when the font has those tables, so Latin is ligatures alone.
+  `itemize` cuts on script changes; common characters join the run BEFORE them (standard), which
+  is what makes the trailing comma jump in `mixed_demo`: that is the bidi trap shown on purpose, not
+  a bug. `position(font, buffer, size, x, y, direction, kerning)` walks the LOGICAL buffer: ltr pen
+  from x rightward, rtl pen from x + advance leftward (subtract before placing), so a run always
+  occupies x..x+advance; marks never move the pen and sit at base origin + (dx·s, −dy·s). No buffer
+  reversal (HarfBuzz reverses instead; the chapter says so). `caret_offsets(buffer, length)` /
+  `caret_positions(font, buffer, length, size, x, direction, kerning)` take the text length
+  explicitly. Plate: characters-in / glyphs-out boxes with cluster joins, office and kitab side by
+  side. Nothing of UAX 9/14/29 is implemented: the trap box surveys them.
 - Runner learned `≥`. Figure JS `mag` must be `sqrt(x*x+y*y)` to mirror chapter 4's `magnitude`
   (Math.hypot differs in the last bit and flipped one byte of the spiral).
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and

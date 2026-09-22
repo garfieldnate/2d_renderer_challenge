@@ -38,7 +38,7 @@ class Glyph:
 
 class Font:
     __slots__ = ("units_per_em", "ascender", "descender", "line_gap", "glyphs", "cmap",
-                 "kern", "ligatures")
+                 "kern", "ligatures", "joining", "forms", "marks", "anchors")
 
     def __init__(self, data):
         self.units_per_em = data["units_per_em"]
@@ -53,6 +53,12 @@ class Font:
         self.cmap = {int(k): v for k, v in data["cmap"].items()}
         self.kern = {(a, b): v for a, b, v in data.get("kern", [])}
         self.ligatures = [(tuple(parts), name) for parts, name in data.get("ligatures", [])]
+        # chapter 19's optional sections: Unicode joining types by codepoint,
+        # GSUB's positional forms, and GPOS mark attachment as anchors
+        self.joining = {int(k): v for k, v in data.get("joining", {}).items()}
+        self.forms = {k: dict(v) for k, v in data.get("forms", {}).items()}
+        self.marks = {k: (v[0], v[1], v[2]) for k, v in data.get("marks", {}).items()}
+        self.anchors = {k: {c: (a[0], a[1]) for c, a in v.items()} for k, v in data.get("anchors", {}).items()}
 
 
 def load_font(text):

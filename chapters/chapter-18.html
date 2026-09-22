@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 18 · Setting a Line of Text — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 18 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-17.html">← 17</a> · <a href="#plate">Plate&nbsp;18</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Eighteen</p>
+    <h1>Setting a Line of Text</h1>
+    <p class="hook">Set the word <em>TAVERN</em> in Roboto at 64 pixels by moving the pen one
+      advance per glyph, the way chapter 17's <code>draw_text</code> did. Now look at the gap
+      between the T and the A. It's wider than the gap between the E and the R, by a distance you
+      can see from across the room, because the T's bar leaves a hole underneath it that the A's
+      slope was designed to slide into. The font knows this. It has a table of pairs that sit
+      badly at their advances and how far to pull each one together, and <code>draw_text</code>
+      never asked. That table is the first thing this chapter reads. The rest of it is the
+      arithmetic of putting glyphs in a row: where the pen goes, where the next line goes, where a
+      line has to stop, and what to do with the space left over when it does. None of it draws a
+      pixel, and that turns out to be the point.</p>
+  </header>
+
+  <p>Every previous chapter about type ended with a picture. This one ends with a list of numbers
+    and hands the list to chapter 17. <em>Layout</em> decides where every glyph goes; <em>rendering</em>
+    puts it there. Every serious text stack keeps those two apart, and by the end of the chapter
+    you'll be able to see the seam between them in your own code.</p>
+
+  <h2><span class="sec">§ 18.1</span> The pen, and the lines around it</h2>
+
+  <p>A run of text is a pen walking along a baseline. It starts at some <code>x</code>, draws a
+    glyph with its origin there, moves right by that glyph's advance, and repeats. Advances are in
+    font units, so the step in pixels is <code>advance · size / units_per_em</code>, which chapter
+    17 already wrapped as <code>pen_advance</code>. <code>layout_run(font, text, size, x, y,
+    kerning)</code> does the walk without drawing anything and answers a list of
+    <em>placements</em>, one per character in order: the glyph's name and the fractional pixel
+    position of its origin. Every character gets a placement, including spaces, which have an
+    advance and nothing else, and characters the font lacks, which place <code>.notdef</code>.
+    <code>run_advance</code> is how far the pen moved in total. The last parameter is the subject
+    of the next section; pass <code>false</code> for now.</p>
+
+  <p>The font's vertical numbers become pixels the same way. <code>ascent</code> is how far the
+    font reaches above the baseline, <code>descent</code> how far below (a positive number: the
+    file stores the descender as a negative one), and <code>line_height</code> is the distance from
+    one baseline to the next: ascent plus descent plus the file's <code>line_gap</code>, which for
+    Roboto is zero. At 16 pixels the lines are 18.75 pixels apart, and not a whole number, which
+    matters later.</p>
+
+  <figure>
+    <canvas id="fig181" role="img" aria-label="The letters H and g on a baseline with three horizontal rules: the ascender line above, the baseline, and the descender line below; the distance from the ascender line to the descender line is labelled line height, and the pen's steps along the baseline are marked with ticks labelled advance"></canvas>
+    <figcaption><span class="fig">Figure 18.1</span> The pen walks the baseline by one advance per glyph. Ascent above, descent below, and the next baseline one <code>line_height</code> down.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter18-metrics.feature">
+    <p class="label">features/chapter18-metrics.feature</p>
+<pre><code><span class="kw">Feature</span>: Advances, the pen, and the vertical metrics
+  A line of text is a pen walking along a baseline. layout_run(font, text,
+  size, x, y, kerning) answers one placement per character, in order: the
+  glyph's name and where its origin sits, the first at x on the baseline y
+  and each next one a glyph advance further along, in fractional pixels.
+  Every character is placed, spaces included, and a character the font
+  lacks places .notdef. run_advance(font, text, size, kerning) is how far
+  the pen moved in all. ascent, descent and line_height turn the font's
+  ascender, descender and line gap into pixels; descent is a positive
+  number, and line_height is baseline to baseline. Kerning is the subject
+  of the next section; these scenarios pass false for it.
+
+  <span class="kw">Scenario</span>: The vertical metrics in pixels
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  ascent(font, 16) = 14.8438 ± 0.0001
+    <span class="kw">And</span>   descent(font, 16) = 3.9063 ± 0.0001
+    <span class="kw">And</span>   line_height(font, 16) = 18.75
+    <span class="kw">And</span>   line_height(font, 14) = 16.4063 ± 0.0001
+    <span class="kw">And</span>   line_height(font, 16) = ascent(font, 16) + descent(font, 16)
+
+  <span class="kw">Scenario</span>: A run is one placement per character, each an advance further along
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  run ← layout_run(font, "Ha", 11, 2, 11, false)
+    <span class="kw">Then</span>  length(run) = 2
+    <span class="kw">And</span>   run[0].name = "H"
+    <span class="kw">And</span>   run[0].x = 2
+    <span class="kw">And</span>   run[0].y = 11
+    <span class="kw">And</span>   run[1].name = "a"
+    <span class="kw">And</span>   run[1].x = 2 + pen_advance(font, "H", 11)
+    <span class="kw">And</span>   run[1].x = 9.8418 ± 0.0001
+    <span class="kw">And</span>   run[1].y = 11
+    <span class="kw">And</span>   run_advance(font, "Ha", 11, false) = 13.8252 ± 0.0001
+    <span class="kw">And</span>   run_advance(font, "Ha", 11, false) = pen_advance(font, "H", 11) + pen_advance(font, "a", 11)
+
+  <span class="kw">Scenario</span>: Spaces are placed, and so is a character the font doesn't have
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  run ← layout_run(font, "a☃b", 11, 0, 0, false)
+    <span class="kw">Then</span>  length(run) = 3
+    <span class="kw">And</span>   run[1].name = ".notdef"
+    <span class="kw">And</span>   run[1].x = 5.9834 ± 0.0001
+    <span class="kw">And</span>   run[2].name = "b"
+    <span class="kw">And</span>   run[2].x = 10.8604 ± 0.0001
+    <span class="kw">And</span>   layout_run(font, "a b", 11, 0, 0, false)[1].name = "space"
+    <span class="kw">And</span>   layout_run(font, "a b", 11, 0, 0, false)[2].x = 5.9834 + pen_advance(font, "space", 11) ± 0.0001
+    <span class="kw">And</span>   length(layout_run(font, "", 11, 0, 0, false)) = 0
+    <span class="kw">And</span>   run_advance(font, "", 11, false) = 0
+
+  <span class="kw">Scenario</span>: Without kerning the run's advance is the sum of the glyph advances
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  run_advance(font, "TAVERN", 64, false) = 242.0625
+    <span class="kw">And</span>   layout_run(font, "TAVERN", 64, 12, 70, false)[5].x = 208.4375</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 18.2</span> Kerning</h2>
+
+  <p>Back to the T and the A. Roboto's kern table says the pair <code>T A</code> should be pulled
+    together by 79 font units, <code>A V</code> by 87, and, since the order matters, <code>A T</code>
+    by 129. <code>kern(font, left, right)</code> reads the table and answers 0 for a pair it doesn't
+    list, which is nearly all of them: the file has 2,171 pairs out of 177² possible. With
+    <code>kerning</code> on, <code>layout_run</code> moves the pen by the pair value, scaled to
+    pixels, before placing each glyph after the first, and <code>run_advance</code> shrinks by the
+    same amount. That gives the scenario its cleanest line: a kerned pair is narrower than the sum
+    of its advances by exactly the kern. Figure 18.2 sets <em>TAVERN</em> both ways with a tick at
+    every pen position. Two pairs kern, and the whole word comes in five pixels shorter.</p>
+
+  <figure>
+    <canvas id="fig182" role="img" aria-label="The word TAVERN at 64 pixels twice, kerned above and unkerned below, each on a baseline with a small tick at every pen position; a magenta bracket at the right marks how much shorter the kerned word is"></canvas>
+    <figcaption><span class="fig">Figure 18.2</span> Advances accumulated along the baseline, kerned above and not below. The magenta bracket is what the font asked for: two pairs, five pixels.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter18-kerning.feature">
+    <p class="label">features/chapter18-kerning.feature</p>
+<pre><code><span class="kw">Feature</span>: Kerning
+  Some pairs of glyphs sit badly at their advances: the A tucks under the
+  T's bar, the V and the A lean apart. The font says how far to pull such
+  a pair together, in font units, and kern(font, left, right) reads it:
+  0 when the font has no pair, and the order matters. With kerning on,
+  layout_run moves the pen by the pair value before placing each glyph
+  after the first, and run_advance shrinks by the same amount, so a kerned
+  pair is narrower than the sum of its advances by exactly the kern.
+
+  <span class="kw">Scenario</span>: The font's kern pairs, in font units
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  kern(font, "T", "A") = -79
+    <span class="kw">And</span>   kern(font, "A", "V") = -87
+    <span class="kw">And</span>   kern(font, "A", "T") = -129
+    <span class="kw">And</span>   kern(font, "V", "E") = 0
+    <span class="kw">And</span>   kern(font, "H", "a") = 0
+    <span class="kw">And</span>   kern(font, "space", "T") = -40
+
+  <span class="kw">Scenario</span>: A kerned pair is narrower than the unkerned sum by exactly the kern
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  run_advance(font, "Wa", 11, false) = 15.7427 ± 0.0001
+    <span class="kw">And</span>   run_advance(font, "Wa", 11, true) = 15.5654 ± 0.0001
+    <span class="kw">And</span>   run_advance(font, "Wa", 11, true) = run_advance(font, "Wa", 11, false) + kern(font, "W", "a") * 11 / 2048
+    <span class="kw">And</span>   run_advance(font, "Ha", 11, true) = run_advance(font, "Ha", 11, false)
+
+  <span class="kw">Scenario</span>: The pen moves by the pair before the second glyph is placed
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  kerned ← layout_run(font, "TAVERN", 64, 12, 70, true)
+    <span class="kw">And</span>   plain ← layout_run(font, "TAVERN", 64, 12, 70, false)
+    <span class="kw">Then</span>  kerned[0].x = 12
+    <span class="kw">And</span>   kerned[1].x = 47.7188 ± 0.0001
+    <span class="kw">And</span>   kerned[1].x = plain[1].x + kern(font, "T", "A") * 64 / 2048
+    <span class="kw">And</span>   kerned[2].x = 86.75
+    <span class="kw">And</span>   kerned[3].x = 127.4688 ± 0.0001
+    <span class="kw">And</span>   kerned[5].x = 203.25
+    <span class="kw">And</span>   plain[5].x = 208.4375
+    <span class="kw">And</span>   run_advance(font, "TAVERN", 64, true) = 236.875
+    <span class="kw">And</span>   run_advance(font, "TAVERN", 64, false) - run_advance(font, "TAVERN", 64, true) = 5.1875</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 18.3</span> Breaking lines</h2>
+
+  <p>A paragraph is a run that's too long. The <em>measure</em> is how wide a line may be, and
+    breaking a paragraph into lines that fit it is a problem with a hundred years of literature,
+    most of it about doing better than the obvious thing. This chapter does the obvious thing,
+    because it's what every text field on your screen does: <em>greedy</em> breaking. Take the
+    words one at a time. If the current line with the next word on the end still fits, add it. If
+    not, the line is done and the word starts the next one. <code>break_lines(font, text, size,
+    measure, kerning)</code> answers the lines as strings.</p>
+
+<pre><code>break_lines(font, text, size, measure, kerning):
+  words ← the runs of non-space characters in text
+  lines ← [];  current ← ""
+  <span class="kw">for</span> word <span class="kw">in</span> words:
+    candidate ← current = "" ? word : current + " " + word
+    <span class="kw">if</span> current ≠ "" <span class="kw">and</span> run_advance(font, candidate, size, kerning) &gt; measure:
+      append current to lines;  current ← word
+    <span class="kw">else</span>:
+      current ← candidate
+  <span class="kw">if</span> current ≠ "": append current to lines
+  <span class="kw">return</span> lines</code></pre>
+
+  <p>Three decisions are hidden in those ten lines, and the scenarios pin each of them. A line
+    exactly as wide as the measure fits: the comparison is <em>greater than</em>, and the second
+    scenario puts a line on the boundary and then a hundredth of a pixel past it. A word wider than
+    the measure can't be broken, so it sits alone on its own line and sticks out; the alternative,
+    breaking inside a word, is hyphenation, and it's a chapter in someone else's book. And the width
+    of a candidate line is measured with kerning if the line will be laid out with kerning, so the
+    pair across a space counts (Roboto kerns <code>space T</code>). Runs of spaces collapse to
+    one break, spaces at the ends vanish, and a text with no words has no lines.</p>
+
+  <figure>
+    <canvas id="fig183" role="img" aria-label="A paragraph of small text set left-aligned between two vertical cyan rules that mark the measure, seven lines, each ending before the right rule with a ragged right edge"></canvas>
+    <figcaption><span class="fig">Figure 18.3</span> Greedy breaking into a 300-pixel measure at 16 pixels. No line crosses the right rule, and each one stopped because the next word wouldn't have fit.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter18-breaking.feature">
+    <p class="label">features/chapter18-breaking.feature</p>
+<pre><code><span class="kw">Feature</span>: Breaking lines
+  break_lines(font, text, size, measure, kerning) breaks a paragraph into
+  lines no wider than the measure, greedily: the words are the runs of
+  non-space characters, and each word in turn joins the current line if
+  the line with it, one space between, has a run_advance no greater than
+  the measure; otherwise it starts a new line. A line's width is measured
+  with the same kerning the run will be laid out with, so the pair across
+  a space counts. A word wider than the measure sits alone on its line and
+  overflows. Only spaces are break opportunities.
+
+  <span class="kw">Scenario</span>: Greedy breaking at three measures
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   text ← "the quick brown fox jumps over the lazy dog"
+    <span class="kw">Then</span>  break_lines(font, text, 11, 100, true) = ["the quick brown fox", "jumps over the lazy", "dog"]
+    <span class="kw">And</span>   break_lines(font, text, 11, 60, true) = ["the quick", "brown fox", "jumps over", "the lazy dog"]
+    <span class="kw">And</span>   break_lines(font, text, 11, 150, true) = ["the quick brown fox jumps", "over the lazy dog"]
+    <span class="kw">And</span>   run_advance(font, "the quick brown fox", 11, true) ≤ 100
+    <span class="kw">And</span>   100 ≤ run_advance(font, "the quick brown fox jumps", 11, true)
+
+  <span class="kw">Scenario</span>: A line exactly as wide as the measure fits
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   text ← "the quick brown fox jumps over the lazy dog"
+    <span class="kw">And</span>   measure ← run_advance(font, "the quick", 11, true)
+    <span class="kw">Then</span>  measure = 44.521 ± 0.0001
+    <span class="kw">And</span>   break_lines(font, text, 11, measure, true)[0] = "the quick"
+    <span class="kw">And</span>   length(break_lines(font, text, 11, measure, true)) = 6
+    <span class="kw">And</span>   break_lines(font, text, 11, measure - 0.01, true)[0] = "the"
+    <span class="kw">And</span>   length(break_lines(font, text, 11, measure - 0.01, true)) = 7
+
+  <span class="kw">Scenario</span>: A word wider than the measure sits alone and overflows
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  break_lines(font, "a supercalifragilistic word", 11, 40, true) = ["a", "supercalifragilistic", "word"]
+    <span class="kw">And</span>   40 ≤ run_advance(font, "supercalifragilistic", 11, true)
+
+  <span class="kw">Scenario</span>: No text is no lines, and runs of spaces are one break
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  length(break_lines(font, "", 11, 100, true)) = 0
+    <span class="kw">And</span>   break_lines(font, "  two  spaces ", 11, 100, true) = ["two spaces"]
+    <span class="kw">And</span>   break_lines(font, "one", 11, 1, true) = ["one"]</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 18.4</span> Four alignments</h2>
+
+  <p>Every line but the last comes out a bit short of the measure, and what you do with the
+    <em>slack</em>, the measure minus the line's width, is the alignment. Leave it on the right and
+    the paragraph is set <em>left</em>, with a ragged right edge. Put it on the left and it's set
+    <em>right</em>. Split it and the line is <em>centered</em>. The fourth choice is the one books
+    use: spread the slack across the spaces, so every gap in the line grows by the same amount and
+    the line ends exactly at the measure. That's <em>justified</em>, and it needs a line with at
+    least one space; a line that's one word can't be stretched and is laid out left instead.
+    <code>layout_line(font, text, size, x, y, measure, align, kerning)</code> is
+    <code>layout_run</code> plus one of those four rules, with <code>align</code> one of the strings
+    <code>"left"</code>, <code>"right"</code>, <code>"center"</code>, <code>"justify"</code>.</p>
+
+<pre><code>layout_line(font, text, size, x, y, measure, align, kerning):
+  run ← layout_run(font, text, size, x, y, kerning)
+  slack ← measure − run_advance(font, text, size, kerning)
+  <span class="kw">if</span> align = "justify" <span class="kw">and</span> text has a space:
+    extra ← slack / (number of spaces in text)
+    <span class="kw">for</span> each placement, add extra × (spaces before it in text) to its x
+  <span class="kw">else</span>:
+    shift ← align = "right" ? slack : align = "center" ? slack / 2 : 0
+    add shift to every placement's x
+  <span class="kw">return</span> run</code></pre>
+
+  <p>A paragraph is lines stacked: <code>layout_paragraph</code> breaks the text, lays out each
+    line with the same alignment, puts the first baseline at <code>y</code> and each next one
+    <code>line_height</code> lower, and answers one flat list of placements, since the renderer
+    doesn't care which line a glyph came from. It keeps one rule of its own: a justified
+    paragraph's last line is laid out left, because stretching three words across the whole
+    measure is how you can tell a text engine was written in a weekend.</p>
+
+  <div class="test" data-feature="chapter18-aligning.feature">
+    <p class="label">features/chapter18-aligning.feature</p>
+<pre><code><span class="kw">Feature</span>: Aligning
+  layout_line(font, text, size, x, y, measure, align, kerning) lays a line
+  out inside a measure that starts at x. The slack is the measure minus
+  the line's run_advance. "left" leaves the slack on the right, "right"
+  puts it on the left, "center" splits it, and "justify" spreads it over
+  the line's spaces, each gap growing by slack / spaces, so the line ends
+  exactly at the measure. A line with no space can't be justified and is
+  laid out left. layout_paragraph(font, text, size, x, y, measure, align,
+  kerning) breaks the text and lays out every line, the first baseline at
+  y and each next one line_height below; when the alignment is justify,
+  the last line is laid out left. It answers one flat list of placements.
+
+  <span class="kw">Scenario</span>: Four alignments of one short line
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">Then</span>  run_advance(font, "to be", 11, true) = 24.4814 ± 0.0001
+    <span class="kw">And</span>   layout_line(font, "to be", 11, 10, 20, 60, "left", true)[0].x = 10
+    <span class="kw">And</span>   layout_line(font, "to be", 11, 10, 20, 60, "left", true)[4].x = 28.6538 ± 0.0001
+    <span class="kw">And</span>   layout_line(font, "to be", 11, 10, 20, 60, "right", true)[0].x = 45.5186 ± 0.0001
+    <span class="kw">And</span>   layout_line(font, "to be", 11, 10, 20, 60, "right", true)[4].x = 64.1724 ± 0.0001
+    <span class="kw">And</span>   layout_line(font, "to be", 11, 10, 20, 60, "center", true)[0].x = 27.7593 ± 0.0001
+    <span class="kw">And</span>   layout_line(font, "to be", 11, 10, 20, 60, "center", true)[4].x = 46.4131 ± 0.0001
+    <span class="kw">And</span>   layout_line(font, "to be", 11, 10, 20, 60, "right", true)[4].x + pen_advance(font, "e", 11) = 70 ± 0.0001
+
+  <span class="kw">Scenario</span>: Justify stretches the spaces, not the letters
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  run ← layout_line(font, "to be", 11, 10, 20, 60, "justify", true)
+    <span class="kw">Then</span>  run[0].x = 10
+    <span class="kw">And</span>   run[1].x = 13.4858 ± 0.0001
+    <span class="kw">And</span>   run[2].name = "space"
+    <span class="kw">And</span>   run[2].x = 19.7593 ± 0.0001
+    <span class="kw">And</span>   run[3].x = 58.001 ± 0.0001
+    <span class="kw">And</span>   run[4].x = 64.1724 ± 0.0001
+    <span class="kw">And</span>   run[4].x + pen_advance(font, "e", 11) = 70 ± 0.0001
+    <span class="kw">And</span>   layout_line(font, "to", 11, 10, 20, 60, "justify", true)[1].x = 13.4858 ± 0.0001
+
+  <span class="kw">Scenario</span>: A paragraph stacks its lines by line_height and leaves the last line ragged
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  run ← layout_paragraph(font, "the quick brown fox jumps over the lazy dog", 11, 10, 20, 100, "justify", true)
+    <span class="kw">Then</span>  length(run) = 41
+    <span class="kw">And</span>   run[0].name = "t"
+    <span class="kw">And</span>   run[0].x = 10
+    <span class="kw">And</span>   run[0].y = 20
+    <span class="kw">And</span>   run[18].name = "x"
+    <span class="kw">And</span>   run[18].x + pen_advance(font, "x", 11) = 110 ± 0.0001
+    <span class="kw">And</span>   run[19].name = "j"
+    <span class="kw">And</span>   run[19].x = 10
+    <span class="kw">And</span>   run[19].y = 20 + line_height(font, 11)
+    <span class="kw">And</span>   run[19].y = 32.8906 ± 0.0001
+    <span class="kw">And</span>   run[38].name = "d"
+    <span class="kw">And</span>   run[38].x = 10
+    <span class="kw">And</span>   run[38].y = 45.7813 ± 0.0001
+    <span class="kw">And</span>   run[40].name = "g"
+    <span class="kw">And</span>   run[40].x = 22.4771 ± 0.0001</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>InDesign's Paragraph panel opens with seven alignment buttons; the first four are this
+      section, and the fourth is labelled <em>Justify with last line aligned left</em>. Its
+      Character panel's <em>Kerning</em> field, set to <em>Metrics</em>, is <code>kern</code>
+      reading the font's pairs; <em>Optical</em> is InDesign guessing them instead.</p>
+  </aside>
+
+  <h2><span class="sec">§ 18.5</span> The seam</h2>
+
+  <p>Now draw it. <code>draw_run(canvas, font, run, size, color, linear)</code> takes the
+    placements and hands each one to chapter 17: split its <code>x</code> with
+    <code>subpixel_of</code> into a whole pixel and a quarter, fetch the glyph's bitmap for that
+    quarter, and paint it with the pen at that pixel. The baseline needs a whole pixel row too, and
+    there's no vertical equivalent of the quarters, so it rounds to the nearest row, halves up: at
+    16 pixels the baselines land on rows 24, 43, 62, 80. That's the seam. Everything above it is
+    arithmetic on a string; everything below it is chapter 17, unchanged. A run laid out at whole
+    pixels draws exactly what <code>draw_text</code> drew, and the scenario says so with a diff of
+    zero.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>The obvious shortcut is to round the pen to a whole pixel after every glyph, so the bitmap
+      for quarter zero is the only one you ever need. Each rounding is off by at most half a pixel,
+      which sounds harmless. It isn't, because the errors don't cancel: an <em>i</em> at 11 pixels
+      advances by 2.67, and rounded it advances by 3, every time, so twenty of them drift six and a
+      half pixels. Figure 18.4 sets a line chosen to be mean about it. The rounded version is
+      fifteen pixels longer, and every word in it is a different amount too wide. Keep the pen
+      fractional and round only when you paint; the quarter-pixel cache in chapter 17 exists for
+      exactly this reason.</p>
+  </div>
+
+  <figure>
+    <canvas id="fig184" role="img" aria-label="Two copies of one line of small text, magnified: the upper laid out with a fractional pen ends at a cyan tick; the lower, with the pen rounded to whole pixels after every glyph, runs on past the tick and ends at a magenta one, the two ends joined by a magenta bracket"></canvas>
+    <figcaption><span class="fig">Figure 18.4</span> The same line, the pen fractional above and rounded after every glyph below. The magenta bracket is fifteen pixels of accumulated rounding.</figcaption>
+  </figure>
+
+  <h2><span class="sec">§ 18.6</span> Putting it together</h2>
+
+  <p>The plate is one paragraph set four ways. Every glyph in it went through
+    <code>layout_paragraph</code>, then <code>draw_run</code>, and the only thing that changes
+    between the panels is a string.</p>
+
+<pre><code>alignment_plate():
+  font ← load_font(roboto.json);  c ← canvas(660, 236) filled with paper
+  text ← THROUGH_LINE;  size ← 14;  measure ← 300
+  <span class="kw">for</span> k, align <span class="kw">in</span> ("left", "right", "center", "justify"):
+    x ← 20 + (k mod 2) × 320;  y ← 24 + (k div 2) × 108
+    run ← layout_paragraph(font, text, size, x, y, measure, align, true)
+    n ← number of lines break_lines gives for text at this measure
+    <span class="kw">for</span> i <span class="kw">in</span> 0 .. n − 1: dim hairline 0.5 wide along the baseline y + i × line_height, across the measure
+    cyan hairlines 0.5 wide down x and x + measure, from 14 above the first baseline to 5 below the last
+    draw_run(c, font, run, size, gray, true)
+  <span class="kw">return</span> c
+
+plate_18():
+  <span class="kw">return</span> alignment_plate()</code></pre>
+
+  <div class="test" data-feature="chapter18-plate.feature">
+    <p class="label">features/chapter18-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 18
+  draw_run(canvas, font, run, size, color, linear) is the seam between
+  layout and rendering: every placement goes through chapter 17, its x
+  split by subpixel_of into a whole pixel and a quarter, the glyph's
+  bitmap for that quarter painted with the pen at that pixel, and its
+  baseline rounded to the nearest pixel row, halves up. A run at whole
+  pixels draws exactly what chapter 17's draw_text drew. The renders use
+  chapter 16's inks (paper, gray, dim, magenta, cyan) and its hairlines
+  (butt caps, round joins, 1 wide unless said), and kerning is on unless
+  said. kern_demo() is 320 by 190 paper: TAVERN at a 64 pixel em from x
+  = 12, kerned on the baseline y = 70 and unkerned on y = 160, a dim
+  hairline along each baseline from x = 4 to 316, a tick from 3 to 12
+  below the baseline at every placement's x and at the run's end, cyan on
+  the kerned row and dim on the other, and magenta hairlines from y = 84
+  to 180 at both runs' ends joined along y = 180. break_demo() is 340 by
+  150 paper: the through-line, THROUGH_LINE below, as a left paragraph at
+  16 pixels from (20, 30) in a 300 measure, and cyan hairlines down x = 20
+  and x = 320 from y = 10 to 140. drift_demo() is a 260 by 44 white canvas
+  magnified three times: the line "little illicit lilies fill the hill
+  until it is still" at 11 pixels from x = 6, black, unkerned, on the
+  baseline y = 14 as layout_run lays it out and on y = 34 with the pen
+  rounded to a whole pixel after every glyph; hairlines 2 wide: cyan from
+  y = 3 to 18 and 23 to 38 at the exact run's end, magenta from 23 to 38
+  at the rounded run's end, and magenta along y = 40 between the two ends.
+  alignment_plate() is 660 by 236 paper: THROUGH_LINE at 14 pixels in a
+  300 measure four times, left at (20, 24), right at (340, 24), center at
+  (20, 132) and justify at (340, 132), each with a dim hairline 0.5 wide
+  along every baseline across the measure and cyan hairlines 0.5 wide
+  down both edges of the measure from 14 above the first baseline to 5
+  below the last; plate_18() is it.
+
+  THROUGH_LINE is "Rasterization computes coverage. Painting composites
+  paint through coverage. Once you hold a coverage buffer, a stroke is a
+  fill of a different outline, a clip is a multiplication of two buffers,
+  and a glyph is a path somebody else drew."
+
+  <span class="kw">Scenario</span>: A run at whole pixels draws what chapter 17 drew
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   a ← canvas(30, 14)
+    <span class="kw">And</span>   b ← canvas(30, 14)
+    <span class="kw">When</span>  fill(a, color(1, 1, 1))
+    <span class="kw">And</span>   fill(b, color(1, 1, 1))
+    <span class="kw">And</span>   draw_run(a, font, layout_run(font, "Ha", 11, 2, 11, false), 11, color(0, 0, 0), true)
+    <span class="kw">And</span>   pen ← draw_text(b, font, "Ha", 11, 2, 11, color(0, 0, 0), true)
+    <span class="kw">Then</span>  max_channel_difference(canvas_to_p6(a), canvas_to_p6(b)) = 0
+    <span class="kw">And</span>   pixel_at(a, 3, 6) = color(0.0331, 0.0331, 0.0331)
+
+  <span class="kw">Scenario</span>: The baseline rounds to a pixel row, halves up
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   a ← canvas(30, 14)
+    <span class="kw">And</span>   b ← canvas(30, 14)
+    <span class="kw">When</span>  fill(a, color(1, 1, 1))
+    <span class="kw">And</span>   fill(b, color(1, 1, 1))
+    <span class="kw">And</span>   draw_run(a, font, layout_run(font, "Ha", 11, 2.4, 11.5, false), 11, color(0, 0, 0), true)
+    <span class="kw">And</span>   draw_run(b, font, layout_run(font, "Ha", 11, 2.4, 11.4, false), 11, color(0, 0, 0), true)
+    <span class="kw">Then</span>  subpixel_of(2.4) = (2, 2)
+    <span class="kw">And</span>   pixel_at(a, 3, 11) = color(0.4077, 0.4077, 0.4077)
+    <span class="kw">And</span>   pixel_at(a, 3, 12) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(b, 3, 11) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(b, 3, 10) = color(0.4077, 0.4077, 0.4077)
+
+  <span class="kw">Scenario</span>: The kern pair the font asks for
+    <span class="kw">Given</span> c ← kern_demo()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-18/kerning.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 320
+    <span class="kw">And</span>   c.height = 190
+    <span class="kw">And</span>   ppm_pixel(p6, 135, 40) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 135, 130) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 141, 130) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 141, 40) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 251, 180) = (176, 93, 146) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Greedy breaking inside a measure
+    <span class="kw">Given</span> c ← break_demo()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-18/breaking.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 340
+    <span class="kw">And</span>   c.height = 150
+    <span class="kw">And</span>   ppm_pixel(p6, 20, 60) = (93, 167, 181) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 31, 28) = (206, 206, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 200, 140) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: A rounded pen drifts
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">And</span>   c ← drift_demo()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-18/drift.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  pen_advance(font, "i", 11) = 2.6694 ± 0.0001
+    <span class="kw">And</span>   20 * round(pen_advance(font, "i", 11)) - run_advance(font, "iiiiiiiiiiiiiiiiiiii", 11, false) = 6.6113 ± 0.0001
+    <span class="kw">And</span>   c.width = 780
+    <span class="kw">And</span>   c.height = 132
+    <span class="kw">And</span>   ppm_pixel(p6, 571, 30) = (124, 225, 243) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 616, 90) = (237, 124, 196) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 600, 120) = (237, 124, 196) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 600, 60) = (255, 255, 255)
+    <span class="kw">And</span>   ppm_pixel(p6, 21, 40) = (114, 114, 114) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: Plate 18
+    <span class="kw">Given</span> c ← plate_18()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-18/plate-18.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 660
+    <span class="kw">And</span>   c.height = 236
+    <span class="kw">And</span>   ppm_pixel(p6, 340, 130) = (72, 124, 135) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 24, 20) = (55, 55, 59) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 5, 5) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate18" role="img" aria-label="One short paragraph set four times in a two by two grid: left aligned, right aligned, centered, and justified, each between two thin cyan rules marking the measure, with a dim rule under every baseline"></canvas>
+    <figcaption><span class="fig">Plate 18</span> One paragraph, four alignments. Every glyph is a placement from <code>layout_paragraph</code> handed to chapter 17's bitmaps at its nearest quarter pixel.</figcaption>
+  </figure>
+
+  <p>What you have is a list of glyph names and positions, and a renderer that will draw any such
+    list. Chapter 19 is about the step this chapter skipped: the one between the string and the
+    glyph names, which for English is a lookup and for most of the world's writing is not.</p>
+
+  <nav class="endnav">
+    <a href="chapter-17.html">← 17 · Rasterizing Type Well</a>
+    <span>Chapter 18 · Setting a Line of Text</span>
+    <a href="chapter-19.html">Next: 19 · Shaping, a Field Guide →</a>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+/* the figures draw from this subset of reference/chapter-16/roboto.json */
+var GLYPHS={"units_per_em":2048,"ascender":1900,"descender":-500,"line_gap":0,"cmap":{"32":"space","44":"comma","46":"period","65":"A","69":"E","78":"N","79":"O","80":"P","82":"R","84":"T","86":"V","97":"a","98":"b","99":"c","100":"d","101":"e","102":"f","103":"g","104":"h","105":"i","106":"j","107":"k","108":"l","109":"m","110":"n","111":"o","112":"p","113":"q","114":"r","115":"s","116":"t","117":"u","118":"v","119":"w","120":"x","121":"y","122":"z"},"glyphs":{".notdef":{"advance":908,"contours":[[[808,0,true],[100,0,true],[100,1456,true],[808,1456,true]],[[754,84,true],[754,1371,true],[480,728,true]],[[154,1359,true],[154,96,true],[422,728,true]],[[194,54,true],[709,54,true],[451,660,true]],[[451,796,true],[709,1402,true],[194,1402,true]]],"components":[]},"A":{"advance":1336,"contours":[[[973,380,true],[363,380,true],[226,0,true],[28,0,true],[584,1456,true],[752,1456,true],[1309,0,true],[1112,0,true]],[[421,538,true],[916,538,true],[668,1219,true]]],"components":[]},"E":{"advance":1164,"contours":[[[992,673,true],[361,673,true],[361,157,true],[1094,157,true],[1094,0,true],[169,0,true],[169,1456,true],[1084,1456,true],[1084,1298,true],[361,1298,true],[361,830,true],[992,830,true]]],"components":[]},"N":{"advance":1460,"contours":[[[1288,0,true],[1095,0,true],[362,1122,true],[362,0,true],[169,0,true],[169,1456,true],[362,1456,true],[1097,329,true],[1097,1456,true],[1288,1456,true]]],"components":[]},"O":{"advance":1408,"contours":[[[1289,681,true],[1289,467,false],[1145,148,false],[881,-20,false],[705,-20,true],[533,-20,false],[267,149,false],[120,462,false],[118,668,true],[118,773,true],[118,983,false],[264,1305,false],[531,1476,false],[703,1476,true],[878,1476,false],[1145,1307,false],[1289,986,false],[1289,773,true]],[[1098,775,true],[1098,1034,false],[890,1311,false],[703,1311,true],[521,1311,false],[312,1034,false],[309,788,true],[309,681,true],[309,430,false],[520,143,false],[705,143,true],[891,143,false],[1095,414,false],[1098,667,true]]],"components":[]},"P":{"advance":1292,"contours":[[[361,570,true],[361,0,true],[169,0,true],[169,1456,true],[706,1456,true],[945,1456,false],[1216,1212,false],[1216,1011,true],[1216,799,false],[951,570,false],[704,570,true]],[[361,727,true],[706,727,true],[860,727,false],[1024,872,false],[1024,1009,true],[1024,1139,false],[860,1295,false],[717,1298,true],[361,1298,true]]],"components":[]},"R":{"advance":1261,"contours":[[[703,589,true],[361,589,true],[361,0,true],[168,0,true],[168,1456,true],[650,1456,true],[896,1456,false],[1161,1232,false],[1161,1018,true],[1161,882,false],[1014,680,false],[883,630,true],[1225,12,true],[1225,0,true],[1019,0,true]],[[361,746,true],[656,746,true],[799,746,false],[968,894,false],[968,1018,true],[968,1153,false],[807,1297,false],[655,1298,true],[361,1298,true]]],"components":[]},"T":{"advance":1222,"contours":[[[1175,1298,true],[707,1298,true],[707,0,true],[516,0,true],[516,1298,true],[49,1298,true],[49,1456,true],[1175,1456,true]]],"components":[]},"V":{"advance":1303,"contours":[[[651,255,true],[1067,1456,true],[1277,1456,true],[737,0,true],[567,0,true],[28,1456,true],[237,1456,true]]],"components":[]},"a":{"advance":1114,"contours":[[[808,0,true],[792,32,false],[782,114,true],[653,-20,false],[474,-20,true],[314,-20,false],[109,161,false],[109,300,true],[109,469,false],[366,656,false],[599,656,true],[779,656,true],[779,741,true],[779,838,false],[663,953,false],[550,953,true],[451,953,false],[317,853,false],[317,782,true],[131,782,true],[131,863,false],[246,1014,false],[443,1102,false],[561,1102,true],[748,1102,false],[960,915,false],[964,751,true],[964,253,true],[964,104,false],[1002,16,true],[1002,0,true]],[[501,141,true],[588,141,false],[744,231,false],[779,303,true],[779,525,true],[634,525,true],[294,525,false],[294,326,true],[294,239,false],[410,141,false]]],"components":[]},"b":{"advance":1149,"contours":[[[1056,529,true],[1056,281,false],[828,-20,false],[636,-20,true],[431,-20,false],[319,125,true],[310,0,true],[140,0,true],[140,1536,true],[325,1536,true],[325,963,true],[437,1102,false],[831,1102,false],[1056,804,false],[1056,545,true]],[[871,550,true],[871,739,false],[725,945,false],[588,945,true],[405,945,false],[325,775,true],[325,307,true],[410,137,false],[590,137,true],[723,137,false],[871,343,false]]],"components":[]},"c":{"advance":1072,"contours":[[[574,131,true],[673,131,false],[821,251,false],[829,341,true],[1004,341,true],[999,248,false],[881,80,false],[684,-20,false],[574,-20,true],[353,-20,false],[92,275,false],[92,531,true],[92,562,true],[92,720,false],[208,966,false],[425,1102,false],[573,1102,true],[755,1102,false],[996,884,false],[1004,710,true],[829,710,true],[821,815,false],[678,950,false],[573,950,true],[432,950,false],[277,747,false],[277,555,true],[277,520,true],[277,333,false],[431,131,false]]],"components":[]},"comma":{"advance":402,"contours":[[[134,-290,true],[29,-218,true],[123,-87,false],[127,52,true],[127,219,true],[308,219,true],[308,74,true],[308,-27,false],[209,-229,false]]],"components":[]},"d":{"advance":1155,"contours":[[[95,550,true],[95,799,false],[331,1102,false],[522,1102,true],[712,1102,false],[823,972,true],[823,1536,true],[1008,1536,true],[1008,0,true],[838,0,true],[829,116,true],[718,-20,false],[520,-20,true],[332,-20,false],[95,288,false],[95,536,true]],[[280,529,true],[280,345,false],[432,137,false],[566,137,true],[742,137,false],[823,295,true],[823,792,true],[740,945,false],[568,945,true],[432,945,false],[280,735,false]]],"components":[]},"e":{"advance":1085,"contours":[[[589,-20,true],[369,-20,false],[93,269,false],[93,511,true],[93,545,true],[93,706,false],[216,959,false],[437,1102,false],[566,1102,true],[777,1102,false],[1011,824,false],[1011,565,true],[1011,488,true],[278,488,true],[282,328,false],[461,131,false],[599,131,true],[697,131,false],[833,211,false],[884,277,true],[997,189,true],[861,-20,false]],[[566,950,true],[454,950,false],[302,787,false],[284,640,true],[826,640,true],[826,654,true],[818,795,false],[682,950,false]]],"components":[]},"f":{"advance":711,"contours":[[[231,0,true],[231,939,true],[60,939,true],[60,1082,true],[231,1082,true],[231,1193,true],[231,1367,false],[417,1557,false],[587,1557,true],[651,1557,false],[714,1540,true],[704,1390,true],[657,1399,false],[604,1399,true],[514,1399,false],[416,1294,false],[416,1196,true],[416,1082,true],[647,1082,true],[647,939,true],[416,939,true],[416,0,true]]],"components":[]},"g":{"advance":1149,"contours":[[[96,550,true],[96,803,false],[330,1102,false],[523,1102,true],[721,1102,false],[832,962,true],[841,1082,true],[1010,1082,true],[1010,26,true],[1010,-184,false],[761,-426,false],[551,-426,true],[434,-426,false],[210,-326,false],[151,-239,true],[247,-128,true],[366,-275,false],[538,-275,true],[673,-275,false],[824,-123,false],[824,15,true],[824,108,true],[713,-20,false],[521,-20,true],[331,-20,false],[96,286,false]],[[282,529,true],[282,346,false],[432,137,false],[567,137,true],[742,137,false],[824,296,true],[824,790,true],[739,945,false],[569,945,true],[434,945,false],[282,735,false]]],"components":[]},"h":{"advance":1128,"contours":[[[325,951,true],[448,1102,false],[645,1102,true],[988,1102,false],[991,715,true],[991,0,true],[806,0,true],[806,716,true],[805,833,false],[700,945,false],[589,945,true],[499,945,false],[363,849,false],[325,771,true],[325,0,true],[140,0,true],[140,1536,true],[325,1536,true]]],"components":[]},"i":{"advance":497,"contours":[[[341,0,true],[156,0,true],[156,1082,true],[341,1082,true]],[[141,1369,true],[141,1414,false],[196,1476,false],[304,1476,false],[360,1414,false],[360,1324,false],[304,1264,false],[196,1264,false],[141,1324,false]]],"components":[]},"j":{"advance":489,"contours":[[[331,1082,true],[331,-125,true],[331,-437,false],[48,-437,true],[-13,-437,false],[-65,-419,true],[-65,-271,true],[-33,-279,false],[19,-279,true],[81,-279,false],[146,-212,false],[146,-129,true],[146,1082,true]],[[127,1369,true],[127,1413,false],[182,1476,false],[235,1476,true],[289,1476,false],[345,1414,false],[345,1324,false],[289,1264,false],[181,1264,false],[127,1324,false]]],"components":[]},"k":{"advance":1038,"contours":[[[442,501,true],[326,380,true],[326,0,true],[141,0,true],[141,1536,true],[326,1536,true],[326,607,true],[425,726,true],[762,1082,true],[987,1082,true],[566,630,true],[1036,0,true],[819,0,true]]],"components":[]},"l":{"advance":497,"contours":[[[341,0,true],[156,0,true],[156,1536,true],[341,1536,true]]],"components":[]},"m":{"advance":1795,"contours":[[[314,1082,true],[319,962,true],[438,1102,false],[640,1102,true],[867,1102,false],[949,928,true],[1003,1006,false],[1176,1102,false],[1294,1102,true],[1650,1102,false],[1656,725,true],[1656,0,true],[1471,0,true],[1471,714,true],[1471,830,false],[1365,945,false],[1240,945,true],[1137,945,false],[1001,822,false],[990,718,true],[990,0,true],[804,0,true],[804,709,true],[804,945,false],[573,945,true],[391,945,false],[324,790,true],[324,0,true],[139,0,true],[139,1082,true]]],"components":[]},"n":{"advance":1130,"contours":[[[315,1082,true],[321,946,true],[445,1102,false],[645,1102,true],[988,1102,false],[991,715,true],[991,0,true],[806,0,true],[806,716,true],[805,833,false],[700,945,false],[589,945,true],[499,945,false],[363,849,false],[325,771,true],[325,0,true],[140,0,true],[140,1082,true]]],"components":[]},"o":{"advance":1168,"contours":[[[91,551,true],[91,710,false],[216,964,false],[439,1102,false],[582,1102,true],[803,1102,false],[1076,796,false],[1076,542,true],[1076,529,true],[1076,371,false],[955,120,false],[730,-20,false],[584,-20,true],[364,-20,false],[91,286,false],[91,538,true]],[[277,529,true],[277,349,false],[444,131,false],[584,131,true],[725,131,false],[891,352,false],[891,551,true],[891,729,false],[722,950,false],[582,950,true],[445,950,false],[277,732,false]]],"components":[]},"p":{"advance":1149,"contours":[[[1054,529,true],[1054,282,false],[828,-20,false],[635,-20,true],[438,-20,false],[325,105,true],[325,-416,true],[140,-416,true],[140,1082,true],[309,1082,true],[318,962,true],[431,1102,false],[632,1102,true],[827,1102,false],[1054,808,false],[1054,546,true]],[[869,550,true],[869,733,false],[713,945,false],[577,945,true],[409,945,false],[325,796,true],[325,279,true],[408,131,false],[579,131,true],[712,131,false],[869,342,false]]],"components":[]},"period":{"advance":539,"contours":[[[144,97,true],[144,145,false],[201,209,false],[315,209,false],[374,145,false],[374,97,true],[374,51,false],[315,-11,false],[201,-11,false],[144,51,false]]],"components":[]},"q":{"advance":1164,"contours":[[[95,550,true],[95,805,false],[329,1102,false],[526,1102,true],[718,1102,false],[829,973,true],[837,1082,true],[1007,1082,true],[1007,-416,true],[822,-416,true],[822,100,true],[710,-20,false],[524,-20,true],[328,-20,false],[95,285,false],[95,537,true]],[[280,529,true],[280,343,false],[437,131,false],[570,131,true],[735,131,false],[822,277,true],[822,807,true],[734,950,false],[572,950,true],[438,950,false],[280,737,false]]],"components":[]},"r":{"advance":693,"contours":[[[663,916,true],[621,923,false],[572,923,true],[390,923,false],[325,768,true],[325,0,true],[140,0,true],[140,1082,true],[320,1082,true],[323,957,true],[414,1102,false],[581,1102,true],[635,1102,false],[663,1088,true]]],"components":[]},"s":{"advance":1056,"contours":[[[770,287,true],[770,362,false],[657,445,false],[376,505,false],[211,589,false],[132,705,false],[132,785,true],[132,918,false],[357,1102,false],[532,1102,true],[716,1102,false],[945,912,false],[945,764,true],[759,764,true],[759,840,false],[630,950,false],[532,950,true],[431,950,false],[317,862,false],[317,791,true],[317,724,false],[423,656,false],[700,594,false],[872,508,false],[955,387,false],[955,300,true],[955,155,false],[723,-20,false],[538,-20,true],[408,-20,false],[208,72,false],[95,237,false],[95,333,true],[280,333,true],[285,240,false],[424,131,false],[538,131,true],[643,131,false],[770,216,false]]],"components":[]},"space":{"advance":507,"contours":[],"components":[]},"t":{"advance":669,"contours":[[[391,1344,true],[391,1082,true],[593,1082,true],[593,939,true],[391,939,true],[391,268,true],[391,203,false],[445,138,false],[510,138,true],[542,138,false],[598,150,true],[598,0,true],[525,-20,false],[456,-20,true],[332,-20,false],[206,130,false],[206,268,true],[206,939,true],[9,939,true],[9,1082,true],[206,1082,true],[206,1344,true]]],"components":[]},"u":{"advance":1129,"contours":[[[808,107,true],[700,-20,false],[491,-20,true],[318,-20,false],[137,181,false],[136,378,true],[136,1082,true],[321,1082,true],[321,383,true],[321,137,false],[521,137,true],[733,137,false],[803,295,true],[803,1082,true],[988,1082,true],[988,0,true],[812,0,true]]],"components":[]},"v":{"advance":992,"contours":[[[497,251,true],[765,1082,true],[954,1082,true],[566,0,true],[425,0,true],[33,1082,true],[222,1082,true]]],"components":[]},"w":{"advance":1539,"contours":[[[1098,255,true],[1306,1082,true],[1491,1082,true],[1176,0,true],[1026,0,true],[763,820,true],[507,0,true],[357,0,true],[43,1082,true],[227,1082,true],[440,272,true],[692,1082,true],[841,1082,true]]],"components":[]},"x":{"advance":1015,"contours":[[[503,687,true],[743,1082,true],[959,1082,true],[605,547,true],[970,0,true],[756,0,true],[506,405,true],[256,0,true],[41,0,true],[406,547,true],[52,1082,true],[266,1082,true]]],"components":[]},"y":{"advance":969,"contours":[[[494,271,true],[746,1082,true],[944,1082,true],[509,-167,true],[408,-437,false],[188,-437,true],[153,-434,true],[84,-421,true],[84,-271,true],[134,-275,true],[228,-275,false],[333,-199,false],[367,-98,true],[408,12,true],[22,1082,true],[224,1082,true]]],"components":[]},"z":{"advance":1015,"contours":[[[314,151,true],[947,151,true],[947,0,true],[88,0,true],[88,136,true],[685,929,true],[97,929,true],[97,1082,true],[917,1082,true],[917,951,true]]],"components":[]}},"kern":[["space","T",-40],["A","O",-11],["A","T",-129],["A","V",-87],["A","o",-12],["A","t",-17],["A","u",-11],["A","v",-50],["A","w",-33],["A","y",-50],["A","z",12],["E","T",20],["E","c",-19],["E","d",-19],["E","e",-19],["E","f",-18],["E","g",-19],["E","o",-19],["E","q",-19],["E","u",-17],["E","v",-26],["E","w",-22],["E","y",-26],["N","A",18],["N","T",-29],["O","comma",-102],["O","period",-102],["O","A",-21],["O","T",-27],["O","V",-22],["P","comma",-324],["P","period",-324],["P","A",-138],["P","a",-11],["P","c",-13],["P","d",-13],["P","e",-13],["P","g",-13],["P","o",-13],["P","q",-13],["P","t",14],["P","v",15],["P","y",15],["R","T",-80],["R","V",-19],["T","space",-40],["T","comma",-218],["T","period",-218],["T","A",-79],["T","O",-28],["T","T",16],["T","V",16],["T","a",-113],["T","c",-99],["T","d",-99],["T","e",-99],["T","g",-99],["T","m",-109],["T","n",-109],["T","o",-99],["T","p",-109],["T","q",-99],["T","r",-75],["T","s",-116],["T","u",-95],["T","v",-72],["T","w",-57],["T","x",-77],["T","y",-72],["T","z",-60],["V","comma",-225],["V","period",-225],["V","A",-75],["V","O",-13],["V","a",-46],["V","c",-44],["V","d",-44],["V","e",-44],["V","g",-44],["V","o",-46],["V","q",-44],["V","r",-30],["V","u",-28],["V","v",-11],["V","y",-11],["a","v",-15],["a","y",-15],["b","v",-11],["b","x",-15],["b","y",-11],["b","z",-15],["e","v",-13],["e","y",-13],["f","c",-24],["f","d",-24],["f","e",-24],["f","g",-24],["f","q",-24],["k","c",-20],["k","d",-20],["k","e",-20],["k","g",-20],["k","q",-20],["o","v",-15],["o","x",-21],["o","y",-15],["o","z",-16],["p","v",-11],["p","x",-15],["p","y",-11],["p","z",-15],["r","comma",-123],["r","period",-123],["r","a",-40],["r","c",-19],["r","d",-19],["r","e",-19],["r","f",15],["r","g",-19],["r","o",-20],["r","q",-19],["r","t",50],["r","v",18],["r","w",17],["r","y",18],["t","o",-20],["v","comma",-107],["v","period",-107],["v","a",-15],["v","c",-13],["v","d",-13],["v","e",-13],["v","f",13],["v","g",-13],["v","o",-15],["v","q",-13],["w","comma",-124],["w","period",-124],["x","c",-20],["x","d",-20],["x","e",-20],["x","g",-20],["x","o",-20],["x","q",-20],["y","comma",-107],["y","period",-107],["y","a",-15],["y","c",-13],["y","d",-13],["y","e",-13],["y","f",13],["y","g",-13],["y","o",-15],["y","q",-13],["z","c",-16],["z","d",-16],["z","e",-16],["z","g",-16],["z","o",-16],["z","q",-16]],"ligatures":[]};
+function toByte(light){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255+0.5);}
+function lerp3(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+function blit(ctx,pixels,pw,ph,scale,ox,oy){var img=ctx.createImageData(pw,ph);for(var i=0;i<pw*ph;i++){img.data[i*4]=pixels[i][0];img.data[i*4+1]=pixels[i][1];img.data[i*4+2]=pixels[i][2];img.data[i*4+3]=255;}var off=Plate.offcan(pw,ph);off.getContext('2d').putImageData(img,0,0);ctx.imageSmoothingEnabled=false;ctx.drawImage(off,ox,oy,pw*scale,ph*scale);}
+
+/* vectors and matrices (chapters 4 and 13) */
+function sub(a,b){return [a[0]-b[0],a[1]-b[1]];}
+function mag(v){return Math.sqrt(v[0]*v[0]+v[1]*v[1]);}
+function unit(a,b){var d=sub(b,a),m=mag(d);return [d[0]/m,d[1]/m];}
+function perp(v){return [-v[1],v[0]];}
+function crss(a,b){return a[0]*b[1]-a[1]*b[0];}
+function add(p,v,s){return [p[0]+v[0]*s,p[1]+v[1]*s];}
+function intersect(p1,d1,p2,d2){var den=crss(d1,d2);if(Math.abs(den)<1e-12)return null;var t=crss(sub(p2,p1),d2)/den;return add(p1,d1,t);}
+function arc(pts,c,a0,a1,r,steps){for(var k=0;k<=steps;k++){var a=a0+(a1-a0)*k/steps;pts.push([c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)]);}}
+function arcSteps(a0,a1){return Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/16)));}
+function angBetween(a,b){var d=((b-a)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);return d>Math.PI?d-2*Math.PI:d;}
+function mat(a,b,c,d,e,f,g,h,i){return [a,b,c,d,e,f,g,h,i];}
+function mmul(m,n){var o=[];for(var r=0;r<3;r++)for(var c=0;c<3;c++){var s=0;for(var k=0;k<3;k++)s+=m[r*3+k]*n[k*3+c];o.push(s);}return o;}
+function apply(m,p){return [m[0]*p[0]+m[1]*p[1]+m[2],m[3]*p[0]+m[4]*p[1]+m[5]];}
+function translation(x,y){return mat(1,0,x,0,1,y,0,0,1);}
+function scaling(x,y){return mat(x,0,0,0,y,0,0,0,1);}
+
+/* curves (chapter 8) */
+function lerpP(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];}
+function decasteljau(pts,t){var left=[pts[0]],right=[pts[pts.length-1]],p=pts.slice();while(p.length>1){var q=[];for(var i=0;i<p.length-1;i++)q.push(lerpP(p[i],p[i+1],t));p=q;left.push(p[0]);right.push(p[p.length-1]);}return {at:p[0],left:left,right:right.reverse()};}
+function pointAt(c,t){return decasteljau(c,t).at;}
+function flatness(c){var a=c[0],b=c[c.length-1],dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy),w=0;for(var i=1;i<c.length-1;i++){var p=c[i],d=L===0?Math.hypot(p[0]-a[0],p[1]-a[1]):Math.abs((p[0]-a[0])*dy-(p[1]-a[1])*dx)/L;w=Math.max(w,d);}return w;}
+function flattenInto(c,tol,out){if(flatness(c)<=tol)out.push(c[c.length-1]);else{var d=decasteljau(c,0.5);flattenInto(d.left,tol,out);flattenInto(d.right,tol,out);}}
+function flatten(c,tol){var out=[c[0]];flattenInto(c,tol,out);return out;}
+function flattenIntoPath(pts,c,tol){var f=flatten(c,tol);if(pts.length&&pts[pts.length-1][0]===f[0][0]&&pts[pts.length-1][1]===f[0][1])f=f.slice(1);return pts.concat(f);}
+function transformCurve(c,m){return c.map(function(p){return apply(m,p);});}
+function quadBounds(c){var xs=[c[0][0],c[2][0]],ys=[c[0][1],c[2][1]];[0,1].forEach(function(k){var den=c[0][k]-2*c[1][k]+c[2][k];if(Math.abs(den)>1e-12){var t=(c[0][k]-c[1][k])/den;if(t>0&&t<1){var q=pointAt(c,t);(k?ys:xs).push(q[k]);}}});return [Math.min.apply(null,xs),Math.min.apply(null,ys),Math.max.apply(null,xs),Math.max.apply(null,ys)];}
+
+/* chapter 16: glyphs */
+function impliedPoints(contour){var out=[],n=contour.length;for(var i=0;i<n;i++){var cur=contour[i],nxt=contour[(i+1)%n];out.push(cur);if(!cur[2]&&!nxt[2])out.push([(cur[0]+nxt[0])/2,(cur[1]+nxt[1])/2,1]);}for(var k=0;k<out.length;k++)if(out[k][2])return out.slice(k).concat(out.slice(0,k));return out;}
+function contourCurves(contour){var pts=impliedPoints(contour),curves=[],n=pts.length,i=0;while(i<n){var a=pts[i],b=pts[(i+1)%n];if(b[2]){curves.push([[a[0],a[1]],[(a[0]+b[0])/2,(a[1]+b[1])/2],[b[0],b[1]]]);i+=1;}else{var c=pts[(i+2)%n];curves.push([[a[0],a[1]],[b[0],b[1]],[c[0],c[1]]]);i+=2;}}return curves;}
+function componentMatrix(t){return mat(t[0],t[2],t[4],t[1],t[3],t[5],0,0,1);}
+function glyphOutline(font,name){var g=font.glyphs[name],out=g.contours.map(contourCurves);g.components.forEach(function(comp){var m=componentMatrix(comp.transform);glyphOutline(font,comp.glyph).forEach(function(contour){out.push(contour.map(function(c){return transformCurve(c,m);}));});});return out;}
+function glyphBounds(font,name){var boxes=[];glyphOutline(font,name).forEach(function(contour){contour.forEach(function(c){boxes.push(quadBounds(c));});});if(!boxes.length)return [0,0,0,0];return [Math.min.apply(null,boxes.map(function(b){return b[0];})),Math.min.apply(null,boxes.map(function(b){return b[1];})),Math.max.apply(null,boxes.map(function(b){return b[2];})),Math.max.apply(null,boxes.map(function(b){return b[3];}))];}
+function textMatrix(font,size,x,y){var s=size/font.units_per_em;return mmul(translation(x,y),scaling(s,-s));}
+function glyphPath(font,name,m,tol){return glyphOutline(font,name).map(function(contour){var pts=[];contour.forEach(function(c){pts=flattenIntoPath(pts,transformCurve(c,m),tol);});return pts;});}
+function glyphNameOf(font,ch){return font.cmap[String(ch.charCodeAt(0))]||'.notdef';}
+
+/* the stroker (chapter 13), for emboldening */
+function segRect(a,b,h){var d=unit(a,b),n=perp(d);return [add(a,n,h),add(b,n,h),add(b,n,-h),add(a,n,-h)];}
+function joinShape(v,din,dout,h,join,ml){var turn=crss(din,dout);if(Math.abs(turn)<1e-12)return null;var s=turn>0?-1:1,nin=perp(din).map(function(x){return x*s;}),nout=perp(dout).map(function(x){return x*s;}),a=add(v,nin,h),b=add(v,nout,h);
+  if(join==='bevel')return [v,a,b];
+  if(join==='round'){var a0=Math.atan2(a[1]-v[1],a[0]-v[0]),a1=a0+angBetween(a0,Math.atan2(b[1]-v[1],b[0]-v[0]));var p=[v];arc(p,v,a0,a1,h,arcSteps(a0,a1));return p;}
+  var m=intersect(a,din,b,dout);if(m&&mag(sub(m,v))<=ml*h)return [v,a,m,b];return [v,a,b];}
+function capShape(p,dout,h,cap){var n=perp(dout);if(cap==='butt')return null;
+  if(cap==='square'){var l=add(p,n,h),r=add(p,n,-h);return [l,add(l,dout,h),add(r,dout,h),r];}
+  var a0=Math.atan2(n[1],n[0]),d=angBetween(a0,Math.atan2(dout[1],dout[0]));var a1=a0+(d>0?Math.PI:-Math.PI),pts=[];arc(pts,p,a0,a1,h,arcSteps(a0,a1));return pts;}
+function dedupe(pts){var o=[pts[0]];for(var i=1;i<pts.length;i++)if(mag(sub(pts[i],o[o.length-1]))>1e-9)o.push(pts[i]);return o;}
+function area(sp){var s=0;for(var i=0;i<sp.length;i++){var a=sp[i],b=sp[(i+1)%sp.length];s+=a[0]*b[1]-b[0]*a[1];}return s/2;}
+function strokeToPath(pts,closed,width,cap,join,ml){var h=width/2,subs=[];pts=dedupe(pts);if(closed&&pts.length>1&&mag(sub(pts[pts.length-1],pts[0]))<=1e-9)pts.pop();
+  function emit(sp){if(!sp)return;if(area(sp)>0)sp.reverse();subs.push(sp);}
+  if(pts.length<2){if(cap==='round'){var d=[];arc(d,pts[0],0,2*Math.PI,h,48);emit(d);}else if(cap==='square'){var c=pts[0];emit([[c[0]-h,c[1]-h],[c[0]+h,c[1]-h],[c[0]+h,c[1]+h],[c[0]-h,c[1]+h]]);}return subs;}
+  var segs=[];for(var i=0;i<pts.length-1;i++)segs.push([pts[i],pts[i+1]]);if(closed)segs.push([pts[pts.length-1],pts[0]]);
+  segs.forEach(function(s){emit(segRect(s[0],s[1],h));});
+  var dirs=segs.map(function(s){return unit(s[0],s[1]);}),nj=closed?segs.length:segs.length-1;
+  for(var k=0;k<nj;k++){var v=segs[(k+1)%segs.length][0];emit(joinShape(v,dirs[k],dirs[(k+1)%segs.length],h,join,ml));}
+  if(!closed){emit(capShape(pts[0],dirs[0].map(function(x){return -x;}),h,cap));emit(capShape(pts[pts.length-1],dirs[dirs.length-1],h,cap));}
+  return subs;}
+
+/* fill a list of closed subpaths (chapter 7, nonzero) */
+function edgesOf(subs){var out=[];subs.forEach(function(sp){var n=sp.length;for(var i=0;i<n;i++)out.push([sp[i],sp[(i+1)%n]]);});return out;}
+function fillSubs(subs,w,h){var acc={area:new Array(w*h).fill(0),cover:new Array(w*h).fill(0)};edgesOf(subs).forEach(function(e){var a=e[0],b=e[1];if(a[1]===b[1])return;var sign=a[1]>b[1]?1:-1,top=a[1]>b[1]?b:a,bot=a[1]>b[1]?a:b,slope=(bot[0]-top[0])/(bot[1]-top[1]);var first=Math.max(Math.floor(top[1]),0),last=Math.min(Math.ceil(bot[1])-1,h-1);for(var row=first;row<=last;row++){var y0=Math.max(top[1],row),y1=Math.min(bot[1],row+1),x0=top[0]+(y0-top[1])*slope,x1=top[0]+(y1-top[1])*slope,xa=Math.min(x0,x1),xb=Math.max(x0,x1),ca=Math.floor(xa),cb=Math.floor(xb);function ad(x,ar,co){if(x<0){x=0;ar=co;}if(x>=w)return;var idx=row*w+x;acc.area[idx]+=ar;acc.cover[idx]+=co;}var hg=sign*(y1-y0);if(ca===cb){var xm=(xa+xb)/2-ca;ad(ca,hg*(1-xm),hg);}else{var dx=xb-xa;for(var c=ca;c<=cb;c++){var lo=Math.max(xa,c),hi=Math.min(xb,c+1),sh=hg*(hi-lo)/dx,mm=(lo+hi)/2-c;ad(c,sh*(1-mm),sh);}}}});var cov=new Array(w*h).fill(0);for(var row=0;row<h;row++){var run=0;for(var x=0;x<w;x++){var idx=row*w+x;cov[idx]=Math.min(1,Math.abs(run+acc.area[idx]));run+=acc.cover[idx];}}return cov;}
+
+/* chapter 17 */
+var SUBPIXELS=4,TAPS=[1/3,1/3,1/3];
+function subpixelOf(x){var whole=Math.floor(x),q=Math.floor((x-whole)*SUBPIXELS+0.5);return q===SUBPIXELS?[whole+1,0]:[whole,q];}
+function glyphBitmap(font,name,size,sp){var s=size/font.units_per_em,bb=glyphBounds(font,name);if(bb[0]===0&&bb[1]===0&&bb[2]===0&&bb[3]===0)return {cov:[],w:0,h:0,left:0,top:0};var dx=sp/SUBPIXELS,left=Math.floor(bb[0]*s+dx),right=Math.ceil(bb[2]*s+dx),top=Math.floor(-bb[3]*s),bottom=Math.ceil(-bb[1]*s),w=Math.max(1,right-left),h=Math.max(1,bottom-top);return {cov:fillSubs(glyphPath(font,name,textMatrix(font,size,dx-left,-top),0.1),w,h),w:w,h:h,left:left,top:top};}
+function mixColor(d,c,k,linear){if(linear)return lerp3(d,c,k);return d.map(function(v,i){var a=Plate.l2s(Math.min(1,Math.max(0,v))),b=Plate.l2s(Math.min(1,Math.max(0,c[i])));return Plate.s2l(a+(b-a)*k);});}
+function penAdvance(font,name,size){return font.glyphs[name].advance*size/font.units_per_em;}
+/* a paint buffer, white paper */
+var WHITE=[1,1,1],BLACK=[0,0,0];
+function Buf(w,h,paper){this.w=w;this.h=h;this.p=[];for(var i=0;i<w*h;i++)this.p.push((paper||WHITE).slice());}
+Buf.prototype.paint=function(cov,col){for(var i=0;i<this.w*this.h;i++){var k=cov[i];if(k>0)this.p[i]=lerp3(this.p[i],col,k);}};
+Buf.prototype.bitmap=function(bm,x,y,col,linear){for(var j=0;j<bm.h;j++)for(var i=0;i<bm.w;i++){var k=bm.cov[j*bm.w+i];if(k>0){var px=x+bm.left+i,py=y+bm.top+j;if(px>=0&&py>=0&&px<this.w&&py<this.h)this.p[py*this.w+px]=mixColor(this.p[py*this.w+px],col,k,linear);}}};
+Buf.prototype.lcd=function(cov3,col){for(var y=0;y<this.h;y++)for(var x=0;x<this.w;x++){var kr=cov3[y*3*this.w+3*x],kg=cov3[y*3*this.w+3*x+1],kb=cov3[y*3*this.w+3*x+2];if(kr>0||kg>0||kb>0){var d=this.p[y*this.w+x];this.p[y*this.w+x]=[d[0]+(col[0]-d[0])*kr,d[1]+(col[1]-d[1])*kg,d[2]+(col[2]-d[2])*kb];}}};
+Buf.prototype.bytes=function(){return this.p.map(function(c){return c.map(toByte);});};
+function magnifyBytes(g,k){var o=new Array(g.w*g.h*k*k);for(var y=0;y<g.h;y++)for(var x=0;x<g.w;x++){var v=g.bytes[y*g.w+x];for(var j=0;j<k;j++)for(var i=0;i<k;i++)o[(y*k+j)*g.w*k+x*k+i]=v;}return {bytes:o,w:g.w*k,h:g.h*k};}
+
+/* chapter 18: layout */
+var PAPER=[0.02,0.02,0.025],GRAY=[0.62,0.62,0.66],DIM=[0.3,0.3,0.34],MAGENTA=[0.85,0.2,0.55],CYAN=[0.2,0.75,0.9];
+var THROUGH_LINE="Rasterization computes coverage. Painting composites paint through coverage. Once you hold a coverage buffer, a stroke is a fill of a different outline, a clip is a multiplication of two buffers, and a glyph is a path somebody else drew.";
+function roundHalfUp(v){return Math.floor(v+0.5);}
+function kernOf(font,a,b){if(!font.kernMap){font.kernMap={};font.kern.forEach(function(k){font.kernMap[k[0]+'\u0001'+k[1]]=k[2];});}return font.kernMap[a+'\u0001'+b]||0;}
+function ascent(font,size){return font.ascender*size/font.units_per_em;}
+function descent(font,size){return -font.descender*size/font.units_per_em;}
+function lineHeight(font,size){return (font.ascender-font.descender+font.line_gap)*size/font.units_per_em;}
+function layoutRun(font,text,size,x,y,kerning){var s=size/font.units_per_em,out=[],pen=x,prev=null;for(var i=0;i<text.length;i++){var name=glyphNameOf(font,text[i]);if(kerning&&prev!==null)pen+=kernOf(font,prev,name)*s;out.push({name:name,x:pen,y:y});pen+=font.glyphs[name].advance*s;prev=name;}return out;}
+function runAdvance(font,text,size,kerning){var s=size/font.units_per_em,total=0,prev=null;for(var i=0;i<text.length;i++){var name=glyphNameOf(font,text[i]);if(kerning&&prev!==null)total+=kernOf(font,prev,name)*s;total+=font.glyphs[name].advance*s;prev=name;}return total;}
+function breakLines(font,text,size,measure,kerning){var words=text.split(' ').filter(function(w){return w;}),lines=[],cur='';words.forEach(function(w){var cand=cur?cur+' '+w:w;if(cur&&runAdvance(font,cand,size,kerning)>measure){lines.push(cur);cur=w;}else cur=cand;});if(cur)lines.push(cur);return lines;}
+function layoutLine(font,text,size,x,y,measure,align,kerning){var run=layoutRun(font,text,size,x,y,kerning),slack=measure-runAdvance(font,text,size,kerning);var gaps=text.split(' ').length-1;if(align==='justify'&&gaps>0){var extra=slack/gaps,seen=0;for(var i=0;i<text.length;i++){run[i].x+=seen*extra;if(text[i]===' ')seen++;}return run;}var shift=align==='right'?slack:align==='center'?slack/2:0;run.forEach(function(p){p.x+=shift;});return run;}
+function layoutParagraph(font,text,size,x,y,measure,align,kerning){var lines=breakLines(font,text,size,measure,kerning),out=[];lines.forEach(function(line,i){var mode=(align==='justify'&&i===lines.length-1)?'left':align;out=out.concat(layoutLine(font,line,size,x,y+i*lineHeight(font,size),measure,mode,kerning));});return out;}
+function drawRun(b,font,run,size,col){run.forEach(function(p){var sq=subpixelOf(p.x);b.bitmap(glyphBitmap(font,p.name,size,sq[1]),sq[0],roundHalfUp(p.y),col,true);});}
+function layoutRunRounded(font,text,size,x,y){var s=size/font.units_per_em,out=[],pen=x;for(var i=0;i<text.length;i++){var name=glyphNameOf(font,text[i]);out.push({name:name,x:pen,y:y});pen=roundHalfUp(pen+font.glyphs[name].advance*s);}return out;}
+function hairline(b,pts,col,width){b.paint(fillSubs(strokeToPath(pts,false,width||1,'butt','round',4),b.w,b.h),col);}
+function vline(b,x,y0,y1,col,width){hairline(b,[[x,y0],[x,y1]],col,width);}
+function hline(b,x0,x1,y,col,width){hairline(b,[[x0,y],[x1,y]],col,width);}
+
+/* the renders */
+function kernDemo(){var f=GLYPHS,W=320,H=190,b=new Buf(W,H,PAPER),size=64,x=12;[[70,true],[160,false]].forEach(function(row){var y=row[0],k=row[1],run=layoutRun(f,'TAVERN',size,x,y,k);drawRun(b,f,run,size,GRAY);hline(b,4,W-4,y,DIM);var end=x+runAdvance(f,'TAVERN',size,k);run.concat([{x:end}]).forEach(function(p){vline(b,p.x,y+3,y+12,k?CYAN:DIM);});});var kerned=x+runAdvance(f,'TAVERN',size,true),plain=x+runAdvance(f,'TAVERN',size,false);vline(b,kerned,84,180,MAGENTA);vline(b,plain,84,180,MAGENTA);hline(b,kerned,plain,180,MAGENTA);return {bytes:b.bytes(),w:W,h:H};}
+function breakDemo(){var f=GLYPHS,W=340,H=150,b=new Buf(W,H,PAPER),x=20,y=30,measure=300,size=16;drawRun(b,f,layoutParagraph(f,THROUGH_LINE,size,x,y,measure,'left',true),size,GRAY);vline(b,x,10,H-10,CYAN);vline(b,x+measure,10,H-10,CYAN);return {bytes:b.bytes(),w:W,h:H};}
+function driftDemo(){var f=GLYPHS,text='little illicit lilies fill the hill until it is still',W=260,H=44,b=new Buf(W,H),size=11,x=6;var exact=layoutRun(f,text,size,x,14,false),rounded=layoutRunRounded(f,text,size,x,34);drawRun(b,f,exact,size,[0,0,0]);drawRun(b,f,rounded,size,[0,0,0]);var endE=x+runAdvance(f,text,size,false),last=rounded[rounded.length-1],endR=last.x+penAdvance(f,last.name,size);vline(b,endE,3,18,CYAN,2);vline(b,endE,23,38,CYAN,2);vline(b,endR,23,38,MAGENTA,2);hline(b,endE,endR,40,MAGENTA,2);return magnifyBytes({bytes:b.bytes(),w:W,h:H},3);}
+function alignmentPlate(){var f=GLYPHS,W=660,H=236,b=new Buf(W,H,PAPER),size=14,measure=300;['left','right','center','justify'].forEach(function(align,k){var x=20+(k%2)*(measure+20),y=24+Math.floor(k/2)*108,run=layoutParagraph(f,THROUGH_LINE,size,x,y,measure,align,true),n=breakLines(f,THROUGH_LINE,size,measure,true).length,lh=lineHeight(f,size);for(var i=0;i<n;i++)hline(b,x,x+measure,y+i*lh,DIM,0.5);vline(b,x,y-14,y+(n-1)*lh+5,CYAN,0.5);vline(b,x+measure,y-14,y+(n-1)*lh+5,CYAN,0.5);drawRun(b,f,run,size,GRAY);});return {bytes:b.bytes(),w:W,h:H};}
+
+function fit(ctx,g,w,h,top){var sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,top?0:(h-g.h*sc)/2);}
+
+/* ---------- Figure 18.1 — the metrics ---------- */
+Plate.add('fig181', 0.4, function (ctx, w, h, p) {
+  var f=GLYPHS,size=Math.min(h*0.55,110),base=h*0.62,x0=w*0.08;
+  function fillGlyph(name,x){var m=textMatrix(f,size,x,base);glyphPath(f,name,m,0.1).forEach(function(sp){ctx.beginPath();sp.forEach(function(q,i){ctx[i?'lineTo':'moveTo'](q[0],q[1]);});ctx.closePath();ctx.fillStyle=p.ink2;ctx.fill();});}
+  var run=layoutRun(f,'Hg',size,x0,base,true);run.forEach(function(q){fillGlyph(q.name,q.x);});
+  var end=x0+runAdvance(f,'Hg',size,true);
+  ctx.strokeStyle=p.ink3;ctx.lineWidth=1;ctx.setLineDash([3,3]);
+  [[base-ascent(f,size),'ascent'],[base+descent(f,size),'descent']].forEach(function(l){ctx.beginPath();ctx.moveTo(x0-16,l[0]+0.5);ctx.lineTo(w*0.7,l[0]+0.5);ctx.stroke();});
+  ctx.setLineDash([]);ctx.strokeStyle=p.ink;ctx.beginPath();ctx.moveTo(x0-16,base+0.5);ctx.lineTo(w*0.7,base+0.5);ctx.stroke();
+  ctx.strokeStyle=p.cyan;ctx.lineWidth=1.2;run.concat([{x:end}]).forEach(function(q){ctx.beginPath();ctx.moveTo(q.x,base+3);ctx.lineTo(q.x,base+12);ctx.stroke();});
+  Plate.label(ctx,'BASELINE',w*0.71,base+4,p.ink,9.5);Plate.label(ctx,'ASCENT',w*0.71,base-ascent(f,size)+4,p.ink3,9.5);Plate.label(ctx,'DESCENT',w*0.71,base+descent(f,size)+4,p.ink3,9.5);
+  Plate.label(ctx,'ADVANCE',run[0].x,base+24,p.cyan,9.5);Plate.label(ctx,'ADVANCE',run[1].x,base+24,p.cyan,9.5);
+  ctx.strokeStyle=p.magenta;ctx.lineWidth=1.2;var lx=w*0.9;ctx.beginPath();ctx.moveTo(lx,base-ascent(f,size));ctx.lineTo(lx,base+descent(f,size));ctx.stroke();
+  Plate.label(ctx,'LINE HEIGHT',lx-4,base-ascent(f,size)-6,p.magenta,9.5,'right');
+});
+
+/* ---------- Figure 18.2 — kerning ---------- */
+Plate.add('fig182', 0.6, function (ctx, w, h, p) { fit(ctx,kernDemo(),w,h); });
+
+/* ---------- Figure 18.3 — breaking ---------- */
+Plate.add('fig183', 0.44, function (ctx, w, h, p) { fit(ctx,breakDemo(),w,h); });
+
+/* ---------- Figure 18.4 — the drift ---------- */
+Plate.add('fig184', 0.17, function (ctx, w, h, p) { fit(ctx,driftDemo(),w,h); });
+
+/* ---------- Plate 18 ---------- */
+Plate.add('plate18', 0.358, function (ctx, w, h, p) { fit(ctx,alignmentPlate(),w,h,true); });
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, sub, mag, unit, perp, crss, add, intersect, arc, arcSteps, angBetween, mat, mmul, apply, translation, scaling, lerpP, decasteljau, pointAt, flatness, flattenInto, flatten, flattenIntoPath, transformCurve, quadBounds, impliedPoints, contourCurves, componentMatrix, glyphOutline, glyphBounds, textMatrix, glyphPath, glyphNameOf, segRect, joinShape, capShape, dedupe, area, strokeToPath, edgesOf, fillSubs, subpixelOf, glyphBitmap, mixColor, penAdvance, Buf, magnifyBytes, roundHalfUp, kernOf, ascent, descent, lineHeight, layoutRun, runAdvance, breakLines, layoutLine, layoutParagraph, drawRun, layoutRunRounded, hairline, vline, hline, kernDemo, breakDemo, driftDemo, alignmentPlate, fit].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>
