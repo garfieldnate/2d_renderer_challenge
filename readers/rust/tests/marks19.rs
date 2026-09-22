@@ -15,6 +15,8 @@ const KITAB_MARKED: &str = "\u{0643}\u{0650}\u{062A}\u{0627}\u{0628}";
 const BEH_FATHA_SHADDA: &str = "\u{0628}\u{064E}\u{0651}";
 // kasra, beh
 const KASRA_BEH: &str = "\u{0650}\u{0628}";
+// seen, lam, alef, meem
+const SALAM: &str = "\u{0633}\u{0644}\u{0627}\u{0645}";
 
 #[test]
 fn the_anchors_in_font_units() {
@@ -74,4 +76,16 @@ fn shaping_latin_is_ligatures_alone() {
     assert_eq!(b[2].glyph, "f_i");
     assert_eq!(b[2].cluster, 2);
     assert!(!is_mark(&f, "f_i"));
+}
+
+#[test]
+fn shape_chooses_the_forms_before_it_looks_for_ligatures() {
+    let f = arabic_font();
+    let b = shape(&f, SALAM);
+    assert_eq!(b.len(), 3);
+    assert_eq!(b[0].glyph, "seen.init");
+    assert_eq!(b[1].glyph, "lam_alef.fina");
+    assert_eq!(b[1].cluster, 1);
+    assert_eq!(b[2].glyph, "meem");
+    assert_eq!(renderer::clusters(&b), vec![0, 1, 3]);
 }

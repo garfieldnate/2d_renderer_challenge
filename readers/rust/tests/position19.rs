@@ -12,6 +12,12 @@ fn arabic_font() -> renderer::Font {
 
 const KITAB_MARKED: &str = "\u{0643}\u{0650}\u{062A}\u{0627}\u{0628}";
 
+const TOY_JSON: &str = r#"{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"97": "a", "98": "b", "99": "c", "42": "dot"}, "glyphs": {".notdef": {"advance": 500, "contours": [], "components": []}, "a": {"advance": 600, "contours": [], "components": []}, "b": {"advance": 600, "contours": [], "components": []}, "c": {"advance": 600, "contours": [], "components": []}, "a_b": {"advance": 900, "contours": [], "components": []}, "a_b_c": {"advance": 1200, "contours": [], "components": []}, "a_b_a": {"advance": 1500, "contours": [], "components": []}, "dot": {"advance": 0, "contours": [], "components": []}}, "kern": [["a", "b", -100]], "ligatures": [[["a", "b"], "a_b"], [["a", "b", "c"], "a_b_c"], [["a_b", "a"], "a_b_a"]], "marks": {"dot": ["above", 0, 0]}, "anchors": {"a": {"above": [300, 700]}}}"#;
+
+fn toy_font() -> renderer::Font {
+    load_font(TOY_JSON)
+}
+
 #[test]
 fn a_buffer_straight_from_the_cmap_positions_exactly_as_layout_run_lays_it_out() {
     let f = roboto_font();
@@ -95,4 +101,36 @@ fn cursor_positions_in_a_right_to_left_run_run_from_right_to_left() {
         assert!(approx_eq_eps(*a, *e, 0.0001));
     }
     assert!(approx_eq(positions[0], 20.0 + buffer_advance(&f, &b, 64.0, false)));
+}
+
+#[test]
+fn a_mark_between_two_glyphs_neither_moves_the_pen_nor_breaks_their_kern_pair() {
+    let toy = toy_font();
+    let b = shape(&toy, "a*b");
+    let run = position(&toy, &b, 10.0, 10.0, 50.0, "ltr", true);
+    assert_eq!(b.len(), 3);
+    assert_eq!(b[1].glyph, "dot");
+    assert_eq!(b[1].cluster, 0);
+    assert!(approx_eq(b[1].dx, 300.0));
+    assert!(approx_eq(b[1].dy, 700.0));
+    assert_eq!(b[2].glyph, "b");
+    assert!(approx_eq(buffer_advance(&toy, &b, 10.0, true), 11.0));
+    assert!(approx_eq(buffer_advance(&toy, &b, 10.0, false), 12.0));
+    assert!(approx_eq(run[1].x, 13.0));
+    assert!(approx_eq(run[1].y, 43.0));
+    assert!(approx_eq(run[2].x, 15.0));
+    assert!(approx_eq(run[2].y, 50.0));
+
+    let expected_ltr_true = [10.0, 15.0, 21.0];
+    for (a, e) in caret_positions(&toy, &b, 3, 10.0, 10.0, "ltr", true).iter().zip(expected_ltr_true.iter()) {
+        assert!(approx_eq(*a, *e));
+    }
+    let expected_rtl_true = [21.0, 16.0, 10.0];
+    for (a, e) in caret_positions(&toy, &b, 3, 10.0, 10.0, "rtl", true).iter().zip(expected_rtl_true.iter()) {
+        assert!(approx_eq(*a, *e));
+    }
+    let expected_rtl_false = [22.0, 16.0, 10.0];
+    for (a, e) in caret_positions(&toy, &b, 3, 10.0, 10.0, "rtl", false).iter().zip(expected_rtl_false.iter()) {
+        assert!(approx_eq(*a, *e));
+    }
 }

@@ -1,6 +1,6 @@
 // features/chapter18-aligning.feature
 
-use renderer::{approx_eq, approx_eq_eps, layout_line, layout_paragraph, load_font, pen_advance, read_file, run_advance};
+use renderer::{approx_eq, approx_eq_eps, break_lines, layout_line, layout_paragraph, load_font, pen_advance, read_file, run_advance};
 
 fn font() -> renderer::Font {
     load_font(read_file("reference/chapter-16/roboto.json"))
@@ -61,4 +61,27 @@ fn a_paragraph_stacks_its_lines_by_line_height_and_leaves_the_last_line_ragged()
     assert!(approx_eq_eps(run[38].y, 45.7813, 0.0001));
     assert_eq!(run[40].name, "g");
     assert!(approx_eq_eps(run[40].x, 22.4771, 0.0001));
+}
+
+#[test]
+fn the_last_line_stays_left_even_when_it_has_spaces_to_stretch() {
+    let f = font();
+    let run = layout_paragraph(&f, "the quick brown fox jumps over the lazy dog", 11.0, 10.0, 20.0, 150.0, "justify", true);
+    assert_eq!(
+        break_lines(&f, "the quick brown fox jumps over the lazy dog", 11.0, 150.0, true),
+        vec!["the quick brown fox jumps".to_string(), "over the lazy dog".to_string()]
+    );
+    assert_eq!(run.len(), 42);
+    assert_eq!(run[24].name, "s");
+    assert!(approx_eq_eps(run[24].x + pen_advance(&f, "s", 11.0), 160.0, 0.0001));
+    assert_eq!(run[25].name, "o");
+    assert!(approx_eq(run[25].x, 10.0));
+    assert!(approx_eq_eps(run[25].y, 32.8906, 0.0001));
+    assert_eq!(run[41].name, "g");
+    assert!(approx_eq_eps(run[41].x, 86.436, 0.0001));
+    assert!(approx_eq_eps(
+        run[41].x + pen_advance(&f, "g", 11.0),
+        10.0 + run_advance(&f, "over the lazy dog", 11.0, true),
+        0.0001
+    ));
 }
