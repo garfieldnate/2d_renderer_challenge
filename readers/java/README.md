@@ -848,3 +848,29 @@ identical whenever `kerning = false`, which is exactly the blind spot
 every existing scenario shares. Implemented the second (correct) formula
 directly from that reconstruction rather than trusting the first pass's
 green scenarios. See `FEEDBACK.md`.
+
+**Catch-up: five scenarios added, all already true of the existing
+code.** `chapter18-aligning.feature` gained "The last line stays left
+even when it has spaces to stretch" (`layoutParagraph` already forces the
+last line of a justified paragraph left regardless of whether it has
+spaces to stretch). `chapter19-ligatures.feature` gained "The longest
+rule that matches wins, on a font written by hand to have two" and "A
+result is never fed back into the rules", both against a new hand-written
+toy font (`a`/`b`/`c` with `a_b`, `a_b_c` and `a_b_a` rules -- the last
+one's parts include another rule's own result, so it can only fire if a
+result is fed back in, which it never is). `chapter19-marks.feature`
+gained "shape chooses the forms before it looks for ligatures", pinning
+that `shape` on the Arabic font applies `applyForms` before
+`applyLigatures` (already the order in `Shaping.shape`, needed for
+DejaVu's `lam_alef.fina` ligature rule, which is written in terms of
+post-forms glyph names). `chapter19-position.feature` gained "A mark
+between two glyphs neither moves the pen nor breaks their kern pair",
+reusing the same toy font with `kerning = true` in a `"rtl"` case for the
+first time -- exactly the blind spot the `caretPositions` note above
+describes. It passed on the first run: `Shaping.caretPositions`'s rtl
+branch already used `run[i].x + the glyph's own advance` (the corrected
+formula), not the entry-point formula the note above says was tried and
+discarded. `Chapter18Tests.java` and `Chapter19Tests.java` are the only
+files that changed; no bug was found. All 21 chapter 18 scenarios and all
+31 chapter 19 scenarios are green, and every chapter 18/19 render still
+diffs 0 against the reference bytes.

@@ -300,6 +300,26 @@ public final class Chapter18Tests {
             assertEquals("run[40].name", run.get(40).name(), "g");
             assertDoubleEq("run[40].x", run.get(40).x(), 22.4771, 0.0001);
         });
+
+        scenario("Aligning: the last line stays left even when it has spaces to stretch", () -> {
+            Font f = font();
+            String text = "the quick brown fox jumps over the lazy dog";
+            List<Placement> run = Layout.layoutParagraph(f, text, 11, 10, 20, 150, "justify", true);
+            assertEquals("break_lines(text, 11, 150, true)", Layout.breakLines(f, text, 11, 150, true),
+                    List.of("the quick brown fox jumps", "over the lazy dog"));
+            assertEquals("length(run)", run.size(), 42);
+            assertEquals("run[24].name", run.get(24).name(), "s");
+            assertDoubleEq("run[24].x + pen_advance(font, \"s\", 11)",
+                    run.get(24).x() + Glyphs.penAdvance(f, "s", 11), 160, 0.0001);
+            assertEquals("run[25].name", run.get(25).name(), "o");
+            assertDoubleEq("run[25].x", run.get(25).x(), 10);
+            assertDoubleEq("run[25].y", run.get(25).y(), 32.8906, 0.0001);
+            assertEquals("run[41].name", run.get(41).name(), "g");
+            assertDoubleEq("run[41].x", run.get(41).x(), 86.436, 0.0001);
+            assertDoubleEq("run[41].x + pen_advance(font, \"g\", 11)",
+                    run.get(41).x() + Glyphs.penAdvance(f, "g", 11),
+                    10 + Layout.runAdvance(f, "over the lazy dog", 11, true), 0.0001);
+        });
     }
 
     // features/chapter18-plate.feature

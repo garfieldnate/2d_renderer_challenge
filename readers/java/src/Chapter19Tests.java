@@ -75,6 +75,35 @@ public final class Chapter19Tests {
         return arabic;
     }
 
+    // A hand-written font with two ligature rules of different lengths (and one whose
+    // parts include another rule's result, "a_b" + "a" -> "a_b_a", to prove a result is
+    // never fed back into the rules), a kern pair, and a mark with an anchor.
+    private static final String TOY_FONT_JSON = "{\"units_per_em\": 1000, \"ascender\": 800, "
+            + "\"descender\": -200, \"line_gap\": 0, "
+            + "\"cmap\": {\"97\": \"a\", \"98\": \"b\", \"99\": \"c\", \"42\": \"dot\"}, "
+            + "\"glyphs\": {\".notdef\": {\"advance\": 500, \"contours\": [], \"components\": []}, "
+            + "\"a\": {\"advance\": 600, \"contours\": [], \"components\": []}, "
+            + "\"b\": {\"advance\": 600, \"contours\": [], \"components\": []}, "
+            + "\"c\": {\"advance\": 600, \"contours\": [], \"components\": []}, "
+            + "\"a_b\": {\"advance\": 900, \"contours\": [], \"components\": []}, "
+            + "\"a_b_c\": {\"advance\": 1200, \"contours\": [], \"components\": []}, "
+            + "\"a_b_a\": {\"advance\": 1500, \"contours\": [], \"components\": []}, "
+            + "\"dot\": {\"advance\": 0, \"contours\": [], \"components\": []}}, "
+            + "\"kern\": [[\"a\", \"b\", -100]], "
+            + "\"ligatures\": [[[\"a\", \"b\"], \"a_b\"], [[\"a\", \"b\", \"c\"], \"a_b_c\"], "
+            + "[[\"a_b\", \"a\"], \"a_b_a\"]], "
+            + "\"marks\": {\"dot\": [\"above\", 0, 0]}, "
+            + "\"anchors\": {\"a\": {\"above\": [300, 700]}}}";
+
+    private static Font toy;
+
+    private static Font toyFont() {
+        if (toy == null) {
+            toy = Fonts.loadFont(TOY_FONT_JSON);
+        }
+        return toy;
+    }
+
     // codepoints, spelled out so the source stays readable without relying on the terminal's encoding
     private static final String KAF = "ك";
     private static final String KASRA = "ِ";
@@ -193,6 +222,28 @@ public final class Chapter19Tests {
             assertDoubleEq("glyph_advance(font, \"f_i\")", Fonts.glyphAdvance(f, "f_i"), 1134);
             assertDoubleEq("glyph_advance(font, \"f\") + glyph_advance(font, \"i\")",
                     Fonts.glyphAdvance(f, "f") + Fonts.glyphAdvance(f, "i"), 1208);
+        });
+
+        scenario("Ligatures: the longest rule that matches wins, on a font written by hand to have two", () -> {
+            Font f = toyFont();
+            List<GlyphEntry> abc = Shaping.applyLigatures(f, Shaping.glyphBuffer(f, "abc"));
+            assertEquals("length(apply_ligatures(toy, glyph_buffer(toy, \"abc\")))", abc.size(), 1);
+            assertEquals("abc[0].glyph", abc.get(0).glyph(), "a_b_c");
+            assertEquals("abc[0].cluster", abc.get(0).cluster(), 0);
+            List<GlyphEntry> abcab = Shaping.applyLigatures(f, Shaping.glyphBuffer(f, "abcab"));
+            assertEquals("abcab[1].glyph", abcab.get(1).glyph(), "a_b");
+            assertEquals("abcab[1].cluster", abcab.get(1).cluster(), 3);
+            assertEquals("length(apply_ligatures(toy, glyph_buffer(toy, \"acb\")))",
+                    Shaping.applyLigatures(f, Shaping.glyphBuffer(f, "acb")).size(), 3);
+        });
+
+        scenario("Ligatures: a result is never fed back into the rules", () -> {
+            Font f = toyFont();
+            List<GlyphEntry> b = Shaping.applyLigatures(f, Shaping.glyphBuffer(f, "aba"));
+            assertEquals("length(b)", b.size(), 2);
+            assertEquals("b[0].glyph", b.get(0).glyph(), "a_b");
+            assertEquals("b[1].glyph", b.get(1).glyph(), "a");
+            assertEquals("b[1].cluster", b.get(1).cluster(), 2);
         });
     }
 
@@ -325,6 +376,17 @@ public final class Chapter19Tests {
             assertEquals("b[2].cluster", b.get(2).cluster(), 2);
             assertTrue("!is_mark(font, \"f_i\")", !Fonts.isMark(f, "f_i"));
         });
+
+        scenario("Marks: shape chooses the forms before it looks for ligatures", () -> {
+            Font f = arabic();
+            List<GlyphEntry> b = Shaping.shape(f, SALAAM);
+            assertEquals("length(b)", b.size(), 3);
+            assertEquals("b[0].glyph", b.get(0).glyph(), "seen.init");
+            assertEquals("b[1].glyph", b.get(1).glyph(), "lam_alef.fina");
+            assertEquals("b[1].cluster", b.get(1).cluster(), 1);
+            assertEquals("b[2].glyph", b.get(2).glyph(), "meem");
+            assertEquals("clusters(b)", Shaping.clusters(b), List.of(0, 1, 3));
+        });
     }
 
     // features/chapter19-position.feature
@@ -414,6 +476,37 @@ public final class Chapter19Tests {
             assertDoubleEq("caret_positions[0] = 20 + buffer_advance(font, b, 64, false)", positions.get(0),
                     20 + Shaping.bufferAdvance(f, b, 64, false));
         });
+
+        scenario("Position: a mark between two glyphs neither moves the pen nor breaks their kern pair", () -> {
+            Font f = toyFont();
+            List<GlyphEntry> b = Shaping.shape(f, "a*b");
+            List<Placement> run = Shaping.position(f, b, 10, 10, 50, "ltr", true);
+            assertEquals("length(b)", b.size(), 3);
+            assertEquals("b[1].glyph", b.get(1).glyph(), "dot");
+            assertEquals("b[1].cluster", b.get(1).cluster(), 0);
+            assertDoubleEq("b[1].dx", b.get(1).dx(), 300);
+            assertDoubleEq("b[1].dy", b.get(1).dy(), 700);
+            assertEquals("b[2].glyph", b.get(2).glyph(), "b");
+            assertDoubleEq("buffer_advance(toy, b, 10, true)", Shaping.bufferAdvance(f, b, 10, true), 11);
+            assertDoubleEq("buffer_advance(toy, b, 10, false)", Shaping.bufferAdvance(f, b, 10, false), 12);
+            assertDoubleEq("run[1].x", run.get(1).x(), 13);
+            assertDoubleEq("run[1].y", run.get(1).y(), 43);
+            assertDoubleEq("run[2].x", run.get(2).x(), 15);
+            assertDoubleEq("run[2].y", run.get(2).y(), 50);
+            assertDoubleList("caret_positions(toy, b, 3, 10, 10, \"ltr\", true)",
+                    Shaping.caretPositions(f, b, 3, 10, 10, "ltr", true), new double[] {10, 15, 21});
+            assertDoubleList("caret_positions(toy, b, 3, 10, 10, \"rtl\", true)",
+                    Shaping.caretPositions(f, b, 3, 10, 10, "rtl", true), new double[] {21, 16, 10});
+            assertDoubleList("caret_positions(toy, b, 3, 10, 10, \"rtl\", false)",
+                    Shaping.caretPositions(f, b, 3, 10, 10, "rtl", false), new double[] {22, 16, 10});
+        });
+    }
+
+    private static void assertDoubleList(String what, List<Double> actual, double[] expected) {
+        assertEquals(what + ": length", actual.size(), expected.length);
+        for (int i = 0; i < expected.length; i++) {
+            assertDoubleEq(what + "[" + i + "]", actual.get(i), expected[i]);
+        }
     }
 
     // features/chapter19-plate.feature
