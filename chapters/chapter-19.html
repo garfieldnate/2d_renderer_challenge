@@ -157,7 +157,9 @@
     the walk is greedy: in <em>office</em> the first f looks at the second f, finds no rule, and is
     left alone, and it's the second f that ligates with the i. The buffer comes out five glyphs long
     with clusters 0, 1, 2, 4, 5. Character 3, the i, has no cluster of its own any more, and that's
-    correct: there is no longer anywhere between the f and the i for a cursor to be.</p>
+    correct: there is no longer anywhere between the f and the i for a cursor to be. Roboto's two
+    rules are both two glyphs long, so the last scenario writes a font by hand with an
+    <code>a b</code> rule and an <code>a b c</code> rule, and pins that the longer one wins.</p>
 
   <p>In the real format this is one lookup type of a table called GSUB, the glyph substitution
     table, which has half a dozen more: single substitutions, one glyph for another; alternates;
@@ -206,7 +208,16 @@
   <span class="kw">Scenario</span>: A ligature is narrower than its parts
     <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
     <span class="kw">Then</span>  glyph_advance(font, "f_i") = 1134
-    <span class="kw">And</span>   glyph_advance(font, "f") + glyph_advance(font, "i") = 1208</code></pre>
+    <span class="kw">And</span>   glyph_advance(font, "f") + glyph_advance(font, "i") = 1208
+
+  <span class="kw">Scenario</span>: The longest rule that matches wins, on a font written by hand to have two
+    <span class="kw">Given</span> toy ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"97": "a", "98": "b", "99": "c", "42": "dot"}, "glyphs": {".notdef": {"advance": 500, "contours": [], "components": []}, "a": {"advance": 600, "contours": [], "components": []}, "b": {"advance": 600, "contours": [], "components": []}, "c": {"advance": 600, "contours": [], "components": []}, "a_b": {"advance": 900, "contours": [], "components": []}, "a_b_c": {"advance": 1200, "contours": [], "components": []}, "dot": {"advance": 0, "contours": [], "components": []}}, "kern": [["a", "b", -100]], "ligatures": [[["a", "b"], "a_b"], [["a", "b", "c"], "a_b_c"]], "marks": {"dot": ["above", 0, 0]}, "anchors": {"a": {"above": [300, 700]}}}')
+    <span class="kw">Then</span>  length(apply_ligatures(toy, glyph_buffer(toy, "abc"))) = 1
+    <span class="kw">And</span>   apply_ligatures(toy, glyph_buffer(toy, "abc"))[0].glyph = "a_b_c"
+    <span class="kw">And</span>   apply_ligatures(toy, glyph_buffer(toy, "abc"))[0].cluster = 0
+    <span class="kw">And</span>   apply_ligatures(toy, glyph_buffer(toy, "abcab"))[1].glyph = "a_b"
+    <span class="kw">And</span>   apply_ligatures(toy, glyph_buffer(toy, "abcab"))[1].cluster = 3
+    <span class="kw">And</span>   length(apply_ligatures(toy, glyph_buffer(toy, "acb"))) = 3</code></pre>
   </div>
 
   <h2><span class="sec">§ 19.4</span> Arabic: joining, and the four forms</h2>
@@ -340,7 +351,11 @@
 
   <p><code>shape(font, text)</code> is the pipeline for one run: the buffer, then forms if the font
     has a forms table, then ligatures, then marks if it has a marks table. Roboto has neither, so
-    shaping Latin comes down to the ligature pass, and the same function does both scripts.</p>
+    shaping Latin comes down to the ligature pass, and the same function does both scripts. One
+    simplification to own up to: a mark sitting between two glyphs keeps them from matching a
+    ligature rule, because the rule wants them next to each other. HarfBuzz skips marks while it
+    matches. This shaper doesn't, and the hand-written font's scenario in the next section pins
+    what it does instead.</p>
 
   <figure>
     <canvas id="fig194" role="img" aria-label="The Arabic word kitab at 64 pixels reading right to left, its letters in gray connected into one stroke except the last, and a small magenta kasra mark under the first letter at the right; cyan ticks below the baseline mark the five cursor positions, none of them under the mark"></canvas>
@@ -412,7 +427,17 @@
     <span class="kw">Then</span>  length(b) = 5
     <span class="kw">And</span>   b[2].glyph = "f_i"
     <span class="kw">And</span>   b[2].cluster = 2
-    <span class="kw">And</span>   is_mark(font, "f_i") = false</code></pre>
+    <span class="kw">And</span>   is_mark(font, "f_i") = false
+
+  <span class="kw">Scenario</span>: shape chooses the forms before it looks for ligatures
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    <span class="kw">When</span>  b ← shape(font, "سلام")
+    <span class="kw">Then</span>  length(b) = 3
+    <span class="kw">And</span>   b[0].glyph = "seen.init"
+    <span class="kw">And</span>   b[1].glyph = "lam_alef.fina"
+    <span class="kw">And</span>   b[1].cluster = 1
+    <span class="kw">And</span>   b[2].glyph = "meem"
+    <span class="kw">And</span>   clusters(b) = [0, 1, 3]</code></pre>
   </div>
 
   <h2><span class="sec">§ 19.6</span> Positioning, in either direction</h2>
@@ -428,7 +453,10 @@
     turned over, which works the same in either direction because the base is wherever the pen put
     it. HarfBuzz reverses the buffer for right-to-left runs instead and lets the pen always walk
     right; either way the picture is the same, and the placements go to <code>draw_run</code>
-    unchanged, which is the seam from chapter 18 doing its job.</p>
+    unchanged, which is the seam from chapter 18 doing its job. Kern pairs are between
+    consecutive non-marks: a mark between two letters has no advance, so it can't be the pen's
+    business, and the pair on either side of it still applies. Neither real font can show that
+    (DejaVu's Arabic has no kern pairs and Roboto has no marks), so the hand-written font does.</p>
 
   <p>Two things fall out. <code>caret_offsets(buffer, length)</code> is the list of character
     offsets a cursor may stand at: every cluster start, and the end. <code>caret_positions</code> is
@@ -516,7 +544,24 @@
     <span class="kw">When</span>  b ← shape(font, "كِتاب")
     <span class="kw">Then</span>  caret_offsets(b, 5) = [0, 2, 3, 4, 5]
     <span class="kw">And</span>   caret_positions(font, b, 5, 64, 20, "rtl", false) = [149.5313, 119.0625, 99.75, 80.25, 20] ± 0.0001
-    <span class="kw">And</span>   caret_positions(font, b, 5, 64, 20, "rtl", false)[0] = 20 + buffer_advance(font, b, 64, false)</code></pre>
+    <span class="kw">And</span>   caret_positions(font, b, 5, 64, 20, "rtl", false)[0] = 20 + buffer_advance(font, b, 64, false)
+
+  <span class="kw">Scenario</span>: A mark between two glyphs neither moves the pen nor breaks their kern pair
+    <span class="kw">Given</span> toy ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"97": "a", "98": "b", "99": "c", "42": "dot"}, "glyphs": {".notdef": {"advance": 500, "contours": [], "components": []}, "a": {"advance": 600, "contours": [], "components": []}, "b": {"advance": 600, "contours": [], "components": []}, "c": {"advance": 600, "contours": [], "components": []}, "a_b": {"advance": 900, "contours": [], "components": []}, "a_b_c": {"advance": 1200, "contours": [], "components": []}, "dot": {"advance": 0, "contours": [], "components": []}}, "kern": [["a", "b", -100]], "ligatures": [[["a", "b"], "a_b"], [["a", "b", "c"], "a_b_c"]], "marks": {"dot": ["above", 0, 0]}, "anchors": {"a": {"above": [300, 700]}}}')
+    <span class="kw">When</span>  b ← shape(toy, "a*b")
+    <span class="kw">And</span>   run ← position(toy, b, 10, 10, 50, "ltr", true)
+    <span class="kw">Then</span>  length(b) = 3
+    <span class="kw">And</span>   b[1].glyph = "dot"
+    <span class="kw">And</span>   b[1].cluster = 0
+    <span class="kw">And</span>   b[1].dx = 300
+    <span class="kw">And</span>   b[1].dy = 700
+    <span class="kw">And</span>   b[2].glyph = "b"
+    <span class="kw">And</span>   buffer_advance(toy, b, 10, true) = 11
+    <span class="kw">And</span>   buffer_advance(toy, b, 10, false) = 12
+    <span class="kw">And</span>   run[1].x = 13
+    <span class="kw">And</span>   run[1].y = 43
+    <span class="kw">And</span>   run[2].x = 15
+    <span class="kw">And</span>   run[2].y = 50</code></pre>
   </div>
 
   <aside class="gui">

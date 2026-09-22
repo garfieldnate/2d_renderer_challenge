@@ -62,3 +62,13 @@ Feature: Marks: positioning
     And   b[2].glyph = "f_i"
     And   b[2].cluster = 2
     And   is_mark(font, "f_i") = false
+
+  Scenario: shape chooses the forms before it looks for ligatures
+    Given font ← load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+    When  b ← shape(font, "سلام")
+    Then  length(b) = 3
+    And   b[0].glyph = "seen.init"
+    And   b[1].glyph = "lam_alef.fina"
+    And   b[1].cluster = 1
+    And   b[2].glyph = "meem"
+    And   clusters(b) = [0, 1, 3]

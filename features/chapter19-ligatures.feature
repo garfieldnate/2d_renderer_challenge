@@ -34,3 +34,12 @@ Feature: Ligatures: substitution
     Given font ← load_font(read_file("reference/chapter-16/roboto.json"))
     Then  glyph_advance(font, "f_i") = 1134
     And   glyph_advance(font, "f") + glyph_advance(font, "i") = 1208
+
+  Scenario: The longest rule that matches wins, on a font written by hand to have two
+    Given toy ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"97": "a", "98": "b", "99": "c", "42": "dot"}, "glyphs": {".notdef": {"advance": 500, "contours": [], "components": []}, "a": {"advance": 600, "contours": [], "components": []}, "b": {"advance": 600, "contours": [], "components": []}, "c": {"advance": 600, "contours": [], "components": []}, "a_b": {"advance": 900, "contours": [], "components": []}, "a_b_c": {"advance": 1200, "contours": [], "components": []}, "dot": {"advance": 0, "contours": [], "components": []}}, "kern": [["a", "b", -100]], "ligatures": [[["a", "b"], "a_b"], [["a", "b", "c"], "a_b_c"]], "marks": {"dot": ["above", 0, 0]}, "anchors": {"a": {"above": [300, 700]}}}')
+    Then  length(apply_ligatures(toy, glyph_buffer(toy, "abc"))) = 1
+    And   apply_ligatures(toy, glyph_buffer(toy, "abc"))[0].glyph = "a_b_c"
+    And   apply_ligatures(toy, glyph_buffer(toy, "abc"))[0].cluster = 0
+    And   apply_ligatures(toy, glyph_buffer(toy, "abcab"))[1].glyph = "a_b"
+    And   apply_ligatures(toy, glyph_buffer(toy, "abcab"))[1].cluster = 3
+    And   length(apply_ligatures(toy, glyph_buffer(toy, "acb"))) = 3

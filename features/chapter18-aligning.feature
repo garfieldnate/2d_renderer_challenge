@@ -51,3 +51,17 @@ Feature: Aligning
     And   run[38].y = 45.7813 ± 0.0001
     And   run[40].name = "g"
     And   run[40].x = 22.4771 ± 0.0001
+
+  Scenario: The last line stays left even when it has spaces to stretch
+    Given font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    When  run ← layout_paragraph(font, "the quick brown fox jumps over the lazy dog", 11, 10, 20, 150, "justify", true)
+    Then  break_lines(font, "the quick brown fox jumps over the lazy dog", 11, 150, true) = ["the quick brown fox jumps", "over the lazy dog"]
+    And   length(run) = 42
+    And   run[24].name = "s"
+    And   run[24].x + pen_advance(font, "s", 11) = 160 ± 0.0001
+    And   run[25].name = "o"
+    And   run[25].x = 10
+    And   run[25].y = 32.8906 ± 0.0001
+    And   run[41].name = "g"
+    And   run[41].x = 86.436 ± 0.0001
+    And   run[41].x + pen_advance(font, "g", 11) = 10 + run_advance(font, "over the lazy dog", 11, true) ± 0.0001

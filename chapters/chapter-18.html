@@ -339,7 +339,21 @@
     <span class="kw">And</span>   run[38].x = 10
     <span class="kw">And</span>   run[38].y = 45.7813 ± 0.0001
     <span class="kw">And</span>   run[40].name = "g"
-    <span class="kw">And</span>   run[40].x = 22.4771 ± 0.0001</code></pre>
+    <span class="kw">And</span>   run[40].x = 22.4771 ± 0.0001
+
+  <span class="kw">Scenario</span>: The last line stays left even when it has spaces to stretch
+    <span class="kw">Given</span> font ← load_font(read_file("reference/chapter-16/roboto.json"))
+    <span class="kw">When</span>  run ← layout_paragraph(font, "the quick brown fox jumps over the lazy dog", 11, 10, 20, 150, "justify", true)
+    <span class="kw">Then</span>  break_lines(font, "the quick brown fox jumps over the lazy dog", 11, 150, true) = ["the quick brown fox jumps", "over the lazy dog"]
+    <span class="kw">And</span>   length(run) = 42
+    <span class="kw">And</span>   run[24].name = "s"
+    <span class="kw">And</span>   run[24].x + pen_advance(font, "s", 11) = 160 ± 0.0001
+    <span class="kw">And</span>   run[25].name = "o"
+    <span class="kw">And</span>   run[25].x = 10
+    <span class="kw">And</span>   run[25].y = 32.8906 ± 0.0001
+    <span class="kw">And</span>   run[41].name = "g"
+    <span class="kw">And</span>   run[41].x = 86.436 ± 0.0001
+    <span class="kw">And</span>   run[41].x + pen_advance(font, "g", 11) = 10 + run_advance(font, "over the lazy dog", 11, true) ± 0.0001</code></pre>
   </div>
 
   <aside class="gui">

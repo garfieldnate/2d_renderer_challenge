@@ -76,3 +76,20 @@ Feature: Positioning, in either direction, and where the cursor may stand
     Then  caret_offsets(b, 5) = [0, 2, 3, 4, 5]
     And   caret_positions(font, b, 5, 64, 20, "rtl", false) = [149.5313, 119.0625, 99.75, 80.25, 20] ± 0.0001
     And   caret_positions(font, b, 5, 64, 20, "rtl", false)[0] = 20 + buffer_advance(font, b, 64, false)
+
+  Scenario: A mark between two glyphs neither moves the pen nor breaks their kern pair
+    Given toy ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"97": "a", "98": "b", "99": "c", "42": "dot"}, "glyphs": {".notdef": {"advance": 500, "contours": [], "components": []}, "a": {"advance": 600, "contours": [], "components": []}, "b": {"advance": 600, "contours": [], "components": []}, "c": {"advance": 600, "contours": [], "components": []}, "a_b": {"advance": 900, "contours": [], "components": []}, "a_b_c": {"advance": 1200, "contours": [], "components": []}, "dot": {"advance": 0, "contours": [], "components": []}}, "kern": [["a", "b", -100]], "ligatures": [[["a", "b"], "a_b"], [["a", "b", "c"], "a_b_c"]], "marks": {"dot": ["above", 0, 0]}, "anchors": {"a": {"above": [300, 700]}}}')
+    When  b ← shape(toy, "a*b")
+    And   run ← position(toy, b, 10, 10, 50, "ltr", true)
+    Then  length(b) = 3
+    And   b[1].glyph = "dot"
+    And   b[1].cluster = 0
+    And   b[1].dx = 300
+    And   b[1].dy = 700
+    And   b[2].glyph = "b"
+    And   buffer_advance(toy, b, 10, true) = 11
+    And   buffer_advance(toy, b, 10, false) = 12
+    And   run[1].x = 13
+    And   run[1].y = 43
+    And   run[2].x = 15
+    And   run[2].y = 50
