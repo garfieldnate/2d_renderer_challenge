@@ -1,13 +1,16 @@
 # The 2D Renderer Challenge — Rust
 
-Chapters 1 (`The Canvas and the Color`) through 17 (`Rasterizing Type Well`),
+Chapters 1 (`The Canvas and the Color`) through 19 (`Shaping, a Field Guide`),
 stdlib only. Chapter 16 needed a small hand-written JSON reader for the font
-file (`reference/chapter-16/roboto.json`); no crate was added for it.
+file (`reference/chapter-16/roboto.json`); no crate was added for it. Chapter
+19 reuses that same reader for `reference/chapter-19/dejavu-arabic.json`,
+which carries four more optional sections (`kern`/`ligatures` since chapter
+18, `joining`/`forms`/`marks`/`anchors` new in chapter 19).
 
 ## Build, test, render
 
 ```
-cargo test --release   # every scenario in features/, chapters 1-17
+cargo test --release   # every scenario in features/, chapters 1-19
 cargo run --release --bin render_all   # writes all renders (P3 + P6) to out/
 ```
 
@@ -26,17 +29,22 @@ That's it — `cargo build` alone also works if you just want the library to com
   soft masks, groups, `stroke_to_path` and its joins/caps/miter, curve
   offsetting and curve stroking (chapter 14), dashing (chapter 15), a
   hand-written JSON reader plus glyphs/contours/composites/the text matrix
-  (chapter 16), and quarter-pixel bitmaps/the glyph cache and atlas/stem
-  darkening/LCD subpixel rendering (chapter 17), plus every chapter's named
-  figures/plates.
+  (chapter 16), quarter-pixel bitmaps/the glyph cache and atlas/stem
+  darkening/LCD subpixel rendering (chapter 17), laying out a run of text —
+  advances/kerning/greedy line breaking/the four alignments/`draw_run` as
+  the seam into chapter 17 (chapter 18), and a small shaping pipeline —
+  itemizing by script, a glyph buffer with clusters, ligature substitution,
+  Arabic joining forms, mark-to-base attachment, and positioning in either
+  direction (chapter 19), plus every chapter's named figures/plates.
 - `src/bin/render_all.rs` — renders every figure/plate to `out/`.
 - `tests/*.rs` — one test file per `features/*.feature` file (Gherkin
   scenarios translated 1:1 into `#[test]` functions; outlines expanded per
   row).
 - `reference/chapter-0{1..9}/*.ppm`, `reference/chapter-{10..15}/*.ppm`,
-  `reference/chapter-16/roboto.json` (the font data) and
-  `reference/chapter-{16,17}/*.ppm` — the book's reference images (and, for
-  16 on, its font), compared against with `max_channel_difference`. Note:
+  `reference/chapter-16/roboto.json` (the font data),
+  `reference/chapter-19/dejavu-arabic.json` (chapter 19's Arabic font data)
+  and `reference/chapter-{16..19}/*.ppm` — the book's reference images (and,
+  for 16 on, its fonts), compared against with `max_channel_difference`. Note:
   `out/two-strokes.ppm`, `fold.ppm`, `offsets.ppm` and `plate-14.ppm`
   (chapter 14) and `even-marks.ppm`, `dash-strip.ppm`, `spiral-dashes.ppm`
   and `plate-15.ppm` (chapter 15) all land in the same flat `out/`
@@ -44,10 +52,12 @@ That's it — `cargo build` alone also works if you just want the library to com
   used to be named `spiral.ppm` and collide with chapter 6's `spiral()`
   render of the same name; it's now `spiral-dashes.ppm`. Chapters 16 and 17
   add `glyph.ppm`, `plate-16.ppm`, `composite.ppm`, `sizes.ppm`, `flip.ppm`,
-  `subpixels.ppm`, `smoothing.ppm`, `lcd.ppm` and `plate-17.ppm`, none of
-  which collide with an earlier chapter's names either. Every render is
-  checked against its own `reference/chapter-NN/` directory by the tests
-  regardless.
+  `subpixels.ppm`, `smoothing.ppm`, `lcd.ppm` and `plate-17.ppm`. Chapter 18
+  adds `kerning.ppm`, `breaking.ppm`, `drift.ppm` and `plate-18.ppm`; chapter
+  19 adds `ligature.ppm`, `forms.ppm`, `word.ppm`, `mixed.ppm` and
+  `plate-19.ppm`. None of these collide with an earlier chapter's names.
+  Every render is checked against its own `reference/chapter-NN/` directory
+  by the tests regardless.
 
 `--release` matters here: chapter 2's brute-force `coverage()` samples 64
 points per pixel per disc, chapter 3's `thick_line` reuses that same
@@ -629,3 +639,133 @@ since no glyph's ink happens to reach column 0 or the last column of its
 LCD buffer in any pinned render. See `FEEDBACK.md` for the full list,
 including the two that render-diffs alone caught immediately (the
 double-flip and the atlas that never opens a new shelf).
+
+## Chapter 18 notes
+
+`Placement { name, x, y }` is the whole of layout's output: a flat list a
+renderer hands to chapter 17 unchanged. `ascent`/`descent`/`line_height`
+are one-line conversions of the font's own vertical metrics into pixels
+(`descent` negates the file's negative descender, so it comes out
+positive as the chapter says). `layout_run` walks the pen by one
+`glyph_advance` per character, pulling in `kern(font, prev, cur)` before
+placing every glyph after the first when `kerning` is on; `run_advance`
+is the same walk without building the list. `kern` reads `Font.kern`
+(added to the loader this chapter, a `HashMap<(String, String), f64>`,
+0.0 for a pair the file doesn't list). `break_lines` is greedy: split on
+spaces, grow the current line while `run_advance` of the candidate stays
+`<= measure`, start a new line the moment it doesn't; a word alone that's
+still too wide is left to overflow rather than hyphenated. `layout_line`
+is `layout_run` plus the slack (`measure - run_advance`) distributed one
+of four ways; `"justify"` only fires when the line has at least one
+space, otherwise it falls through to the same `shift = 0.0` `"left"`
+takes. `layout_paragraph` is `break_lines` + `layout_line` per line
+stacked by `line_height`, forcing the last line to `"left"` when the
+paragraph's own alignment is `"justify"`. `draw_run` is the seam:
+`subpixel_of(p.x)` into chapter 17's `glyph_bitmap`/`paint_bitmap`, the
+baseline through chapter 1's `round` (halves up), not `floor` — a run at
+whole pixels is checked byte-identical to chapter 17's `draw_text`.
+`kern_demo`/`break_demo`/`drift_demo`/`alignment_plate` (`plate_18`) all
+diff 0 against `reference/chapter-18/` — not merely within tolerance.
+
+## Chapter 19 notes
+
+`Font` gained five more optional sections this chapter needed a font to
+carry (`ligatures`/`kern` already existed for chapter 18): `joining`
+(`HashMap<String, String>`, codepoint string to Unicode joining type),
+`forms` (`HashMap<String, HashMap<String, String>>`, glyph name to
+form to glyph name), `marks` (`HashMap<String, (String, f64, f64)>`,
+mark glyph to anchor class and its own anchor point), and `anchors`
+(`HashMap<String, HashMap<String, (f64, f64)>>`, base glyph to anchor
+point per class); all four are empty maps when a file doesn't carry the
+section, which is Roboto's case for all four and DejaVu Sans's case for
+none. `script_of` is three range checks; `itemize` walks the string once,
+skipping `"common"` characters without ending the current item (so they
+land in whichever item is open when the loop reaches the next real
+letter, or in one Latin item if the whole string is `"common"`).
+`GlyphEntry { glyph, cluster, dx, dy }` is the shaping buffer's own
+element; `glyph_buffer` is one entry per character straight through the
+cmap. `apply_ligatures` walks left to right, tries the font's rules
+longest-parts-first at each position, and steps past a match's whole
+width without re-checking the glyph it just produced — `font.ligatures`
+is a `Vec<(Vec<String>, String)>` so a rule's parts aren't fixed at two.
+`joining_type`/`form_of`/`arabic_forms` are Unicode's join-type rule
+almost verbatim: a transparent character is skipped over (not treated as
+a neighbour) when looking either direction for the nearest real one.
+`attach_marks` finds each mark's nearest preceding non-mark, borrows its
+anchor of the mark's own class, and reparents the mark onto the base's
+cluster; no base, or a base with no anchor of that class, leaves the mark
+at its own cluster and a zero offset. `shape` is the pipeline `forms?
+-> ligatures -> marks?`, forms and marks only run when the font's table
+is non-empty, which is why shaping Latin (Roboto has neither) is
+ligatures alone. `position` is `layout_run`'s walk generalized to either
+direction: `"rtl"` starts the pen at `x + buffer_advance` and subtracts
+each advance before placing, so the first entry lands at the run's right
+end; a mark is placed at its base's last placed origin (`base_x`) plus
+its own offset scaled to pixels, `dy` negated (font units point up,
+pixels down) — never touching the pen. `caret_offsets` is `clusters(buffer)`
+plus the text's length; `caret_positions` is the same walk's `x` at each
+of those offsets, the last one being the pen's final position. None of
+this needed a new rasterizer: every render goes through chapter 18's
+`draw_run` once shaping and positioning have produced ordinary
+placements. `ligature_demo`/`forms_demo`/`word_demo`/`mixed_demo`/
+`cluster_plate` (`plate_19`) all diff 0 against `reference/chapter-19/` —
+not merely within tolerance.
+
+## Mutation testing (chapters 18-19)
+
+Six deliberate bugs, tested and reverted, three per chapter.
+
+- **Chapter 18 — kerning applied after the glyph instead of before**
+  (`layout_run` placing the glyph, advancing the pen by its own width,
+  and only then adding the kern against the *next* glyph): caught hard —
+  6 scenarios fail across `kerning18.rs`, `aligning18.rs` and
+  `plate18.rs`, since every kerned position from the second character on
+  comes out shifted by one glyph's worth of kerning.
+- **Chapter 18 — the baseline floored instead of rounded halves-up**
+  (`draw_run` using `p.y.floor()` instead of chapter 1's `round`): caught
+  by the scenario built for exactly this (`the_baseline_rounds_to_a_pixel_row_halves_up`)
+  plus two render diffs (`breaking.ppm`, `plate-18.ppm`) whose baselines
+  land on a non-whole `y`.
+- **Chapter 18 — a justified paragraph's last line also stretched**
+  (`layout_paragraph` always passing the paragraph's own `align` instead
+  of forcing `"left"` on the last line): **not caught by anything.**
+  Every justified paragraph in this book's scenarios and renders happens
+  to end its last line on a single word (`"dog"`, `"drew."`), and
+  `layout_line`'s justify branch only fires when a line has at least one
+  space (`gaps > 0`) — a one-word line is identical whether or not it's
+  "supposed" to be forced left. The rule is stated in prose and in the
+  chapter's pseudocode, and it's real (a multi-word last line would
+  visibly stretch), but nothing in `features/chapter18-*.feature` pins a
+  paragraph whose last line has two or more words under `"justify"`. This
+  is the single most valuable finding of this round — see **Concrete
+  changes** below.
+- **Chapter 19 — the rtl pen starting at `x` instead of
+  `x + buffer_advance`**: caught hard — 6 scenarios fail, 3 directly in
+  `position19.rs` (both the dedicated rtl scenario and the mark-offset
+  scenario, which reads `rtl[0].x` as its reference point) and 3 more in
+  `plate19.rs`'s render diffs (`word.ppm`, `mixed.ppm`, `plate-19.ppm`).
+- **Chapter 19 — a ligature result fed back into the rules**
+  (`apply_ligatures` re-running itself on its own output until nothing
+  changes, instead of treating a match's result as final): **not caught
+  by anything.** Every scenario and every render in this chapter's font
+  data uses ligature rules whose *results* (`f_i`, `f_l`, `lam_alef`,
+  `lam_alef.fina`, …) never themselves appear as the left-hand side of
+  another rule, so feeding a result back in is a no-op on every buffer
+  this book ever builds. The prose states the rule explicitly
+  ("A result is never fed back into another rule") and a scenario is
+  named for it ("The walk is greedy from the left and a result is not
+  fed back in"), but that scenario only checks that a *later* position
+  in the buffer isn't matched early (greediness), not that an already
+  -produced glyph is exempt from re-matching. See **Concrete changes**.
+- **Chapter 19 — a mark keeping its own cluster instead of taking its
+  base's** (`attach_marks` writing `e.cluster` instead of `b.cluster`
+  into the reparented entry): caught directly by 2 of 3 `marks19.rs`
+  scenarios (the kasra's cluster and the two-marks-on-one-base scenario
+  both pin the reparented cluster value).
+
+Two of six mutations survived every scenario and every render. Both are
+recorded above and in **Concrete changes**; neither was silent because of
+a gap in *coverage* (every code path the mutation touches is exercised)
+but because the specific *data* this book's fonts and example texts
+happen to use never puts the mutated behavior and the correct behavior
+in disagreement.

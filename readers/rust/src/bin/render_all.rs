@@ -7,15 +7,16 @@ use std::fs;
 use std::path::Path;
 
 use renderer::{
-    blend_strip, canvas_to_p6, canvas_to_ppm, caps_demo, clamp_pair, clip_demo, composite_demo,
-    dash_strip, disc_centers, disc_coverage, drops, even_marks, extend_strip, fan_bresenham,
-    fan_both_orders, fan_coverage, fan_wu, flip_trap, flower, fold_demo, glyph_plate, gray_match,
-    joins_plate, lcd_plate, needles, offsets_plate, opacity_plate, painted_twice, plate_01,
+    blend_strip, break_demo, canvas_to_p6, canvas_to_ppm, caps_demo, clamp_pair, clip_demo,
+    composite_demo, dash_strip, disc_centers, disc_coverage, drift_demo, drops, even_marks,
+    extend_strip, fan_bresenham, fan_both_orders, fan_coverage, fan_wu, flip_trap, flower,
+    fold_demo, forms_demo, glyph_plate, gray_match, joins_plate, kern_demo, lcd_plate,
+    ligature_demo, mixed_demo, needles, offsets_plate, opacity_plate, painted_twice, plate_01,
     plate_02, plate_03, plate_04, plate_05, plate_06, plate_07, plate_08, plate_09, plate_10,
-    plate_11, plate_12, plate_13, plate_14, plate_15, plate_16, plate_17, porter_duff_table,
-    quarter_match, ramp, seam, sizes, smoothing_demo, soft_square, spiral, spiral_dashes,
-    spiral_smooth, star_centers, star_coverage, star_exact, subpixel_strip, three_filters,
-    three_gradients, two_filters, two_strokes,
+    plate_11, plate_12, plate_13, plate_14, plate_15, plate_16, plate_17, plate_18, plate_19,
+    porter_duff_table, quarter_match, ramp, seam, sizes, smoothing_demo, soft_square, spiral,
+    spiral_dashes, spiral_smooth, star_centers, star_coverage, star_exact, subpixel_strip,
+    three_filters, three_gradients, two_filters, two_strokes, word_demo,
 };
 
 fn write_p3(dir: &Path, name: &str, ppm: String) {
@@ -125,5 +126,18 @@ fn main() {
     write_p6(out, "lcd.ppm", canvas_to_p6(&lcd_plate()));
     write_p6(out, "plate-17.ppm", canvas_to_p6(&plate_17()));
 
-    println!("wrote 61 renders to out/");
+    // Chapter 18: setting a line of text.
+    write_p6(out, "kerning.ppm", canvas_to_p6(&kern_demo()));
+    write_p6(out, "breaking.ppm", canvas_to_p6(&break_demo()));
+    write_p6(out, "drift.ppm", canvas_to_p6(&drift_demo()));
+    write_p6(out, "plate-18.ppm", canvas_to_p6(&plate_18()));
+
+    // Chapter 19: shaping, a field guide.
+    write_p6(out, "ligature.ppm", canvas_to_p6(&ligature_demo()));
+    write_p6(out, "forms.ppm", canvas_to_p6(&forms_demo()));
+    write_p6(out, "word.ppm", canvas_to_p6(&word_demo()));
+    write_p6(out, "mixed.ppm", canvas_to_p6(&mixed_demo()));
+    write_p6(out, "plate-19.ppm", canvas_to_p6(&plate_19()));
+
+    println!("wrote 70 renders to out/");
 }

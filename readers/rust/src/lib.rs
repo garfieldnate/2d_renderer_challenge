@@ -5415,6 +5415,12 @@ impl Json {
     fn get(&self, key: &str) -> &Json {
         self.as_object().get(key).unwrap_or_else(|| panic!("missing key {key:?}"))
     }
+    /// A key that may not be present: chapter 18's `kern`/`ligatures` and
+    /// chapter 19's `joining`/`forms`/`marks`/`anchors` are all optional
+    /// sections of the schema, present only in the fonts that need them.
+    fn get_opt(&self, key: &str) -> Option<&Json> {
+        self.as_object().get(key)
+    }
 }
 
 struct JsonParser<'a> {
@@ -5594,8 +5600,19 @@ pub struct Glyph {
 }
 
 /// A font: vertical metrics in font units, a codepoint-to-name `cmap`,
-/// and every glyph by name. `units_per_em` is the design grid every
-/// coordinate in the file is a whole number on.
+/// and every glyph by name, plus the optional sections later chapters
+/// read when a font file carries them. `units_per_em` is the design grid
+/// every coordinate in the file is a whole number on.
+///
+/// `kern` (chapter 18) is a pair of glyph names to a font-unit value.
+/// `ligatures` (chapters 18-19) is a list of rules, each a sequence of
+/// glyph names and the one glyph that replaces them. `joining` (chapter
+/// 19) is Unicode's joining type per codepoint, keyed the same way as
+/// `cmap`. `forms` is, for a glyph with positional forms, its
+/// `"init"`/`"medi"`/`"fina"` glyph names. `marks` is, for a mark glyph,
+/// its anchor class (`"above"`/`"below"`) and its own anchor point in
+/// font units. `anchors` is, for a base glyph, its anchor point per
+/// class. All six are empty when the file doesn't carry the section.
 #[derive(Debug, Clone)]
 pub struct Font {
     pub units_per_em: f64,
@@ -5604,12 +5621,19 @@ pub struct Font {
     pub line_gap: f64,
     pub cmap: HashMap<String, String>,
     pub glyphs: HashMap<String, Glyph>,
+    pub kern: HashMap<(String, String), f64>,
+    pub ligatures: Vec<(Vec<String>, String)>,
+    pub joining: HashMap<String, String>,
+    pub forms: HashMap<String, HashMap<String, String>>,
+    pub marks: HashMap<String, (String, f64, f64)>,
+    pub anchors: HashMap<String, HashMap<String, (f64, f64)>>,
 }
 
 /// Reads the book's JSON font schema: `units_per_em`/`ascender`/
 /// `descender`/`line_gap` in font units, `cmap` (codepoint string to
-/// glyph name), and `glyphs` by name. `kern` and `ligatures` arrive in
-/// later chapters and aren't read here.
+/// glyph name), and `glyphs` by name, plus six optional sections read
+/// when present: `kern`, `ligatures`, `joining`, `forms`, `marks` and
+/// `anchors` (chapters 18-19's field guide).
 pub fn load_font<T: AsRef<[u8]>>(data: T) -> Font {
     let text = std::str::from_utf8(data.as_ref()).expect("font JSON is not valid UTF-8");
     let root = parse_json(text);
@@ -5647,7 +5671,62 @@ pub fn load_font<T: AsRef<[u8]>>(data: T) -> Font {
         glyphs.insert(name.clone(), Glyph { advance, contours, components });
     }
 
-    Font { units_per_em, ascender, descender, line_gap, cmap, glyphs }
+    let mut kern = HashMap::new();
+    if let Some(arr) = root.get_opt("kern") {
+        for entry in arr.as_array() {
+            let e = entry.as_array();
+            kern.insert((e[0].as_str().to_string(), e[1].as_str().to_string()), e[2].as_f64());
+        }
+    }
+
+    let mut ligatures = Vec::new();
+    if let Some(arr) = root.get_opt("ligatures") {
+        for entry in arr.as_array() {
+            let e = entry.as_array();
+            let parts: Vec<String> = e[0].as_array().iter().map(|p| p.as_str().to_string()).collect();
+            ligatures.push((parts, e[1].as_str().to_string()));
+        }
+    }
+
+    let mut joining = HashMap::new();
+    if let Some(obj) = root.get_opt("joining") {
+        for (k, v) in obj.as_object() {
+            joining.insert(k.clone(), v.as_str().to_string());
+        }
+    }
+
+    let mut forms = HashMap::new();
+    if let Some(obj) = root.get_opt("forms") {
+        for (glyph, table) in obj.as_object() {
+            let mut m = HashMap::new();
+            for (form, name) in table.as_object() {
+                m.insert(form.clone(), name.as_str().to_string());
+            }
+            forms.insert(glyph.clone(), m);
+        }
+    }
+
+    let mut marks = HashMap::new();
+    if let Some(obj) = root.get_opt("marks") {
+        for (glyph, arr) in obj.as_object() {
+            let a = arr.as_array();
+            marks.insert(glyph.clone(), (a[0].as_str().to_string(), a[1].as_f64(), a[2].as_f64()));
+        }
+    }
+
+    let mut anchors = HashMap::new();
+    if let Some(obj) = root.get_opt("anchors") {
+        for (glyph, table) in obj.as_object() {
+            let mut m = HashMap::new();
+            for (class, arr) in table.as_object() {
+                let a = arr.as_array();
+                m.insert(class.clone(), (a[0].as_f64(), a[1].as_f64()));
+            }
+            anchors.insert(glyph.clone(), m);
+        }
+    }
+
+    Font { units_per_em, ascender, descender, line_gap, cmap, glyphs, kern, ligatures, joining, forms, marks, anchors }
 }
 
 /// Looks a character up in the font's `cmap`; `.notdef` for one the font
@@ -6308,4 +6387,921 @@ pub fn lcd_plate() -> Canvas {
 /// Plate 17: `lcd_plate`, magnified by 2.
 pub fn plate_17() -> Canvas {
     magnify(&lcd_plate(), 2)
+}
+
+// =======================================================================
+// Chapter 18: Setting a Line of Text
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 18.1 The pen, and the lines around it
+// ---------------------------------------------------------------------
+
+/// One glyph's name and the fractional-pixel position of its origin.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Placement {
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+}
+
+fn placement(name: &str, x: f64, y: f64) -> Placement {
+    Placement { name: name.to_string(), x, y }
+}
+
+/// How far the font reaches above the baseline, in pixels.
+pub fn ascent(font: &Font, size: f64) -> f64 {
+    font.ascender * size / font.units_per_em
+}
+
+/// How far the font reaches below the baseline, in pixels -- a positive
+/// number, even though the file stores the descender as a negative one.
+pub fn descent(font: &Font, size: f64) -> f64 {
+    -font.descender * size / font.units_per_em
+}
+
+/// The distance from one baseline to the next: ascent plus descent plus
+/// the file's own line gap.
+pub fn line_height(font: &Font, size: f64) -> f64 {
+    (font.ascender - font.descender + font.line_gap) * size / font.units_per_em
+}
+
+/// Walks the pen along a baseline, one placement per character in order,
+/// each an advance further along than the last; a character the font
+/// lacks places `.notdef`. Kerning, when `true`, is folded in before
+/// § 18.2 explains it.
+pub fn layout_run(font: &Font, text: &str, size: f64, x: f64, y: f64, kerning: bool) -> Vec<Placement> {
+    let s = size / font.units_per_em;
+    let mut out = Vec::new();
+    let mut pen = x;
+    let mut prev: Option<String> = None;
+    for ch in text.chars() {
+        let name = glyph_name(font, ch as i64);
+        if kerning {
+            if let Some(p) = &prev {
+                pen += kern(font, p, &name) * s;
+            }
+        }
+        out.push(placement(&name, pen, y));
+        pen += glyph_advance(font, &name) * s;
+        prev = Some(name);
+    }
+    out
+}
+
+/// How far the pen moved in all, laying `text` out the way `layout_run`
+/// would.
+pub fn run_advance(font: &Font, text: &str, size: f64, kerning: bool) -> f64 {
+    let s = size / font.units_per_em;
+    let mut total = 0.0;
+    let mut prev: Option<String> = None;
+    for ch in text.chars() {
+        let name = glyph_name(font, ch as i64);
+        if kerning {
+            if let Some(p) = &prev {
+                total += kern(font, p, &name) * s;
+            }
+        }
+        total += glyph_advance(font, &name) * s;
+        prev = Some(name);
+    }
+    total
+}
+
+// ---------------------------------------------------------------------
+// § 18.2 Kerning
+// ---------------------------------------------------------------------
+
+/// The font's kern table, in font units: 0 for a pair it doesn't list
+/// (nearly all of them). The order matters -- `kern(f, "A", "T")` and
+/// `kern(f, "T", "A")` are different entries.
+pub fn kern(font: &Font, left: &str, right: &str) -> f64 {
+    *font.kern.get(&(left.to_string(), right.to_string())).unwrap_or(&0.0)
+}
+
+// ---------------------------------------------------------------------
+// § 18.3 Breaking lines
+// ---------------------------------------------------------------------
+
+/// Greedy line breaking: the words are the runs of non-space characters,
+/// and each in turn joins the current line if the line with it (one
+/// space between) still fits the measure; otherwise it starts a new
+/// line. A word wider than the measure sits alone and overflows. Only
+/// spaces are break opportunities, so runs of them collapse to one
+/// break and a text of nothing but words has no lines.
+pub fn break_lines(font: &Font, text: &str, size: f64, measure: f64, kerning: bool) -> Vec<String> {
+    let words: Vec<&str> = text.split(' ').filter(|w| !w.is_empty()).collect();
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in words {
+        let candidate = if current.is_empty() { word.to_string() } else { format!("{current} {word}") };
+        if !current.is_empty() && run_advance(font, &candidate, size, kerning) > measure {
+            lines.push(current.clone());
+            current = word.to_string();
+        } else {
+            current = candidate;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+// ---------------------------------------------------------------------
+// § 18.4 Four alignments
+// ---------------------------------------------------------------------
+
+/// `layout_run` plus one of four rules for the slack (the measure minus
+/// the line's own `run_advance`): `"left"` leaves it on the right,
+/// `"right"` puts it on the left, `"center"` splits it, and `"justify"`
+/// spreads it over the line's spaces so the line ends exactly at the
+/// measure -- unless the line has no space, which can't be stretched and
+/// is laid out left instead.
+pub fn layout_line(
+    font: &Font,
+    text: &str,
+    size: f64,
+    x: f64,
+    y: f64,
+    measure: f64,
+    align: &str,
+    kerning: bool,
+) -> Vec<Placement> {
+    let mut run = layout_run(font, text, size, x, y, kerning);
+    let slack = measure - run_advance(font, text, size, kerning);
+    let gaps = text.matches(' ').count();
+    if align == "justify" && gaps > 0 {
+        let extra = slack / gaps as f64;
+        let mut seen = 0usize;
+        for (i, ch) in text.chars().enumerate() {
+            run[i].x += seen as f64 * extra;
+            if ch == ' ' {
+                seen += 1;
+            }
+        }
+    } else {
+        let shift = match align {
+            "right" => slack,
+            "center" => slack / 2.0,
+            _ => 0.0,
+        };
+        for p in &mut run {
+            p.x += shift;
+        }
+    }
+    run
+}
+
+/// Breaks `text` and lays out every line with the same alignment, the
+/// first baseline at `y` and each next one `line_height` lower, as one
+/// flat list of placements. A justified paragraph's last line is laid
+/// out left, since stretching a short last line across the whole measure
+/// is how you can tell a text engine was written in a weekend.
+pub fn layout_paragraph(
+    font: &Font,
+    text: &str,
+    size: f64,
+    x: f64,
+    y: f64,
+    measure: f64,
+    align: &str,
+    kerning: bool,
+) -> Vec<Placement> {
+    let lines = break_lines(font, text, size, measure, kerning);
+    let lh = line_height(font, size);
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let mode = if align == "justify" && i == lines.len() - 1 { "left" } else { align };
+        out.extend(layout_line(font, line, size, x, y + i as f64 * lh, measure, mode, kerning));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------
+// § 18.5 The seam
+// ---------------------------------------------------------------------
+
+/// The seam between layout and rendering: every placement's `x` split by
+/// chapter 17's `subpixel_of`, its glyph's bitmap for that quarter
+/// painted with the pen at that whole pixel, and the baseline rounded to
+/// the nearest pixel row, halves up (chapter 1's `round`).
+pub fn draw_run(c: &mut Canvas, font: &Font, run: &[Placement], size: f64, col: Color, linear: bool) {
+    for p in run {
+        let (whole, sub) = subpixel_of(p.x);
+        let b = glyph_bitmap(font, &p.name, size, sub);
+        paint_bitmap(c, &b, whole, round(p.y), col, linear);
+    }
+}
+
+/// The trap: rounding the pen to a whole pixel after every glyph instead
+/// of keeping it fractional. Each rounding is off by at most half a
+/// pixel, and the errors don't cancel.
+fn layout_run_rounded(font: &Font, text: &str, size: f64, x: f64, y: f64) -> Vec<Placement> {
+    let s = size / font.units_per_em;
+    let mut out = Vec::new();
+    let mut pen = x;
+    for ch in text.chars() {
+        let name = glyph_name(font, ch as i64);
+        out.push(placement(&name, pen, y));
+        pen = round(pen + glyph_advance(font, &name) * s) as f64;
+    }
+    out
+}
+
+// ---------------------------------------------------------------------
+// § 18.6 Putting it together
+// ---------------------------------------------------------------------
+
+fn ch18_load_font() -> Font {
+    load_font(read_file("reference/chapter-16/roboto.json"))
+}
+
+fn ch18_line(c: &mut Canvas, x0: f64, y0: f64, x1: f64, y1: f64, col: Color, width: f64) {
+    let mut p = path();
+    move_to(&mut p, point(x0, y0));
+    line_to(&mut p, point(x1, y1));
+    paint_hairline(c, &p, width, col);
+}
+
+fn ch18_vline(c: &mut Canvas, x: f64, y0: f64, y1: f64, col: Color, width: f64) {
+    ch18_line(c, x, y0, x, y1, col, width);
+}
+
+fn ch18_hline(c: &mut Canvas, x0: f64, x1: f64, y: f64, col: Color, width: f64) {
+    ch18_line(c, x0, y, x1, y, col, width);
+}
+
+const THROUGH_LINE: &str = "Rasterization computes coverage. Painting composites paint through coverage. Once you hold a coverage buffer, a stroke is a fill of a different outline, a clip is a multiplication of two buffers, and a glyph is a path somebody else drew.";
+
+/// TAVERN at a 64 pixel em, kerned on one baseline and not on the other,
+/// with a tick at every pen position and a magenta bracket over what the
+/// two runs' widths differ by.
+pub fn kern_demo() -> Canvas {
+    let font = ch18_load_font();
+    let (w, h) = (320usize, 190usize);
+    let mut c = canvas(w, h);
+    fill(&mut c, CH16_PAPER);
+    let size = 64.0;
+    let x = 12.0;
+    for &(y, kerning) in &[(70.0, true), (160.0, false)] {
+        let run = layout_run(&font, "TAVERN", size, x, y, kerning);
+        draw_run(&mut c, &font, &run, size, CH16_GRAY, true);
+        ch18_hline(&mut c, 4.0, w as f64 - 4.0, y, CH16_DIM, 1.0);
+        let end = x + run_advance(&font, "TAVERN", size, kerning);
+        let tick_col = if kerning { CH16_CYAN } else { CH16_DIM };
+        for p in &run {
+            ch18_vline(&mut c, p.x, y + 3.0, y + 12.0, tick_col, 1.0);
+        }
+        ch18_vline(&mut c, end, y + 3.0, y + 12.0, tick_col, 1.0);
+    }
+    let kerned_end = x + run_advance(&font, "TAVERN", size, true);
+    let plain_end = x + run_advance(&font, "TAVERN", size, false);
+    ch18_vline(&mut c, kerned_end, 84.0, 180.0, CH16_MAGENTA, 1.0);
+    ch18_vline(&mut c, plain_end, 84.0, 180.0, CH16_MAGENTA, 1.0);
+    ch18_hline(&mut c, kerned_end, plain_end, 180.0, CH16_MAGENTA, 1.0);
+    c
+}
+
+/// The through-line greedily broken into a 300-pixel measure at 16
+/// pixels, set left.
+pub fn break_demo() -> Canvas {
+    let font = ch18_load_font();
+    let (w, h) = (340usize, 150usize);
+    let mut c = canvas(w, h);
+    fill(&mut c, CH16_PAPER);
+    let (x, y, measure, size) = (20.0, 30.0, 300.0, 16.0);
+    let run = layout_paragraph(&font, THROUGH_LINE, size, x, y, measure, "left", true);
+    draw_run(&mut c, &font, &run, size, CH16_GRAY, true);
+    ch18_vline(&mut c, x, 10.0, h as f64 - 10.0, CH16_CYAN, 1.0);
+    ch18_vline(&mut c, x + measure, 10.0, h as f64 - 10.0, CH16_CYAN, 1.0);
+    c
+}
+
+/// One line set twice: the pen kept fractional above, rounded to a
+/// whole pixel after every glyph below. Magnified by 3.
+pub fn drift_demo() -> Canvas {
+    let font = ch18_load_font();
+    let text = "little illicit lilies fill the hill until it is still";
+    let (w, h) = (260usize, 44usize);
+    let mut c = canvas(w, h);
+    fill(&mut c, color(1.0, 1.0, 1.0));
+    let size = 11.0;
+    let x = 6.0;
+    let exact = layout_run(&font, text, size, x, 14.0, false);
+    let rounded = layout_run_rounded(&font, text, size, x, 34.0);
+    draw_run(&mut c, &font, &exact, size, color(0.0, 0.0, 0.0), true);
+    draw_run(&mut c, &font, &rounded, size, color(0.0, 0.0, 0.0), true);
+    let end_exact = x + run_advance(&font, text, size, false);
+    let last = rounded.last().expect("text is not empty");
+    let end_rounded = last.x + pen_advance(&font, &last.name, size);
+    ch18_vline(&mut c, end_exact, 3.0, 18.0, CH16_CYAN, 2.0);
+    ch18_vline(&mut c, end_exact, 23.0, 38.0, CH16_CYAN, 2.0);
+    ch18_vline(&mut c, end_rounded, 23.0, 38.0, CH16_MAGENTA, 2.0);
+    ch18_hline(&mut c, end_exact, end_rounded, 40.0, CH16_MAGENTA, 2.0);
+    magnify(&c, 3)
+}
+
+/// The through-line at 14 pixels in a 300-pixel measure, set all four
+/// ways.
+pub fn alignment_plate() -> Canvas {
+    let font = ch18_load_font();
+    let (w, h) = (660usize, 236usize);
+    let mut c = canvas(w, h);
+    fill(&mut c, CH16_PAPER);
+    let size = 14.0;
+    let measure = 300.0;
+    let aligns = ["left", "right", "center", "justify"];
+    for (k, &align) in aligns.iter().enumerate() {
+        let x = 20.0 + (k % 2) as f64 * (measure + 20.0);
+        let y = 24.0 + (k / 2) as f64 * 108.0;
+        let run = layout_paragraph(&font, THROUGH_LINE, size, x, y, measure, align, true);
+        let n = break_lines(&font, THROUGH_LINE, size, measure, true).len();
+        let lh = line_height(&font, size);
+        for i in 0..n {
+            ch18_hline(&mut c, x, x + measure, y + i as f64 * lh, CH16_DIM, 0.5);
+        }
+        let bottom = y + (n as f64 - 1.0) * lh + 5.0;
+        ch18_vline(&mut c, x, y - 14.0, bottom, CH16_CYAN, 0.5);
+        ch18_vline(&mut c, x + measure, y - 14.0, bottom, CH16_CYAN, 0.5);
+        draw_run(&mut c, &font, &run, size, CH16_GRAY, true);
+    }
+    c
+}
+
+/// Plate 18: `alignment_plate`.
+pub fn plate_18() -> Canvas {
+    alignment_plate()
+}
+
+// =======================================================================
+// Chapter 19: Shaping, a Field Guide
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 19.1 Itemizing
+// ---------------------------------------------------------------------
+
+/// `"arabic"` for U+0600-U+06FF, `"latin"` for A-Z, a-z and U+00C0-U+024F,
+/// `"common"` for everything else (spaces, digits, punctuation), which
+/// has no script of its own.
+pub fn script_of(codepoint: i64) -> String {
+    if (0x600..=0x6FF).contains(&codepoint) {
+        "arabic".to_string()
+    } else if (0x41..=0x5A).contains(&codepoint)
+        || (0x61..=0x7A).contains(&codepoint)
+        || (0xC0..=0x24F).contains(&codepoint)
+    {
+        "latin".to_string()
+    } else {
+        "common".to_string()
+    }
+}
+
+/// One run of a single script and direction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Item {
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
+    pub script: String,
+    pub direction: String,
+}
+
+fn direction_of(script: &str) -> &'static str {
+    if script == "arabic" { "rtl" } else { "ltr" }
+}
+
+fn make_item(chars: &[char], start: usize, end: usize, script: &str) -> Item {
+    Item {
+        start,
+        end,
+        text: chars[start..end].iter().collect(),
+        script: script.to_string(),
+        direction: direction_of(script).to_string(),
+    }
+}
+
+/// Cuts `text` where the script changes; a common character joins the
+/// run before it (common characters at the very start join the first
+/// run), and text of nothing but common characters is one Latin run.
+pub fn itemize(text: &str) -> Vec<Item> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut items = Vec::new();
+    let mut start = 0usize;
+    let mut script: Option<String> = None;
+    for i in 0..chars.len() {
+        let s = script_of(chars[i] as i64);
+        if s == "common" {
+            continue;
+        }
+        match &script {
+            None => script = Some(s),
+            Some(cur) if *cur != s => {
+                items.push(make_item(&chars, start, i, cur));
+                start = i;
+                script = Some(s);
+            }
+            _ => {}
+        }
+    }
+    if !chars.is_empty() {
+        let sc = script.unwrap_or_else(|| "latin".to_string());
+        items.push(make_item(&chars, start, chars.len(), &sc));
+    }
+    items
+}
+
+// ---------------------------------------------------------------------
+// § 19.2 The glyph buffer, and clusters
+// ---------------------------------------------------------------------
+
+/// One glyph in a shaping buffer, carrying the index of the character it
+/// came from (its cluster) and a positioning offset in font units, set
+/// by mark attachment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlyphEntry {
+    pub glyph: String,
+    pub cluster: usize,
+    pub dx: f64,
+    pub dy: f64,
+}
+
+fn glyph_entry(glyph: &str, cluster: usize) -> GlyphEntry {
+    GlyphEntry { glyph: glyph.to_string(), cluster, dx: 0.0, dy: 0.0 }
+}
+
+/// The starting buffer: one entry per character, through the cmap, each
+/// its own cluster.
+pub fn glyph_buffer(font: &Font, text: &str) -> Vec<GlyphEntry> {
+    text.chars().enumerate().map(|(i, ch)| glyph_entry(&glyph_name(font, ch as i64), i)).collect()
+}
+
+/// The distinct clusters in the buffer, in order.
+pub fn clusters(buffer: &[GlyphEntry]) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::new();
+    for e in buffer {
+        if !out.contains(&e.cluster) {
+            out.push(e.cluster);
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Whether `name` is one of the font's mark glyphs.
+pub fn is_mark(font: &Font, name: &str) -> bool {
+    font.marks.contains_key(name)
+}
+
+// ---------------------------------------------------------------------
+// § 19.3 Ligatures: substitution
+// ---------------------------------------------------------------------
+
+/// Walks the buffer from the left; at each position tries the font's
+/// rules, longest first, and when the glyphs there match a rule's parts
+/// replaces them with the result, which takes the first part's cluster.
+/// The result is never fed back into another rule.
+pub fn apply_ligatures(font: &Font, buffer: &[GlyphEntry]) -> Vec<GlyphEntry> {
+    let mut rules: Vec<&(Vec<String>, String)> = font.ligatures.iter().collect();
+    rules.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < buffer.len() {
+        let hit = rules.iter().find(|rule| {
+            let parts = &rule.0;
+            parts.len() <= buffer.len() - i && parts.iter().enumerate().all(|(k, p)| buffer[i + k].glyph == *p)
+        });
+        match hit {
+            Some(rule) => {
+                out.push(glyph_entry(&rule.1, buffer[i].cluster));
+                i += rule.0.len();
+            }
+            None => {
+                out.push(buffer[i].clone());
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------
+// § 19.4 Arabic: joining, and the four forms
+// ---------------------------------------------------------------------
+
+/// Unicode's joining type for a codepoint, `"none"` for one the font
+/// doesn't list.
+pub fn joining_type(font: &Font, codepoint: i64) -> String {
+    font.joining.get(&codepoint.to_string()).cloned().unwrap_or_else(|| "none".to_string())
+}
+
+/// A character joins backward when it's dual or right-joining and the
+/// nearest non-transparent character before it is dual; forward when
+/// it's dual and the nearest non-transparent character after it is dual
+/// or right-joining. Both is medial, backward alone final, forward alone
+/// initial, neither isolated.
+fn form_of(types: &[String], i: usize) -> &'static str {
+    let t = &types[i];
+    if t == "none" || t == "transparent" {
+        return "isol";
+    }
+    let mut j = i as isize - 1;
+    while j >= 0 && types[j as usize] == "transparent" {
+        j -= 1;
+    }
+    let back = (t == "dual" || t == "right") && j >= 0 && types[j as usize] == "dual";
+    let mut k = i + 1;
+    while k < types.len() && types[k] == "transparent" {
+        k += 1;
+    }
+    let fwd = t == "dual" && k < types.len() && (types[k] == "dual" || types[k] == "right");
+    match (back, fwd) {
+        (true, true) => "medi",
+        (true, false) => "fina",
+        (false, true) => "init",
+        (false, false) => "isol",
+    }
+}
+
+/// The form ("isol"/"init"/"medi"/"fina") of every character of `text`.
+pub fn arabic_forms(font: &Font, text: &str) -> Vec<String> {
+    let types: Vec<String> = text.chars().map(|c| joining_type(font, c as i64)).collect();
+    (0..types.len()).map(|i| form_of(&types, i).to_string()).collect()
+}
+
+/// Swaps each glyph for its form's glyph when the font's `forms` table
+/// has one, leaving it alone otherwise.
+pub fn apply_forms(font: &Font, text: &str, buffer: &[GlyphEntry]) -> Vec<GlyphEntry> {
+    let forms = arabic_forms(font, text);
+    buffer
+        .iter()
+        .map(|e| {
+            let swapped = font
+                .forms
+                .get(&e.glyph)
+                .and_then(|table| forms.get(e.cluster).and_then(|f| table.get(f)))
+                .cloned()
+                .unwrap_or_else(|| e.glyph.clone());
+            GlyphEntry { glyph: swapped, cluster: e.cluster, dx: e.dx, dy: e.dy }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------
+// § 19.5 Marks: positioning
+// ---------------------------------------------------------------------
+
+/// Finds each mark's base (the nearest non-mark before it), sets the
+/// mark's offset to the base's anchor of the mark's class minus the
+/// mark's own anchor, and gives the mark the base's cluster. A mark
+/// whose base has no anchor of its class, or with no base before it,
+/// keeps its own cluster at offset (0, 0).
+pub fn attach_marks(font: &Font, buffer: &[GlyphEntry]) -> Vec<GlyphEntry> {
+    let mut out = Vec::new();
+    let mut base: Option<&GlyphEntry> = None;
+    for e in buffer {
+        if is_mark(font, &e.glyph) {
+            let m = &font.marks[&e.glyph];
+            let anchor = base.and_then(|b| font.anchors.get(&b.glyph)).and_then(|t| t.get(&m.0));
+            match (base, anchor) {
+                (Some(b), Some(a)) => {
+                    out.push(GlyphEntry { glyph: e.glyph.clone(), cluster: b.cluster, dx: a.0 - m.1, dy: a.1 - m.2 })
+                }
+                _ => out.push(glyph_entry(&e.glyph, e.cluster)),
+            }
+        } else {
+            base = Some(e);
+            out.push(e.clone());
+        }
+    }
+    out
+}
+
+/// The pipeline for one run: the buffer, then forms when the font has a
+/// forms table, then ligatures, then marks when the font has a marks
+/// table. Roboto has neither, so shaping Latin is ligatures alone.
+pub fn shape(font: &Font, text: &str) -> Vec<GlyphEntry> {
+    let mut b = glyph_buffer(font, text);
+    if !font.forms.is_empty() {
+        b = apply_forms(font, text, &b);
+    }
+    b = apply_ligatures(font, &b);
+    if !font.marks.is_empty() {
+        b = attach_marks(font, &b);
+    }
+    b
+}
+
+// ---------------------------------------------------------------------
+// § 19.6 Positioning, in either direction
+// ---------------------------------------------------------------------
+
+/// The pen's total movement laying `buffer` out: every non-mark's
+/// advance, plus the kern pair between consecutive non-marks.
+pub fn buffer_advance(font: &Font, buffer: &[GlyphEntry], size: f64, kerning: bool) -> f64 {
+    let s = size / font.units_per_em;
+    let mut total = 0.0;
+    let mut prev: Option<&str> = None;
+    for e in buffer {
+        if is_mark(font, &e.glyph) {
+            continue;
+        }
+        if kerning {
+            if let Some(p) = prev {
+                total += kern(font, p, &e.glyph) * s;
+            }
+        }
+        total += glyph_advance(font, &e.glyph) * s;
+        prev = Some(&e.glyph);
+    }
+    total
+}
+
+/// Turns a shaped buffer into chapter 18's placements, one per entry in
+/// the buffer's own order. For `"ltr"` the pen starts at `x` and walks
+/// right, kern pairs included; for `"rtl"` it starts at `x` plus the
+/// buffer's advance and walks left, so the first entry lands at the
+/// right end and the run still occupies `x` to `x + advance`. A mark
+/// never moves the pen: it's placed at its base's origin plus its
+/// offset, scaled to pixels, `dy` turned over.
+pub fn position(
+    font: &Font,
+    buffer: &[GlyphEntry],
+    size: f64,
+    x: f64,
+    y: f64,
+    direction: &str,
+    kerning: bool,
+) -> Vec<Placement> {
+    let s = size / font.units_per_em;
+    let mut out = Vec::with_capacity(buffer.len());
+    let mut pen = if direction == "ltr" { x } else { x + buffer_advance(font, buffer, size, kerning) };
+    let mut base_x = x;
+    let mut prev: Option<&str> = None;
+    for e in buffer {
+        if is_mark(font, &e.glyph) {
+            out.push(placement(&e.glyph, base_x + e.dx * s, y - e.dy * s));
+            continue;
+        }
+        let adv = glyph_advance(font, &e.glyph) * s;
+        let k = if kerning { prev.map(|p| kern(font, p, &e.glyph) * s).unwrap_or(0.0) } else { 0.0 };
+        if direction == "ltr" {
+            pen += k;
+            base_x = pen;
+            pen += adv;
+        } else {
+            pen -= k;
+            pen -= adv;
+            base_x = pen;
+        }
+        out.push(placement(&e.glyph, base_x, y));
+        prev = Some(&e.glyph);
+    }
+    out
+}
+
+/// The character offsets a cursor may stand at: every cluster start,
+/// then the text's own length.
+pub fn caret_offsets(buffer: &[GlyphEntry], length: usize) -> Vec<usize> {
+    let mut out = clusters(buffer);
+    out.push(length);
+    out
+}
+
+/// The `x` of each caret offset, in the same order: the pen where each
+/// cluster's first (non-mark) glyph was placed, then the pen after the
+/// last glyph. For `"rtl"` the first position is the run's right end and
+/// the last is `x`.
+pub fn caret_positions(
+    font: &Font,
+    buffer: &[GlyphEntry],
+    _length: usize,
+    size: f64,
+    x: f64,
+    direction: &str,
+    kerning: bool,
+) -> Vec<f64> {
+    let run = position(font, buffer, size, x, 0.0, direction, kerning);
+    let s = size / font.units_per_em;
+    let mut out = Vec::new();
+    for cl in clusters(buffer) {
+        let non_mark = buffer.iter().position(|e| e.cluster == cl && !is_mark(font, &e.glyph));
+        if let Some(i) = non_mark {
+            let v = if direction == "ltr" { run[i].x } else { run[i].x + glyph_advance(font, &buffer[i].glyph) * s };
+            out.push(v);
+        } else if let Some(j) = buffer.iter().position(|e| e.cluster == cl) {
+            out.push(run[j].x);
+        }
+    }
+    let total = buffer_advance(font, buffer, size, kerning);
+    out.push(if direction == "ltr" { x + total } else { x });
+    out
+}
+
+// ---------------------------------------------------------------------
+// § 19.8 Putting it together
+// ---------------------------------------------------------------------
+
+fn ch19_load_arabic() -> Font {
+    load_font(read_file("reference/chapter-19/dejavu-arabic.json"))
+}
+
+const KITAB: &str = "كِتاب";
+
+fn ch19_box(c: &mut Canvas, x0: f64, y0: f64, x1: f64, y1: f64, col: Color, width: f64) {
+    let poly = polygon(&[point(x0, y0), point(x1, y0), point(x1, y1), point(x0, y1)]);
+    paint_hairline(c, &poly, width, col);
+}
+
+fn draw_shaped(
+    c: &mut Canvas,
+    font: &Font,
+    buffer: &[GlyphEntry],
+    size: f64,
+    x: f64,
+    y: f64,
+    direction: &str,
+    kerning: bool,
+    col: Color,
+    mark_col: Color,
+) -> Vec<Placement> {
+    let run = position(font, buffer, size, x, y, direction, kerning);
+    for (e, p) in buffer.iter().zip(run.iter()) {
+        let ink = if is_mark(font, &e.glyph) { mark_col } else { col };
+        draw_run(c, font, std::slice::from_ref(p), size, ink, true);
+    }
+    run
+}
+
+fn draw_carets(
+    c: &mut Canvas,
+    font: &Font,
+    buffer: &[GlyphEntry],
+    size: f64,
+    x: f64,
+    direction: &str,
+    kerning: bool,
+    length: usize,
+    y0: f64,
+    y1: f64,
+    col: Color,
+) {
+    for cx in caret_positions(font, buffer, length, size, x, direction, kerning) {
+        ch18_vline(c, cx, y0, y1, col, 1.0);
+    }
+}
+
+fn cluster_of_char(buffer: &[GlyphEntry], i: usize) -> usize {
+    buffer.iter().filter(|e| e.cluster <= i).map(|e| e.cluster).max().expect("buffer is not empty")
+}
+
+/// `office` shaped in Roboto and positioned, the `f_i` ligature in
+/// magenta, with a cyan tick at every caret position.
+pub fn ligature_demo() -> Canvas {
+    let font = ch18_load_font();
+    let (w, h) = (260usize, 100usize);
+    let mut c = canvas(w, h);
+    fill(&mut c, CH16_PAPER);
+    let (size, x, y) = (64.0, 20.0, 70.0);
+    let text = "office";
+    let buffer = shape(&font, text);
+    let run = position(&font, &buffer, size, x, y, "ltr", true);
+    ch18_hline(&mut c, 4.0, w as f64 - 4.0, y, CH16_DIM, 1.0);
+    for (e, p) in buffer.iter().zip(run.iter()) {
+        let col = if e.glyph == "f_i" { CH16_MAGENTA } else { CH16_GRAY };
+        draw_run(&mut c, &font, std::slice::from_ref(p), size, col, true);
+    }
+    draw_carets(&mut c, &font, &buffer, size, x, "ltr", true, text.chars().count(), y + 4.0, y + 16.0, CH16_CYAN);
+    c
+}
+
+/// `beh` in its four forms, each captioned by chapter 18's `layout_run`
+/// in Roboto.
+pub fn forms_demo() -> Canvas {
+    let ar = ch19_load_arabic();
+    let lat = ch18_load_font();
+    let (w, h) = (320usize, 110usize);
+    let mut c = canvas(w, h);
+    fill(&mut c, CH16_PAPER);
+    let size = 64.0;
+    let y = 60.0;
+    let names = ["beh", "beh.init", "beh.medi", "beh.fina"];
+    let labels = ["isol", "init", "medi", "fina"];
+    for k in 0..names.len() {
+        let x = 16.0 + k as f64 * 76.0;
+        ch18_hline(&mut c, x - 4.0, x + 68.0, y, CH16_DIM, 1.0);
+        let p = placement(names[k], x, y);
+        draw_run(&mut c, &ar, std::slice::from_ref(&p), size, CH16_GRAY, true);
+        let run = layout_run(&lat, labels[k], 11.0, x, y + 30.0, true);
+        draw_run(&mut c, &lat, &run, 11.0, CH16_CYAN, true);
+    }
+    c
+}
+
+/// كِتاب, shaped in DejaVu Sans and positioned right to left, the letters
+/// gray and the mark magenta.
+pub fn word_demo() -> Canvas {
+    let font = ch19_load_arabic();
+    let (w, h) = (260usize, 100usize);
+    let mut c = canvas(w, h);
+    fill(&mut c, CH16_PAPER);
+    let (size, x, y) = (64.0, 20.0, 64.0);
+    let buffer = shape(&font, KITAB);
+    ch18_hline(&mut c, 4.0, w as f64 - 4.0, y, CH16_DIM, 1.0);
+    draw_shaped(&mut c, &font, &buffer, size, x, y, "rtl", false, CH16_GRAY, CH16_MAGENTA);
+    draw_carets(&mut c, &font, &buffer, size, x, "rtl", false, KITAB.chars().count(), y + 4.0, y + 16.0, CH16_CYAN);
+    c
+}
+
+/// "Book: كِتاب, again." itemized, each item shaped in its own script's
+/// font and placed one after another -- the trap: the comma follows the
+/// Arabic word and comes out on its left.
+pub fn mixed_demo() -> Canvas {
+    let lat = ch18_load_font();
+    let ar = ch19_load_arabic();
+    let (w, h) = (300usize, 60usize);
+    let mut c = canvas(w, h);
+    fill(&mut c, CH16_PAPER);
+    let size = 28.0;
+    let y = 40.0;
+    let text = format!("Book: {KITAB}, again.");
+    ch18_hline(&mut c, 4.0, w as f64 - 4.0, y, CH16_DIM, 1.0);
+    let mut pen = 12.0;
+    for item in itemize(&text) {
+        let font = if item.script == "arabic" { &ar } else { &lat };
+        let buffer = shape(font, &item.text);
+        ch18_vline(&mut c, pen, y + 3.0, y + 10.0, CH16_CYAN, 1.0);
+        draw_shaped(&mut c, font, &buffer, size, pen, y, &item.direction, true, CH16_GRAY, CH16_MAGENTA);
+        pen += buffer_advance(font, &buffer, size, true);
+    }
+    c
+}
+
+/// Characters in on top, one glyph each straight from the cmap; glyphs
+/// out on the bottom, shaped and positioned; a line from each character
+/// to the cluster it ended up in.
+pub fn cluster_plate() -> Canvas {
+    let lat = ch18_load_font();
+    let ar = ch19_load_arabic();
+    let (w, h) = (540usize, 210usize);
+    let mut c = canvas(w, h);
+    fill(&mut c, CH16_PAPER);
+    let size = 52.0;
+    let bands: [(&Font, &str, &str, f64); 2] = [(&lat, "office", "ltr", 20.0), (&ar, KITAB, "rtl", 290.0)];
+    for (font, text, direction, x) in bands {
+        let (y_top, y_bot) = (80.0, 180.0);
+        let s = size / font.units_per_em;
+        let raw = glyph_buffer(font, text);
+        let mut centers = Vec::new();
+        let mut pen = x;
+        for e in &raw {
+            let adv = glyph_advance(font, &e.glyph) * s;
+            let width = adv.max(12.0);
+            ch19_box(&mut c, pen, y_top - 46.0, pen + width, y_top + 12.0, CH16_DIM, 1.0);
+            let p = placement(&e.glyph, pen + (width - adv) / 2.0, y_top);
+            draw_run(&mut c, font, std::slice::from_ref(&p), size, CH16_GRAY, true);
+            centers.push(pen + width / 2.0);
+            pen += width + 14.0;
+        }
+
+        let buffer = shape(font, text);
+        let run = position(font, &buffer, size, x, y_bot, direction, true);
+        let mut boxes: HashMap<usize, (f64, f64)> = HashMap::new();
+        for (e, p) in buffer.iter().zip(run.iter()) {
+            if is_mark(font, &e.glyph) {
+                continue;
+            }
+            let adv = glyph_advance(font, &e.glyph) * s;
+            let entry = boxes.entry(e.cluster).or_insert((p.x, p.x + adv));
+            entry.0 = entry.0.min(p.x);
+            entry.1 = entry.1.max(p.x + adv);
+        }
+
+        let raw_names: Vec<&str> = raw.iter().map(|e| e.glyph.as_str()).collect();
+        for (e, p) in buffer.iter().zip(run.iter()) {
+            let changed = is_mark(font, &e.glyph) || !raw_names.contains(&e.glyph.as_str());
+            let ink = if changed { CH16_MAGENTA } else { CH16_GRAY };
+            draw_run(&mut c, font, std::slice::from_ref(p), size, ink, true);
+        }
+
+        let mut cluster_keys: Vec<usize> = boxes.keys().copied().collect();
+        cluster_keys.sort_unstable();
+        for cl in &cluster_keys {
+            let (lo, hi) = boxes[cl];
+            ch19_box(&mut c, lo, y_bot - 46.0, hi, y_bot + 12.0, CH16_CYAN, 1.0);
+        }
+
+        for i in 0..text.chars().count() {
+            let cl = cluster_of_char(&buffer, i);
+            let (lo, hi) = boxes[&cl];
+            ch18_line(&mut c, centers[i], y_top + 12.0, (lo + hi) / 2.0, y_bot - 46.0, CH16_MAGENTA, 0.75);
+        }
+    }
+    c
+}
+
+/// Plate 19: `cluster_plate`.
+pub fn plate_19() -> Canvas {
+    cluster_plate()
 }

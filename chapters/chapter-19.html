@@ -159,7 +159,8 @@
     with clusters 0, 1, 2, 4, 5. Character 3, the i, has no cluster of its own any more, and that's
     correct: there is no longer anywhere between the f and the i for a cursor to be. Roboto's two
     rules are both two glyphs long, so the last scenario writes a font by hand with an
-    <code>a b</code> rule and an <code>a b c</code> rule, and pins that the longer one wins.</p>
+    <code>a b</code> rule, an <code>a b c</code> rule and an <code>a_b a</code> rule whose input is
+    another rule's output, and pins that the longer one wins and that the output is never fed back.</p>
 
   <p>In the real format this is one lookup type of a table called GSUB, the glyph substitution
     table, which has half a dozen more: single substitutions, one glyph for another; alternates;
@@ -211,13 +212,21 @@
     <span class="kw">And</span>   glyph_advance(font, "f") + glyph_advance(font, "i") = 1208
 
   <span class="kw">Scenario</span>: The longest rule that matches wins, on a font written by hand to have two
-    <span class="kw">Given</span> toy ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"97": "a", "98": "b", "99": "c", "42": "dot"}, "glyphs": {".notdef": {"advance": 500, "contours": [], "components": []}, "a": {"advance": 600, "contours": [], "components": []}, "b": {"advance": 600, "contours": [], "components": []}, "c": {"advance": 600, "contours": [], "components": []}, "a_b": {"advance": 900, "contours": [], "components": []}, "a_b_c": {"advance": 1200, "contours": [], "components": []}, "dot": {"advance": 0, "contours": [], "components": []}}, "kern": [["a", "b", -100]], "ligatures": [[["a", "b"], "a_b"], [["a", "b", "c"], "a_b_c"]], "marks": {"dot": ["above", 0, 0]}, "anchors": {"a": {"above": [300, 700]}}}')
+    <span class="kw">Given</span> toy ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"97": "a", "98": "b", "99": "c", "42": "dot"}, "glyphs": {".notdef": {"advance": 500, "contours": [], "components": []}, "a": {"advance": 600, "contours": [], "components": []}, "b": {"advance": 600, "contours": [], "components": []}, "c": {"advance": 600, "contours": [], "components": []}, "a_b": {"advance": 900, "contours": [], "components": []}, "a_b_c": {"advance": 1200, "contours": [], "components": []}, "a_b_a": {"advance": 1500, "contours": [], "components": []}, "dot": {"advance": 0, "contours": [], "components": []}}, "kern": [["a", "b", -100]], "ligatures": [[["a", "b"], "a_b"], [["a", "b", "c"], "a_b_c"], [["a_b", "a"], "a_b_a"]], "marks": {"dot": ["above", 0, 0]}, "anchors": {"a": {"above": [300, 700]}}}')
     <span class="kw">Then</span>  length(apply_ligatures(toy, glyph_buffer(toy, "abc"))) = 1
     <span class="kw">And</span>   apply_ligatures(toy, glyph_buffer(toy, "abc"))[0].glyph = "a_b_c"
     <span class="kw">And</span>   apply_ligatures(toy, glyph_buffer(toy, "abc"))[0].cluster = 0
     <span class="kw">And</span>   apply_ligatures(toy, glyph_buffer(toy, "abcab"))[1].glyph = "a_b"
     <span class="kw">And</span>   apply_ligatures(toy, glyph_buffer(toy, "abcab"))[1].cluster = 3
-    <span class="kw">And</span>   length(apply_ligatures(toy, glyph_buffer(toy, "acb"))) = 3</code></pre>
+    <span class="kw">And</span>   length(apply_ligatures(toy, glyph_buffer(toy, "acb"))) = 3
+
+  <span class="kw">Scenario</span>: A result is never fed back into the rules
+    <span class="kw">Given</span> toy ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"97": "a", "98": "b", "99": "c", "42": "dot"}, "glyphs": {".notdef": {"advance": 500, "contours": [], "components": []}, "a": {"advance": 600, "contours": [], "components": []}, "b": {"advance": 600, "contours": [], "components": []}, "c": {"advance": 600, "contours": [], "components": []}, "a_b": {"advance": 900, "contours": [], "components": []}, "a_b_c": {"advance": 1200, "contours": [], "components": []}, "a_b_a": {"advance": 1500, "contours": [], "components": []}, "dot": {"advance": 0, "contours": [], "components": []}}, "kern": [["a", "b", -100]], "ligatures": [[["a", "b"], "a_b"], [["a", "b", "c"], "a_b_c"], [["a_b", "a"], "a_b_a"]], "marks": {"dot": ["above", 0, 0]}, "anchors": {"a": {"above": [300, 700]}}}')
+    <span class="kw">When</span>  b ← apply_ligatures(toy, glyph_buffer(toy, "aba"))
+    <span class="kw">Then</span>  length(b) = 2
+    <span class="kw">And</span>   b[0].glyph = "a_b"
+    <span class="kw">And</span>   b[1].glyph = "a"
+    <span class="kw">And</span>   b[1].cluster = 2</code></pre>
   </div>
 
   <h2><span class="sec">§ 19.4</span> Arabic: joining, and the four forms</h2>
@@ -547,7 +556,7 @@
     <span class="kw">And</span>   caret_positions(font, b, 5, 64, 20, "rtl", false)[0] = 20 + buffer_advance(font, b, 64, false)
 
   <span class="kw">Scenario</span>: A mark between two glyphs neither moves the pen nor breaks their kern pair
-    <span class="kw">Given</span> toy ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"97": "a", "98": "b", "99": "c", "42": "dot"}, "glyphs": {".notdef": {"advance": 500, "contours": [], "components": []}, "a": {"advance": 600, "contours": [], "components": []}, "b": {"advance": 600, "contours": [], "components": []}, "c": {"advance": 600, "contours": [], "components": []}, "a_b": {"advance": 900, "contours": [], "components": []}, "a_b_c": {"advance": 1200, "contours": [], "components": []}, "dot": {"advance": 0, "contours": [], "components": []}}, "kern": [["a", "b", -100]], "ligatures": [[["a", "b"], "a_b"], [["a", "b", "c"], "a_b_c"]], "marks": {"dot": ["above", 0, 0]}, "anchors": {"a": {"above": [300, 700]}}}')
+    <span class="kw">Given</span> toy ← load_font('{"units_per_em": 1000, "ascender": 800, "descender": -200, "line_gap": 0, "cmap": {"97": "a", "98": "b", "99": "c", "42": "dot"}, "glyphs": {".notdef": {"advance": 500, "contours": [], "components": []}, "a": {"advance": 600, "contours": [], "components": []}, "b": {"advance": 600, "contours": [], "components": []}, "c": {"advance": 600, "contours": [], "components": []}, "a_b": {"advance": 900, "contours": [], "components": []}, "a_b_c": {"advance": 1200, "contours": [], "components": []}, "a_b_a": {"advance": 1500, "contours": [], "components": []}, "dot": {"advance": 0, "contours": [], "components": []}}, "kern": [["a", "b", -100]], "ligatures": [[["a", "b"], "a_b"], [["a", "b", "c"], "a_b_c"], [["a_b", "a"], "a_b_a"]], "marks": {"dot": ["above", 0, 0]}, "anchors": {"a": {"above": [300, 700]}}}')
     <span class="kw">When</span>  b ← shape(toy, "a*b")
     <span class="kw">And</span>   run ← position(toy, b, 10, 10, 50, "ltr", true)
     <span class="kw">Then</span>  length(b) = 3
