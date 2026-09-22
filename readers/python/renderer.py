@@ -6011,16 +6011,19 @@ def caret_positions(font, buffer, length, size, x, direction, kerning):
     for e in buffer:
         if is_mark(font, e.glyph):
             continue
-        if e.cluster != last_cluster:
-            checkpoints.append(pen)
-            last_cluster = e.cluster
         if direction == "rtl":
             if kerning and prev_glyph is not None:
                 pen -= kern(font, prev_glyph, e.glyph) * scale
+            if e.cluster != last_cluster:
+                checkpoints.append(pen)
+                last_cluster = e.cluster
             pen -= pen_advance(font, e.glyph, size)
         else:
             if kerning and prev_glyph is not None:
                 pen += kern(font, prev_glyph, e.glyph) * scale
+            if e.cluster != last_cluster:
+                checkpoints.append(pen)
+                last_cluster = e.cluster
             pen += pen_advance(font, e.glyph, size)
         prev_glyph = e.glyph
     checkpoints.append(pen)
