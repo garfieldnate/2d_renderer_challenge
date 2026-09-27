@@ -50,3 +50,4 @@ Feature: The transform attribute
     And   parse_transform("rotate(30 1)") = identity()
     And   parse_transform("translate(1 2) bogus(3)") = identity()
     And   parse_transform("scale(2") = identity()
+    And   parse_transform("translate(1 2 x)") = identity()

@@ -330,6 +330,13 @@
     <span class="kw">And</span>   draw_coverage(b, fill_path(sq, "nonzero", 64, 64), solid(color(0.2, 0.6, 0.9)), 1)
     <span class="kw">Then</span>  layers_equal(a, b) = true
 
+  <span class="kw">Scenario</span>: A solid tile cut short by the canvas copies only the pixels on the canvas
+    <span class="kw">Given</span> t ← fill_path_tiled(polygon(point(-10, -10), point(50, -10), point(50, 50), point(-10, 50)), "nonzero", 40, 40, stats())
+    <span class="kw">And</span>   st ← stats()
+    <span class="kw">When</span>  draw_tiled(layer(40, 40), t, solid(color(1, 0, 0)), 1, st)
+    <span class="kw">Then</span>  st.copies = 960
+    <span class="kw">And</span>   st.blends = 640
+
   <span class="kw">Scenario</span>: At half alpha nothing is copied
     <span class="kw">Given</span> sq ← polygon(point(4, 4), point(60, 4), point(60, 60), point(4, 60))
     <span class="kw">And</span>   t ← fill_path_tiled(sq, "nonzero", 64, 64, stats())
@@ -348,7 +355,8 @@
     no branches, no dependency from one pixel to the next. That is the exact shape a vector unit
     wants, and most languages have a way to ask for one, whether that's Rust's
     <code>std::simd</code>, C#'s <code>System.Numerics.Vector&lt;T&gt;</code>, Java's Vector
-    API or NumPy.</p>
+    API or NumPy. (Rust's is still unstable; four-element arrays in a loop get most of the
+    way on stable.)</p>
 
 <pre><code><span class="cm">// scalar: one pixel, four channels, per step</span>
 <span class="kw">for</span> i <span class="kw">in</span> 0 .. n − 1:
@@ -491,7 +499,11 @@ draw_tiled(l, t, paint, alpha, st):
   <p>And the measurements, every mode on all three of chapter 20's documents, every render
     byte-identical to chapter 20's. The times are the Python reference's on one laptop, and they
     are the least interesting column; the Python times flatten out once painting is all that's left,
-    because a Python blend is expensive, where a compiled one is a few instructions.</p>
+    because a Python blend is expensive, where a compiled one is a few instructions. The cells and
+    copies are exact for any implementation that follows the scenarios. The blends are not: they
+    count the crumbs too, pixels with coverage around 10<sup>−16</sup>, and whether a crumb is 0 or
+    not depends on the last bit of the geometry, so only the tiger's are pinned and yours may
+    differ by a few dozen elsewhere. Clip fills are left out of every count.</p>
 
   <div class="tablewrap">
     <table class="props">
@@ -519,13 +531,17 @@ draw_tiled(l, t, paint, alpha, st):
     <p class="label">features/chapter21-plate.feature</p>
 <pre><code><span class="kw">Feature</span>: Plate 21
   Every mode of render_svg_with draws exactly the bytes chapter 20's
-  render_svg draws. tile_work(text, width, height) renders the document
+  render_svg draws. Only fills and strokes count; the fills that build a
+  clip's coverage are not counted, and a shape with a clip has its window
+  or tiles turned into a canvas-sized coverage, multiplied by the clip and
+  painted with draw_coverage_counted. tile_work(text, width, height) renders the document
   in the "tiled" mode and, for every tile, counts how many of its fills and
   strokes classified that tile partial and how many solid: tile_work[ty][tx]
   is the pair (partial, solid). work_map() is 910 by 450 paper: the tiger
   as the "tiled" walker draws it at (0, 0), and from x = 460 one square per
-  tile of it, each inset one pixel from its tile's edges (the tile's first
-  and last row and column are left as paper): magenta mixed into paper at
+  tile of it: the pixels whose x mod 16 or y mod 16 is 0 or 15 are left
+  as paper, so each square is its tile's 16 pixels inset by one on every
+  side and then cut by the canvas; the rest of the tile is magenta mixed into paper at
   0.15 + 0.85 × partial / the largest partial count of any tile when the
   tile's partial count is above 0; cyan mixed in at 0.6 when it's 0 and
   its solid count isn't; paper when both are 0. The mixes are in linear

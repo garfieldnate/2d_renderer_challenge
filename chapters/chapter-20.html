@@ -290,6 +290,7 @@
     <span class="kw">And</span>   cmds[1].op = "A"
     <span class="kw">And</span>   cmds[1].args = (1, 1, 0, 0, 1, 10, 0)
     <span class="kw">And</span>   path_commands("M0 0 a-5 -5 30 1 0 10 0")[1].args = (5, 5, 30, 1, 0, 10, 0)
+    <span class="kw">And</span>   path_commands("M10 10 a5 5 0 0 1 10 0 5 5 0 0 1 10 0")[2].args = (5, 5, 0, 0, 1, 30, 10)
 
   <span class="kw">Scenario</span>: Nothing needs a separator where a sign or a point can do the job
     <span class="kw">When</span>  cmds ← path_commands("M1,2l3-4-5.5.5e1")
@@ -458,7 +459,8 @@
   <span class="kw">Scenario</span>: An arc in a path ends exactly at its end point
     <span class="kw">When</span>  p ← build_path(path_commands("M0 0 A5 5 0 0 1 10 0"), identity(), 0.1)
     <span class="kw">Then</span>  length(subpaths(p)[0].points) = 17
-    <span class="kw">And</span>   subpaths(p)[0].points[16] = point(10, 0)
+    <span class="kw">And</span>   subpaths(p)[0].points[16] = point(10, 0) ± 0
+    <span class="kw">And</span>   arc_cubics(8.3, 1.1, 3.3, 3.3, 0, 0, 1, 5, 4.4)[0].points[3] = point(5, 4.4) ± 0
     <span class="kw">And</span>   subpaths(p)[0].points[8] = point(5, -5)
 
   <span class="kw">Scenario</span>: The bounds of the geometry, not of the control points
@@ -541,7 +543,8 @@
     <span class="kw">And</span>   parse_transform(none) = identity()
     <span class="kw">And</span>   parse_transform("rotate(30 1)") = identity()
     <span class="kw">And</span>   parse_transform("translate(1 2) bogus(3)") = identity()
-    <span class="kw">And</span>   parse_transform("scale(2") = identity()</code></pre>
+    <span class="kw">And</span>   parse_transform("scale(2") = identity()
+    <span class="kw">And</span>   parse_transform("translate(1 2 x)") = identity()</code></pre>
   </div>
 
   <h2><span class="sec">§ 20.6</span> Colours and the cascade</h2>
@@ -693,7 +696,18 @@
     <span class="kw">And</span>   s.fill_rule = "evenodd"
     <span class="kw">And</span>   s.stroke_miterlimit = 10
     <span class="kw">And</span>   s.stroke_dashoffset = 1.5
-    <span class="kw">And</span>   s.fill = none</code></pre>
+    <span class="kw">And</span>   s.fill = none
+
+  <span class="kw">Scenario</span>: Opacities are clamped, a miter limit below 1 is ignored, and so is anything that doesn't parse
+    <span class="kw">Given</span> root ← parse_xml("&lt;g stroke-width='3' fill-rule='evenodd' stroke-miterlimit='6'&gt;&lt;rect opacity='2' fill-opacity='-1' stroke-opacity='0.5' stroke-miterlimit='0.5' stroke-width='wide' fill-rule='odd'/&gt;&lt;/g&gt;")
+    <span class="kw">When</span>  gs ← computed_style(root, initial_style())
+    <span class="kw">And</span>   rs ← computed_style(children(root)[0], gs)
+    <span class="kw">Then</span>  rs.opacity = 1
+    <span class="kw">And</span>   rs.fill_opacity = 0
+    <span class="kw">And</span>   rs.stroke_opacity = 0.5
+    <span class="kw">And</span>   rs.stroke_miterlimit = 6
+    <span class="kw">And</span>   rs.stroke_width = 3
+    <span class="kw">And</span>   rs.fill_rule = "evenodd"</code></pre>
   </div>
 
   <h2><span class="sec">§ 20.7</span> Basic shapes</h2>
@@ -821,7 +835,18 @@
   for Max: translation(ox, oy) times scaling(s, s) times translation(-min-x,
   -min-y). A slice spills off the canvas, which the canvas edge clips. No
   viewBox, one without four numbers, or one with a width or height of zero
-  or less is the identity.
+  or less is the identity. aspect_demo() is 660 by 110 paper (chapter 16's
+  paper, color(0.02, 0.02, 0.025)) with five panels of 120 by 90 at x = 10
+  + 130k, y = 10, for k from 0 to 4; panel k is render_svg of the document
+  below with its preserveAspectRatio set to "none", "xMinYMid meet",
+  "xMidYMid meet", "xMaxYMid meet" and "xMidYMid slice" in that order, at
+  120 by 90, copied in pixel for pixel. The document, with %s standing for
+  the aspect value, is: &lt;svg xmlns='http://www.w3.org/2000/svg'
+  viewBox='0 0 60 80' preserveAspectRatio='%s'&gt;&lt;rect width='60'
+  height='80' fill='#f4d8a8'/&gt;&lt;circle cx='30' cy='26' r='14'
+  fill='#e8553a'/&gt;&lt;polygon points='0,80 22,44 36,62 44,52 60,80'
+  fill='#3b5b7a'/&gt;&lt;rect x='1' y='1' width='58' height='78' fill='none'
+  stroke='#1a1a1a' stroke-width='2'/&gt;&lt;/svg&gt;
 
   <span class="kw">Scenario</span>: meet fits the whole box and centres it
     <span class="kw">When</span>  m ← view_box_matrix("0 0 60 80", "xMidYMid meet", 120, 90)
@@ -844,6 +869,7 @@
   <span class="kw">Scenario</span>: none stretches each axis on its own
     <span class="kw">When</span>  m ← view_box_matrix("0 0 60 80", "none", 120, 90)
     <span class="kw">Then</span>  m = scaling(2, 1.125)
+    <span class="kw">And</span>   view_box_matrix("10 20 60 80", "none", 120, 90) * point(10, 20) = point(0, 0)
 
   <span class="kw">Scenario</span>: The box's origin moves to the viewport's
     <span class="kw">Then</span>  view_box_matrix("10 20 60 80", "xMidYMid meet", 120, 90) * point(10, 20) = point(26.25, 0)
@@ -992,7 +1018,8 @@
     <span class="kw">And</span>   paint_server(root, "url(#empty)", (10, 0, 30, 10), identity()) = none
     <span class="kw">And</span>   paint_server(root, "url(#k)", (10, 0, 30, 10), identity()) = none
     <span class="kw">And</span>   paint_server(root, "url(#missing)", (10, 0, 30, 10), identity()) = none
-    <span class="kw">And</span>   paint_server(root, "url(#a)", (0, 0, 10, 0), identity()) = none</code></pre>
+    <span class="kw">And</span>   paint_server(root, "url(#a)", (0, 0, 10, 0), identity()) = none
+    <span class="kw">And</span>   paint_at(paint_server(root, "url(#one)", (0, 0, 10, 0), identity()), 0, 0) = color(1, 0, 0)</code></pre>
   </div>
 
   <h2><span class="sec">§ 20.10</span> The walker</h2>
@@ -1079,6 +1106,15 @@
     <span class="kw">And</span>   pixel_at(c, 4, 1) = color(1, 1, 1)
     <span class="kw">And</span>   pixel_at(c, 9, 1) = color(1, 1, 1)
     <span class="kw">And</span>   pixel_at(c, 10, 1) = color(0, 0, 0)
+
+  <span class="kw">Scenario</span>: The dash offset moves the pattern along the path
+    <span class="kw">When</span>  c ← render_svg("&lt;svg viewBox='0 0 10 2'&gt;&lt;line x1='0' y1='1' x2='10' y2='1' stroke='black' stroke-width='2' stroke-dasharray='2 3' stroke-dashoffset='1'/&gt;&lt;/svg&gt;", 10, 2)
+    <span class="kw">Then</span>  pixel_at(c, 0, 1) = color(0, 0, 0)
+    <span class="kw">And</span>   pixel_at(c, 1, 1) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(c, 3, 1) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(c, 4, 1) = color(0, 0, 0)
+    <span class="kw">And</span>   pixel_at(c, 5, 1) = color(0, 0, 0)
+    <span class="kw">And</span>   pixel_at(c, 6, 1) = color(1, 1, 1)
 
   <span class="kw">Scenario</span>: Caps and fill rules reach the fill and the stroker
     <span class="kw">When</span>  c ← render_svg("&lt;svg viewBox='0 0 10 4'&gt;&lt;line x1='2' y1='2' x2='8' y2='2' stroke='black' stroke-width='2' stroke-linecap='square'/&gt;&lt;/svg&gt;", 10, 4)
@@ -1208,6 +1244,11 @@
     <span class="kw">And</span>   pixel_at(k, 0, 0) = color(1, 1, 1)
     <span class="kw">And</span>   pixel_at(k, 3, 0) = color(1, 0, 0)
 
+  <span class="kw">Scenario</span>: A clip's shapes take their style from the clipPath
+    <span class="kw">When</span>  c ← render_svg("&lt;svg viewBox='0 0 10 10'&gt;&lt;clipPath id='c' clip-rule='evenodd'&gt;&lt;path d='M0 0H10V10H0Z M2 2H8V8H2Z'/&gt;&lt;/clipPath&gt;&lt;rect width='10' height='10' fill='red' clip-path='url(#c)'/&gt;&lt;/svg&gt;", 10, 10)
+    <span class="kw">Then</span>  pixel_at(c, 0, 0) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_at(c, 5, 5) = color(1, 1, 1)
+
   <span class="kw">Scenario</span>: An empty clip hides everything, and a missing one hides nothing
     <span class="kw">Then</span>  pixel_at(render_svg("&lt;svg viewBox='0 0 4 4'&gt;&lt;clipPath id='c'/&gt;&lt;rect width='4' height='4' fill='red' clip-path='url(#c)'/&gt;&lt;/svg&gt;", 4, 4), 0, 0) = color(1, 1, 1)
     <span class="kw">And</span>   pixel_at(render_svg("&lt;svg viewBox='0 0 4 4'&gt;&lt;rect width='4' height='4' fill='red' clip-path='url(#nope)'/&gt;&lt;/svg&gt;", 4, 4), 0, 0) = color(1, 0, 0)</code></pre>
@@ -1236,7 +1277,7 @@ render_element(el, l, parent, m):
   <span class="kw">if</span> el is not svg, g <span class="kw">or</span> a shape: <span class="kw">return</span>
   style ← computed_style(el, parent);  m ← m × parse_transform(el's transform)
   clip ← clip_coverage(root, style.clip_path, m, width, height) <span class="kw">if</span> there is one
-  own ← style.opacity < 1 <span class="kw">or</span> (clip <span class="kw">and</span> el is svg <span class="kw">or</span> g)
+  own ← style.opacity &lt; 1 <span class="kw">or</span> (clip <span class="kw">and</span> el is svg <span class="kw">or</span> g)
   target ← <span class="kw">if</span> own: a fresh transparent layer <span class="kw">else</span> l
   <span class="kw">if</span> el is svg <span class="kw">or</span> g: <span class="kw">for</span> child <span class="kw">in</span> children(el): render_element(child, target, style, m)
   <span class="kw">else</span>: draw_shape(el, target, style, m, <span class="kw">if</span> own: nothing <span class="kw">else</span> clip)

@@ -73,7 +73,8 @@ Feature: From commands to a path
   Scenario: An arc in a path ends exactly at its end point
     When  p ← build_path(path_commands("M0 0 A5 5 0 0 1 10 0"), identity(), 0.1)
     Then  length(subpaths(p)[0].points) = 17
-    And   subpaths(p)[0].points[16] = point(10, 0)
+    And   subpaths(p)[0].points[16] = point(10, 0) ± 0
+    And   arc_cubics(8.3, 1.1, 3.3, 3.3, 0, 0, 1, 5, 4.4)[0].points[3] = point(5, 4.4) ± 0
     And   subpaths(p)[0].points[8] = point(5, -5)
 
   Scenario: The bounds of the geometry, not of the control points

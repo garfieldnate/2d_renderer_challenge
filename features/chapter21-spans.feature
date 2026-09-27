@@ -29,6 +29,13 @@ Feature: Spans
     And   draw_coverage(b, fill_path(sq, "nonzero", 64, 64), solid(color(0.2, 0.6, 0.9)), 1)
     Then  layers_equal(a, b) = true
 
+  Scenario: A solid tile cut short by the canvas copies only the pixels on the canvas
+    Given t ← fill_path_tiled(polygon(point(-10, -10), point(50, -10), point(50, 50), point(-10, 50)), "nonzero", 40, 40, stats())
+    And   st ← stats()
+    When  draw_tiled(layer(40, 40), t, solid(color(1, 0, 0)), 1, st)
+    Then  st.copies = 960
+    And   st.blends = 640
+
   Scenario: At half alpha nothing is copied
     Given sq ← polygon(point(4, 4), point(60, 4), point(60, 60), point(4, 60))
     And   t ← fill_path_tiled(sq, "nonzero", 64, 64, stats())

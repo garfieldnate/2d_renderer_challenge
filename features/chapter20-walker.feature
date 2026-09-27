@@ -54,6 +54,15 @@ Feature: The walker
     And   pixel_at(c, 9, 1) = color(1, 1, 1)
     And   pixel_at(c, 10, 1) = color(0, 0, 0)
 
+  Scenario: The dash offset moves the pattern along the path
+    When  c ← render_svg("<svg viewBox='0 0 10 2'><line x1='0' y1='1' x2='10' y2='1' stroke='black' stroke-width='2' stroke-dasharray='2 3' stroke-dashoffset='1'/></svg>", 10, 2)
+    Then  pixel_at(c, 0, 1) = color(0, 0, 0)
+    And   pixel_at(c, 1, 1) = color(1, 1, 1)
+    And   pixel_at(c, 3, 1) = color(1, 1, 1)
+    And   pixel_at(c, 4, 1) = color(0, 0, 0)
+    And   pixel_at(c, 5, 1) = color(0, 0, 0)
+    And   pixel_at(c, 6, 1) = color(1, 1, 1)
+
   Scenario: Caps and fill rules reach the fill and the stroker
     When  c ← render_svg("<svg viewBox='0 0 10 4'><line x1='2' y1='2' x2='8' y2='2' stroke='black' stroke-width='2' stroke-linecap='square'/></svg>", 10, 4)
     And   e ← render_svg("<svg viewBox='0 0 10 10'><path fill-rule='evenodd' d='M0 0H10V10H0Z M2 2H8V8H2Z'/></svg>", 10, 10)

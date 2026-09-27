@@ -85,3 +85,14 @@ Feature: Colours and the style cascade
     And   s.stroke_miterlimit = 10
     And   s.stroke_dashoffset = 1.5
     And   s.fill = none
+
+  Scenario: Opacities are clamped, a miter limit below 1 is ignored, and so is anything that doesn't parse
+    Given root ← parse_xml("<g stroke-width='3' fill-rule='evenodd' stroke-miterlimit='6'><rect opacity='2' fill-opacity='-1' stroke-opacity='0.5' stroke-miterlimit='0.5' stroke-width='wide' fill-rule='odd'/></g>")
+    When  gs ← computed_style(root, initial_style())
+    And   rs ← computed_style(children(root)[0], gs)
+    Then  rs.opacity = 1
+    And   rs.fill_opacity = 0
+    And   rs.stroke_opacity = 0.5
+    And   rs.stroke_miterlimit = 6
+    And   rs.stroke_width = 3
+    And   rs.fill_rule = "evenodd"

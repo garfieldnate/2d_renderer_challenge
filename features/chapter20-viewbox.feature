@@ -14,7 +14,18 @@ Feature: viewBox and preserveAspectRatio
   for Max: translation(ox, oy) times scaling(s, s) times translation(-min-x,
   -min-y). A slice spills off the canvas, which the canvas edge clips. No
   viewBox, one without four numbers, or one with a width or height of zero
-  or less is the identity.
+  or less is the identity. aspect_demo() is 660 by 110 paper (chapter 16's
+  paper, color(0.02, 0.02, 0.025)) with five panels of 120 by 90 at x = 10
+  + 130k, y = 10, for k from 0 to 4; panel k is render_svg of the document
+  below with its preserveAspectRatio set to "none", "xMinYMid meet",
+  "xMidYMid meet", "xMaxYMid meet" and "xMidYMid slice" in that order, at
+  120 by 90, copied in pixel for pixel. The document, with %s standing for
+  the aspect value, is: <svg xmlns='http://www.w3.org/2000/svg'
+  viewBox='0 0 60 80' preserveAspectRatio='%s'><rect width='60'
+  height='80' fill='#f4d8a8'/><circle cx='30' cy='26' r='14'
+  fill='#e8553a'/><polygon points='0,80 22,44 36,62 44,52 60,80'
+  fill='#3b5b7a'/><rect x='1' y='1' width='58' height='78' fill='none'
+  stroke='#1a1a1a' stroke-width='2'/></svg>
 
   Scenario: meet fits the whole box and centres it
     When  m ← view_box_matrix("0 0 60 80", "xMidYMid meet", 120, 90)
@@ -37,6 +48,7 @@ Feature: viewBox and preserveAspectRatio
   Scenario: none stretches each axis on its own
     When  m ← view_box_matrix("0 0 60 80", "none", 120, 90)
     Then  m = scaling(2, 1.125)
+    And   view_box_matrix("10 20 60 80", "none", 120, 90) * point(10, 20) = point(0, 0)
 
   Scenario: The box's origin moves to the viewport's
     Then  view_box_matrix("10 20 60 80", "xMidYMid meet", 120, 90) * point(10, 20) = point(26.25, 0)

@@ -87,3 +87,4 @@ Feature: Paint servers
     And   paint_server(root, "url(#k)", (10, 0, 30, 10), identity()) = none
     And   paint_server(root, "url(#missing)", (10, 0, 30, 10), identity()) = none
     And   paint_server(root, "url(#a)", (0, 0, 10, 0), identity()) = none
+    And   paint_at(paint_server(root, "url(#one)", (0, 0, 10, 0), identity()), 0, 0) = color(1, 0, 0)

@@ -1,12 +1,16 @@
 Feature: Plate 21
   Every mode of render_svg_with draws exactly the bytes chapter 20's
-  render_svg draws. tile_work(text, width, height) renders the document
+  render_svg draws. Only fills and strokes count; the fills that build a
+  clip's coverage are not counted, and a shape with a clip has its window
+  or tiles turned into a canvas-sized coverage, multiplied by the clip and
+  painted with draw_coverage_counted. tile_work(text, width, height) renders the document
   in the "tiled" mode and, for every tile, counts how many of its fills and
   strokes classified that tile partial and how many solid: tile_work[ty][tx]
   is the pair (partial, solid). work_map() is 910 by 450 paper: the tiger
   as the "tiled" walker draws it at (0, 0), and from x = 460 one square per
-  tile of it, each inset one pixel from its tile's edges (the tile's first
-  and last row and column are left as paper): magenta mixed into paper at
+  tile of it: the pixels whose x mod 16 or y mod 16 is 0 or 15 are left
+  as paper, so each square is its tile's 16 pixels inset by one on every
+  side and then cut by the canvas; the rest of the tile is magenta mixed into paper at
   0.15 + 0.85 × partial / the largest partial count of any tile when the
   tile's partial count is above 0; cyan mixed in at 0.6 when it's 0 and
   its solid count isn't; paper when both are 0. The mixes are in linear

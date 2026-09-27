@@ -76,6 +76,11 @@ Feature: Clips and group opacity
     And   pixel_at(k, 0, 0) = color(1, 1, 1)
     And   pixel_at(k, 3, 0) = color(1, 0, 0)
 
+  Scenario: A clip's shapes take their style from the clipPath
+    When  c ← render_svg("<svg viewBox='0 0 10 10'><clipPath id='c' clip-rule='evenodd'><path d='M0 0H10V10H0Z M2 2H8V8H2Z'/></clipPath><rect width='10' height='10' fill='red' clip-path='url(#c)'/></svg>", 10, 10)
+    Then  pixel_at(c, 0, 0) = color(1, 0, 0)
+    And   pixel_at(c, 5, 5) = color(1, 1, 1)
+
   Scenario: An empty clip hides everything, and a missing one hides nothing
     Then  pixel_at(render_svg("<svg viewBox='0 0 4 4'><clipPath id='c'/><rect width='4' height='4' fill='red' clip-path='url(#c)'/></svg>", 4, 4), 0, 0) = color(1, 1, 1)
     And   pixel_at(render_svg("<svg viewBox='0 0 4 4'><rect width='4' height='4' fill='red' clip-path='url(#nope)'/></svg>", 4, 4), 0, 0) = color(1, 0, 0)

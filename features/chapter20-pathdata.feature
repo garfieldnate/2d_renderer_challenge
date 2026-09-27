@@ -80,6 +80,7 @@ Feature: Path data
     And   cmds[1].op = "A"
     And   cmds[1].args = (1, 1, 0, 0, 1, 10, 0)
     And   path_commands("M0 0 a-5 -5 30 1 0 10 0")[1].args = (5, 5, 30, 1, 0, 10, 0)
+    And   path_commands("M10 10 a5 5 0 0 1 10 0 5 5 0 0 1 10 0")[2].args = (5, 5, 0, 0, 1, 30, 10)
 
   Scenario: Nothing needs a separator where a sign or a point can do the job
     When  cmds ← path_commands("M1,2l3-4-5.5.5e1")
