@@ -6314,6 +6314,28 @@ def _skip_ws_comma(s, i):
     return i
 
 
+def _number_list_consumed(s):
+    """Same walk as number_list, but returns how far into s it got,
+    so a caller can tell whether anything unparsed is left over."""
+    if not s:
+        return 0
+    n = len(s)
+    i = 0
+    first = True
+    while True:
+        i = _skip_ws_comma(s, i)
+        if not first:
+            if i < n and s[i] == ',':
+                i += 1
+                i = _skip_ws_comma(s, i)
+        val, j = read_number(s, i)
+        if val is None:
+            break
+        i = j
+        first = False
+    return i
+
+
 def number_list(s):
     """Read as many numbers as s has: whitespace-separated, at most one
     comma (with whitespace allowed around it) between any two, stopping
@@ -6796,7 +6818,18 @@ def parse_transform(s):
         close_idx = s.find(')', i)
         if close_idx == -1:
             return identity()
-        args = number_list(s[i:close_idx])
+        arg_str = s[i:close_idx]
+        args = number_list(arg_str)
+        # number_list stops silently at the first thing that isn't a
+        # number (the right behaviour for path data, where "stop at
+        # the error" is the rule). A transform function's argument
+        # list has no such rule: any leftover, unparsed text inside
+        # the parens after the last number it accepted -- like the
+        # "x" in "translate(1 2 x)" -- makes the whole function (and
+        # so the whole attribute) invalid.
+        used = _number_list_consumed(arg_str)
+        if arg_str[used:].strip(' \t\r\n,'):
+            return identity()
         i = close_idx + 1
         fn = _svg_transform_fn(name, args)
         if fn is None:
@@ -7256,6 +7289,12 @@ def paint_server(root, ref, bbox, ctm):
     if not stops:
         return None
 
+    # A single stop is a solid colour regardless of geometry, so it
+    # doesn't need a usable bounding box: check this before the
+    # objectBoundingBox degenerate-box rejection below.
+    if len(stops) == 1:
+        return TransformedPaint(solid(stops[0].color), identity())
+
     units = attribute(el, "gradientUnits") or "objectBoundingBox"
     bx0, by0, bx1, by1 = bbox
     if units == "userSpaceOnUse":
@@ -7273,9 +7312,6 @@ def paint_server(root, ref, bbox, ctm):
     spread = attribute(el, "spreadMethod") or "pad"
     if spread not in ("pad", "reflect", "repeat"):
         spread = "pad"
-
-    if len(stops) == 1:
-        return TransformedPaint(solid(stops[0].color), identity())
 
     if el.name == "linearGradient":
         x1 = _svg_percent_or_number(attribute(el, "x1"), 0.0)
@@ -7352,6 +7388,7 @@ def clip_coverage(root, ref, m, width, height):
     if el is None or el.name != "clipPath":
         return full_clip(width, height)
     cm = m * parse_transform(attribute(el, "transform"))
+    clip_style = computed_style(el, initial_style())
     result = None
     for child in children(el):
         cmds = shape_commands(child)
@@ -7360,7 +7397,7 @@ def clip_coverage(root, ref, m, width, height):
         child_m = cm * parse_transform(attribute(child, "transform"))
         if not is_invertible(child_m):
             continue
-        style = computed_style(child, initial_style())
+        style = computed_style(child, clip_style)
         dev = build_path(cmds, child_m, 0.1)
         cov = fill_path(dev, style.clip_rule, width, height)
         result = cov if result is None else union_coverage(result, cov)
@@ -7474,10 +7511,11 @@ def render_svg_with(text, width, height, mode, st):
 # --- 20.12 renders ---
 
 def aspect_demo():
-    """One portrait drawing in five landscape viewports: none, xMinYMid
+    """One drawing in five preserveAspectRatio settings: none, xMinYMid
     meet, xMidYMid meet, xMaxYMid meet, xMidYMid slice. Each 120x90
-    viewport sits in a 10px margin of PAPER on a 660x110 canvas; the
-    dark border is the viewBox's own edge, stroked two user units wide."""
+    panel is render_svg of the document (viewBox '0 0 60 80', that one
+    preserveAspectRatio) copied pixel for pixel into a 10px margin of
+    PAPER on a 660x110 canvas."""
     modes = ["none", "xMinYMid meet", "xMidYMid meet", "xMaxYMid meet", "xMidYMid slice"]
     margin = 10
     cell_w, cell_h = 120, 90
@@ -7485,22 +7523,16 @@ def aspect_demo():
     total_h = margin * 2 + cell_h
     c = canvas(total_w, total_h)
     fill(c, PAPER)
-    drawing = (
-        "<svg viewBox='0 0 60 80'>"
+    template = (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 60 80' preserveAspectRatio='%s'>"
         "<rect width='60' height='80' fill='#f4d8a8'/>"
         "<circle cx='30' cy='26' r='14' fill='#e8553a'/>"
-        "<path d='M2,79 L22,44 L49,79 Z' fill='#3b5b7a'/>"
-        "<path d='M23,79 L44,52 L59,79 Z' fill='#3b5b7a'/>"
+        "<polygon points='0,80 22,44 36,62 44,52 60,80' fill='#3b5b7a'/>"
         "<rect x='1' y='1' width='58' height='78' fill='none' stroke='#1a1a1a' stroke-width='2'/>"
         "</svg>"
     )
     for i, mode in enumerate(modes):
-        root = parse_xml(drawing)
-        l = layer(cell_w, cell_h)
-        vb = attribute(root, "viewBox")
-        m = view_box_matrix(vb, mode, cell_w, cell_h)
-        render_element(root, l, initial_style(), m, cell_w, cell_h, root)
-        panel = flatten_layer(l, color(1, 1, 1))
+        panel = render_svg(template % mode, cell_w, cell_h)
         ox = margin + i * (cell_w + margin)
         for y in range(cell_h):
             for x in range(cell_w):
