@@ -2117,4 +2117,194 @@ public final class Figures {
     public static Canvas plate21() {
         return workMap();
     }
+
+    // ---- Chapter 22: boolean path operations ------------------------------------
+
+    /**
+     * §22.8: the trap -- the crossing of the line through a, b with the line
+     * through c, d, in pixels, in plain floating point, with no grid at all.
+     */
+    public static Tuple floatCrossing(Tuple a, Tuple b, Tuple c, Tuple d) {
+        Tuple ab = b.subtract(a);
+        Tuple cd = d.subtract(c);
+        double t = Tuple.cross(c.subtract(a), cd) / Tuple.cross(ab, cd);
+        return a.add(ab.scale(t));
+    }
+
+    /**
+     * §22.9: text_path(font, text, size, x, y) -- one path holding, in
+     * order, the subpaths of glyph_path for every placement of
+     * layout_run(font, text, size, x, y, true).
+     */
+    public static Path textPath(Font font, String text, double size, double x, double y) {
+        Path out = new Path();
+        for (Placement pl : Layout.layoutRun(font, text, size, x, y, true)) {
+            Matrix m = Glyphs.textMatrix(font, size, pl.x(), pl.y());
+            Path glyph = Glyphs.glyphPath(font, pl.name(), m, 0.1);
+            appendPath(out, glyph);
+        }
+        return out;
+    }
+
+    private static void appendPath(Path into, Path from) {
+        for (Subpath sp : from.subpaths()) {
+            boolean first = true;
+            for (Tuple q : sp.points) {
+                if (first) {
+                    into.moveTo(q);
+                    first = false;
+                } else {
+                    into.lineTo(q);
+                }
+            }
+            if (sp.closed) {
+                into.close();
+            }
+        }
+    }
+
+    /** §22.9: plate_glyph() -- path A, Roboto's g at a 200 pixel em, origin (40, 140). */
+    public static Path plateGlyph() {
+        Font font = robotoFont();
+        Matrix m = Glyphs.textMatrix(font, 200, 40, 140);
+        return Glyphs.glyphPath(font, "g", m, 0.1);
+    }
+
+    /** §22.9: plate_star() -- path B, chapter 5's star scaled by 0.85 about its centre and moved to (130, 104). */
+    public static Path plateStar() {
+        Matrix m = Transforms.translation(49.5, 23.5)
+                .multiply(Transforms.translation(80.5, 80.5))
+                .multiply(Transforms.scaling(0.85, 0.85))
+                .multiply(Transforms.translation(-80.5, -80.5));
+        return Paths.transformPath(star(), m);
+    }
+
+    /** §22.9: one panel of plate 22 -- op_panel(op), a 200 by 200 canvas. */
+    public static Canvas opPanel(String op) {
+        int w = 200, h = 200;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Path a = plateGlyph();
+        Path b = plateStar();
+        Path r = BoolCombine.combine(a, "nonzero", b, "evenodd", op);
+        Painter.paintThrough(c, Fill.fillPath(r, "nonzero", w, h), INK);
+        Painter.paintThrough(c, Fill.fillPath(Stroke.strokeToPath(a, 1, "butt", "round", 4.0), "nonzero", w, h),
+                GLYPH_DIM);
+        Painter.paintThrough(c, Fill.fillPath(Stroke.strokeToPath(b, 1, "butt", "round", 4.0), "nonzero", w, h),
+                GLYPH_DIM);
+        Painter.paintThrough(c, Fill.fillPath(Stroke.strokeToPath(r, 1, "butt", "round", 4.0), "nonzero", w, h),
+                GLYPH_MAGENTA);
+        return c;
+    }
+
+    private static final String[] BOOL_OPS = {"union", "intersection", "difference", "xor"};
+
+    /** §22.9: plate_22() -- the four panels side by side, 800 by 200. */
+    public static Canvas plate22() {
+        Canvas out = new Canvas(800, 200);
+        for (int k = 0; k < BOOL_OPS.length; k++) {
+            Canvas panel = opPanel(BOOL_OPS[k]);
+            for (int y = 0; y < 200; y++) {
+                for (int x = 0; x < 200; x++) {
+                    out.writePixel(200 * k + x, y, panel.pixelAt(x, y));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** §22.9: rosette(cx, cy, n, r, d) -- n circles xor'ed together, one at a time. */
+    public static Path rosette(double cx, double cy, int n, double r, double d) {
+        Path out = new Path();
+        for (int k = 0; k < n; k++) {
+            double a = 2 * Math.PI * k / n;
+            Path circle = Paths.circlePath(cx + d * Math.cos(a), cy + d * Math.sin(a), r, 72);
+            out = BoolCombine.combine(out, "nonzero", circle, "nonzero", "xor");
+        }
+        return out;
+    }
+
+    /** §22.9: seal() -- sixty-one combines, 480 by 480. */
+    public static Path sealPath() {
+        Path rim = Paths.circlePath(240, 240, 200, 120);
+        for (int k = 0; k < 40; k++) {
+            double a = 2 * Math.PI * k / 40;
+            Path scallop = Paths.circlePath(240 + 200 * Math.cos(a), 240 + 200 * Math.sin(a), 16, 24);
+            rim = BoolCombine.combine(rim, "nonzero", scallop, "nonzero", "union");
+        }
+        Path ring = BoolCombine.combine(rim, "nonzero", Paths.circlePath(240, 240, 168, 120), "nonzero", "difference");
+        Path band = Paths.polygon(Tuple.point(20, 196), Tuple.point(460, 196), Tuple.point(460, 284),
+                Tuple.point(20, 284));
+        Path s = BoolCombine.combine(ring, "nonzero", band, "nonzero", "union");
+        Path text = textPath(robotoFont(), "BOOLEAN", 84, 52, 270);
+        s = BoolCombine.combine(s, "nonzero", text, "nonzero", "xor");
+        Path movedStar = Paths.transformPath(star(), Transforms.translation(159.5, 23.5));
+        s = BoolCombine.combine(s, "nonzero", movedStar, "evenodd", "xor");
+        Path rosette = rosette(240, 352, 16, 44, 36);
+        s = BoolCombine.combine(s, "nonzero", rosette, "nonzero", "xor");
+        return s;
+    }
+
+    public static Canvas seal() {
+        int w = 480, h = 480;
+        Canvas c = new Canvas(w, h);
+        c.fill(PAPER);
+        Path s = sealPath();
+        Painter.paintThrough(c, Fill.fillPath(s, "nonzero", w, h), INK);
+        Painter.paintThrough(c, Fill.fillPath(Stroke.strokeToPath(s, 0.75, "butt", "round", 4.0), "nonzero", w, h),
+                GLYPH_MAGENTA);
+        return c;
+    }
+
+    /** §22.6: struck_line(n) -- the word Pathfinder n times, struck through by 14n bars. */
+    public static Path[] struckLine(int n) {
+        StringBuilder words = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            if (i > 0) {
+                words.append(' ');
+            }
+            words.append("Pathfinder");
+        }
+        Path text = textPath(robotoFont(), words.toString(), 120.0 / n, 20, 160);
+        Path bars = new Path();
+        for (int k = 0; k < 14 * n; k++) {
+            double x = -40 + 48.0 * k / n;
+            Path bar = Paths.polygon(
+                    Tuple.point(x, 100), Tuple.point(x + 22.0 / n, 100),
+                    Tuple.point(x - 40.0 / n, 200), Tuple.point(x - 62.0 / n, 200));
+            appendPath(bars, bar);
+        }
+        return new Path[] {text, bars};
+    }
+
+    /** §22.6: struck_segments(n) -- merge_segments of the text's and bars' path segments. */
+    public static List<Seg> struckSegments(int n) {
+        Path[] sl = struckLine(n);
+        List<Seg> segs = new ArrayList<>();
+        segs.addAll(Splitting.pathSegments(sl[0], "a"));
+        segs.addAll(Splitting.pathSegments(sl[1], "b"));
+        return Splitting.mergeSegments(segs);
+    }
+
+    // ---- Chapter 23: distance fields ---------------------------------------------
+
+    /** §23.6: transform_bitmap() -- Roboto's g at 48 pixels to the em, origin (14, 44), in a 64 by 64 buffer. */
+    public static CoverageBuffer transformBitmap() {
+        Font font = robotoFont();
+        Matrix m = Glyphs.textMatrix(font, 48, 14, 44);
+        Path p = Glyphs.glyphPath(font, "g", m, 0.1);
+        return Fill.fillPath(p, "nonzero", 64, 64);
+    }
+
+    /** §23.8: peanut() -- two circles overlapping in a waist around x = 85. */
+    public static Path[] peanut() {
+        return new Path[] {
+                Paths.circlePath(60, 80, 40, 96),
+                Paths.circlePath(110, 80, 40, 96)
+        };
+    }
+
+    public static double minOf(double a, double b) {
+        return Math.min(a, b);
+    }
 }

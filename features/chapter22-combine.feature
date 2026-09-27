@@ -4,7 +4,11 @@ Feature: Stitching, and the four operations
   of from, then of to; walk it, and at the vertex you reach take, among
   the unused pairs leaving it, the one that turns furthest right: the
   first you meet sweeping counterclockwise on screen from the way you
-  came back. Stop when you're back at the vertex you started from. Then
+  came back. Exactly: with r the incoming direction reversed, give each
+  candidate direction v a half, 0 when cross(r, v) < 0 or when cross(r,
+  v) = 0 and dot(r, v) > 0, and 1 otherwise; the lower half wins, and in
+  the same half v beats w when cross(v, w) < 0. (cross > 0 is clockwise
+  on screen, chapter 4's rule, so this is counterclockwise.) Stop when you're back at the vertex you started from. Then
   drop every vertex whose two neighbours are collinear with it
   (orient = 0), again until none is left; start the contour at its
   topmost vertex, the leftmost of those if there's a tie; and when every

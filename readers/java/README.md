@@ -1,12 +1,15 @@
 # The 2D Renderer Challenge — Java
 
-Chapters 1-21, hand-rolled test runner, no JUnit, no network. Chapter 16's
+Chapters 1-23, hand-rolled test runner, no JUnit, no network. Chapter 16's
 font file (`reference/chapter-16/roboto.json`) and chapter 19's Arabic font
 (`reference/chapter-19/dejavu-arabic.json`) are read with a small
 hand-written JSON reader (`Json.java`) -- no library, as the chapter asks.
 Chapter 20's "your XML library" is `javax.xml` (a namespace-unaware
 `DocumentBuilder`, converted into the book's own small `SvgElement` tree),
-which the chapter explicitly allows.
+which the chapter explicitly allows. Chapter 22's exact grid arithmetic uses
+`long` throughout except Bentley-Ottmann's own event ordering, which needs
+`java.math.BigInteger` (about 80-100 bits), exactly as the chapter says Java
+should.
 
 ## Compile, test, render
 
@@ -35,6 +38,8 @@ java -cp classes Chapter18Tests
 java -cp classes Chapter19Tests
 java -cp classes Chapter20Tests
 java -cp classes Chapter21Tests
+java -cp classes Chapter22Tests
+java -cp classes Chapter23Tests
 ```
 
 Each run prints one `PASS`/`FAIL` line per scenario, a pass/fail total, and
@@ -61,7 +66,11 @@ P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/harbor.ppm`, `out/rose.ppm`, `out/tiger.ppm`, `out/work_map.ppm`.
 Chapter 20 has no `plate-20.ppm`/`plate-21.ppm` files of their own -- the
 chapter's own `plate_20()` is `tiger()` and chapter 21's `plate_21()` is
-`work_map()`, so those two names already cover the plates.
+`work_map()`, so those two names already cover the plates. Chapter 22 adds
+`out/plate-22.ppm`, `out/seal.ppm`; chapter 23 adds `out/primitive-fields.ppm`,
+`out/error-map.ppm`, `out/fields-vs-paths.ppm`, `out/fillets.ppm`,
+`out/transform-demo.ppm`, `out/atlas-corners.ppm`, `out/trap-shrink.ppm`,
+`out/plate-23.ppm`, `out/title.ppm`.
 
 Chapter 15's dashed spiral render is `spiral-dashes.ppm`, not `spiral.ppm` --
 it used to share that name with chapter 6's spiral figure, which meant running
@@ -1039,3 +1048,176 @@ new scenario pinning that a solid tile cut short at the canvas edge copies
 only its on-canvas pixels, `Tiles.drawTiled` already clips both tile
 dimensions with `Math.min(t0 + TILE, width/height)`, so both passed with no
 bug found; see `FEEDBACK.md`).
+
+## Chapter 22
+
+Boolean path operations, on a grid. `Grid.grid(v)` is `floor(v * 256 + 0.5)`
+(a `long`), `Grid.snapPoint`, `Grid.orient` (the chapter 4 cross product on
+grid points, exact in a `double` since every coordinate stays under 2^18)
+and `Grid.lexLess` (top to bottom, then left to right) are the whole of
+§22.1. `Seg` (`Seg.seg(a, b, wa, wb)`) canonicalizes direction the moment
+it's built: whichever end is `lex_less` becomes `lo`, and the windings flip
+sign if that swaps the input order. `MeetResult` (`kind`, `onS`, `onT`) and
+`BoolMeet.meet(s, t)`/`BoolMeet.crossingPoint(s, t)` are §22.2 -- `meet`
+distinguishes "none"/"end"/"cross"/"touch"/"overlap" by orient tests alone,
+and `crossingPoint` is exact in a 64-bit `long` (N reaches about 2^59, as
+the chapter says), the intersection of the two lines rounded to the nearest
+grid point, halves up, via `(2N + D) div 2D` with `Math.floorDiv`.
+
+`Splitting` is §22.3: `pathSegments(p, operand)` snaps a path's edges onto
+the grid and drops any that snap to nothing; `mergeSegments` folds
+identical (lo, hi) pairs, sums their windings, and drops a pair that adds to
+(0, 0); `findSplits(segs, method, st)` dispatches "brute" (every pair),
+"sweep" (the active-list version of §22.6), or "bentley-ottmann" (see
+below); `splitSegments` loops merge-then-split until a pass finds nothing,
+counting the pass that finds nothing per the chapter's own words. The
+active-list sweep keeps a segment active while `lex_less(new.lo, active.hi)`
+holds, dropping everything else before testing what's left, per §22.6's
+"only pairs whose rows overlap are tested."
+
+`BentleyOttmann` (package-private, used only through `Splitting.findSplits`)
+is §22.7's status-ordered sweep, following its four-step `handle(P)`
+literally: a binary search over the current status for the block with
+`orient(lo, hi, P) = 0`, splitting `C` (the block's interior members) at `P`
+rounded to the grid, replacing the block with `U(P)` and `C`'s remainders in
+departure order (`cross(t.dir, s.dir) > 0` puts `s` before `t`, tied broken
+by which segment came first in the input), then testing the one or two new
+boundary pairs. Events are an exact fraction `(X, Y, D)`; ordering two of
+them, and testing a status segment against one, is `BigInteger` arithmetic
+(about 100 and about 80 bits respectively, matching the chapter's estimate).
+Two things needed more care than the pseudocode states outright: **a piece
+whose rounded cut point lands lex-after its own remaining endpoint** (the
+rounding can, rarely, overshoot far enough that the "remainder" would run
+backward) **is dropped rather than spliced into the status** -- its cut
+point is still recorded, but there is nothing left of it worth tracking;
+and **the block search treats a piece collinear with a far-off event but
+outside its own [lo, hi] range as ahead of or behind the point, not part of
+the block** -- a rounded cut can leave a piece running exactly horizontal
+(or vertical), and without this a status search at a *different*, unrelated
+point that happens to share that piece's row would find it "passes through"
+the point and cut it again. Both are pinned by
+`chapter22-bentley.feature`'s small hand-checkable scenarios (see
+`FEEDBACK.md`'s Mutation results for the second one -- removing the check
+reintroduces exactly this bug on the "crossing between grid points" scenario).
+
+`Inside.windingBeside(segs, i)` is §22.4: chapter 5's `winding_at` at a
+segment's own midpoint (kept as `lo + hi`, doubled, to stay in whole
+numbers), with the half-open rule in `lex_less` terms and the two winding
+numbers (A, B) summed together in one pass. `insideRule`/`opInside` are one
+line each; `keepEdges` returns a `List<KeptEdge>` (a small `(from, to)`
+record) pointed so the inside is on the right.
+
+`Stitching.stitch(kept)` is §22.5: link the kept edges into closed contours
+by always taking, at each vertex, the arrow that turns furthest *right* on
+screen. **This needed a sign flip from the textbook cross-product
+convention**: the book's own architecture note says a positive rotation is
+clockwise on this y-down canvas, so "furthest right, counterclockwise from
+the way you came" is the *opposite* sign of what a plain math-convention
+cross product gives on a y-up page. Getting this backward passed every
+simple scenario with only one branching vertex, but broke every scenario
+with a real self-touching junction -- see `FEEDBACK.md`'s Mutation results,
+where reverting the flip is the first mutation and the scenarios that catch
+it are listed. `BoolCombine.combine`/`simplify`/`pointLists` are §22.9's
+twenty-line pipeline, read straight off its own printed pseudocode.
+
+`Figures` adds `plateGlyph()`, `plateStar()`, `opPanel(op)`, `plate22()`,
+`textPath`, `rosette`, `sealPath`, `seal()` (all from the chapter's own
+prose in §22.9, which spells out `plate_glyph`/`plate_star`/`op_panel`/
+`text_path`/`rosette`/`seal` exactly), plus `floatCrossing` (§22.8's trap,
+the same crossing computed in plain floating point) and
+`struckLine`/`struckSegments` (§22.6's benchmark, the word "Pathfinder" laid
+out with chapter 18's `layoutRun` struck through by parallelogram bars).
+Both renders (`plate-22.ppm`, `seal.ppm`) diff 0 against the reference
+bytes.
+
+**Known gap: Bentley-Ottmann's own test/event counts drift from `sweep`'s
+and `brute`'s on the chapter's large benchmark, by a handful out of
+thousands.** All hand-traceable scenarios in `chapter22-bentley.feature`
+(the ones with a written-out expected event/test count small enough to
+verify by hand) pass exactly, and `combine`/`simplify` -- which every render
+and every other scenario in the chapter goes through, via `Splitting`'s
+`"sweep"` method -- are byte-exact against every reference image, including
+`plate-22.ppm` and `seal.ppm` (sixty-one `combine` calls). Only
+`find_splits(struckSegments(1), "bentley-ottmann", ...)` and the
+`struckSegments(2)` three-way comparison disagree, by one grid unit on one
+crossing (traced in detail in `FEEDBACK.md`): the two "wrong" segments are
+each already-once-cut pieces, and the second cut's rounding depends on
+*which* piece geometry (original or already-rounded-remainder) computes the
+crossing, which the chapter's own §22.3 identifies as an inherent property
+of rounding intermediate cuts (the same reason `split_segments` loops at
+all) rather than a fixable single-pass bug. See `FEEDBACK.md` for the full
+trace and why I left the two scenarios failing rather than papering over
+them.
+
+## Chapter 23
+
+Distance fields. `Field` (`width`, `height`, `values`) is the whole data
+model: `Field.field(w, h, fn)` samples `fn` at every pixel center,
+`Field.fieldOf`, `Field.fieldAt`, `Field.fieldRange`. `Sdf` is §23.1's four
+exact primitives (`sdCircle`, `distanceToSegment`, `sdBox`, `sdRoundedBox`,
+`sdPolygon`, the last signed by chapter 5's `Winding.insideNonzero`/
+`insideEvenodd`). `CurveDistance` is §23.2: `solveCubic` (Cardano when
+there's one real root, the cosine formula when there are three, falling
+back to quadratic/linear/no-roots as the leading coefficients vanish),
+`distanceToQuadratic`/`nearestTQuadratic` (exact, through `solveCubic`),
+`nearestTCubic`/`distanceToCubic` (nine Newton seeds plus both ends, since a
+quintic has no formula -- **the ends matter**: `nearestTCubic`'s own
+scenario is built around a curve where Newton's method walks every seed
+away from the true answer, an end chapter 14's own sample-based search also
+gets right only by luck of where it samples), and `bruteDistance` (the
+ground truth: 128 samples, ternary search refined around *every* local
+minimum, not just the best sample, so a curve that loops back past the
+point doesn't fool it the way chapter 14's `distance_to_curve` can -- pinned
+directly by `chapter23-curves.feature`'s last scenario, where the two
+disagree by more than 0.02).
+
+`Fields` is §23.3-23.5: `fieldCoverage` (`clamp(0.5 - d, 0, 1)`),
+`polygonField`, `coverageError`, the six one-line operations of §23.4
+(`fieldOffset`, `fieldStroke`, `fieldUnion`/`Intersection`/`Difference`/`Xor`),
+`cubicField`, `sCurve`, `plateGlyphField` (chapter 22's `plate_glyph()`,
+refielded: the least `distanceToQuadratic` to its own quadratics through
+`text_matrix`, signed by `glyphPath`'s own nonzero winding), and §23.5's
+`smoothMin`/`fieldSmoothUnion`/`filletField`. `DistanceTransform` is §23.6,
+built exactly on the printed `edt_1d` pseudocode (`v`/`z` arrays, `k` a
+plain `int` index) -- `distanceTransform` runs it down every column then
+along every row of the result, matching `bruteDistanceTransform` exactly on
+`Figures.transformBitmap()` (Roboto's g at 48 pixels to the em, filled by
+chapter 7 into a 64 by 64 buffer). `fieldFromCoverage` is two transforms
+(to the nearest on pixel, to the nearest off pixel), each square-rooted and
+offset by half a pixel, one negated.
+
+`Msdf` is §23.7, the multi-channel bake: `Msdf.Box`/`bakeBox` (chapter 17's
+bitmap box, grown by `spread` texels); `bakeSdf` (one field, signed by
+`glyphPath`'s winding, clamped to the spread); `isCorner` (`dot(a,b) <= 0 ||
+|cross(a,b)| > Math.sin(3)` -- read literally: `Math.sin(3)` in *radians*
+equals `sin(pi - 3)`, which is `sin` of about 8.1 degrees, exactly the
+"about eight degrees" the prose states, by the `sin(pi - x) = sin(x)`
+identity); `colorEdges` (finds the corners, rotates the contour to start at
+the first one, then either the "one corner" thirds-split or the "more
+corners" alternating-runs-with-a-yellow-if-odd rule, both matched
+scenario-for-scenario against the square/triangle/house/teardrop/circle
+cases); `pseudoDistance` (the past-the-end tangent-line case collapses
+algebraically to `-side` either way, but is written out as the chapter's
+own `-|side|`/`|side|` pair for a literal reading); `bakeMsdf` (colors every
+contour, pools all their curves, and for each of the three channels keeps
+the nearest edge that carries it, breaking a near-tie by which end is more
+nearly perpendicular); `bakeMtsdf` (`bakeMsdf`'s three channels plus
+`bakeSdf`'s as a fourth); `sampleField` (chapter 11's bilinear sample,
+texel-center space); `median3`; `drawBaked`/`drawEffect` (the second
+generalizing the first to read the fourth "true" channel and take a custom
+mix function instead of the fixed `clamp(0.5 - d, 0, 1)`, for the title's
+four layered effects). `Baked` is the plain `(left, top, width, height,
+Field[] channels)` record every bake function returns.
+
+`Chapter23Figures` holds the eight renders of §23.9, each built from
+`chapter23-plate.feature`'s own prose (none of it is printed as pseudocode
+in the chapter text, the same situation chapters 12/16/18 were already in
+for their own unprinted renders): `primitiveFields`, `errorMap`,
+`fieldsVsPaths`, `fillets`, `transformDemo`, `atlasCorners`, `trapShrink`,
+`plateField`/`plate23`, and `title` (Roboto's "DISTANCE" at 32-pixel-baked
+`bakeMtsdf`, drawn at scale 5, four `drawEffect` passes over the whole run
+in order -- shadow, glow, fill, pale outline -- matching the feature's own
+per-layer formulas exactly). All eight renders (`primitive-fields.ppm`,
+`error-map.ppm`, `fields-vs-paths.ppm`, `fillets.ppm`, `transform-demo.ppm`,
+`atlas-corners.ppm`, `trap-shrink.ppm`, `plate-23.ppm`, `title.ppm`) diff 0
+against the reference bytes, and all 43 chapter 23 scenarios pass.

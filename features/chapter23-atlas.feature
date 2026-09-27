@@ -26,7 +26,8 @@ Feature: Glyph atlases
   A multi-channel field colours the edges. The channels are the bits RED
   1, GREEN 2 and BLUE 4; an edge is CYAN (6), MAGENTA (5), YELLOW (3) or
   WHITE (7). is_corner(a, b), for unit directions, is dot(a, b) ≤ 0 or
-  |cross(a, b)| > sin(3). color_edges(contour) takes one closed contour's
+  |cross(a, b)| > sin(3), the sine of 3 radians, about 0.1411:
+  a turn of more than π - 3 radians, about 8 degrees. color_edges(contour) takes one closed contour's
   curves and answers (curves, masks): the corners are the curves whose
   start direction (derivative at 0, or the chord where that's zero,
   normalized) makes a corner with the end direction of the curve before.
@@ -45,10 +46,10 @@ Feature: Glyph atlases
   flip makes. bake_msdf(font, name, size, spread) has three channels over
   the box; at each texel center p, for each channel, of the coloured
   edges that carry it, the one with the least distance wins, and when
-  two are within 10⁻¹² of each other at an end, the one whose end
-  direction is more nearly at right angles to p - that end, by the least
-  |dot(direction, unit(p - end))|; the channel is that edge's
-  pseudo_distance, clamped to ±spread. bake_mtsdf adds bake_sdf's field
+  two are within 10⁻¹² of each other, the one with the smaller o, where
+  o is 0 when the nearest t is inside the curve and |dot(direction at
+  that end, unit(p - that end))| when it's an end; the channel is that
+  edge's pseudo_distance, clamped to ±spread. bake_mtsdf adds bake_sdf's field
   as a fourth channel. line_curve(a, b) is a straight edge as chapter 16
   makes one, quadratic(a, (a + b) / 2, b); circle_curves(cx, cy, r) is
   eight quadratics, ends on the circle at angles 2πi / 8 and controls at

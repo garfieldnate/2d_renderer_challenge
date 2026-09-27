@@ -11,11 +11,16 @@ Feature: Bentley-Ottmann
        it and those with orient > 0 all after, so a binary search finds
        it. L is the block's segments whose hi is P; C is the rest, the
        ones with P strictly inside.
-    2. Split each segment of C at P rounded to the nearest grid point,
-       halves up, which is P itself when P is a grid point.
+    2. Record, as a split point of each segment of C, P rounded to the
+       nearest grid point, halves up, which is P itself when P is a grid
+       point. Nothing is cut during the sweep: every segment keeps the
+       ends it had when find_splits was called, and every test and every
+       crossing uses those ends. The cuts happen afterwards, in
+       split_segments, like every other finder's.
     3. Replace the block by U and C together, in the order they leave P
        left to right: s before t when cross(t.hi - t.lo, s.hi - s.lo) >
-       0, and when that's 0, the one earlier in segs first.
+       0, and when that's 0, the one earlier in the list given to
+       find_splits first.
     4. If nothing was put back, test the two segments now either side of
        the gap. Otherwise test the segment left of what was put back
        against the first of it, and the last of it against the segment

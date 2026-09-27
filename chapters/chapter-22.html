@@ -506,7 +506,11 @@
   of from, then of to; walk it, and at the vertex you reach take, among
   the unused pairs leaving it, the one that turns furthest right: the
   first you meet sweeping counterclockwise on screen from the way you
-  came back. Stop when you're back at the vertex you started from. Then
+  came back. Exactly: with r the incoming direction reversed, give each
+  candidate direction v a half, 0 when cross(r, v) &lt; 0 or when cross(r,
+  v) = 0 and dot(r, v) &gt; 0, and 1 otherwise; the lower half wins, and in
+  the same half v beats w when cross(v, w) &lt; 0. (cross &gt; 0 is clockwise
+  on screen, chapter 4's rule, so this is counterclockwise.) Stop when you're back at the vertex you started from. Then
   drop every vertex whose two neighbours are collinear with it
   (orient = 0), again until none is left; start the contour at its
   topmost vertex, the leftmost of those if there's a tie; and when every
@@ -702,7 +706,7 @@
   st.events ← st.events + 1
   block ← the status segments with orient(lo, hi, P) = 0      <span class="cm">// binary search</span>
   L ← those of block whose hi is P;  C ← the rest of block
-  <span class="kw">for</span> each s of C: split s at P rounded to the grid
+  <span class="kw">for</span> each s of C: record P rounded to the grid as a split of s   <span class="cm">// cut later, never now</span>
   new ← U(P) and C, left to right as they leave P
   replace block by new in the status
   <span class="kw">if</span> new is empty: test(left of the gap, right of the gap)
@@ -771,11 +775,16 @@ test(s, t):                                  <span class="cm">// only when both 
        it and those with orient &gt; 0 all after, so a binary search finds
        it. L is the block's segments whose hi is P; C is the rest, the
        ones with P strictly inside.
-    2. Split each segment of C at P rounded to the nearest grid point,
-       halves up, which is P itself when P is a grid point.
+    2. Record, as a split point of each segment of C, P rounded to the
+       nearest grid point, halves up, which is P itself when P is a grid
+       point. Nothing is cut during the sweep: every segment keeps the
+       ends it had when find_splits was called, and every test and every
+       crossing uses those ends. The cuts happen afterwards, in
+       split_segments, like every other finder's.
     3. Replace the block by U and C together, in the order they leave P
        left to right: s before t when cross(t.hi - t.lo, s.hi - s.lo) &gt;
-       0, and when that's 0, the one earlier in segs first.
+       0, and when that's 0, the one earlier in the list given to
+       find_splits first.
     4. If nothing was put back, test the two segments now either side of
        the gap. Otherwise test the segment left of what was put back
        against the first of it, and the last of it against the segment
