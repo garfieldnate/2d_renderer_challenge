@@ -47,6 +47,11 @@ fn bresenhams_fan() {
     assert_pixel_within(&p6, 10, 10, (39, 39, 44), 1);
     assert_pixel_within(&p6, 100, 91, (39, 39, 44), 1);
     assert_pixel_within(&p6, 100, 92, (246, 246, 241), 1);
+    assert_pixel_within(&p6, 103, 120, (246, 246, 241), 1);
+    assert_pixel_within(&p6, 102, 120, (39, 39, 44), 1);
+    assert_pixel_within(&p6, 104, 120, (39, 39, 44), 1);
+    let reference = read_file("reference/chapter-03/fan-bresenham.ppm");
+    assert!(max_channel_difference(&p6, &reference) <= 1);
 }
 
 #[test]
@@ -57,6 +62,10 @@ fn wus_fan() {
     assert_pixel_within(&p6, 120, 80, (246, 246, 241), 1);
     assert_pixel_within(&p6, 100, 91, (163, 163, 161), 1);
     assert_pixel_within(&p6, 100, 92, (199, 199, 196), 1);
+    assert_pixel_within(&p6, 103, 120, (220, 220, 216), 1);
+    assert_pixel_within(&p6, 104, 120, (130, 130, 129), 1);
+    let reference = read_file("reference/chapter-03/fan-wu.ppm");
+    assert!(max_channel_difference(&p6, &reference) <= 1);
 }
 
 #[test]

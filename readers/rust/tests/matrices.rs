@@ -190,3 +190,10 @@ fn the_inverse_of_a_transform_is_a_transform() {
     assert!(approx_eq(matrix_at(&b, 1, 2), 1.6994));
     assert!(matrices_eq(&(b * a), &identity()));
 }
+
+#[test]
+fn invertibility_is_an_exact_test_against_zero() {
+    assert!(is_invertible(scaling(0.0001, 1.0)));
+    assert!(approx_eq(determinant(scaling(0.0001, 1.0)), 0.0001));
+    assert!(tuples_eq(inverse(scaling(0.0001, 1.0)) * point(0.0001, 3.0), point(1.0, 3.0)));
+}

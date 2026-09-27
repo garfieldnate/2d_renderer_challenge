@@ -1,4 +1,4 @@
-// features/chapter04-shapes.feature
+// features/chapter04-drawing.feature
 
 use renderer::{
     approx_eq, approx_scale, canvas, circle, color, colors_eq, coverage_at, identity, ink, inside,

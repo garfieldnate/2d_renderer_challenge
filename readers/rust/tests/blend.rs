@@ -69,3 +69,11 @@ fn blend_color_is_the_blend_function_on_two_straight_colours() {
         color(0.874, 0.174, 0.174)
     ));
 }
+
+#[test]
+fn a_non_separable_blend_that_overflows_is_clipped_back_into_range() {
+    let src = opaque(color(0.95, 0.95, 0.95));
+    let dst = opaque(color(0.2, 0.45, 0.95));
+    let c = pixel_color(blend("luminosity", src, dst));
+    assert!(renderer::colors_eq_eps(c, color(0.927885, 0.951923, 1.0), 0.0001), "{c:?}");
+}

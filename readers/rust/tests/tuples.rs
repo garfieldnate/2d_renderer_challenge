@@ -95,3 +95,9 @@ fn the_sign_of_the_cross_product_says_which_side_of_a_line_a_point_is_on() {
     assert!(approx_eq(cross(b - a, point(5.0, -3.0) - a), -30.0));
     assert!(approx_eq(cross(b - a, point(20.0, 0.0) - a), 0.0));
 }
+
+#[test]
+fn magnitude_and_dot_look_at_x_and_y_only() {
+    assert!(approx_eq(magnitude(point(3.0, 4.0)), 5.0));
+    assert!(approx_eq(dot(point(1.0, 2.0), point(2.0, 3.0)), 8.0));
+}

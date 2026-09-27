@@ -928,7 +928,7 @@ pub fn plot(c: &mut Canvas, x: i64, y: i64, col: Color, weight: f64) {
         return;
     }
     let old = pixel_at(c, x, y);
-    write_pixel(c, x, y, mix(old, col, weight));
+    write_pixel(c, x, y, mix_with(old, col, weight, true));
 }
 
 /// Xiaolin Wu's line, 1991: two pixels per column instead of one, weighted
@@ -1251,7 +1251,7 @@ pub fn determinant(m: Matrix3) -> f64 {
 /// Zero means there's no inverse: you can't un-flatten a line back into a
 /// plane.
 pub fn is_invertible(m: Matrix3) -> bool {
-    !approx_eq(determinant(m), 0.0)
+    determinant(m) != 0.0
 }
 
 /// The matrix that undoes `m`: `inverse(m) * m` is the identity. The
@@ -2094,17 +2094,43 @@ pub fn cover_at(acc: &Accumulator, x: i64, y: i64) -> f64 {
 /// right. A deposit right of the buffer is dropped: there's nothing to
 /// its right to carry into.
 pub fn add_cell(acc: &mut Accumulator, x: i64, row: i64, area: f64, cover: f64) {
+    add_cell_to(acc, x, row, area, cover);
+}
+
+/// Where deposits go. Chapter 7's `Accumulator` is one (a dense grid);
+/// chapter 21's tiled fill keeps a sparse map of only the cells that were
+/// deposited into. The folding and dropping rules live in `add_cell_to`,
+/// once, so both stores see bit-for-bit the same deposits.
+pub(crate) trait CellSink {
+    fn sink_width(&self) -> usize;
+    fn sink_height(&self) -> usize;
+    fn put(&mut self, x: usize, row: usize, area: f64, cover: f64);
+}
+
+impl CellSink for Accumulator {
+    fn sink_width(&self) -> usize {
+        self.width
+    }
+    fn sink_height(&self) -> usize {
+        self.height
+    }
+    fn put(&mut self, x: usize, row: usize, area: f64, cover: f64) {
+        let idx = row * self.width + x;
+        self.area[idx] += area;
+        self.cover[idx] += cover;
+    }
+}
+
+pub(crate) fn add_cell_to<S: CellSink>(acc: &mut S, x: i64, row: i64, area: f64, cover: f64) {
     let (mut x, mut area) = (x, area);
     if x < 0 {
         x = 0;
         area = cover;
     }
-    if x >= acc.width as i64 {
+    if x >= acc.sink_width() as i64 {
         return;
     }
-    let idx = row as usize * acc.width + x as usize;
-    acc.area[idx] += area;
-    acc.cover[idx] += cover;
+    acc.put(x as usize, row as usize, area, cover);
 }
 
 // ---------------------------------------------------------------------
@@ -2119,13 +2145,17 @@ pub fn add_cell(acc: &mut Accumulator, x: i64, row: i64, area: f64, cover: f64) 
 /// cells shares the height by the width it has in each, using the same
 /// midpoint rule inside its own cell.
 pub fn accumulate_row(acc: &mut Accumulator, row: i64, x0: f64, x1: f64, height: f64) {
+    accumulate_row_to(acc, row, x0, x1, height);
+}
+
+pub(crate) fn accumulate_row_to<S: CellSink>(acc: &mut S, row: i64, x0: f64, x1: f64, height: f64) {
     let xa = x0.min(x1);
     let xb = x0.max(x1);
     let ca = xa.floor() as i64;
     let cb = xb.floor() as i64;
     if ca == cb {
         let xm = (xa + xb) / 2.0 - ca as f64;
-        add_cell(acc, ca, row, height * (1.0 - xm), height);
+        add_cell_to(acc, ca, row, height * (1.0 - xm), height);
         return;
     }
     let dx = xb - xa;
@@ -2134,7 +2164,7 @@ pub fn accumulate_row(acc: &mut Accumulator, row: i64, x0: f64, x1: f64, height:
         let hi = xb.min(c as f64 + 1.0);
         let share = height * (hi - lo) / dx;
         let m = (lo + hi) / 2.0 - c as f64;
-        add_cell(acc, c, row, share * (1.0 - m), share);
+        add_cell_to(acc, c, row, share * (1.0 - m), share);
     }
 }
 
@@ -2152,6 +2182,10 @@ pub fn accumulate_row(acc: &mut Accumulator, row: i64, x0: f64, x1: f64, height:
 /// (through the column-0 folding in `add_cell`), and one entirely right
 /// deposits nothing.
 pub fn accumulate(acc: &mut Accumulator, a: Tuple, b: Tuple) {
+    accumulate_to(acc, a, b);
+}
+
+pub(crate) fn accumulate_to<S: CellSink>(acc: &mut S, a: Tuple, b: Tuple) {
     if a.y == b.y {
         return;
     }
@@ -2159,12 +2193,12 @@ pub fn accumulate(acc: &mut Accumulator, a: Tuple, b: Tuple) {
     let (top, bottom) = if a.y > b.y { (b, a) } else { (a, b) };
     let slope = (bottom.x - top.x) / (bottom.y - top.y);
     let first = (top.y.floor() as i64).max(0);
-    let last = (bottom.y.ceil() as i64 - 1).min(acc.height as i64 - 1);
+    let last = (bottom.y.ceil() as i64 - 1).min(acc.sink_height() as i64 - 1);
     let mut row = first;
     while row <= last {
         let y0 = top.y.max(row as f64);
         let y1 = bottom.y.min(row as f64 + 1.0);
-        accumulate_row(
+        accumulate_row_to(
             acc,
             row,
             top.x + (y0 - top.y) * slope,
@@ -3342,6 +3376,8 @@ pub enum Paint {
     Radial { c0: Tuple, r0: f64, c1: Tuple, r1: f64, stops: Vec<Stop>, extend: String },
     Conic { center: Tuple, angle0: f64, stops: Vec<Stop>, extend: String },
     Image { img: Image, inv: Matrix3, filter: String, extend: String },
+    /// Chapter 20: any paint seen through a matrix (`transformed_paint`).
+    Transformed { inner: Box<Paint>, inv: Matrix3 },
 }
 
 /// A paint that ignores the point and always returns `c`.
@@ -3411,7 +3447,10 @@ pub fn radial_t(g: &Paint, x: f64, y: f64) -> Option<f64> {
                 return None;
             }
             let s = disc.sqrt();
-            let roots = [(-b + s) / (2.0 * a), (-b - s) / (2.0 * a)];
+            let r1 = (-b + s) / (2.0 * a);
+            let r2 = (-b - s) / (2.0 * a);
+            // largest first, whatever the sign of a
+            let roots = if r1 >= r2 { [r1, r2] } else { [r2, r1] };
             for t in roots {
                 if r0 + t * dr >= 0.0 {
                     return Some(t);
@@ -3459,6 +3498,10 @@ pub fn paint_at(g: &Paint, x: f64, y: f64) -> Color {
                 other => panic!("unknown filter: {other}"),
             };
             pixel_color(p)
+        }
+        Paint::Transformed { inner, inv } => {
+            let q = *inv * point(x, y);
+            paint_at(inner, q.x, q.y)
         }
     }
 }
@@ -4143,7 +4186,7 @@ fn ang_between(from: f64, to: f64) -> f64 {
 /// How many steps an arc from `a0` to `a1` needs, one every eighth of a
 /// radian's sixteenth-turn (`pi/16`, 11.25 degrees), at least two.
 fn arc_steps(a0: f64, a1: f64) -> usize {
-    (((a1 - a0).abs() / (std::f64::consts::PI / 16.0)).ceil() as usize).max(2)
+    (((a1 - a0).abs() / (std::f64::consts::PI / 16.0) - 0.000000001).ceil() as usize).max(2)
 }
 
 /// Appends `steps + 1` points of the arc centred on `c`, radius `r`, from
@@ -7304,4 +7347,1932 @@ pub fn cluster_plate() -> Canvas {
 /// Plate 19: `cluster_plate`.
 pub fn plate_19() -> Canvas {
     cluster_plate()
+}
+
+// =======================================================================
+// Chapter 20: Rendering SVG
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 20.1 The document
+// ---------------------------------------------------------------------
+
+/// One XML element, owned: its local name (namespace prefix taken off),
+/// its attributes as written (in document order, local names), and its
+/// child elements in order -- text and comments between them dropped.
+/// roxmltree does the parsing; this is the four things the chapter asks
+/// of what it hands back, in a form that outlives the text.
+#[derive(Debug, Clone)]
+pub struct Element {
+    pub name: String,
+    pub attributes: Vec<(String, String)>,
+    pub children: Vec<Element>,
+}
+
+fn element_from_node(node: roxmltree::Node) -> Element {
+    Element {
+        name: node.tag_name().name().to_string(),
+        attributes: node.attributes().map(|a| (a.name().to_string(), a.value().to_string())).collect(),
+        children: node.children().filter(|c| c.is_element()).map(element_from_node).collect(),
+    }
+}
+
+/// The document's root element. Panics on text that isn't XML: every
+/// document the book parses is well-formed, and a renderer handed garbage
+/// has nothing sensible to draw.
+pub fn parse_xml(text: &str) -> Element {
+    let doc = roxmltree::Document::parse(text).unwrap_or_else(|e| panic!("parse_xml: {e}"));
+    element_from_node(doc.root_element())
+}
+
+/// An attribute's text exactly as written, or `None`.
+pub fn attribute<'a>(el: &'a Element, name: &str) -> Option<&'a str> {
+    el.attributes.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
+}
+
+/// The child elements, in document order.
+pub fn children(el: &Element) -> &[Element] {
+    &el.children
+}
+
+/// The element anywhere under (and including) `root` whose id is `id`,
+/// depth first in document order, or `None`.
+pub fn find_by_id<'a>(root: &'a Element, id: &str) -> Option<&'a Element> {
+    if attribute(root, "id") == Some(id) {
+        return Some(root);
+    }
+    root.children.iter().find_map(|c| find_by_id(c, id))
+}
+
+// ---------------------------------------------------------------------
+// § 20.2 Numbers
+// ---------------------------------------------------------------------
+
+/// Reads the number starting at byte `i` of `s`: an optional sign, digits,
+/// an optional point and more digits (at least one digit somewhere), and
+/// an optional exponent that counts only when a digit follows the `e`
+/// (after an optional sign). Answers the number and the index just past
+/// it, or `(None, i)` when there's no number there.
+pub fn read_number(s: &str, i: usize) -> (Option<f64>, usize) {
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut j = i;
+    if j < n && (b[j] == b'+' || b[j] == b'-') {
+        j += 1;
+    }
+    let int_start = j;
+    while j < n && b[j].is_ascii_digit() {
+        j += 1;
+    }
+    let int_digits = j - int_start;
+    let mut frac_digits = 0;
+    if j < n && b[j] == b'.' {
+        let mut k = j + 1;
+        while k < n && b[k].is_ascii_digit() {
+            k += 1;
+        }
+        frac_digits = k - (j + 1);
+        if int_digits + frac_digits > 0 {
+            j = k;
+        }
+    }
+    if int_digits + frac_digits == 0 {
+        return (None, i);
+    }
+    if j < n && (b[j] == b'e' || b[j] == b'E') {
+        let mut k = j + 1;
+        if k < n && (b[k] == b'+' || b[k] == b'-') {
+            k += 1;
+        }
+        if k < n && b[k].is_ascii_digit() {
+            while k < n && b[k].is_ascii_digit() {
+                k += 1;
+            }
+            j = k;
+        }
+    }
+    match s[i..j].parse::<f64>() {
+        Ok(v) => (Some(v), j),
+        Err(_) => (None, i),
+    }
+}
+
+fn is_wsp(c: u8) -> bool {
+    c == b' ' || c == b'\t' || c == b'\r' || c == b'\n'
+}
+
+fn skip_wsp(b: &[u8], i: &mut usize) {
+    while *i < b.len() && is_wsp(b[*i]) {
+        *i += 1;
+    }
+}
+
+/// Whitespace, at most one comma, whitespace.
+fn skip_comma_wsp(b: &[u8], i: &mut usize) {
+    skip_wsp(b, i);
+    if *i < b.len() && b[*i] == b',' {
+        *i += 1;
+        skip_wsp(b, i);
+    }
+}
+
+/// `number_list`, also answering where it stopped, so a caller can tell
+/// whether the whole string was numbers.
+fn number_list_end(s: &str) -> (Vec<f64>, usize) {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    skip_wsp(b, &mut i);
+    let mut end = i;
+    loop {
+        let mut j = i;
+        if !out.is_empty() {
+            skip_comma_wsp(b, &mut j);
+        }
+        match read_number(s, j) {
+            (Some(v), k) => {
+                out.push(v);
+                i = k;
+                end = k;
+            }
+            (None, _) => break,
+        }
+    }
+    let mut e = end;
+    skip_wsp(b, &mut e);
+    (out, e)
+}
+
+/// As many numbers as can be read, separated by whitespace and at most one
+/// comma, stopping at the first thing that isn't one.
+pub fn number_list(s: &str) -> Vec<f64> {
+    number_list_end(s).0
+}
+
+/// An arc flag: exactly one character, `0` or `1`, needing no separator
+/// after it.
+pub fn read_flag(s: &str, i: usize) -> (Option<f64>, usize) {
+    match s.as_bytes().get(i) {
+        Some(b'0') => (Some(0.0), i + 1),
+        Some(b'1') => (Some(1.0), i + 1),
+        _ => (None, i),
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 20.3 Path data
+// ---------------------------------------------------------------------
+
+/// One path command in the chapter's normal form: `op` is one of `M L C Q
+/// A Z`, every coordinate absolute.
+#[derive(Debug, Clone)]
+pub struct Command {
+    pub op: &'static str,
+    pub args: Vec<f64>,
+}
+
+fn is_command_letter(c: u8) -> bool {
+    b"MmLlHhVvCcSsQqTtAaZz".contains(&c)
+}
+
+fn starts_number(c: u8) -> bool {
+    c.is_ascii_digit() || c == b'+' || c == b'-' || c == b'.'
+}
+
+/// Reads one argument group: `kinds` is one byte per argument, `n` for a
+/// number and `f` for a flag. The first argument of the first group after
+/// a letter may be preceded by whitespace only; every other by
+/// comma-whitespace (the caller has already skipped it for the first
+/// argument of a repeat).
+fn read_group(d: &str, i: &mut usize, kinds: &[u8], first_group: bool) -> Option<Vec<f64>> {
+    let b = d.as_bytes();
+    let mut j = *i;
+    let mut args = Vec::with_capacity(kinds.len());
+    for (k, &kind) in kinds.iter().enumerate() {
+        if k == 0 {
+            if first_group {
+                skip_wsp(b, &mut j);
+            }
+        } else {
+            skip_comma_wsp(b, &mut j);
+        }
+        let (v, next) = if kind == b'f' { read_flag(d, j) } else { read_number(d, j) };
+        args.push(v?);
+        j = next;
+    }
+    *i = j;
+    Some(args)
+}
+
+/// Turns a `d` attribute into commands, absolute, in six ops only. H/V
+/// become L, S/T become C/Q with the borrowed control point filled in,
+/// repeats are spelled out (repeats of M are L), Z returns the current
+/// point to the subpath's start, arc radii come back as absolute values.
+/// At the first thing that can't be read, the commands so far are the
+/// answer; a path that doesn't start with M/m is no path.
+pub fn path_commands(d: &str) -> Vec<Command> {
+    let b = d.as_bytes();
+    let n = b.len();
+    let mut out: Vec<Command> = Vec::new();
+    let mut i = 0;
+    skip_wsp(b, &mut i);
+    if i >= n || !(b[i] == b'M' || b[i] == b'm') {
+        return out;
+    }
+    let (mut cx, mut cy, mut sx, mut sy) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let mut prev_cubic: Option<(f64, f64)> = None;
+    let mut prev_quad: Option<(f64, f64)> = None;
+    loop {
+        skip_wsp(b, &mut i);
+        if i >= n || !is_command_letter(b[i]) {
+            break;
+        }
+        let letter = b[i];
+        i += 1;
+        let rel = letter.is_ascii_lowercase();
+        let mut up = letter.to_ascii_uppercase();
+        if up == b'Z' {
+            out.push(Command { op: "Z", args: vec![] });
+            cx = sx;
+            cy = sy;
+            prev_cubic = None;
+            prev_quad = None;
+            continue;
+        }
+        let kinds: &[u8] = match up {
+            b'M' | b'L' | b'T' => b"nn",
+            b'H' | b'V' => b"n",
+            b'C' => b"nnnnnn",
+            b'S' | b'Q' => b"nnnn",
+            b'A' => b"nnnffnn",
+            _ => unreachable!(),
+        };
+        let mut first = true;
+        loop {
+            if !first {
+                let mut j = i;
+                skip_comma_wsp(b, &mut j);
+                if j >= n || !starts_number(b[j]) {
+                    break;
+                }
+                i = j;
+            }
+            let a = match read_group(d, &mut i, kinds, first) {
+                Some(a) => a,
+                None => return out,
+            };
+            let (ox, oy) = if rel { (cx, cy) } else { (0.0, 0.0) };
+            let (mut next_cubic, mut next_quad) = (None, None);
+            match up {
+                b'M' => {
+                    cx = a[0] + ox;
+                    cy = a[1] + oy;
+                    sx = cx;
+                    sy = cy;
+                    out.push(Command { op: "M", args: vec![cx, cy] });
+                }
+                b'L' => {
+                    cx = a[0] + ox;
+                    cy = a[1] + oy;
+                    out.push(Command { op: "L", args: vec![cx, cy] });
+                }
+                b'H' => {
+                    cx = a[0] + ox;
+                    out.push(Command { op: "L", args: vec![cx, cy] });
+                }
+                b'V' => {
+                    cy = a[0] + oy;
+                    out.push(Command { op: "L", args: vec![cx, cy] });
+                }
+                b'C' => {
+                    let args = vec![a[0] + ox, a[1] + oy, a[2] + ox, a[3] + oy, a[4] + ox, a[5] + oy];
+                    next_cubic = Some((args[2], args[3]));
+                    cx = args[4];
+                    cy = args[5];
+                    out.push(Command { op: "C", args });
+                }
+                b'S' => {
+                    let (x1, y1) = match prev_cubic {
+                        Some((px, py)) => (2.0 * cx - px, 2.0 * cy - py),
+                        None => (cx, cy),
+                    };
+                    let args = vec![x1, y1, a[0] + ox, a[1] + oy, a[2] + ox, a[3] + oy];
+                    next_cubic = Some((args[2], args[3]));
+                    cx = args[4];
+                    cy = args[5];
+                    out.push(Command { op: "C", args });
+                }
+                b'Q' => {
+                    let args = vec![a[0] + ox, a[1] + oy, a[2] + ox, a[3] + oy];
+                    next_quad = Some((args[0], args[1]));
+                    cx = args[2];
+                    cy = args[3];
+                    out.push(Command { op: "Q", args });
+                }
+                b'T' => {
+                    let (x1, y1) = match prev_quad {
+                        Some((px, py)) => (2.0 * cx - px, 2.0 * cy - py),
+                        None => (cx, cy),
+                    };
+                    let args = vec![x1, y1, a[0] + ox, a[1] + oy];
+                    next_quad = Some((x1, y1));
+                    cx = args[2];
+                    cy = args[3];
+                    out.push(Command { op: "Q", args });
+                }
+                b'A' => {
+                    cx = a[5] + ox;
+                    cy = a[6] + oy;
+                    out.push(Command { op: "A", args: vec![a[0].abs(), a[1].abs(), a[2], a[3], a[4], cx, cy] });
+                }
+                _ => unreachable!(),
+            }
+            prev_cubic = next_cubic;
+            prev_quad = next_quad;
+            first = false;
+            if up == b'M' {
+                up = b'L';
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------
+// § 20.4 From commands to a path
+// ---------------------------------------------------------------------
+
+/// An SVG arc as cubics: chapter 8's `arc` finds the center form (the
+/// angle arrives in degrees), the swept angle is cut into `n = max(1,
+/// ceil(|delta| / (pi/2) - 0.000001))` equal pieces, and each piece gets
+/// handles `4/3 tan(d/4)` along the tangents, on the ellipse's own axes.
+/// The first cubic starts exactly at `(x1, y1)`, the last ends exactly at
+/// `(x2, y2)`. Coincident endpoints give nothing; a zero radius gives one
+/// straight cubic with its handles at the thirds of the chord.
+pub fn arc_cubics(x1: f64, y1: f64, rx: f64, ry: f64, angle: f64, large: bool, sweep: bool, x2: f64, y2: f64) -> Vec<Curve> {
+    if x1 == x2 && y1 == y2 {
+        return vec![];
+    }
+    let p1 = point(x1, y1);
+    let p2 = point(x2, y2);
+    if rx == 0.0 || ry == 0.0 {
+        let d = p2 - p1;
+        return vec![cubic(p1, p1 + d / 3.0, p1 + d * (2.0 / 3.0), p2)];
+    }
+    let a = match arc(x1, y1, rx.abs(), ry.abs(), angle.to_radians(), large, sweep, x2, y2) {
+        Some(a) => a,
+        None => return vec![],
+    };
+    let n = ((a.delta.abs() / (std::f64::consts::PI / 2.0) - 0.000001).ceil() as usize).max(1);
+    let d = a.delta / n as f64;
+    let k = 4.0 / 3.0 * (d / 4.0).tan();
+    let (cphi, sphi) = (a.phi.cos(), a.phi.sin());
+    let on_ellipse = |ux: f64, uy: f64| {
+        let ex = a.rx * ux;
+        let ey = a.ry * uy;
+        point(a.cx + cphi * ex - sphi * ey, a.cy + sphi * ex + cphi * ey)
+    };
+    let mut out = Vec::with_capacity(n);
+    let mut start = p1;
+    for i in 0..n {
+        let t0 = a.theta1 + d * i as f64;
+        let t1 = a.theta1 + d * (i + 1) as f64;
+        let (c0, s0) = (t0.cos(), t0.sin());
+        let (c1, s1) = (t1.cos(), t1.sin());
+        let h1 = on_ellipse(c0 - k * s0, s0 + k * c0);
+        let h2 = on_ellipse(c1 + k * s1, s1 - k * c1);
+        let end = if i == n - 1 { p2 } else { on_ellipse(c1, s1) };
+        out.push(cubic(start, h1, h2, end));
+        start = end;
+    }
+    out
+}
+
+fn arc_command_cubics(from: Tuple, a: &[f64]) -> Vec<Curve> {
+    arc_cubics(from.x, from.y, a[0], a[1], a[2], a[3] != 0.0, a[4] != 0.0, a[5], a[6])
+}
+
+/// Walks the commands with a current point and builds a chapter 5 path in
+/// device space: points through `m`; curves through `m` and then
+/// flattened (chapter 8's order); arcs as `arc_cubics`; Z is a close. A
+/// subpath that's nothing but its moveto is dropped.
+pub fn build_path(cmds: &[Command], m: Matrix3, tolerance: f64) -> Path {
+    let mut p = path();
+    let mut cur = point(0.0, 0.0);
+    let mut start = cur;
+    for c in cmds {
+        let a = &c.args;
+        match c.op {
+            "M" => {
+                cur = point(a[0], a[1]);
+                start = cur;
+                move_to(&mut p, m * cur);
+            }
+            "L" => {
+                cur = point(a[0], a[1]);
+                line_to(&mut p, m * cur);
+            }
+            "C" => {
+                let cv = cubic(cur, point(a[0], a[1]), point(a[2], a[3]), point(a[4], a[5]));
+                flatten_into_path(&mut p, &transform_curve(&cv, m), tolerance);
+                cur = point(a[4], a[5]);
+            }
+            "Q" => {
+                let cv = quadratic(cur, point(a[0], a[1]), point(a[2], a[3]));
+                flatten_into_path(&mut p, &transform_curve(&cv, m), tolerance);
+                cur = point(a[2], a[3]);
+            }
+            "A" => {
+                for cv in arc_command_cubics(cur, a) {
+                    flatten_into_path(&mut p, &transform_curve(&cv, m), tolerance);
+                }
+                cur = point(a[5], a[6]);
+            }
+            "Z" => {
+                close(&mut p);
+                cur = start;
+            }
+            other => panic!("build_path: unknown op {other}"),
+        }
+    }
+    p.subpaths.retain(|sp| sp.points.len() > 1 || sp.closed);
+    p
+}
+
+/// The tight box of the geometry in user space: every M and L point and
+/// chapter 8's `curve_bounds` of every curve (arcs as their cubics);
+/// `(0, 0, 0, 0)` when there's nothing.
+pub fn commands_bounds(cmds: &[Command]) -> (f64, f64, f64, f64) {
+    let mut bb: Option<(f64, f64, f64, f64)> = None;
+    let mut add = |b: (f64, f64, f64, f64)| {
+        bb = Some(match bb {
+            None => b,
+            Some(o) => (o.0.min(b.0), o.1.min(b.1), o.2.max(b.2), o.3.max(b.3)),
+        });
+    };
+    let mut cur = point(0.0, 0.0);
+    let mut start = cur;
+    for c in cmds {
+        let a = &c.args;
+        match c.op {
+            "M" | "L" => {
+                cur = point(a[0], a[1]);
+                if c.op == "M" {
+                    start = cur;
+                }
+                add((cur.x, cur.y, cur.x, cur.y));
+            }
+            "C" => {
+                add(curve_bounds(&cubic(cur, point(a[0], a[1]), point(a[2], a[3]), point(a[4], a[5]))));
+                cur = point(a[4], a[5]);
+            }
+            "Q" => {
+                add(curve_bounds(&quadratic(cur, point(a[0], a[1]), point(a[2], a[3]))));
+                cur = point(a[2], a[3]);
+            }
+            "A" => {
+                for cv in arc_command_cubics(cur, a) {
+                    add(curve_bounds(&cv));
+                }
+                cur = point(a[5], a[6]);
+            }
+            _ => cur = start,
+        }
+    }
+    bb.unwrap_or((0.0, 0.0, 0.0, 0.0))
+}
+
+// ---------------------------------------------------------------------
+// § 20.5 The transform attribute
+// ---------------------------------------------------------------------
+
+fn transform_function(name: &str, v: &[f64]) -> Option<Matrix3> {
+    let rad = |d: f64| d.to_radians();
+    Some(match (name, v.len()) {
+        ("matrix", 6) => matrix3(v[0], v[2], v[4], v[1], v[3], v[5], 0.0, 0.0, 1.0),
+        ("translate", 1) => translation(v[0], 0.0),
+        ("translate", 2) => translation(v[0], v[1]),
+        ("scale", 1) => scaling(v[0], v[0]),
+        ("scale", 2) => scaling(v[0], v[1]),
+        ("rotate", 1) => rotation(rad(v[0])),
+        ("rotate", 3) => translation(v[1], v[2]) * rotation(rad(v[0])) * translation(-v[1], -v[2]),
+        ("skewX", 1) => shearing(rad(v[0]).tan(), 0.0),
+        ("skewY", 1) => shearing(0.0, rad(v[0]).tan()),
+        _ => return None,
+    })
+}
+
+/// A transform list as one matrix, the functions multiplied left to right
+/// (so the rightmost touches a point first). Missing, empty, or anything
+/// that doesn't parse is the identity.
+pub fn parse_transform(s: Option<&str>) -> Matrix3 {
+    let s = match s {
+        Some(s) => s,
+        None => return identity(),
+    };
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut m = identity();
+    loop {
+        while i < b.len() && (is_wsp(b[i]) || b[i] == b',') {
+            i += 1;
+        }
+        if i >= b.len() {
+            return m;
+        }
+        let name_start = i;
+        while i < b.len() && b[i].is_ascii_alphabetic() {
+            i += 1;
+        }
+        let name = &s[name_start..i];
+        if name.is_empty() {
+            return identity();
+        }
+        skip_wsp(b, &mut i);
+        if i >= b.len() || b[i] != b'(' {
+            return identity();
+        }
+        let close_at = match s[i..].find(')') {
+            Some(k) => i + k,
+            None => return identity(),
+        };
+        let inside = &s[i + 1..close_at];
+        let (nums, end) = number_list_end(inside);
+        if end != inside.len() {
+            return identity();
+        }
+        match transform_function(name, &nums) {
+            Some(f) => m = m * f,
+            None => return identity(),
+        }
+        i = close_at + 1;
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 20.6 Colours and the cascade
+// ---------------------------------------------------------------------
+
+const COLOR_NAMES: [(&str, [u8; 3]); 17] = [
+    ("black", [0, 0, 0]),
+    ("silver", [192, 192, 192]),
+    ("gray", [128, 128, 128]),
+    ("white", [255, 255, 255]),
+    ("maroon", [128, 0, 0]),
+    ("red", [255, 0, 0]),
+    ("purple", [128, 0, 128]),
+    ("fuchsia", [255, 0, 255]),
+    ("green", [0, 128, 0]),
+    ("lime", [0, 255, 0]),
+    ("olive", [128, 128, 0]),
+    ("yellow", [255, 255, 0]),
+    ("navy", [0, 0, 128]),
+    ("blue", [0, 0, 255]),
+    ("teal", [0, 128, 128]),
+    ("aqua", [0, 255, 255]),
+    ("orange", [255, 165, 0]),
+];
+
+fn color_from_bytes(r: f64, g: f64, b: f64) -> Color {
+    color(decode(r / 255.0), decode(g / 255.0), decode(b / 255.0))
+}
+
+/// A colour as the file writes it (sRGB bytes), answered in linear light:
+/// `#rgb`, `#rrggbb`, `rgb(r, g, b)` with numbers 0-255 or percentages,
+/// clamped, and the seventeen names. Anything else is `None`.
+pub fn parse_color(s: &str) -> Option<Color> {
+    let v = s.trim().to_ascii_lowercase();
+    if let Some(hex) = v.strip_prefix('#') {
+        if !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let digit = |i: usize| u8::from_str_radix(&hex[i..i + 1], 16).unwrap() as f64;
+        return match hex.len() {
+            3 => Some(color_from_bytes(digit(0) * 17.0, digit(1) * 17.0, digit(2) * 17.0)),
+            6 => Some(color_from_bytes(
+                digit(0) * 16.0 + digit(1),
+                digit(2) * 16.0 + digit(3),
+                digit(4) * 16.0 + digit(5),
+            )),
+            _ => None,
+        };
+    }
+    if let Some(rest) = v.strip_prefix("rgb") {
+        let rest = rest.trim_start();
+        let inner = rest.strip_prefix('(')?.strip_suffix(')')?;
+        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let mut ch = [0.0; 3];
+        for (k, part) in parts.iter().enumerate() {
+            let (num, end) = read_number(part, 0);
+            let num = num?;
+            let tail = &part[end..];
+            let byte = match tail {
+                "" => num,
+                "%" => num / 100.0 * 255.0,
+                _ => return None,
+            };
+            ch[k] = byte.clamp(0.0, 255.0);
+        }
+        return Some(color_from_bytes(ch[0], ch[1], ch[2]));
+    }
+    COLOR_NAMES
+        .iter()
+        .find(|(n, _)| *n == v)
+        .map(|(_, b)| color_from_bytes(b[0] as f64, b[1] as f64, b[2] as f64))
+}
+
+/// What a fill or stroke is: nothing, a colour, or a reference to a paint
+/// server elsewhere in the document, kept as the text `url(#id)`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SvgPaint {
+    None,
+    Color(Color),
+    Url(String),
+}
+
+/// Every property the book reads, computed.
+#[derive(Debug, Clone)]
+pub struct Style {
+    pub fill: SvgPaint,
+    pub fill_opacity: f64,
+    pub fill_rule: String,
+    pub stroke: SvgPaint,
+    pub stroke_width: f64,
+    pub stroke_opacity: f64,
+    pub stroke_linecap: String,
+    pub stroke_linejoin: String,
+    pub stroke_miterlimit: f64,
+    pub stroke_dasharray: Option<Vec<f64>>,
+    pub stroke_dashoffset: f64,
+    pub clip_rule: String,
+    pub opacity: f64,
+    pub clip_path: Option<String>,
+    pub stop_color: Color,
+}
+
+/// Every property at its initial value: the parent of the root.
+pub fn initial_style() -> Style {
+    Style {
+        fill: SvgPaint::Color(color(0.0, 0.0, 0.0)),
+        fill_opacity: 1.0,
+        fill_rule: "nonzero".to_string(),
+        stroke: SvgPaint::None,
+        stroke_width: 1.0,
+        stroke_opacity: 1.0,
+        stroke_linecap: "butt".to_string(),
+        stroke_linejoin: "miter".to_string(),
+        stroke_miterlimit: 4.0,
+        stroke_dasharray: None,
+        stroke_dashoffset: 0.0,
+        clip_rule: "nonzero".to_string(),
+        opacity: 1.0,
+        clip_path: None,
+        stop_color: color(0.0, 0.0, 0.0),
+    }
+}
+
+/// A number, optionally followed by `px`, and nothing else.
+fn parse_length(v: &str) -> Option<f64> {
+    let v = v.trim();
+    match read_number(v, 0) {
+        (Some(x), end) if &v[end..] == "" || &v[end..] == "px" => Some(x),
+        _ => None,
+    }
+}
+
+fn parse_svg_paint(v: &str) -> Option<SvgPaint> {
+    if v == "none" {
+        Some(SvgPaint::None)
+    } else if v.starts_with("url(") {
+        Some(SvgPaint::Url(v.to_string()))
+    } else {
+        parse_color(v).map(SvgPaint::Color)
+    }
+}
+
+fn one_of(v: &str, options: &[&str]) -> Option<String> {
+    options.iter().find(|o| **o == v).map(|o| o.to_string())
+}
+
+/// Applies one declaration to `s`. `inherit` copies the parent's value;
+/// a value that doesn't parse leaves `s` as it was.
+fn apply_property(s: &mut Style, name: &str, value: &str, parent: &Style) {
+    let v = value.trim();
+    let inherit = v == "inherit";
+    match name {
+        "fill" => {
+            if inherit {
+                s.fill = parent.fill.clone();
+            } else if let Some(p) = parse_svg_paint(v) {
+                s.fill = p;
+            }
+        }
+        "stroke" => {
+            if inherit {
+                s.stroke = parent.stroke.clone();
+            } else if let Some(p) = parse_svg_paint(v) {
+                s.stroke = p;
+            }
+        }
+        "fill-opacity" => {
+            if inherit {
+                s.fill_opacity = parent.fill_opacity;
+            } else if let Some(x) = parse_length(v) {
+                s.fill_opacity = x.clamp(0.0, 1.0);
+            }
+        }
+        "stroke-opacity" => {
+            if inherit {
+                s.stroke_opacity = parent.stroke_opacity;
+            } else if let Some(x) = parse_length(v) {
+                s.stroke_opacity = x.clamp(0.0, 1.0);
+            }
+        }
+        "opacity" => {
+            if inherit {
+                s.opacity = parent.opacity;
+            } else if let Some(x) = parse_length(v) {
+                s.opacity = x.clamp(0.0, 1.0);
+            }
+        }
+        "fill-rule" => {
+            if inherit {
+                s.fill_rule = parent.fill_rule.clone();
+            } else if let Some(r) = one_of(v, &["nonzero", "evenodd"]) {
+                s.fill_rule = r;
+            }
+        }
+        "clip-rule" => {
+            if inherit {
+                s.clip_rule = parent.clip_rule.clone();
+            } else if let Some(r) = one_of(v, &["nonzero", "evenodd"]) {
+                s.clip_rule = r;
+            }
+        }
+        "stroke-width" => {
+            if inherit {
+                s.stroke_width = parent.stroke_width;
+            } else if let Some(x) = parse_length(v) {
+                if x >= 0.0 {
+                    s.stroke_width = x;
+                }
+            }
+        }
+        "stroke-linecap" => {
+            if inherit {
+                s.stroke_linecap = parent.stroke_linecap.clone();
+            } else if let Some(r) = one_of(v, &["butt", "round", "square"]) {
+                s.stroke_linecap = r;
+            }
+        }
+        "stroke-linejoin" => {
+            if inherit {
+                s.stroke_linejoin = parent.stroke_linejoin.clone();
+            } else if let Some(r) = one_of(v, &["miter", "round", "bevel"]) {
+                s.stroke_linejoin = r;
+            }
+        }
+        "stroke-miterlimit" => {
+            if inherit {
+                s.stroke_miterlimit = parent.stroke_miterlimit;
+            } else if let Some(x) = parse_length(v) {
+                if x >= 1.0 {
+                    s.stroke_miterlimit = x;
+                }
+            }
+        }
+        "stroke-dasharray" => {
+            if inherit {
+                s.stroke_dasharray = parent.stroke_dasharray.clone();
+            } else if v == "none" {
+                s.stroke_dasharray = None;
+            } else {
+                let (nums, end) = number_list_end(v);
+                if end == v.len() && !nums.is_empty() {
+                    s.stroke_dasharray = Some(nums);
+                }
+            }
+        }
+        "stroke-dashoffset" => {
+            if inherit {
+                s.stroke_dashoffset = parent.stroke_dashoffset;
+            } else if let Some(x) = parse_length(v) {
+                s.stroke_dashoffset = x;
+            }
+        }
+        "clip-path" => {
+            if inherit {
+                s.clip_path = parent.clip_path.clone();
+            } else if v == "none" {
+                s.clip_path = None;
+            } else if v.starts_with("url(") {
+                s.clip_path = Some(v.to_string());
+            }
+        }
+        "stop-color" => {
+            if inherit {
+                s.stop_color = parent.stop_color;
+            } else if let Some(c) = parse_color(v) {
+                s.stop_color = c;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The cascade: inherited properties start at the parent's value and the
+/// rest (opacity, clip-path, stop-color) at their initial values; then the
+/// presentation attributes; then the style attribute's declarations,
+/// whatever order they were written in.
+pub fn computed_style(el: &Element, parent: &Style) -> Style {
+    let init = initial_style();
+    let mut s = parent.clone();
+    s.opacity = init.opacity;
+    s.clip_path = init.clip_path;
+    s.stop_color = init.stop_color;
+    for (name, value) in &el.attributes {
+        if name != "style" {
+            apply_property(&mut s, name, value, parent);
+        }
+    }
+    if let Some(decls) = attribute(el, "style") {
+        for decl in decls.split(';') {
+            if let Some((name, value)) = decl.split_once(':') {
+                apply_property(&mut s, name.trim(), value, parent);
+            }
+        }
+    }
+    s
+}
+
+// ---------------------------------------------------------------------
+// § 20.7 Basic shapes
+// ---------------------------------------------------------------------
+
+/// A number attribute: missing (or unreadable) is 0.
+fn number_attribute(el: &Element, name: &str) -> f64 {
+    attribute(el, name).and_then(parse_length).unwrap_or(0.0)
+}
+
+fn cmd(op: &'static str, args: &[f64]) -> Command {
+    Command { op, args: args.to_vec() }
+}
+
+const SHAPE_NAMES: [&str; 7] = ["path", "rect", "circle", "ellipse", "line", "polyline", "polygon"];
+
+fn is_shape(el: &Element) -> bool {
+    SHAPE_NAMES.contains(&el.name.as_str())
+}
+
+/// The path commands a shape element stands for, the equivalent paths the
+/// SVG specification gives. Nothing for a shape that doesn't render or an
+/// element that isn't a shape.
+pub fn shape_commands(el: &Element) -> Vec<Command> {
+    let num = |n: &str| number_attribute(el, n);
+    match el.name.as_str() {
+        "path" => path_commands(attribute(el, "d").unwrap_or("")),
+        "rect" => {
+            let (x, y, w, h) = (num("x"), num("y"), num("width"), num("height"));
+            if w <= 0.0 || h <= 0.0 {
+                return vec![];
+            }
+            let given = |n: &str| attribute(el, n).and_then(parse_length).filter(|v| *v >= 0.0);
+            let (rx, ry) = match (given("rx"), given("ry")) {
+                (Some(a), Some(b)) => (a, b),
+                (Some(a), None) => (a, a),
+                (None, Some(b)) => (b, b),
+                (None, None) => (0.0, 0.0),
+            };
+            let rx = rx.min(w / 2.0);
+            let ry = ry.min(h / 2.0);
+            if rx <= 0.0 || ry <= 0.0 {
+                return vec![
+                    cmd("M", &[x, y]),
+                    cmd("L", &[x + w, y]),
+                    cmd("L", &[x + w, y + h]),
+                    cmd("L", &[x, y + h]),
+                    cmd("Z", &[]),
+                ];
+            }
+            vec![
+                cmd("M", &[x + rx, y]),
+                cmd("L", &[x + w - rx, y]),
+                cmd("A", &[rx, ry, 0.0, 0.0, 1.0, x + w, y + ry]),
+                cmd("L", &[x + w, y + h - ry]),
+                cmd("A", &[rx, ry, 0.0, 0.0, 1.0, x + w - rx, y + h]),
+                cmd("L", &[x + rx, y + h]),
+                cmd("A", &[rx, ry, 0.0, 0.0, 1.0, x, y + h - ry]),
+                cmd("L", &[x, y + ry]),
+                cmd("A", &[rx, ry, 0.0, 0.0, 1.0, x + rx, y]),
+                cmd("Z", &[]),
+            ]
+        }
+        "circle" | "ellipse" => {
+            let (cx, cy) = (num("cx"), num("cy"));
+            let (rx, ry) = if el.name == "circle" { (num("r"), num("r")) } else { (num("rx"), num("ry")) };
+            if rx <= 0.0 || ry <= 0.0 {
+                return vec![];
+            }
+            vec![
+                cmd("M", &[cx + rx, cy]),
+                cmd("A", &[rx, ry, 0.0, 0.0, 1.0, cx, cy + ry]),
+                cmd("A", &[rx, ry, 0.0, 0.0, 1.0, cx - rx, cy]),
+                cmd("A", &[rx, ry, 0.0, 0.0, 1.0, cx, cy - ry]),
+                cmd("A", &[rx, ry, 0.0, 0.0, 1.0, cx + rx, cy]),
+                cmd("Z", &[]),
+            ]
+        }
+        "line" => vec![cmd("M", &[num("x1"), num("y1")]), cmd("L", &[num("x2"), num("y2")])],
+        "polyline" | "polygon" => {
+            let nums = number_list(attribute(el, "points").unwrap_or(""));
+            let mut out = Vec::new();
+            for (k, pair) in nums.chunks_exact(2).enumerate() {
+                out.push(cmd(if k == 0 { "M" } else { "L" }, pair));
+            }
+            if !out.is_empty() && el.name == "polygon" {
+                out.push(cmd("Z", &[]));
+            }
+            out
+        }
+        _ => vec![],
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 20.8 viewBox and preserveAspectRatio
+// ---------------------------------------------------------------------
+
+/// The matrix that carries the viewBox onto a `width` by `height`
+/// viewport under `preserveAspectRatio` (absent means `xMidYMid meet`).
+/// No usable viewBox is the identity.
+pub fn view_box_matrix(view_box: Option<&str>, aspect: Option<&str>, width: usize, height: usize) -> Matrix3 {
+    let vb = match view_box {
+        Some(v) => number_list(v),
+        None => return identity(),
+    };
+    if vb.len() != 4 || vb[2] <= 0.0 || vb[3] <= 0.0 {
+        return identity();
+    }
+    let (w, h) = (width as f64, height as f64);
+    let sx = w / vb[2];
+    let sy = h / vb[3];
+    let words: Vec<&str> = aspect.unwrap_or("xMidYMid meet").split_whitespace().collect();
+    let align = words.first().copied().unwrap_or("xMidYMid");
+    if align == "none" {
+        return scaling(sx, sy) * translation(-vb[0], -vb[1]);
+    }
+    let slice = words.get(1).copied() == Some("slice");
+    let s = if slice { sx.max(sy) } else { sx.min(sy) };
+    let frac = |word: &str| match word {
+        "Min" => 0.0,
+        "Max" => 1.0,
+        _ => 0.5,
+    };
+    let (fx, fy) = if align.len() == 8 && align.starts_with('x') && &align[4..5] == "Y" {
+        (frac(&align[1..4]), frac(&align[5..8]))
+    } else {
+        (0.5, 0.5)
+    };
+    let ox = (w - vb[2] * s) * fx;
+    let oy = (h - vb[3] * s) * fy;
+    translation(ox, oy) * scaling(s, s) * translation(-vb[0], -vb[1])
+}
+
+// ---------------------------------------------------------------------
+// § 20.9 Paint servers
+// ---------------------------------------------------------------------
+
+/// A paint seen through a matrix: its colour at a device point is the
+/// inner paint's colour at `inverse(m)` of that point.
+pub fn transformed_paint(paint: Paint, m: Matrix3) -> Paint {
+    Paint::Transformed { inner: Box::new(paint), inv: inverse(m) }
+}
+
+/// A number or a percentage (divided by 100).
+fn number_or_percent(v: &str) -> Option<f64> {
+    let v = v.trim();
+    match read_number(v, 0) {
+        (Some(x), end) if end == v.len() => Some(x),
+        (Some(x), end) if &v[end..] == "%" => Some(x / 100.0),
+        _ => None,
+    }
+}
+
+/// The stop children of a gradient element, in order: offsets clamped to
+/// [0, 1] and never going backward, colours from each stop's computed
+/// `stop-color`.
+pub fn gradient_stops(el: &Element) -> Vec<Stop> {
+    let mut out: Vec<Stop> = Vec::new();
+    for child in children(el) {
+        if child.name != "stop" {
+            continue;
+        }
+        let mut offset = attribute(child, "offset").and_then(number_or_percent).unwrap_or(0.0).clamp(0.0, 1.0);
+        if let Some(prev) = out.last() {
+            offset = offset.max(prev.offset);
+        }
+        let style = computed_style(child, &initial_style());
+        out.push(stop(offset, style.stop_color));
+    }
+    out
+}
+
+/// The id inside `url(#id)`.
+fn url_id(reference: &str) -> Option<&str> {
+    let r = reference.trim();
+    let inner = r.strip_prefix("url(")?.strip_suffix(')')?.trim();
+    let inner = inner.trim_matches(|c| c == '\'' || c == '"');
+    inner.strip_prefix('#')
+}
+
+/// The paint a `url(#id)` fill or stroke names: a chapter 10 gradient,
+/// seen through `ctm` times (for objectBoundingBox) the box's unit square
+/// times the gradientTransform. `None` when there's nothing to paint with.
+pub fn paint_server(root: &Element, reference: &str, bbox: (f64, f64, f64, f64), ctm: Matrix3) -> Option<Paint> {
+    let el = find_by_id(root, url_id(reference)?)?;
+    let linear = match el.name.as_str() {
+        "linearGradient" => true,
+        "radialGradient" => false,
+        _ => return None,
+    };
+    let stops = gradient_stops(el);
+    if stops.is_empty() {
+        return None;
+    }
+    let mut m = ctm;
+    if attribute(el, "gradientUnits") != Some("userSpaceOnUse") {
+        let (x0, y0, x1, y1) = bbox;
+        if x1 - x0 == 0.0 || y1 - y0 == 0.0 {
+            return None;
+        }
+        m = m * translation(x0, y0) * scaling(x1 - x0, y1 - y0);
+    }
+    m = m * parse_transform(attribute(el, "gradientTransform"));
+    let last = stops[stops.len() - 1].color;
+    if stops.len() == 1 {
+        return Some(solid(last));
+    }
+    let ext = match attribute(el, "spreadMethod") {
+        Some("reflect") => "reflect",
+        Some("repeat") => "repeat",
+        _ => "pad",
+    };
+    let coord = |name: &str, default: f64| attribute(el, name).and_then(number_or_percent).unwrap_or(default);
+    let inner = if linear {
+        let (x1, y1, x2, y2) = (coord("x1", 0.0), coord("y1", 0.0), coord("x2", 1.0), coord("y2", 0.0));
+        if x1 == x2 && y1 == y2 {
+            return Some(solid(last));
+        }
+        linear_gradient(point(x1, y1), point(x2, y2), stops, ext)
+    } else {
+        let (cx, cy, r) = (coord("cx", 0.5), coord("cy", 0.5), coord("r", 0.5));
+        let (fx, fy, fr) = (coord("fx", cx), coord("fy", cy), coord("fr", 0.0));
+        if r == 0.0 {
+            return Some(solid(last));
+        }
+        radial_gradient(point(fx, fy), fr, point(cx, cy), r, stops, ext)
+    };
+    Some(transformed_paint(inner, m))
+}
+
+// ---------------------------------------------------------------------
+// § 20.10 The walker, and § 20.11 clips and group opacity
+// ---------------------------------------------------------------------
+
+/// Paints into a layer: at every pixel whose coverage times `alpha`, `k`,
+/// is above 0, the paint's colour at the pixel center, premultiplied by
+/// `k`, goes over what's there.
+pub fn draw_coverage(l: &mut Layer, cov: &CoverageBuffer, paint: &Paint, alpha: f64) {
+    draw_coverage_counted(l, cov, paint, alpha, &mut stats());
+}
+
+/// `1 - (1 - a)(1 - b)` at every pixel: one silhouette over the other.
+pub fn union_coverage(a: &CoverageBuffer, b: &CoverageBuffer) -> CoverageBuffer {
+    let mut out = coverage_buffer(a.width, a.height);
+    for i in 0..out.values.len() {
+        out.values[i] = 1.0 - (1.0 - a.values[i]) * (1.0 - b.values[i]);
+    }
+    out
+}
+
+/// Every premultiplied channel of every pixel times the coverage under it.
+pub fn mask_layer(l: &Layer, cov: &CoverageBuffer) -> Layer {
+    let mut out = l.clone();
+    for y in 0..l.height as i64 {
+        for x in 0..l.width as i64 {
+            let k = coverage_at(cov, x, y);
+            let idx = y as usize * l.width + x as usize;
+            let p = l.pixels[idx];
+            out.pixels[idx] = pixel(p.r * k, p.g * k, p.b * k, p.a * k);
+        }
+    }
+    out
+}
+
+/// The coverage of the clipPath a `url(#id)` names: the union of the
+/// fills of its shape children, each built through `m` times the
+/// clipPath's transform times the child's, under the child's clip-rule.
+/// `None` (clip nothing) when the reference names nothing or something
+/// that isn't a clipPath.
+pub fn clip_coverage(root: &Element, reference: &str, m: Matrix3, width: usize, height: usize) -> Option<CoverageBuffer> {
+    let cp = find_by_id(root, url_id(reference)?)?;
+    if cp.name != "clipPath" {
+        return None;
+    }
+    let cp_style = computed_style(cp, &initial_style());
+    let cm = m * parse_transform(attribute(cp, "transform"));
+    let mut cov = coverage_buffer(width, height);
+    for child in children(cp) {
+        if !is_shape(child) {
+            continue;
+        }
+        let cs = computed_style(child, &cp_style);
+        let km = cm * parse_transform(attribute(child, "transform"));
+        let cmds = shape_commands(child);
+        if cmds.is_empty() || !is_invertible(km) {
+            continue;
+        }
+        let dev = build_path(&cmds, km, 0.1);
+        cov = union_coverage(&cov, &fill_path(&dev, &cs.clip_rule, width, height));
+    }
+    Some(cov)
+}
+
+/// The walker, shared by chapter 20's `render_svg` and chapter 21's three
+/// modes.
+struct Walker<'a> {
+    root: &'a Element,
+    width: usize,
+    height: usize,
+    mode: &'a str,
+    st: &'a mut Stats,
+    work: Option<Vec<Vec<(u32, u32)>>>,
+}
+
+impl<'a> Walker<'a> {
+    fn render_element(&mut self, el: &Element, l: &mut Layer, parent: &Style, m: Matrix3) {
+        let group = el.name == "svg" || el.name == "g";
+        if !group && !is_shape(el) {
+            return;
+        }
+        let style = computed_style(el, parent);
+        let m = m * parse_transform(attribute(el, "transform"));
+        let clip = match &style.clip_path {
+            Some(r) => clip_coverage(self.root, r, m, self.width, self.height),
+            None => None,
+        };
+        let own = style.opacity < 1.0 || (clip.is_some() && group);
+        if own {
+            let mut target = layer(self.width, self.height);
+            if group {
+                for child in children(el) {
+                    self.render_element(child, &mut target, &style, m);
+                }
+            } else {
+                self.draw_shape(el, &mut target, &style, m, None);
+            }
+            let masked = match &clip {
+                Some(c) => mask_layer(&target, c),
+                None => target,
+            };
+            *l = pop_group_with_opacity(&masked, l, style.opacity);
+        } else if group {
+            for child in children(el) {
+                self.render_element(child, l, &style, m);
+            }
+        } else {
+            self.draw_shape(el, l, &style, m, clip.as_ref());
+        }
+    }
+
+    fn resolve_paint(&self, p: &SvgPaint, cmds: &[Command], m: Matrix3) -> Option<Paint> {
+        match p {
+            SvgPaint::None => None,
+            SvgPaint::Color(c) => Some(solid(*c)),
+            SvgPaint::Url(r) => paint_server(self.root, r, commands_bounds(cmds), m),
+        }
+    }
+
+    fn draw_shape(&mut self, el: &Element, l: &mut Layer, style: &Style, m: Matrix3, clip: Option<&CoverageBuffer>) {
+        let cmds = shape_commands(el);
+        if cmds.is_empty() || !is_invertible(m) {
+            return;
+        }
+        let dev = build_path(&cmds, m, 0.1);
+        if let Some(p) = self.resolve_paint(&style.fill, &cmds, m) {
+            self.fill_and_paint(l, &dev, &style.fill_rule, &p, style.fill_opacity, clip);
+        }
+        if style.stroke_width > 0.0 {
+            if let Some(p) = self.resolve_paint(&style.stroke, &cmds, m) {
+                let mut user = transform_path(&dev, inverse(m));
+                if let Some(pattern) = &style.stroke_dasharray {
+                    user = dash(&user, pattern, style.stroke_dashoffset);
+                }
+                let outline = stroke_to_path(
+                    &user,
+                    style.stroke_width,
+                    &style.stroke_linecap,
+                    &style.stroke_linejoin,
+                    style.stroke_miterlimit,
+                );
+                let dev_outline = transform_path(&outline, m);
+                self.fill_and_paint(l, &dev_outline, "nonzero", &p, style.stroke_opacity, clip);
+            }
+        }
+    }
+
+    /// One fill or stroke, done the way the mode says.
+    fn fill_and_paint(&mut self, l: &mut Layer, p: &Path, rule: &str, paint: &Paint, alpha: f64, clip: Option<&CoverageBuffer>) {
+        let (w, h) = (self.width, self.height);
+        match self.mode {
+            "whole" => {
+                let mut cov = fill_path_counted(p, rule, w, h, self.st);
+                if let Some(c) = clip {
+                    cov = multiply_coverage(&cov, c);
+                }
+                draw_coverage_counted(l, &cov, paint, alpha, self.st);
+            }
+            "bounded" => {
+                let mut win = fill_path_bounded(p, rule, w, h, self.st);
+                if let Some(c) = clip {
+                    clip_window(&mut win, c);
+                }
+                draw_window(l, &win, paint, alpha, self.st);
+            }
+            "tiled" => {
+                let mut t = fill_path_tiled(p, rule, w, h, self.st);
+                if let Some(work) = self.work.as_mut() {
+                    for (ty, row) in t.classes.iter().enumerate() {
+                        for (tx, class) in row.iter().enumerate() {
+                            match *class {
+                                "partial" => work[ty][tx].0 += 1,
+                                "solid" => work[ty][tx].1 += 1,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                if let Some(c) = clip {
+                    clip_tiled(&mut t, c);
+                }
+                draw_tiled(l, &t, paint, alpha, self.st);
+            }
+            other => panic!("render_svg_with: unknown mode {other}"),
+        }
+    }
+}
+
+fn render_document(text: &str, width: usize, height: usize, mode: &str, st: &mut Stats, work: bool) -> (Canvas, Option<Vec<Vec<(u32, u32)>>>) {
+    let root = parse_xml(text);
+    let mut l = layer(width, height);
+    let m = view_box_matrix(attribute(&root, "viewBox"), attribute(&root, "preserveAspectRatio"), width, height);
+    let (ntx, nty) = ((width + TILE - 1) / TILE, (height + TILE - 1) / TILE);
+    let mut walker = Walker {
+        root: &root,
+        width,
+        height,
+        mode,
+        st,
+        work: if work { Some(vec![vec![(0, 0); ntx]; nty]) } else { None },
+    };
+    walker.render_element(&root, &mut l, &initial_style(), m);
+    let work = walker.work.take();
+    (flatten_layer(&l, color(1.0, 1.0, 1.0)), work)
+}
+
+/// Draws an SVG document onto a `width` by `height` canvas: a transparent
+/// layer, the tree walked from the root with the viewBox matrix, the
+/// layer flattened over white paper.
+pub fn render_svg(text: &str, width: usize, height: usize) -> Canvas {
+    render_svg_with(text, width, height, "whole", &mut stats())
+}
+
+// ---------------------------------------------------------------------
+// § 20.12 Putting it together
+// ---------------------------------------------------------------------
+
+fn read_text(path: &str) -> String {
+    String::from_utf8(read_file(path)).unwrap_or_else(|e| panic!("{path} is not UTF-8: {e}"))
+}
+
+const ASPECT_SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 60 80' preserveAspectRatio='%s'><rect width='60' height='80' fill='#f4d8a8'/><circle cx='30' cy='26' r='14' fill='#e8553a'/><polygon points='0,80 22,44 36,62 44,52 60,80' fill='#3b5b7a'/><rect x='1' y='1' width='58' height='78' fill='none' stroke='#1a1a1a' stroke-width='2'/></svg>";
+
+/// Figure 20.4: one portrait drawing in five 120 by 90 landscape
+/// viewports, 130 pixels apart from x = 10, y = 10, on 660 by 110 paper.
+pub fn aspect_demo() -> Canvas {
+    let mut c = canvas(660, 110);
+    fill(&mut c, PAPER_3);
+    let aspects = ["none", "xMinYMid meet", "xMidYMid meet", "xMaxYMid meet", "xMidYMid slice"];
+    for (k, a) in aspects.iter().enumerate() {
+        let panel = render_svg(&ASPECT_SVG.replace("%s", a), 120, 90);
+        let ox = 10 + k as i64 * 130;
+        for y in 0..90 {
+            for x in 0..120 {
+                write_pixel(&mut c, ox + x, 10 + y, pixel_at(&panel, x, y));
+            }
+        }
+    }
+    c
+}
+
+/// harbor.svg on a 480 by 320 canvas.
+pub fn harbor() -> Canvas {
+    render_svg(&read_text("reference/chapter-20/harbor.svg"), 480, 320)
+}
+
+/// rose.svg on a 400 by 400 canvas.
+pub fn rose() -> Canvas {
+    render_svg(&read_text("reference/chapter-20/rose.svg"), 400, 400)
+}
+
+/// The Ghostscript tiger on a 450 by 450 canvas.
+pub fn tiger() -> Canvas {
+    render_svg(&read_text("reference/chapter-20/tiger.svg"), 450, 450)
+}
+
+/// Plate 20: the tiger.
+pub fn plate_20() -> Canvas {
+    tiger()
+}
+
+// =======================================================================
+// Chapter 21: Making It Fast
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 21.1 Counting the work
+// ---------------------------------------------------------------------
+
+/// Work, counted in units that don't depend on the machine: accumulator
+/// cells resolved, pixels blended one at a time, pixels copied.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Stats {
+    pub cells: u64,
+    pub blends: u64,
+    pub copies: u64,
+}
+
+/// A stats record with all three counters at 0.
+pub fn stats() -> Stats {
+    Stats::default()
+}
+
+/// Chapter 7's `fill_path`, counting the whole canvas it resolves.
+pub fn fill_path_counted(p: &Path, rule: &str, width: usize, height: usize, st: &mut Stats) -> CoverageBuffer {
+    st.cells += (width * height) as u64;
+    fill_path(p, rule, width, height)
+}
+
+/// One source-over of a colour at coverage `k` into a layer pixel -- the
+/// same arithmetic as `over(from_color(c, k), d)`: `c·k + (1 − k)·d`.
+#[inline]
+fn blend_into(l: &mut Layer, idx: usize, c: Color, k: f64) {
+    l.pixels[idx] = over(from_color(c, k), l.pixels[idx]);
+}
+
+/// Chapter 20's `draw_coverage`, counting every pixel it blends.
+pub fn draw_coverage_counted(l: &mut Layer, cov: &CoverageBuffer, paint: &Paint, alpha: f64, st: &mut Stats) {
+    let w = l.width.min(cov.width);
+    let h = l.height.min(cov.height);
+    for y in 0..h {
+        for x in 0..w {
+            let k = cov.values[y * cov.width + x] * alpha;
+            if k > 0.0 {
+                let c = paint_at(paint, x as f64 + 0.5, y as f64 + 0.5);
+                blend_into(l, y * l.width + x, c, k);
+                st.blends += 1;
+            }
+        }
+    }
+}
+
+/// Chapter 20's walker with every fill and stroke done one of three ways
+/// (`"whole"`, `"bounded"`, `"tiled"`), counting into `st`.
+pub fn render_svg_with(text: &str, width: usize, height: usize, mode: &str, st: &mut Stats) -> Canvas {
+    render_document(text, width, height, mode, st, false).0
+}
+
+// ---------------------------------------------------------------------
+// § 21.2 Bounds
+// ---------------------------------------------------------------------
+
+/// Anything coverage can be read from at a canvas pixel: a plain buffer,
+/// a window, a tiled coverage.
+pub trait CoverageSource {
+    fn coverage_in(&self, x: i64, y: i64) -> f64;
+}
+
+impl CoverageSource for CoverageBuffer {
+    fn coverage_in(&self, x: i64, y: i64) -> f64 {
+        coverage_at(self, x, y)
+    }
+}
+
+/// A coverage buffer and where its corner sits on the canvas.
+#[derive(Debug, Clone)]
+pub struct Window {
+    pub cov: CoverageBuffer,
+    pub x0: i64,
+    pub y0: i64,
+}
+
+impl CoverageSource for Window {
+    fn coverage_in(&self, x: i64, y: i64) -> f64 {
+        coverage_at(&self.cov, x - self.x0, y - self.y0)
+    }
+}
+
+/// Reads any coverage at a canvas pixel, 0 outside it.
+pub fn coverage_in<C: CoverageSource>(c: &C, x: i64, y: i64) -> f64 {
+    c.coverage_in(x, y)
+}
+
+/// Any coverage as a canvas-sized buffer.
+pub fn full_coverage<C: CoverageSource>(c: &C, width: usize, height: usize) -> CoverageBuffer {
+    let mut out = coverage_buffer(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            out.values[y * width + x] = c.coverage_in(x as i64, y as i64);
+        }
+    }
+    out
+}
+
+/// The window of whole pixels a path can reach: floors of its least x
+/// and y, one more than the floors of its greatest, cut to the canvas;
+/// `(0, 0, 0, 0)` when that leaves nothing.
+pub fn fill_bounds(p: &Path, width: usize, height: usize) -> (i64, i64, i64, i64) {
+    if p.subpaths.iter().all(|sp| sp.points.is_empty()) {
+        return (0, 0, 0, 0);
+    }
+    let (min_x, min_y, max_x, max_y) = bounds(p);
+    let (w, h) = (width as i64, height as i64);
+    let clampf = |v: f64, hi: i64| -> i64 {
+        if v.is_nan() {
+            0
+        } else {
+            v.max(-1.0).min(hi as f64 + 1.0) as i64
+        }
+        .clamp(0, hi)
+    };
+    let x0 = clampf(min_x.floor(), w);
+    let y0 = clampf(min_y.floor(), h);
+    let x1 = clampf(max_x.floor() + 1.0, w);
+    let y1 = clampf(max_y.floor() + 1.0, h);
+    if x1 <= x0 || y1 <= y0 {
+        return (0, 0, 0, 0);
+    }
+    (x0, y0, x1, y1)
+}
+
+/// Chapter 7's fill into an accumulator the window's size, with the path
+/// moved so the window's corner is the origin.
+pub fn fill_path_bounded(p: &Path, rule: &str, width: usize, height: usize, st: &mut Stats) -> Window {
+    let (x0, y0, x1, y1) = fill_bounds(p, width, height);
+    let (ww, wh) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    st.cells += (ww * wh) as u64;
+    if ww == 0 || wh == 0 {
+        return Window { cov: coverage_buffer(0, 0), x0: 0, y0: 0 };
+    }
+    let moved = transform_path(p, translation(-x0 as f64, -y0 as f64));
+    Window { cov: fill_path(&moved, rule, ww, wh), x0, y0 }
+}
+
+/// `draw_coverage` over the window's pixels only.
+pub fn draw_window(l: &mut Layer, win: &Window, paint: &Paint, alpha: f64, st: &mut Stats) {
+    for wy in 0..win.cov.height {
+        let y = win.y0 as usize + wy;
+        if y >= l.height {
+            break;
+        }
+        for wx in 0..win.cov.width {
+            let x = win.x0 as usize + wx;
+            if x >= l.width {
+                break;
+            }
+            let k = win.cov.values[wy * win.cov.width + wx] * alpha;
+            if k > 0.0 {
+                let c = paint_at(paint, x as f64 + 0.5, y as f64 + 0.5);
+                blend_into(l, y * l.width + x, c, k);
+                st.blends += 1;
+            }
+        }
+    }
+}
+
+/// A shape's own clip, multiplied into a window (fill first, then clip,
+/// the order `multiply_coverage` uses).
+fn clip_window(win: &mut Window, clip: &CoverageBuffer) {
+    for wy in 0..win.cov.height {
+        for wx in 0..win.cov.width {
+            let i = wy * win.cov.width + wx;
+            win.cov.values[i] *= coverage_at(clip, win.x0 + wx as i64, win.y0 + wy as i64);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 21.3 Tiles
+// ---------------------------------------------------------------------
+
+/// Tiles are 16 pixels square, from the top left.
+pub const TILE: usize = 16;
+
+/// Chapter 7's deposits, kept only for the cells that got one.
+struct SparseCells {
+    width: usize,
+    height: usize,
+    cells: HashMap<(usize, usize), (f64, f64)>,
+}
+
+impl CellSink for SparseCells {
+    fn sink_width(&self) -> usize {
+        self.width
+    }
+    fn sink_height(&self) -> usize {
+        self.height
+    }
+    fn put(&mut self, x: usize, row: usize, area: f64, cover: f64) {
+        let e = self.cells.entry((x, row)).or_insert((0.0, 0.0));
+        e.0 += area;
+        e.1 += cover;
+    }
+}
+
+/// A tiled coverage: the class of every tile and the resolved values of
+/// the partial ones.
+#[derive(Debug, Clone)]
+pub struct Tiled {
+    pub width: usize,
+    pub height: usize,
+    pub classes: Vec<Vec<&'static str>>,
+    /// One 16x16 block per partial tile, row-major, indexed `ty * ntx + tx`.
+    values: Vec<Option<Vec<f64>>>,
+}
+
+impl CoverageSource for Tiled {
+    fn coverage_in(&self, x: i64, y: i64) -> f64 {
+        if x < 0 || y < 0 || x as usize >= self.width || y as usize >= self.height {
+            return 0.0;
+        }
+        let (x, y) = (x as usize, y as usize);
+        let (tx, ty) = (x / TILE, y / TILE);
+        match self.classes[ty][tx] {
+            "solid" => 1.0,
+            "partial" => {
+                let ntx = self.classes[0].len();
+                self.values[ty * ntx + tx].as_ref().map_or(0.0, |v| v[(y % TILE) * TILE + x % TILE])
+            }
+            _ => 0.0,
+        }
+    }
+}
+
+/// Deposits, per-row sorted cell lists, and the classes. Shared by
+/// `classify_tiles` and `fill_path_tiled`.
+struct TileWork {
+    classes: Vec<Vec<&'static str>>,
+    rows: Vec<Vec<(usize, f64, f64)>>,
+    /// arriving[r][tx] for every canvas row r: the running sum arriving at
+    /// the left edge of tile column tx.
+    arriving: Vec<Vec<f64>>,
+}
+
+fn tile_pass(p: &Path, rule: &str, width: usize, height: usize) -> TileWork {
+    let (ntx, nty) = ((width + TILE - 1) / TILE, (height + TILE - 1) / TILE);
+    let mut classes = vec![vec!["empty"; ntx]; nty];
+    let (x0, y0, x1, y1) = fill_bounds(p, width, height);
+    if x1 <= x0 || y1 <= y0 {
+        return TileWork { classes, rows: vec![], arriving: vec![] };
+    }
+    let mut sparse = SparseCells { width, height, cells: HashMap::new() };
+    for (a, b) in edges(p) {
+        accumulate_to(&mut sparse, a, b);
+    }
+    let mut rows: Vec<Vec<(usize, f64, f64)>> = vec![Vec::new(); height];
+    let mut dirty = vec![vec![false; ntx]; nty];
+    for (&(x, r), &(area, cover)) in &sparse.cells {
+        rows[r].push((x, area, cover));
+        if area != 0.0 || cover != 0.0 {
+            dirty[r / TILE][x / TILE] = true;
+        }
+    }
+    for row in rows.iter_mut() {
+        row.sort_by_key(|c| c.0);
+    }
+    let (tx0, tx1) = (x0 as usize / TILE, (x1 as usize - 1) / TILE);
+    let (ty0, ty1) = (y0 as usize / TILE, (y1 as usize - 1) / TILE);
+    // The running sum arriving at every tile column's left edge, row by
+    // row: the covers of the cells to its left, added left to right.
+    let mut arriving = vec![Vec::new(); height];
+    for r in ty0 * TILE..((ty1 + 1) * TILE).min(height) {
+        let mut sums = vec![0.0; ntx + 1];
+        let mut running = 0.0;
+        let mut k = 0;
+        let cells = &rows[r];
+        for tx in 0..=ntx {
+            let edge = tx * TILE;
+            while k < cells.len() && cells[k].0 < edge {
+                running += cells[k].2;
+                k += 1;
+            }
+            sums[tx] = running;
+        }
+        arriving[r] = sums;
+    }
+    for ty in ty0..=ty1 {
+        for tx in tx0..=tx1 {
+            if dirty[ty][tx] {
+                classes[ty][tx] = "partial";
+                continue;
+            }
+            let r0 = ty * TILE;
+            let r1 = ((ty + 1) * TILE).min(height);
+            let n = arriving[r0][tx].round();
+            let uniform = (r0..r1).all(|r| (arriving[r][tx] - n).abs() <= 0.000001);
+            classes[ty][tx] = if !uniform {
+                "partial"
+            } else if apply_rule(n, rule) == 1.0 {
+                "solid"
+            } else {
+                "empty"
+            };
+        }
+    }
+    TileWork { classes, rows, arriving }
+}
+
+/// The class of every tile: `classes[ty][tx]` is "empty", "solid" or
+/// "partial", decided before resolving a single cell.
+pub fn classify_tiles(p: &Path, rule: &str, width: usize, height: usize) -> Vec<Vec<&'static str>> {
+    tile_pass(p, rule, width, height).classes
+}
+
+/// Resolves the partial tiles only, each row starting from the running
+/// sum arriving at the tile's left edge, counting the cells it resolved.
+pub fn fill_path_tiled(p: &Path, rule: &str, width: usize, height: usize, st: &mut Stats) -> Tiled {
+    let work = tile_pass(p, rule, width, height);
+    let nty = work.classes.len();
+    let ntx = if nty > 0 { work.classes[0].len() } else { 0 };
+    let mut values = vec![None; ntx * nty];
+    for ty in 0..nty {
+        for tx in 0..ntx {
+            if work.classes[ty][tx] != "partial" {
+                continue;
+            }
+            let mut block = vec![0.0; TILE * TILE];
+            let xa = tx * TILE;
+            let xb = (xa + TILE).min(width);
+            for r in ty * TILE..((ty + 1) * TILE).min(height) {
+                let mut running = work.arriving[r][tx];
+                let cells = &work.rows[r];
+                // first cell at or right of the tile's left edge
+                let mut k = cells.partition_point(|c| c.0 < xa);
+                for x in xa..xb {
+                    let (area, cover) = if k < cells.len() && cells[k].0 == x {
+                        k += 1;
+                        (cells[k - 1].1, cells[k - 1].2)
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    block[(r - ty * TILE) * TILE + (x - xa)] = apply_rule(running + area, rule);
+                    running += cover;
+                    st.cells += 1;
+                }
+            }
+            values[ty * ntx + tx] = Some(block);
+        }
+    }
+    Tiled { width, height, classes: work.classes, values }
+}
+
+/// How many tiles are of a kind.
+pub fn tile_count(classes: &[Vec<&'static str>], kind: &str) -> usize {
+    classes.iter().flatten().filter(|c| **c == kind).count()
+}
+
+/// A shape's own clip on a tiled coverage: every tile that isn't empty
+/// becomes partial, its values multiplied by the clip (fill first).
+fn clip_tiled(t: &mut Tiled, clip: &CoverageBuffer) {
+    let ntx = t.classes.first().map_or(0, |r| r.len());
+    for ty in 0..t.classes.len() {
+        for tx in 0..ntx {
+            let class = t.classes[ty][tx];
+            if class == "empty" {
+                continue;
+            }
+            let mut block = match class {
+                "solid" => vec![1.0; TILE * TILE],
+                _ => t.values[ty * ntx + tx].take().unwrap(),
+            };
+            for dy in 0..TILE {
+                for dx in 0..TILE {
+                    block[dy * TILE + dx] *= coverage_at(clip, (tx * TILE + dx) as i64, (ty * TILE + dy) as i64);
+                }
+            }
+            t.values[ty * ntx + tx] = Some(block);
+            t.classes[ty][tx] = "partial";
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 21.4 Spans
+// ---------------------------------------------------------------------
+
+/// Paints a tiled coverage tile by tile: empty tiles skipped; a solid
+/// tile under a solid paint at alpha 1 copied; everything else blended
+/// where its coverage times alpha is above 0. A solid paint's colour is
+/// looked up once per tile.
+pub fn draw_tiled(l: &mut Layer, t: &Tiled, paint: &Paint, alpha: f64, st: &mut Stats) {
+    let ntx = t.classes.first().map_or(0, |r| r.len());
+    let w = l.width.min(t.width);
+    let h = l.height.min(t.height);
+    let mut ks = [0.0f64; TILE];
+    for (ty, row) in t.classes.iter().enumerate() {
+        for (tx, &class) in row.iter().enumerate() {
+            if class == "empty" {
+                continue;
+            }
+            let xa = tx * TILE;
+            let xb = (xa + TILE).min(w);
+            let ya = ty * TILE;
+            let yb = (ya + TILE).min(h);
+            if xa >= xb || ya >= yb {
+                continue;
+            }
+            let tile_color = match paint {
+                Paint::Solid(c) => Some(*c),
+                _ => None,
+            };
+            if class == "solid" {
+                if let (Some(c), true) = (tile_color, alpha == 1.0) {
+                    let px = pixel(c.red, c.green, c.blue, 1.0);
+                    for y in ya..yb {
+                        l.pixels[y * l.width + xa..y * l.width + xb].fill(px);
+                    }
+                    st.copies += ((xb - xa) * (yb - ya)) as u64;
+                    continue;
+                }
+            }
+            let block = if class == "partial" { t.values[ty * ntx + tx].as_deref() } else { None };
+            for y in ya..yb {
+                let n = xb - xa;
+                for (i, k) in ks.iter_mut().take(n).enumerate() {
+                    let v = match block {
+                        Some(b) => b[(y - ya) * TILE + i],
+                        None => 1.0,
+                    };
+                    *k = v * alpha;
+                }
+                let lit = ks[..n].iter().filter(|k| **k > 0.0).count();
+                st.blends += lit as u64;
+                match tile_color {
+                    Some(c) => {
+                        // The four-wide span: pixels with k = 0 come back
+                        // exactly as they were, so no test is needed.
+                        if lit > 0 {
+                            composite_span4(l, y as i64, xa as i64, &ks[..n], c);
+                        }
+                    }
+                    None => {
+                        for i in 0..n {
+                            if ks[i] > 0.0 {
+                                let x = xa + i;
+                                let c = paint_at(paint, x as f64 + 0.5, y as f64 + 0.5);
+                                blend_into(l, y * l.width + x, c, ks[i]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 21.5 Four pixels at a time
+// ---------------------------------------------------------------------
+
+/// Composites `c` into row `y` of a layer through a run of coverages, one
+/// pixel at a time: pixel `x + i` becomes `(c·k + t·d)` per channel and
+/// `k + t·a` for alpha, `k = ks[i]`, `t = 1 − k`. No test for `k = 0`.
+pub fn composite_span(l: &mut Layer, y: i64, x: i64, ks: &[f64], c: Color) {
+    let base = y as usize * l.width + x as usize;
+    for (i, &k) in ks.iter().enumerate() {
+        let t = 1.0 - k;
+        let d = l.pixels[base + i];
+        l.pixels[base + i] = pixel(c.red * k + t * d.r, c.green * k + t * d.g, c.blue * k + t * d.b, k + t * d.a);
+    }
+}
+
+/// `composite_span` four pixels to a step: each step loads one channel of
+/// four pixels into a `[f64; 4]` "register" and does the scalar
+/// arithmetic in every lane, in the same order, multiply then add (Rust
+/// never contracts `a * b + c` into a fused multiply-add on its own).
+/// The leftover `n mod 4` pixels go one at a time. Plain arrays of four
+/// are what LLVM's SLP vectorizer turns into packed instructions; no
+/// `std::simd` (still unstable) or intrinsics.
+pub fn composite_span4(l: &mut Layer, y: i64, x: i64, ks: &[f64], c: Color) {
+    let base = y as usize * l.width + x as usize;
+    let n = ks.len();
+    let row = &mut l.pixels[base..base + n];
+    let (cr, cg, cb) = ([c.red; 4], [c.green; 4], [c.blue; 4]);
+    let mut i = 0;
+    while i + 4 <= n {
+        let k: [f64; 4] = [ks[i], ks[i + 1], ks[i + 2], ks[i + 3]];
+        let t: [f64; 4] = [1.0 - k[0], 1.0 - k[1], 1.0 - k[2], 1.0 - k[3]];
+        let dr = [row[i].r, row[i + 1].r, row[i + 2].r, row[i + 3].r];
+        let dg = [row[i].g, row[i + 1].g, row[i + 2].g, row[i + 3].g];
+        let db = [row[i].b, row[i + 1].b, row[i + 2].b, row[i + 3].b];
+        let da = [row[i].a, row[i + 1].a, row[i + 2].a, row[i + 3].a];
+        let mut r = [0.0; 4];
+        let mut g = [0.0; 4];
+        let mut b = [0.0; 4];
+        let mut a = [0.0; 4];
+        for j in 0..4 {
+            r[j] = cr[j] * k[j] + t[j] * dr[j];
+            g[j] = cg[j] * k[j] + t[j] * dg[j];
+            b[j] = cb[j] * k[j] + t[j] * db[j];
+            a[j] = k[j] + t[j] * da[j];
+        }
+        for j in 0..4 {
+            row[i + j] = Pixel { r: r[j], g: g[j], b: b[j], a: a[j] };
+        }
+        i += 4;
+    }
+    while i < n {
+        let k = ks[i];
+        let t = 1.0 - k;
+        let d = row[i];
+        row[i] = pixel(c.red * k + t * d.r, c.green * k + t * d.g, c.blue * k + t * d.b, k + t * d.a);
+        i += 1;
+    }
+}
+
+/// True when every channel of every pixel is the same number (`==`, no
+/// tolerance).
+pub fn layers_equal(a: &Layer, b: &Layer) -> bool {
+    a.width == b.width
+        && a.height == b.height
+        && a.pixels.iter().zip(b.pixels.iter()).all(|(p, q)| p.r == q.r && p.g == q.g && p.b == q.b && p.a == q.a)
+}
+
+// ---------------------------------------------------------------------
+// § 21.7 Putting it together
+// ---------------------------------------------------------------------
+
+/// Renders in "tiled" mode and, for every tile, counts how many fills and
+/// strokes found it partial and how many solid: `(partial, solid)`.
+pub fn tile_work(text: &str, width: usize, height: usize) -> Vec<Vec<(u32, u32)>> {
+    render_document(text, width, height, "tiled", &mut stats(), true).1.unwrap()
+}
+
+/// Plate 21: the tiled tiger at (0, 0) and, from x = 460, one square per
+/// tile, inset a pixel: magenta mixed into paper by the partial count,
+/// cyan at 0.6 where only solid, paper where untouched.
+pub fn work_map() -> Canvas {
+    let text = read_text("reference/chapter-20/tiger.svg");
+    let tiger = render_svg_with(&text, 450, 450, "tiled", &mut stats());
+    let work = tile_work(&text, 450, 450);
+    let mut c = canvas(910, 450);
+    fill(&mut c, CH16_PAPER);
+    for y in 0..450 {
+        for x in 0..450 {
+            write_pixel(&mut c, x, y, pixel_at(&tiger, x, y));
+        }
+    }
+    let max_partial = work.iter().flatten().map(|w| w.0).max().unwrap_or(0).max(1) as f64;
+    for (ty, row) in work.iter().enumerate() {
+        for (tx, &(partial, solid)) in row.iter().enumerate() {
+            let col = if partial > 0 {
+                mix_with(CH16_PAPER, CH16_MAGENTA, 0.15 + 0.85 * partial as f64 / max_partial, true)
+            } else if solid > 0 {
+                mix_with(CH16_PAPER, CH16_CYAN, 0.6, true)
+            } else {
+                continue;
+            };
+            let x0 = 460 + (tx * TILE) as i64;
+            let y0 = (ty * TILE) as i64;
+            // The square is the full 16-pixel tile inset by one, then cut
+            // by the map's edge: a bottom tile cut short to two rows keeps
+            // its second row (this is what reference/chapter-21 has).
+            let x1 = (x0 + TILE as i64 - 1).min(460 + 450);
+            let y1 = (y0 + TILE as i64 - 1).min(450);
+            for y in y0 + 1..y1 {
+                for x in x0 + 1..x1 {
+                    write_pixel(&mut c, x, y, col);
+                }
+            }
+        }
+    }
+    c
+}
+
+/// Plate 21: `work_map`.
+pub fn plate_21() -> Canvas {
+    work_map()
 }

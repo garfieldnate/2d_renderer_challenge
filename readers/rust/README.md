@@ -1,7 +1,9 @@
 # The 2D Renderer Challenge — Rust
 
-Chapters 1 (`The Canvas and the Color`) through 19 (`Shaping, a Field Guide`),
-stdlib only. Chapter 16 needed a small hand-written JSON reader for the font
+Chapters 1 (`The Canvas and the Color`) through 21 (`Making It Fast`),
+stdlib only except for one vendored crate: chapter 20 reads XML with
+`roxmltree` 0.20 (source under `vendor/`, `.cargo/config.toml` points cargo
+at it, so everything builds with `--offline` and no network). Chapter 16 needed a small hand-written JSON reader for the font
 file (`reference/chapter-16/roboto.json`); no crate was added for it. Chapter
 19 reuses that same reader for `reference/chapter-19/dejavu-arabic.json`,
 which carries four more optional sections (`kern`/`ligatures` since chapter
@@ -10,8 +12,10 @@ which carries four more optional sections (`kern`/`ligatures` since chapter
 ## Build, test, render
 
 ```
-cargo test --release   # every scenario in features/, chapters 1-19
-cargo run --release --bin render_all   # writes all renders (P3 + P6) to out/
+cargo test --release --offline   # every scenario in features/, chapters 1-21
+cargo run --release --offline --bin render_all   # writes all renders (P3 + P6) to out/,
+                                                 # then prints chapter 21's work table
+cargo run --release --offline --example span_bench   # composite_span vs composite_span4
 ```
 
 That's it — `cargo build` alone also works if you just want the library to compile.
@@ -36,7 +40,16 @@ That's it — `cargo build` alone also works if you just want the library to com
   itemizing by script, a glyph buffer with clusters, ligature substitution,
   Arabic joining forms, mark-to-base attachment, and positioning in either
   direction (chapter 19), plus every chapter's named figures/plates.
+  Chapter 20 adds an SVG front end (an owned `Element` tree over
+  roxmltree, the number/path-data/transform/colour/style parsers, basic
+  shapes, `view_box_matrix`, paint servers via `transformed_paint`, clips,
+  group opacity and the `render_svg` walker); chapter 21 adds work
+  counters (`Stats`), bounded fills (`fill_bounds`/`fill_path_bounded`/
+  `draw_window`), 16-pixel tiles over a sparse accumulator
+  (`classify_tiles`/`fill_path_tiled`/`draw_tiled`), the scalar and
+  four-wide span compositors, and `render_svg_with(.., mode, ..)`.
 - `src/bin/render_all.rs` — renders every figure/plate to `out/`.
+- `examples/span_bench.rs` — times chapter 21's two span compositors.
 - `tests/*.rs` — one test file per `features/*.feature` file (Gherkin
   scenarios translated 1:1 into `#[test]` functions; outlines expanded per
   row).
@@ -769,3 +782,47 @@ a gap in *coverage* (every code path the mutation touches is exercised)
 but because the specific *data* this book's fonts and example texts
 happen to use never puts the mutated behavior and the correct behavior
 in disagreement.
+
+
+## Chapter 20 notes
+
+`parse_xml` converts roxmltree's borrowed tree into an owned `Element`
+(`name`, `attributes: Vec<(String, String)>`, `children`), so nothing
+downstream carries roxmltree lifetimes. Attribute and element names are
+local names. `attribute`, `children` and `find_by_id` are the chapter's
+three accessors. Things the scenarios write as `none` are `Option`s:
+`read_number`/`read_flag` answer `(Option<f64>, usize)`, `parse_color`
+answers `Option<Color>`, `parse_transform` and `view_box_matrix` take
+`Option<&str>` so `parse_transform(none)` is `parse_transform(None)`,
+`paint_server` and `clip_coverage` answer `Option`. A `Command` is
+`{ op: &'static str, args: Vec<f64> }`, flags stored as `0.0`/`1.0`.
+`Style` has one field per property (snake_case); `fill`/`stroke` are an
+`SvgPaint` enum (`None`, `Color(c)`, `Url("url(#id)")`).
+`transformed_paint` is a new `Paint::Transformed` variant: Rust's
+`Paint` is an enum, so "joining the registry" means adding a variant and
+a match arm in `paint_at`. The walker is one struct shared with chapter
+21 (`render_svg` is `render_svg_with(.., "whole", ..)`).
+`aspect_demo()` (Figure 20.4) is only defined by the chapter's figure
+code; see FEEDBACK.md.
+
+Chapter 7's `add_cell`/`accumulate_row`/`accumulate` became thin wrappers
+over generic versions (`CellSink`), so chapter 21's sparse accumulator
+receives bit-for-bit the same deposits as the dense one.
+
+## Chapter 21 notes
+
+`Stats` is `{ cells, blends, copies }` (u64), passed as `&mut Stats`.
+`CoverageSource` is a trait over `CoverageBuffer`, `Window` and `Tiled`
+so `coverage_in`/`full_coverage` read any of them. The tiled fill keeps
+deposits in a `HashMap<(x, row), (area, cover)>`, sorts each row's cells,
+computes the running sum arriving at every tile column's left edge, and
+resolves only partial tiles, which makes its values bit-identical to
+chapter 7's (same additions, same order). `draw_tiled` copies solid
+tiles under a solid opaque paint with `slice::fill`, and blends partial
+rows of a solid paint through `composite_span4` (a `[f64; 4]` lane loop,
+no intrinsics, no `std::simd`). Tile classes are `&'static str`
+(`"empty"`, `"solid"`, `"partial"`). `tile_work` renders in tiled mode
+while tallying `(partial, solid)` per tile.
+
+All five chapter 20/21 renders (`aspect_demo`, `harbor`, `rose`, `tiger`,
+`work_map`) are byte-identical to `reference/` (max_channel_difference 0).

@@ -145,3 +145,19 @@ fn the_box_is_inclusive_of_the_pixels_it_touches_and_clipped_to_the_buffer() {
     assert!(approx_eq(ink(&cov), 25.0));
     assert!(approx_eq(ink(&big), 25.0));
 }
+
+#[test]
+fn even_odd_counts_negative_windings_too() {
+    let p = polygon(&[point(0.0, 0.0), point(0.0, 10.0), point(10.0, 10.0), point(10.0, 0.0)]);
+    let mut q = path();
+    move_to(&mut q, point(5.0, 0.0));
+    let seq = [(0.0, 5.0), (5.0, 10.0), (10.0, 5.0), (5.0, 0.0), (0.0, 5.0), (5.0, 10.0), (10.0, 5.0),
+               (5.0, 0.0), (0.0, 5.0), (5.0, 10.0), (10.0, 5.0)];
+    for (x, y) in seq { line_to(&mut q, point(x, y)); }
+    close(&mut q);
+    assert_eq!(winding_at(&p, 5.0, 5.0), -1);
+    assert!(inside_evenodd(&p, 5.0, 5.0));
+    assert_eq!(winding_at(&q, 5.0, 5.0), -3);
+    assert!(inside_evenodd(&q, 5.0, 5.0));
+    assert!(inside_nonzero(&q, 5.0, 5.0));
+}

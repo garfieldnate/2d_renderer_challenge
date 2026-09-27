@@ -43,3 +43,10 @@ fn the_flattened_length_converges_to_the_arc_length() {
     assert!(approx_eq_eps(flatten_length(&c, 0.1), 7.9509, 0.001));
     assert!(approx_eq_eps(flatten_length(&c, 0.001), 7.9992, 0.001));
 }
+
+#[test]
+fn a_curve_scaled_up_needs_more_points_so_flatten_after_the_transform() {
+    let c = cubic(point(0.0, 0.0), point(0.0, 4.0), point(4.0, 4.0), point(4.0, 0.0));
+    assert_eq!(flatten(&c, 0.1).len(), 9);
+    assert_eq!(flatten(&renderer::transform_curve(&c, renderer::scaling(10.0, 10.0)), 0.1).len(), 33);
+}

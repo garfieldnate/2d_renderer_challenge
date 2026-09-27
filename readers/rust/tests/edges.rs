@@ -83,3 +83,22 @@ fn the_edge_table_is_the_same_whichever_way_the_path_was_drawn() {
     assert_eq!(ta[0].direction, -1);
     assert_eq!(tb[0].direction, 1);
 }
+
+#[test]
+fn a_nearly_horizontal_edge_is_still_an_edge() {
+    use renderer::{coverage_at, fill_path_aliased, filled, ink, max_coverage_difference, rasterize_centers, spans};
+    let p = polygon(&[point(0.0, 2.4995), point(10.0, 2.5005), point(10.0, 6.0), point(0.0, 6.0)]);
+    let t = edge_table(&p);
+    let cov = fill_path_aliased(&p, "nonzero", 16, 8);
+    assert_eq!(t.len(), 3);
+    let s2 = spans(&p, "nonzero", 2);
+    assert_eq!(s2.len(), 1);
+    assert!(approx_eq(s2[0].0, 0.0) && approx_eq(s2[0].1, 5.0), "{s2:?}");
+    let s3 = spans(&p, "nonzero", 3);
+    assert_eq!(s3.len(), 1);
+    assert!(approx_eq(s3[0].0, 0.0) && approx_eq(s3[0].1, 10.0), "{s3:?}");
+    assert!(approx_eq(coverage_at(&cov, 4, 2), 1.0));
+    assert!(approx_eq(coverage_at(&cov, 5, 2), 0.0));
+    assert!(approx_eq(ink(&cov), 35.0));
+    assert_eq!(max_coverage_difference(&cov, &rasterize_centers(&filled(&p, "nonzero"), 16, 8)), 0.0);
+}

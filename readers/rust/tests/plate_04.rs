@@ -132,3 +132,19 @@ fn plate_4() {
     assert_pixel_within(&p6, 368, 273, (177, 177, 174), 1);
     assert!(max_channel_difference(&p6, &reference) <= 1);
 }
+
+#[test]
+fn side_by_side_puts_the_first_canvas_on_the_left() {
+    use renderer::{canvas, color, colors_eq, fill, pixel_at, side_by_side};
+    let mut a = canvas(2, 3);
+    let mut b = canvas(4, 3);
+    fill(&mut a, color(1.0, 0.0, 0.0));
+    fill(&mut b, color(0.0, 0.0, 1.0));
+    let c = side_by_side(&a, &b);
+    assert_eq!(c.width, 6);
+    assert_eq!(c.height, 3);
+    assert!(colors_eq(pixel_at(&c, 0, 0), color(1.0, 0.0, 0.0)));
+    assert!(colors_eq(pixel_at(&c, 1, 2), color(1.0, 0.0, 0.0)));
+    assert!(colors_eq(pixel_at(&c, 2, 0), color(0.0, 0.0, 1.0)));
+    assert!(colors_eq(pixel_at(&c, 5, 2), color(0.0, 0.0, 1.0)));
+}

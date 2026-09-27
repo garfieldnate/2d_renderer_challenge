@@ -57,3 +57,11 @@ fn a_conic_gradient_sweeps_the_angle_around_its_center() {
     assert!(approx_eq(conic_t(&g, 50.0, 90.0), 0.5));
     assert!(approx_eq(conic_t(&g, 10.0, 50.0), 0.75));
 }
+
+#[test]
+fn when_both_roots_are_valid_the_larger_one_wins() {
+    let g = radial_gradient(point(0.0, 0.0), 10.0, point(30.0, 0.0), 12.0, vec![], "pad");
+    assert!(renderer::approx_eq_eps(radial_t(&g, 5.0, 0.0).unwrap(), 0.535714, 0.0001));
+    assert!(renderer::approx_eq_eps(radial_t(&g, 15.0, 0.0).unwrap(), 0.892857, 0.0001));
+    assert!(renderer::approx_eq_eps(radial_t(&g, 20.0, 0.0).unwrap(), 1.071429, 0.0001));
+}

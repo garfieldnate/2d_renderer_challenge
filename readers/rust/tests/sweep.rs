@@ -151,3 +151,24 @@ fn a_transformed_star_fills_where_the_transform_put_it() {
     let s = filled(&p, "nonzero");
     assert!(approx_eq(max_coverage_difference(&nz, &rasterize_centers(&s, 20, 20)), 0.0));
 }
+
+#[test]
+fn a_bow_tie_has_four_crossings_on_a_row_and_they_must_be_sorted() {
+    use renderer::spans;
+    let p = polygon(&[point(1.0, 1.0), point(15.0, 6.0), point(15.0, 1.0), point(1.0, 6.0)]);
+    let cov = fill_path_aliased(&p, "nonzero", 16, 8);
+    for rule in ["nonzero", "evenodd"] {
+        let s = spans(&p, rule, 2);
+        let e = [(1.0, 5.2), (10.8, 15.0)];
+        assert_eq!(s.len(), 2, "{rule}: {s:?}");
+        for (a, b) in s.iter().zip(e.iter()) {
+            assert!(approx_eq(a.0, b.0) && approx_eq(a.1, b.1), "{rule}: {s:?}");
+        }
+    }
+    assert!(approx_eq(coverage_at(&cov, 4, 2), 1.0));
+    assert!(approx_eq(coverage_at(&cov, 5, 2), 0.0));
+    assert!(approx_eq(coverage_at(&cov, 10, 2), 0.0));
+    assert!(approx_eq(coverage_at(&cov, 11, 2), 1.0));
+    assert!(approx_eq(ink(&cov), 34.0));
+    assert_eq!(max_coverage_difference(&cov, &rasterize_centers(&filled(&p, "nonzero"), 16, 8)), 0.0);
+}

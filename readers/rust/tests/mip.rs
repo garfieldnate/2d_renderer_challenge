@@ -42,3 +42,12 @@ fn the_mip_level_follows_the_minification() {
     assert_eq!(mip_level_for(0.25), 2);
     assert_eq!(mip_level_for(0.3), 1);
 }
+
+#[test]
+fn downsample_averages_premultiplied_so_a_transparent_texel_adds_nothing() {
+    use renderer::{pixel, pixels_eq, CLEAR};
+    let img = image(2, 2, vec![opaque(color(1.0, 0.0, 0.0)), CLEAR, CLEAR, CLEAR]);
+    let d = downsample(&img);
+    assert!(pixels_eq(image_texel(&d, 0, 0, "clamp"), pixel(0.25, 0.0, 0.0, 0.25)));
+    assert!(colors_eq(pixel_color(image_texel(&d, 0, 0, "clamp")), color(1.0, 0.0, 0.0)));
+}

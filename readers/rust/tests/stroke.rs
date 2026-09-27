@@ -114,3 +114,14 @@ fn a_closed_subpath_strokes_to_segments_and_joins_with_no_caps() {
 
     assert_eq!(subpaths(&o).len(), 6);
 }
+
+#[test]
+fn a_round_cap_is_a_semicircle_of_sixteen_steps_whatever_the_rounding() {
+    let mut seg = path();
+    move_to(&mut seg, point(465.1115070868785, 303.45792752328475));
+    line_to(&mut seg, point(464.47508947743773, 304.22927221043426));
+    let o = stroke_to_path(&seg, 0.8, "round", "miter", 4.0);
+    assert_eq!(subpaths(&o).len(), 3);
+    assert_eq!(subpaths(&o)[1].points.len(), 17);
+    assert_eq!(subpaths(&o)[2].points.len(), 17);
+}

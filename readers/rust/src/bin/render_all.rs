@@ -17,7 +17,9 @@ use renderer::{
     porter_duff_table, quarter_match, ramp, seam, sizes, smoothing_demo, soft_square, spiral,
     spiral_dashes, spiral_smooth, star_centers, star_coverage, star_exact, subpixel_strip,
     three_filters, three_gradients, two_filters, two_strokes, word_demo,
+    aspect_demo, harbor, rose, tiger, work_map, render_svg_with, stats, read_file,
 };
+use std::time::Instant;
 
 fn write_p3(dir: &Path, name: &str, ppm: String) {
     fs::write(dir.join(name), ppm).unwrap_or_else(|e| panic!("could not write {name}: {e}"));
@@ -139,5 +141,38 @@ fn main() {
     write_p6(out, "mixed.ppm", canvas_to_p6(&mixed_demo()));
     write_p6(out, "plate-19.ppm", canvas_to_p6(&plate_19()));
 
-    println!("wrote 70 renders to out/");
+    // Chapter 20: rendering SVG.
+    let t = Instant::now();
+    write_p6(out, "aspect_demo.ppm", canvas_to_p6(&aspect_demo()));
+    println!("aspect_demo: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "harbor.ppm", canvas_to_p6(&harbor()));
+    println!("harbor: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "rose.ppm", canvas_to_p6(&rose()));
+    println!("rose: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "tiger.ppm", canvas_to_p6(&tiger()));
+    println!("tiger: {:.2?}", t.elapsed());
+
+    // Chapter 21: making it fast.
+    let t = Instant::now();
+    write_p6(out, "work_map.ppm", canvas_to_p6(&work_map()));
+    println!("work_map: {:.2?}", t.elapsed());
+
+    // Chapter 21's table: every mode on all three documents.
+    for (name, w, h) in [("tiger", 450, 450), ("harbor", 480, 320), ("rose", 400, 400)] {
+        let text = String::from_utf8(read_file(&format!("reference/chapter-20/{name}.svg"))).unwrap();
+        for mode in ["whole", "bounded", "tiled"] {
+            let mut st = stats();
+            let t = Instant::now();
+            render_svg_with(&text, w, h, mode, &mut st);
+            println!(
+                "{name:7} {mode:8} cells {:>10} blends {:>9} copies {:>7} time {:.1?}",
+                st.cells, st.blends, st.copies, t.elapsed()
+            );
+        }
+    }
+
+    println!("wrote 75 renders to out/");
 }

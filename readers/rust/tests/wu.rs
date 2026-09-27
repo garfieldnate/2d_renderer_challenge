@@ -139,3 +139,12 @@ ink_case!(ink_axis_aligned_right, 12, 2, 11.0);
 ink_case!(ink_shallow_diagonal, 10, 8, 9.0);
 ink_case!(ink_steep_diagonal, 8, 10, 9.0);
 ink_case!(ink_axis_aligned_down, 2, 12, 11.0);
+
+#[test]
+fn the_weights_are_applied_in_light_whatever_the_switch_says() {
+    renderer::set_linear_blending(false);
+    let mut c = canvas(10, 10);
+    line_wu(&mut c, 0, 0, 4, 2, color(1.0, 1.0, 1.0));
+    assert!(colors_eq(pixel_at(&c, 1, 0), color(0.5, 0.5, 0.5)));
+    assert!(colors_eq(pixel_at(&c, 1, 1), color(0.5, 0.5, 0.5)));
+}

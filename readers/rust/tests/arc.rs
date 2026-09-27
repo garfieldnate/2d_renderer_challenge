@@ -49,3 +49,13 @@ fn a_degenerate_arc_is_no_arc() {
     assert!(arc(0.0, 0.0, 1.0, 1.0, 0.0, false, true, 0.0, 0.0).is_none());
     assert!(arc(0.0, 0.0, 0.0, 1.0, 0.0, false, true, 2.0, 0.0).is_none());
 }
+
+#[test]
+fn a_half_circle_is_the_boundary_the_acos_clamp_guards() {
+    let a = arc(0.0, 0.0, 2.5, 2.5, 0.0, false, false, 3.0, 4.0).unwrap();
+    assert!(tuples_eq(arc_point(&a, 0.0), point(0.0, 0.0)));
+    assert!(tuples_eq(arc_point(&a, 1.0), point(3.0, 4.0)));
+    assert!(tuples_eq(arc_point(&a, 0.5), point(-0.5, 3.5)), "{:?}", arc_point(&a, 0.5));
+    let b = arc(0.0, 0.0, 2.5, 2.5, 0.0, false, true, 3.0, 4.0).unwrap();
+    assert!(tuples_eq(arc_point(&b, 0.5), point(3.5, 0.5)), "{:?}", arc_point(&b, 0.5));
+}
