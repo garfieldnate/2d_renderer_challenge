@@ -215,12 +215,15 @@ public final class Chapter21Tests {
             assertRowEq("t[3]", t[3], new String[] {"empty", "empty", "empty", "empty"});
         });
 
-        scenario("Tiles: a horizontal edge makes a tile partial, and an edge off canvas deposits nothing", () -> {
-            String[][] t = Tiles.classifyTiles(
-                    Paths.polygon(pt(0, 0), pt(64, 0), pt(64, 40), pt(0, 40)), "nonzero", 64, 64);
+        scenario("Tiles: a horizontal edge makes a tile partial, and an edge off the canvas deposits nothing", () -> {
+            Path p = Paths.polygon(pt(0, 0), pt(64, 0), pt(64, 40), pt(0, 40));
+            String[][] t = Tiles.classifyTiles(p, "nonzero", 64, 64);
             assertRowEq("t[0]", t[0], new String[] {"partial", "solid", "solid", "solid"});
             assertRowEq("t[2]", t[2], new String[] {"partial", "partial", "partial", "partial"});
             assertRowEq("t[3]", t[3], new String[] {"empty", "empty", "empty", "empty"});
+            TiledCoverage tiled = Tiles.fillPathTiled(p, "nonzero", 64, 64, new Stats());
+            assertDoubleEq("coverage_in(tiled, 50, 20)", Coverage.coverageIn(tiled, 50, 20), 1);
+            assertDoubleEq("coverage_in(tiled, 20, 50)", Coverage.coverageIn(tiled, 20, 50), 0);
         });
 
         scenario("Tiles: the fill rule decides what a hole is", () -> {
@@ -288,6 +291,16 @@ public final class Chapter21Tests {
                     Paint.solid(color(0.2, 0.6, 0.9)), 1, new Stats());
             Groups.drawCoverage(b, Fill.fillPath(sq, "nonzero", 64, 64), Paint.solid(color(0.2, 0.6, 0.9)), 1);
             assertTrue("layers_equal(a, b)", Simd.layersEqual(a, b));
+        });
+
+        scenario("Spans: a solid tile cut short by the canvas copies only the pixels on the canvas", () -> {
+            Path sq = Paths.polygon(pt(-10, -10), pt(50, -10), pt(50, 50), pt(-10, 50));
+            TiledCoverage t = Tiles.fillPathTiled(sq, "nonzero", 40, 40, new Stats());
+            Stats st = new Stats();
+            Layer l = new Layer(40, 40);
+            Tiles.drawTiled(l, t, Paint.solid(color(1, 0, 0)), 1, st);
+            assertEquals("st.copies", st.copies, 960L);
+            assertEquals("st.blends", st.blends, 640L);
         });
 
         scenario("Spans: at half alpha nothing is copied", () -> {

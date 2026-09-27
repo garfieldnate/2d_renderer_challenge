@@ -41,13 +41,13 @@ public final class SvgBuilder {
                     Curve raw = Curve.cubic(
                             Tuple.point(cx, cy), Tuple.point(a[0], a[1]), Tuple.point(a[2], a[3]),
                             Tuple.point(a[4], a[5]));
-                    flattenIntoPathNoDup(path, Curves.transformCurve(raw, m), tolerance);
+                    Curves.flattenIntoPath(path, Curves.transformCurve(raw, m), tolerance);
                     cx = a[4];
                     cy = a[5];
                 }
                 case "Q" -> {
                     Curve raw = Curve.quadratic(Tuple.point(cx, cy), Tuple.point(a[0], a[1]), Tuple.point(a[2], a[3]));
-                    flattenIntoPathNoDup(path, Curves.transformCurve(raw, m), tolerance);
+                    Curves.flattenIntoPath(path, Curves.transformCurve(raw, m), tolerance);
                     cx = a[2];
                     cy = a[3];
                 }
@@ -55,7 +55,7 @@ public final class SvgBuilder {
                     List<Curve> cubics = ArcCubics.arcCubics(
                             cx, cy, a[0], a[1], a[2], a[3] != 0, a[4] != 0, a[5], a[6]);
                     for (Curve raw : cubics) {
-                        flattenIntoPathNoDup(path, Curves.transformCurve(raw, m), tolerance);
+                        Curves.flattenIntoPath(path, Curves.transformCurve(raw, m), tolerance);
                     }
                     cx = a[5];
                     cy = a[6];
@@ -69,33 +69,6 @@ public final class SvgBuilder {
         }
         path.dropLoneSubpath();
         return path;
-    }
-
-    /**
-     * Chapter 20's own flatten_into_path, which -- unlike chapter 8's (reused
-     * verbatim by chapter 16, where the repeated point is harmless) -- drops
-     * the flattened curve's own first point when it lands exactly on the
-     * path's current point, so a run of curves sharing endpoints (an arc's
-     * cubics, or C/Q one after another) doesn't grow a zero-length edge at
-     * every join.
-     */
-    private static void flattenIntoPathNoDup(Path path, Curve c, double tolerance) {
-        List<Tuple> pts = Curves.flatten(c, tolerance);
-        List<Subpath> subpaths = path.subpaths();
-        if (subpaths.isEmpty() || subpaths.get(subpaths.size() - 1).closed) {
-            path.moveTo(pts.get(0));
-            pts = pts.subList(1, pts.size());
-        } else {
-            List<Tuple> currentPoints = subpaths.get(subpaths.size() - 1).points;
-            Tuple cur = currentPoints.get(currentPoints.size() - 1);
-            Tuple first = pts.get(0);
-            if (cur.x == first.x && cur.y == first.y) {
-                pts = pts.subList(1, pts.size());
-            }
-        }
-        for (Tuple q : pts) {
-            path.lineTo(q);
-        }
     }
 
     public static Bounds commandsBounds(List<SvgCommand> cmds) {

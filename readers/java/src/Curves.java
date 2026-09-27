@@ -208,9 +208,31 @@ public final class Curves {
         return polylineLength(flatten(c, tolerance));
     }
 
+    /**
+     * §8.4 (revised for chapter 20): appends a flattened curve to a path
+     * with line_to. When the path has no subpath, or its last subpath is
+     * closed, it starts a new subpath at the curve's own first point with
+     * move_to; otherwise, if the pen already stands exactly on the curve's
+     * first point that point is skipped, so consecutive curves sharing an
+     * endpoint don't leave a zero-length edge at the join, and if it
+     * doesn't the first point is joined to the pen with a line.
+     */
     public static void flattenIntoPath(Path p, Curve c, double tolerance) {
-        for (Tuple pt : flatten(c, tolerance)) {
-            p.lineTo(pt);
+        List<Tuple> pts = flatten(c, tolerance);
+        List<Subpath> subpaths = p.subpaths();
+        if (subpaths.isEmpty() || subpaths.get(subpaths.size() - 1).closed) {
+            p.moveTo(pts.get(0));
+            pts = pts.subList(1, pts.size());
+        } else {
+            List<Tuple> currentPoints = subpaths.get(subpaths.size() - 1).points;
+            Tuple cur = currentPoints.get(currentPoints.size() - 1);
+            Tuple first = pts.get(0);
+            if (cur.x == first.x && cur.y == first.y) {
+                pts = pts.subList(1, pts.size());
+            }
+        }
+        for (Tuple q : pts) {
+            p.lineTo(q);
         }
     }
 }

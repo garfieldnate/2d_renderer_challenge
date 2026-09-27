@@ -679,6 +679,21 @@ public final class Chapter20Tests {
             assertDoubleEq("s.stroke_dashoffset", s.strokeDashoffset, 1.5);
             assertEquals("s.fill", s.fill, null);
         });
+
+        scenario("Style: opacities are clamped, a miter limit below 1 is ignored, "
+                + "and so is anything that doesn't parse", () -> {
+            SvgElement root = Xml.parseXml("<g stroke-width='3' fill-rule='evenodd' stroke-miterlimit='6'>"
+                    + "<rect opacity='2' fill-opacity='-1' stroke-opacity='0.5' stroke-miterlimit='0.5' "
+                    + "stroke-width='wide' fill-rule='odd'/></g>");
+            SvgStyle.Style gs = SvgStyle.computedStyle(root, SvgStyle.initialStyle());
+            SvgStyle.Style rs = SvgStyle.computedStyle(root.children.get(0), gs);
+            assertDoubleEq("rs.opacity", rs.opacity, 1);
+            assertDoubleEq("rs.fill_opacity", rs.fillOpacity, 0);
+            assertDoubleEq("rs.stroke_opacity", rs.strokeOpacity, 0.5);
+            assertDoubleEq("rs.stroke_miterlimit", rs.strokeMiterlimit, 6);
+            assertDoubleEq("rs.stroke_width", rs.strokeWidth, 3);
+            assertEquals("rs.fill_rule", rs.fillRule, "evenodd");
+        });
     }
 
     // ---- §20.8: viewBox and preserveAspectRatio ---------------------------------
@@ -956,6 +971,16 @@ public final class Chapter20Tests {
             assertColorEq("pixel_at(n, 5, 5)", n.pixelAt(5, 5), c(1, 0, 0));
         });
 
+        scenario("Groups: a clip's shapes take their style from the clipPath", () -> {
+            Canvas styled = SvgWalker.renderSvg(
+                    "<svg viewBox='0 0 10 10'><clipPath id='c' clip-rule='evenodd'>"
+                            + "<path d='M0 0H10V10H0Z M2 2H8V8H2Z'/></clipPath>"
+                            + "<rect width='10' height='10' fill='red' clip-path='url(#c)'/></svg>",
+                    10, 10);
+            assertColorEq("pixel_at(styled, 0, 0)", styled.pixelAt(0, 0), c(1, 0, 0));
+            assertColorEq("pixel_at(styled, 5, 5)", styled.pixelAt(5, 5), c(1, 1, 1));
+        });
+
         scenario("Groups: a clip lives in the user space of the element that uses it", () -> {
             Canvas u = SvgWalker.renderSvg(
                     "<svg viewBox='0 0 8 4'><clipPath id='c'><rect width='2' height='4'/></clipPath>"
@@ -1047,6 +1072,19 @@ public final class Chapter20Tests {
             assertColorEq("pixel_at(c, 4, 1)", c.pixelAt(4, 1), c(1, 1, 1));
             assertColorEq("pixel_at(c, 9, 1)", c.pixelAt(9, 1), c(1, 1, 1));
             assertColorEq("pixel_at(c, 10, 1)", c.pixelAt(10, 1), c(0, 0, 0));
+        });
+
+        scenario("Walker: the dash offset moves the pattern along the path", () -> {
+            Canvas c = SvgWalker.renderSvg(
+                    "<svg viewBox='0 0 10 2'><line x1='0' y1='1' x2='10' y2='1' stroke='black' "
+                            + "stroke-width='2' stroke-dasharray='2 3' stroke-dashoffset='1'/></svg>",
+                    10, 2);
+            assertColorEq("pixel_at(c, 0, 1)", c.pixelAt(0, 1), c(0, 0, 0));
+            assertColorEq("pixel_at(c, 1, 1)", c.pixelAt(1, 1), c(1, 1, 1));
+            assertColorEq("pixel_at(c, 3, 1)", c.pixelAt(3, 1), c(1, 1, 1));
+            assertColorEq("pixel_at(c, 4, 1)", c.pixelAt(4, 1), c(0, 0, 0));
+            assertColorEq("pixel_at(c, 5, 1)", c.pixelAt(5, 1), c(0, 0, 0));
+            assertColorEq("pixel_at(c, 6, 1)", c.pixelAt(6, 1), c(1, 1, 1));
         });
 
         scenario("Walker: caps and fill rules reach the fill and the stroker", () -> {

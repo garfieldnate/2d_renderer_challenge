@@ -193,8 +193,16 @@ the chord between the ends; `Curves.flatten(c, tolerance)` recursively
 `splitAt(0.5)` until every piece is flat enough and returns the endpoints,
 first to last. `Curves.polylineLength`/`Curves.flattenLength` measure it.
 `Curves.flattenIntoPath(p, c, tolerance)` appends a flattened curve to a
-path with `lineTo` -- `Path`'s own rule for no current point, or a line_to
-right after a close, does the rest.
+path with `lineTo`: with no subpath, or a closed last subpath, it starts a
+new subpath at the curve's own first point with `moveTo`; otherwise a
+first point already sitting on the pen is dropped so a run of curves
+sharing endpoints doesn't grow a zero-length edge at the join (a catch-up
+pass caught a twelve-chapter-old bug here -- the naive "just `lineTo`
+every point" version repeated the join point and, after a close, restarted
+at the previous subpath's start instead of the new curve's; `SvgBuilder`
+had its own private `flattenIntoPathNoDup` working around exactly this,
+which the fix lets it now call `Curves.flattenIntoPath` directly instead;
+see `FEEDBACK.md`).
 
 The SVG elliptical arc: `Arc.arc(x1, y1, rx, ry, phi, largeArc, sweep, x2,
 y2)` is the W3C endpoint-to-center conversion (radii grown together when
@@ -959,7 +967,12 @@ harbor.svg`/`rose.svg`/`tiger.svg` at their plate's own canvas size;
 `preserveAspectRatio`, and blits each into a 660x110 strip). All five
 renders (`aspect_demo.ppm`, `harbor.ppm`, `rose.ppm`, `tiger.ppm`, and
 `tiger.ppm` again as `plate_20()`) diff 0 against the reference bytes. All
-83 chapter 20 scenarios are green.
+86 chapter 20 scenarios are green (a catch-up pass added three: a clipPath's
+own `clip-rule` reaching its shape children through the style cascade, the
+style cascade clamping opacities and rejecting an out-of-range miterlimit
+or an unparseable length, and `stroke-dashoffset` sliding the dash pattern
+along the path -- all three passed on the existing code with no bug found;
+see `FEEDBACK.md`).
 
 ## Chapter 21
 
@@ -1020,4 +1033,9 @@ right/bottom edge) pixel size**, and relies on the canvas's existing "writes
 outside the canvas are silently ignored" rule to clip a short edge tile's
 square, rather than computing a per-tile clipped inset (see `FEEDBACK.md`).
 `Figures.plate21()` is `workMap()`. `work_map.ppm` diffs 0 against the
-reference bytes. All 21 chapter 21 scenarios are green.
+reference bytes. All 22 chapter 21 scenarios are green (a catch-up pass
+added `coverage_in` assertions to the horizontal-edge tile scenario and a
+new scenario pinning that a solid tile cut short at the canvas edge copies
+only its on-canvas pixels, `Tiles.drawTiled` already clips both tile
+dimensions with `Math.min(t0 + TILE, width/height)`, so both passed with no
+bug found; see `FEEDBACK.md`).

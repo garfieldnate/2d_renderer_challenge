@@ -188,6 +188,33 @@ public final class Chapter08Tests {
             assertDoubleEq("flatten_length(c, 0.1)", Curves.flattenLength(c, 0.1), 7.9509, 0.001);
             assertDoubleEq("flatten_length(c, 0.001)", Curves.flattenLength(c, 0.001), 7.9992, 0.001);
         });
+
+        scenario("Flatten: appending curves to a path joins them without repeating a point", () -> {
+            Path p = new Path();
+            Curves.flattenIntoPath(p, Curve.quadratic(Tuple.point(0, 0), Tuple.point(10, 0), Tuple.point(10, 10)), 0.1);
+            Curves.flattenIntoPath(p, Curve.quadratic(Tuple.point(10, 10), Tuple.point(10, 20), Tuple.point(0, 20)), 0.1);
+            assertEquals("length(subpaths(p))", p.subpaths().size(), 1);
+            List<Tuple> pts = p.subpaths().get(0).points;
+            assertEquals("length(subpaths(p)[0].points)", pts.size(), 25);
+            assertTupleEq("subpaths(p)[0].points[12]", pts.get(12), Tuple.point(10, 10));
+            assertTrue("subpaths(p)[0].points[13] != point(10, 10)", !pts.get(13).approxEquals(Tuple.point(10, 10)));
+        });
+
+        scenario("Flatten: a curve that starts away from the pen is joined with a line, "
+                + "and after a close it starts a new subpath", () -> {
+            Path p = new Path();
+            Curves.flattenIntoPath(p, Curve.quadratic(Tuple.point(0, 0), Tuple.point(10, 0), Tuple.point(10, 10)), 0.1);
+            Curves.flattenIntoPath(p, Curve.quadratic(Tuple.point(5, 25), Tuple.point(0, 30), Tuple.point(-5, 25)), 0.1);
+            p.close();
+            Curves.flattenIntoPath(p, Curve.quadratic(Tuple.point(50, 0), Tuple.point(60, 0), Tuple.point(60, 10)), 0.1);
+            assertEquals("length(subpaths(p))", p.subpaths().size(), 2);
+            List<Tuple> first = p.subpaths().get(0).points;
+            assertEquals("length(subpaths(p)[0].points)", first.size(), 22);
+            assertTupleEq("subpaths(p)[0].points[13]", first.get(13), Tuple.point(5, 25));
+            List<Tuple> second = p.subpaths().get(1).points;
+            assertTupleEq("subpaths(p)[1].points[0]", second.get(0), Tuple.point(50, 0));
+            assertEquals("length(subpaths(p)[1].points)", second.size(), 13);
+        });
     }
 
     // features/chapter08-arc.feature
