@@ -60,6 +60,14 @@
     <em>square</em> extends a half-width past it, <em>round</em> is a semicircle. Six little shapes,
     and every stroke in every vector program is made of them.</p>
 
+  <p>The two round shapes are drawn as straight steps, like everything else. An arc that turns
+    through an angle <code>Δ</code> gets <code>n = max(2, ⌈|Δ| ÷ (π/16) − 0.000000001⌉)</code> equal
+    steps, <code>n + 1</code> points from one end to the other, so a round cap, which turns
+    exactly <code>π</code>, is always sixteen steps. The tiny subtraction is there because
+    <code>a0 + π − a0</code> isn't always <code>π</code> in floating point: without it, a cap comes out
+    sixteen steps on one machine and seventeen on another, depending on the last bit of an
+    <code>atan2</code>, and nobody can tell you which one is right.</p>
+
   <div class="test" data-feature="chapter13-stroke.feature">
     <p class="label">features/chapter13-stroke.feature</p>
 <pre><code><span class="kw">Feature</span>: Stroking is filling
@@ -67,6 +75,9 @@
   a fillable outline: one rectangle per segment, one join wedge per interior
   vertex, one cap shape per open end, all as subpaths of one path filled
   nonzero. There is no new rasterizer; a stroke is a path, and a path is filled.
+  A round join or cap is an arc of straight steps: turning through an angle
+  delta it takes n = max(2, ceil(|delta| / (pi / 16) - 0.000000001)) equal
+  steps, n + 1 points, so a round cap is always sixteen steps.
 
   <span class="kw">Scenario</span>: A stroked segment with butt caps is exactly a rectangle
     <span class="kw">Given</span> seg ← path()
@@ -97,6 +108,15 @@
       | miter | 4      |
       | bevel | 3      |
       | round | 13     |
+
+  <span class="kw">Scenario</span>: A round cap is a semicircle of sixteen steps, whatever the rounding
+    <span class="kw">Given</span> seg ← path()
+    <span class="kw">When</span>  move_to(seg, point(465.1115070868785, 303.45792752328475))
+    <span class="kw">And</span>   line_to(seg, point(464.47508947743773, 304.22927221043426))
+    <span class="kw">And</span>   o ← stroke_to_path(seg, 0.8, "round", "miter", 4.0)
+    <span class="kw">Then</span>  length(subpaths(o)) = 3
+    <span class="kw">And</span>   length(subpaths(o)[1].points) = 17
+    <span class="kw">And</span>   length(subpaths(o)[2].points) = 17
 
   <span class="kw">Scenario</span>: The round join is an arc across the outer gap, not around the inside
     <span class="kw">Given</span> o ← stroke_to_path(chevron(), 26, "butt", "round", 4.0)
@@ -407,7 +427,7 @@ function crss(a,b){return a[0]*b[1]-a[1]*b[0];}
 function add(p,v,s){return [p[0]+v[0]*s,p[1]+v[1]*s];}
 function intersect(p1,d1,p2,d2){var den=crss(d1,d2);if(Math.abs(den)<1e-12)return null;var t=crss(sub(p2,p1),d2)/den;return add(p1,d1,t);}
 function arc(pts,c,a0,a1,r,steps){for(var k=0;k<=steps;k++){var a=a0+(a1-a0)*k/steps;pts.push([c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)]);}}
-function arcSteps(a0,a1){return Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/16)));}
+function arcSteps(a0,a1){return Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/16)-1e-9));}
 function angBetween(a,b){var d=((b-a)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);return d>Math.PI?d-2*Math.PI:d;}
 
 /* the stroker: returns a list of subpaths (each an array of [x,y] points) */

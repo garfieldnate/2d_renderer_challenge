@@ -54,7 +54,7 @@ def _arc(out_pts, center, a0, a1, r, steps):
 
 
 def _arc_steps(a0, a1):
-    return max(2, int(math.ceil(abs(a1 - a0) / (math.pi / 16))))
+    return max(2, int(math.ceil(abs(a1 - a0) / (math.pi / 16) - 1e-9)))
 
 
 # --------------------------------------------------------------------------

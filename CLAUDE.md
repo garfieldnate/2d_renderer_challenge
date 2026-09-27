@@ -249,6 +249,13 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   zero-length closing segment and a division by zero. `stroke_to_path` now drops that last point
   after dedupe; pinned by the square-that-ends-where-it-began scenario (`polygon_area = -84`:
   four 10x2 rectangles plus four unit miter squares).
+- Chapter 13 (revised again while writing 20): the arc step count for round joins and caps was
+  never stated in the prose (readers could only get it from the figure JS), and a round cap's sweep
+  `a0 + pi - a0` rounds to pi plus an ulp depending on the last bit of `atan2`, so `ceil(pi/(pi/16))`
+  gave 16 steps on one machine and 17 on another. The rule is now in the prose and the feature:
+  `n = max(2, ceil(|delta| / (pi/16) - 1e-9))`, a cap always 16 steps; pinned by the
+  harbor-dash scenario (a cap Python used to make 17 steps). Chapter 15's two spiral references
+  moved by at most 1 in 85 bytes; every figure script's `arcSteps` carries the epsilon.
 - Font data: `reference/fonts/Roboto-Regular.ttf` (Apache 2.0, license alongside) is the source;
   `tools/ttf_to_json.py` (author-side sfnt parser: head/maxp/hhea/hmtx/cmap 4+12/loca/glyf/GPOS
   PairPos/GSUB liga) writes `reference/chapter-16/roboto.json`, 177 glyphs: printable ASCII,

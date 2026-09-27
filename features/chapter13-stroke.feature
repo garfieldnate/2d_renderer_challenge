@@ -3,6 +3,9 @@ Feature: Stroking is filling
   a fillable outline: one rectangle per segment, one join wedge per interior
   vertex, one cap shape per open end, all as subpaths of one path filled
   nonzero. There is no new rasterizer; a stroke is a path, and a path is filled.
+  A round join or cap is an arc of straight steps: turning through an angle
+  delta it takes n = max(2, ceil(|delta| / (pi / 16) - 0.000000001)) equal
+  steps, n + 1 points, so a round cap is always sixteen steps.
 
   Scenario: A stroked segment with butt caps is exactly a rectangle
     Given seg ← path()
@@ -33,6 +36,15 @@ Feature: Stroking is filling
       | miter | 4      |
       | bevel | 3      |
       | round | 13     |
+
+  Scenario: A round cap is a semicircle of sixteen steps, whatever the rounding
+    Given seg ← path()
+    When  move_to(seg, point(465.1115070868785, 303.45792752328475))
+    And   line_to(seg, point(464.47508947743773, 304.22927221043426))
+    And   o ← stroke_to_path(seg, 0.8, "round", "miter", 4.0)
+    Then  length(subpaths(o)) = 3
+    And   length(subpaths(o)[1].points) = 17
+    And   length(subpaths(o)[2].points) = 17
 
   Scenario: The round join is an arc across the outer gap, not around the inside
     Given o ← stroke_to_path(chevron(), 26, "butt", "round", 4.0)
