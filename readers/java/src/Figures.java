@@ -1996,4 +1996,125 @@ public final class Figures {
     public static Canvas plate19() {
         return clusterPlate();
     }
+
+    // ---- chapter 20: rendering SVG -----------------------------------------
+
+    private static String readTextFile(String path) {
+        try {
+            return new String(
+                    java.nio.file.Files.readAllBytes(java.nio.file.Path.of(path)),
+                    java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.io.IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static final String ASPECT_SVG_TEMPLATE = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 60 80' "
+            + "preserveAspectRatio='%s'><rect width='60' height='80' fill='#f4d8a8'/>"
+            + "<circle cx='30' cy='26' r='14' fill='#e8553a'/>"
+            + "<polygon points='0,80 22,44 36,62 44,52 60,80' fill='#3b5b7a'/>"
+            + "<rect x='1' y='1' width='58' height='78' fill='none' stroke='#1a1a1a' stroke-width='2'/></svg>";
+
+    private static final String[] ASPECTS =
+            {"none", "xMinYMid meet", "xMidYMid meet", "xMaxYMid meet", "xMidYMid slice"};
+
+    /** §20.8's plate: one drawing, five ways to fit it. */
+    public static Canvas aspectDemo() {
+        int width = 660;
+        int height = 110;
+        Canvas c = new Canvas(width, height);
+        c.fill(PAPER);
+        for (int k = 0; k < ASPECTS.length; k++) {
+            String svg = ASPECT_SVG_TEMPLATE.replace("%s", ASPECTS[k]);
+            Canvas panel = SvgWalker.renderSvg(svg, 120, 90);
+            int ox = 10 + k * 130;
+            int oy = 10;
+            for (int y = 0; y < 90; y++) {
+                for (int x = 0; x < 120; x++) {
+                    c.writePixel(ox + x, oy + y, panel.pixelAt(x, y));
+                }
+            }
+        }
+        return c;
+    }
+
+    public static Canvas harbor() {
+        return SvgWalker.renderSvg(readTextFile("reference/chapter-20/harbor.svg"), 480, 320);
+    }
+
+    public static Canvas rose() {
+        return SvgWalker.renderSvg(readTextFile("reference/chapter-20/rose.svg"), 400, 400);
+    }
+
+    public static Canvas tiger() {
+        return SvgWalker.renderSvg(readTextFile("reference/chapter-20/tiger.svg"), 450, 450);
+    }
+
+    /** §20's plate: the Ghostscript tiger. */
+    public static Canvas plate20() {
+        return tiger();
+    }
+
+    // ---- chapter 21: making it fast -----------------------------------------
+
+    /**
+     * §21.5's plate: the tiger tiled at (0, 0), and from x = 460 one inset
+     * square per tile -- magenta for a tile with work left over (partial
+     * fills/strokes), cyan for one that resolved solid, paper for neither.
+     */
+    public static Canvas workMap() {
+        String tigerSvg = readTextFile("reference/chapter-20/tiger.svg");
+        int width = 910;
+        int height = 450;
+        Canvas c = new Canvas(width, height);
+        c.fill(PAPER);
+
+        Canvas tigerTiled = SvgWalker.renderSvgWith(tigerSvg, 450, 450, "tiled", new Stats());
+        for (int y = 0; y < 450; y++) {
+            for (int x = 0; x < 450; x++) {
+                c.writePixel(x, y, tigerTiled.pixelAt(x, y));
+            }
+        }
+
+        int[][][] work = SvgWalker.tileWork(tigerSvg, 450, 450);
+        int tileRows = work.length;
+        int tileCols = work[0].length;
+        int maxPartial = 0;
+        for (int[][] row : work) {
+            for (int[] cell : row) {
+                maxPartial = Math.max(maxPartial, cell[0]);
+            }
+        }
+        for (int ty = 0; ty < tileRows; ty++) {
+            int y0 = ty * Tiles.TILE;
+            for (int tx = 0; tx < tileCols; tx++) {
+                int x0 = tx * Tiles.TILE;
+                int partial = work[ty][tx][0];
+                int solid = work[ty][tx][1];
+                Color color = null;
+                if (partial > 0) {
+                    double weight = 0.15 + 0.85 * partial / (double) maxPartial;
+                    color = Mixer.mix(PAPER, GLYPH_MAGENTA, weight, true);
+                } else if (solid > 0) {
+                    color = Mixer.mix(PAPER, GLYPH_CYAN, 0.6, true);
+                }
+                if (color != null) {
+                    // Inset one pixel from the tile's own (nominal, 16-square) edges; the canvas
+                    // silently drops any of this that falls past its own right or bottom edge, the
+                    // same rule that lets a short tile at the grid's edge still show its square.
+                    for (int dy = 1; dy < Tiles.TILE - 1; dy++) {
+                        for (int dx = 1; dx < Tiles.TILE - 1; dx++) {
+                            c.writePixel(460 + x0 + dx, y0 + dy, color);
+                        }
+                    }
+                }
+            }
+        }
+        return c;
+    }
+
+    /** §21's plate: work_map(). */
+    public static Canvas plate21() {
+        return workMap();
+    }
 }

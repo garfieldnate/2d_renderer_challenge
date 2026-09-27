@@ -56,6 +56,20 @@ public final class Path {
         return subpaths;
     }
 
+    /**
+     * §20.4: chapter 20's build_path drops a subpath that is nothing but its
+     * own move_to -- one point, not closed -- right before starting the next
+     * one, and once more at the end.
+     */
+    public void dropLoneSubpath() {
+        if (!subpaths.isEmpty()) {
+            Subpath last = subpaths.get(subpaths.size() - 1);
+            if (last.points.size() == 1 && !last.closed) {
+                subpaths.remove(subpaths.size() - 1);
+            }
+        }
+    }
+
     public List<Edge> edges() {
         List<Edge> result = new ArrayList<>();
         for (Subpath sp : subpaths) {

@@ -1,9 +1,12 @@
 # The 2D Renderer Challenge — Java
 
-Chapters 1-19, hand-rolled test runner, no JUnit, no network. Chapter 16's
+Chapters 1-21, hand-rolled test runner, no JUnit, no network. Chapter 16's
 font file (`reference/chapter-16/roboto.json`) and chapter 19's Arabic font
 (`reference/chapter-19/dejavu-arabic.json`) are read with a small
 hand-written JSON reader (`Json.java`) -- no library, as the chapter asks.
+Chapter 20's "your XML library" is `javax.xml` (a namespace-unaware
+`DocumentBuilder`, converted into the book's own small `SvgElement` tree),
+which the chapter explicitly allows.
 
 ## Compile, test, render
 
@@ -30,6 +33,8 @@ java -cp classes Chapter16Tests
 java -cp classes Chapter17Tests
 java -cp classes Chapter18Tests
 java -cp classes Chapter19Tests
+java -cp classes Chapter20Tests
+java -cp classes Chapter21Tests
 ```
 
 Each run prints one `PASS`/`FAIL` line per scenario, a pass/fail total, and
@@ -52,7 +57,11 @@ P6): `out/disc-centers.ppm`, `out/disc-coverage.ppm`, `out/painted-twice.ppm`,
 `out/sizes.ppm`, `out/flip.ppm`, `out/subpixels.ppm`, `out/smoothing.ppm`,
 `out/lcd.ppm`, `out/plate-17.ppm`, `out/kerning.ppm`, `out/breaking.ppm`,
 `out/drift.ppm`, `out/plate-18.ppm`, `out/ligature.ppm`, `out/forms.ppm`,
-`out/word.ppm`, `out/mixed.ppm`, `out/plate-19.ppm`.
+`out/word.ppm`, `out/mixed.ppm`, `out/plate-19.ppm`, `out/aspect_demo.ppm`,
+`out/harbor.ppm`, `out/rose.ppm`, `out/tiger.ppm`, `out/work_map.ppm`.
+Chapter 20 has no `plate-20.ppm`/`plate-21.ppm` files of their own -- the
+chapter's own `plate_20()` is `tiger()` and chapter 21's `plate_21()` is
+`work_map()`, so those two names already cover the plates.
 
 Chapter 15's dashed spiral render is `spiral-dashes.ppm`, not `spiral.ppm` --
 it used to share that name with chapter 6's spiral figure, which meant running
@@ -874,3 +883,141 @@ discarded. `Chapter18Tests.java` and `Chapter19Tests.java` are the only
 files that changed; no bug was found. All 21 chapter 18 scenarios and all
 31 chapter 19 scenarios are green, and every chapter 18/19 render still
 diffs 0 against the reference bytes.
+
+## Chapter 20
+
+An SVG document is a `SvgElement` (`name`, `attributes` a `Map<String,
+String>`, `children`): `Xml.parseXml(text)` builds one with `javax.xml`'s
+`DocumentBuilder` (namespace-unaware; the local name is whatever comes after
+a `:` in the raw tag/attribute name, matching the chapter's own rule
+regardless of whether a namespace was actually declared) and converts the
+DOM tree, dropping comments/text/`xmlns*` attributes on the way.
+`Xml.findById(root, id)` is a plain breadth-first search.
+
+Numbers: `SvgNumbers.readNumber/numberList/readFlag` (`§20.2`), each a
+literal port of the chapter's own tokenizer, including the traps -- a second
+`.` or a bare sign ends a number without any separator, an `e` with no digit
+after it isn't part of one. `SvgPathData.pathCommands(d)` (`§20.3`) turns a
+`d` string into `SvgCommand(op, args)` records, all six ops absolute, H/V
+folded to L, S/T reflecting the previous curve's control point, repeated
+argument groups, stopping at the first thing that can't be read.
+
+`ArcCubics.arcCubics(...)` (`§20.4`) turns an SVG arc into chapter 8's
+`Curve`s through `Arc.arc`'s center form, `n = ceil(|delta| / (pi/2) -
+0.000001)` pieces, `4/3 tan(d/4)` handles. `SvgBuilder.buildPath(cmds, m,
+tolerance)` walks the commands into a chapter 5 `Path` in device space --
+M/L through `m` directly, C/Q/A transformed then flattened -- and
+`SvgBuilder.commandsBounds(cmds)` is the tight box in user space
+(`Curves.curveBounds` of every curve). **`Path` gained
+`dropLoneSubpath()`** (a subpath that's nothing but its own move_to), and
+curve flattening here goes through a **chapter-20-local**
+`flattenIntoPathNoDup`, not chapter 8's shared `Curves.flattenIntoPath`: the
+chapter's own reference JS redefines `flattenIntoPath` for this chapter to
+drop a flattened curve's own first point when it lands exactly on the
+path's current point (so a run of curves sharing endpoints -- an arc's
+cubics, or C/Q one after another -- doesn't grow a zero-length edge at every
+join), which is *different* from chapter 8's shared version that chapters
+8-19 still use unchanged (see Ambiguities in `FEEDBACK.md`).
+
+`SvgShapes.shapeCommands(el)` (`§20.7`) turns `rect`/`circle`/`ellipse`/
+`line`/`polyline`/`polygon` into the equivalent path commands the SVG spec
+gives (rounded corners as quarter arcs, radii clamped to half a side); a
+`path` element is `pathCommands` of its `d`. `SvgTransform.parseTransform(s)`
+(`§20.5`) is one `Matrix`, functions applied left to right. `SvgColor`
+(`§20.6`) reads `#rgb`/`#rrggbb`/`rgb()`/the seventeen named colours,
+decoded to linear light. `SvgStyle.Style` holds the fifteen CSS-like
+properties (`fill`, `stroke`, ... `stop-color`) as plain fields;
+`SvgStyle.computedStyle(el, parent)` is the cascade (inherited properties
+start from the parent, `inherit` reaches past that, an unparseable value is
+ignored, a style-attribute declaration beats a presentation attribute
+whatever order they were written in). `ViewBox.viewBoxMatrix(viewBox,
+aspect, w, h)` (`§20.8`) is `meet`/`slice`/`none`/the nine alignment words.
+
+Paint servers (`§20.9`): `SvgPaint.gradientStops(el)`/`paintServer(root,
+ref, bbox, ctm)` build a chapter 10 `LinearGradient`/`RadialGradient` from a
+`linearGradient`/`radialGradient` element (`objectBoundingBox` the default,
+`gradientTransform` multiplied on last), wrapped in `TransformedPaint`
+(`paint_at` through `inverse(m)`). Clips and groups (`§20.10`):
+`SvgClip.clipCoverage(root, ref, ctm, w, h)` unions a `clipPath`'s shape
+children's fills (each under its own `clip-rule`); `Clipping` gained
+`unionCoverage`, `Groups` gained `drawCoverage`/`maskLayer` (both mutate
+their layer in place, matching `paintShape`'s existing convention).
+`SvgWalker.renderSvg(text, w, h)` is the whole chapter: an element that
+isn't `svg`/`g`/a shape is skipped with everything inside it; an opacity
+below 1, or a group with a clip-path, draws into a fresh layer that's
+masked then `popGroupWithOpacity`'d over what's below; any other clipped
+shape multiplies the clip into its own fill/stroke coverage; a shape's
+stroke is built in **user space** (the device outline taken back through
+`inverse(ctm)`, dashed, `Stroke.strokeToPath`'d, then forward through `ctm`
+again) so a squashed transform squashes the pen, per the chapter's own trap.
+
+`Figures.aspectDemo()`/`harbor()`/`rose()`/`tiger()`/`plate20()` are built
+exactly as the chapter's own `aspectDemo`/`harbor`/`rose`/`tiger`/`plate_20`
+(`harbor()`/`rose()`/`tiger()` are `render_svg` of `reference/chapter-20/
+harbor.svg`/`rose.svg`/`tiger.svg` at their plate's own canvas size;
+`aspect_demo()` renders one small inline document five times, once per
+`preserveAspectRatio`, and blits each into a 660x110 strip). All five
+renders (`aspect_demo.ppm`, `harbor.ppm`, `rose.ppm`, `tiger.ppm`, and
+`tiger.ppm` again as `plate_20()`) diff 0 against the reference bytes. All
+83 chapter 20 scenarios are green.
+
+## Chapter 21
+
+Work is counted, not timed (`Stats`: `cells`, `blends`, `copies`, all
+starting at 0). `FillCounting.fillPathCounted`/`drawCoverageCounted`
+(`§21.2`) are chapter 20's `fill_path`/`draw_coverage` with counting added,
+and are what mode `"whole"` of `SvgWalker.renderSvgWith` (below) uses.
+
+Bounded fills (`§21.3`): `BoundedFill.fillBounds(p, w, h)` is the path's
+pixel window (`IntBounds`, `(0,0,0,0)` for an empty path -- checked by
+`p.subpaths().isEmpty()`, **not** `p.edges().isEmpty()`: a lone single-point
+subpath has no edges but still has a point, and still counts toward the
+window, exactly like chapter 8/20's own `pathBounds` walking every point of
+every subpath regardless of subpath length -- see `FEEDBACK.md`'s Failures
+section for the bug this exact distinction fixed).
+`BoundedFill.fillPathBounded(p, rule, w, h, st)` shifts the path by
+`(-x0, -y0)`, fills it into a window-sized accumulator, and answers a
+`FillWindow(x0, y0, cov)`; `BoundedFill.drawWindow` is `draw_coverage` over
+just that window. `Coverage.coverageIn`/`fullCoverage` read any of a plain
+`CoverageBuffer`, a `FillWindow`, or `§21.4`'s `TiledCoverage` the same way.
+
+Tiles (`§21.4`): `Tiles.classifyTiles(p, rule, w, h)` cuts the canvas into
+16-pixel tiles and answers `classes[ty][tx]` (`"empty"`/`"partial"`/
+`"solid"`), built on the same `Accumulator`/`accumulate` chapter 7 uses,
+plus a row-prefix-sums table (`§21.4`'s own optimization for the "running
+sum arriving at the tile's left edge" check, not in the chapter's own
+pseudocode but needed to keep classification fast enough to run on the
+tiger hundreds of times over). `Tiles.fillPathTiled(p, rule, w, h, st[,
+tileWork])` resolves only the partial tiles' cells into per-tile
+`CoverageBuffer`s (`TiledCoverage`), and optionally tallies a tile-work
+grid (`int[ty][tx][2]` = partial count, solid count) for `§21.5`'s plate.
+`Tiles.drawTiled` (`§21.5`) paints a `TiledCoverage` tile by tile, copying a
+solid paint's colour (sampled once per tile) over a fully-solid tile at
+alpha 1, blending everywhere else. `SvgWalker.renderSvgWith(text, w, h,
+mode, st)` is `render_svg` with every shape's fill and stroke routed
+through one of `"whole"`/`"bounded"`/`"tiled"`; a shape's own `clip-path`
+(none of harbor/rose/tiger's actually have one -- only their `<g
+clip-path>` groups do) demotes the bounded/tiled result to a plain
+`CoverageBuffer` first, the same way chapter 20's own `mulCov` does.
+`SvgWalker.tileWork(text, w, h)` is the same walk forced into `"tiled"`
+mode with a tile-work grid threaded through every fill and stroke.
+
+Four pixels at a time (`§21.6`): `Simd.compositeSpan`/`compositeSpan4` are
+the same per-pixel arithmetic, the second just unrolled by 4 with the
+leftover pixels one at a time -- there is no real SIMD in this Java port
+(no vector API in play), so the scenario is really pinning that the two
+give identical numbers, which they do because they're the same expression
+in the same order. `Simd.layersEqual(a, b)` is exact equality, every
+channel.
+
+`Figures.workMap()` (`§21.5`'s plate) is `tiger()` drawn `"tiled"` at (0, 0)
+on a 910 by 450 canvas, and from x = 460 one inset square per tile of
+`tileWork`'s grid, magenta for a tile with leftover partial work (weighted
+`0.15 + 0.85 * partial / max_partial`), cyan at a fixed 0.6 for a
+tile that resolved solid, paper for neither -- **the inset uses the tile's
+own nominal 16-pixel square, not its actual (possibly short, at the grid's
+right/bottom edge) pixel size**, and relies on the canvas's existing "writes
+outside the canvas are silently ignored" rule to clip a short edge tile's
+square, rather than computing a per-tile clipped inset (see `FEEDBACK.md`).
+`Figures.plate21()` is `workMap()`. `work_map.ppm` diffs 0 against the
+reference bytes. All 21 chapter 21 scenarios are green.

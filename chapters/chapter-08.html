@@ -202,6 +202,12 @@
   flat enough. A straight run needs two points; a sharp bend needs many, and
   as the tolerance shrinks the polyline's length climbs toward the true arc
   length. polyline_length and flatten_length measure it.
+  flatten_into_path(p, c, tolerance) appends a flattened curve to a path with
+  line_to: when the path has no subpath, or its last subpath is closed, it
+  starts a new subpath at the curve's first point with move_to; otherwise, if
+  the pen already stands exactly on the curve's first point that point is
+  skipped, so consecutive curves don't leave a zero-length edge at the join,
+  and if it doesn't the first point is joined to the pen with a line.
 
   <span class="kw">Scenario</span>: Flatness is the reach of the control points from the chord
     <span class="kw">Given</span> q ← quadratic(point(0, 0), point(2, 4), point(4, 0))
@@ -235,7 +241,28 @@
     <span class="kw">Given</span> c ← cubic(point(0, 0), point(0, 4), point(4, 4), point(4, 0))
     <span class="kw">Then</span>  flatten_length(c, 2.0) = 7.2111 ± 0.001
     <span class="kw">And</span>   flatten_length(c, 0.1) = 7.9509 ± 0.001
-    <span class="kw">And</span>   flatten_length(c, 0.001) = 7.9992 ± 0.001</code></pre>
+    <span class="kw">And</span>   flatten_length(c, 0.001) = 7.9992 ± 0.001
+
+  <span class="kw">Scenario</span>: Appending curves to a path joins them without repeating a point
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  flatten_into_path(p, quadratic(point(0, 0), point(10, 0), point(10, 10)), 0.1)
+    <span class="kw">And</span>   flatten_into_path(p, quadratic(point(10, 10), point(10, 20), point(0, 20)), 0.1)
+    <span class="kw">Then</span>  length(subpaths(p)) = 1
+    <span class="kw">And</span>   length(subpaths(p)[0].points) = 25
+    <span class="kw">And</span>   subpaths(p)[0].points[12] = point(10, 10)
+    <span class="kw">And</span>   subpaths(p)[0].points[13] ≠ point(10, 10)
+
+  <span class="kw">Scenario</span>: A curve that starts away from the pen is joined with a line, and after a close it starts a new subpath
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  flatten_into_path(p, quadratic(point(0, 0), point(10, 0), point(10, 10)), 0.1)
+    <span class="kw">And</span>   flatten_into_path(p, quadratic(point(5, 25), point(0, 30), point(-5, 25)), 0.1)
+    <span class="kw">And</span>   close(p)
+    <span class="kw">And</span>   flatten_into_path(p, quadratic(point(50, 0), point(60, 0), point(60, 10)), 0.1)
+    <span class="kw">Then</span>  length(subpaths(p)) = 2
+    <span class="kw">And</span>   length(subpaths(p)[0].points) = 22
+    <span class="kw">And</span>   subpaths(p)[0].points[13] = point(5, 25)
+    <span class="kw">And</span>   subpaths(p)[1].points[0] = point(50, 0)
+    <span class="kw">And</span>   length(subpaths(p)[1].points) = 13</code></pre>
   </div>
 
   <p>One thing about <em>when</em> to flatten, because it's the mistake everyone makes once. The
@@ -415,7 +442,10 @@ plate_08():
     image against the reference — and the teardrop render gets pinned too, the coarse half against the
     fine, which is the flattening lesson in one picture. <code>flatten_into_path</code> is the small
     glue that appends a flattened curve to a path with <code>line_to</code>, so a curve becomes an
-    ordinary polygon the fill already knows how to eat.</p>
+    ordinary polygon the fill already knows how to eat. It has one rule worth writing down: when
+    the pen already stands exactly on the curve's first point, that point isn't added again, so a
+    run of curves joined end to end doesn't leave a zero-length edge at every join. Chapter 20
+    counts the points of paths built that way, and a duplicate there is a failing scenario.</p>
 
   <div class="test" data-feature="chapter08-plate.feature">
     <p class="label">features/chapter08-plate.feature</p>

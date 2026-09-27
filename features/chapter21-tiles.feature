@@ -37,6 +37,8 @@ Feature: Tiles
     Then  t[0] = ["partial", "solid", "solid", "solid"]
     And   t[2] = ["partial", "partial", "partial", "partial"]
     And   t[3] = ["empty", "empty", "empty", "empty"]
+    And   coverage_in(fill_path_tiled(polygon(point(0, 0), point(64, 0), point(64, 40), point(0, 40)), "nonzero", 64, 64, stats()), 50, 20) = 1
+    And   coverage_in(fill_path_tiled(polygon(point(0, 0), point(64, 0), point(64, 40), point(0, 40)), "nonzero", 64, 64, stats()), 20, 50) = 0
 
   Scenario: The fill rule decides what a hole is
     Given ring ← path()

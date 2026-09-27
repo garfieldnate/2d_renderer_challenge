@@ -24,6 +24,19 @@ public final class Clipping {
         return out;
     }
 
+    /** §20.10: union_coverage(a, b) is 1 - (1 - a)(1 - b) at every pixel, the alpha of one silhouette over the other. */
+    public static CoverageBuffer unionCoverage(CoverageBuffer a, CoverageBuffer b) {
+        CoverageBuffer out = new CoverageBuffer(a.width, a.height);
+        for (int y = 0; y < a.height; y++) {
+            for (int x = 0; x < a.width; x++) {
+                double p = a.coverageAt(x, y);
+                double q = b.coverageAt(x, y);
+                out.setCoverage(x, y, 1 - (1 - p) * (1 - q));
+            }
+        }
+        return out;
+    }
+
     public static CoverageBuffer fullClip(int w, int h) {
         CoverageBuffer cov = new CoverageBuffer(w, h);
         for (int y = 0; y < h; y++) {

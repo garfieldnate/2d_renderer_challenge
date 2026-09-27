@@ -113,6 +113,16 @@ public final class Chapter13Tests {
             });
         }
 
+        scenario("Stroke: a round cap is a semicircle of sixteen steps, whatever the rounding", () -> {
+            Path seg = new Path();
+            seg.moveTo(Tuple.point(465.1115070868785, 303.45792752328475));
+            seg.lineTo(Tuple.point(464.47508947743773, 304.22927221043426));
+            Path o = Stroke.strokeToPath(seg, 0.8, "round", "miter", 4.0);
+            assertEquals("length(subpaths(o))", o.subpaths().size(), 3);
+            assertEquals("length(subpaths(o)[1].points)", o.subpaths().get(1).points.size(), 17);
+            assertEquals("length(subpaths(o)[2].points)", o.subpaths().get(2).points.size(), 17);
+        });
+
         scenario("Stroke: the round join is an arc across the outer gap, not around the inside", () -> {
             Path o = Stroke.strokeToPath(Figures.chevron(), 26, "butt", "round", 4.0);
             List<Tuple> join = o.subpaths().get(2).points;

@@ -3,8 +3,9 @@ Feature: Bounds
   height) is that window of the canvas in whole pixels: x0 and y0 the
   floors of the path's least x and y, x1 and y1 one more than the floors of
   its greatest (an edge on x = 20 deposits into column 20, so column 20 is
-  in), each cut to the canvas; (0, 0, 0, 0) for an empty path or a window
-  with nothing left in it. fill_path_bounded(p, rule, width, height, st)
+  in), each cut to the canvas, the bounds taken over every point of every
+  subpath, a subpath of one point included; (0, 0, 0, 0) for a path with no
+  subpaths or a window with nothing left in it. fill_path_bounded(p, rule, width, height, st)
   moves the path by (-x0, -y0), fills it with chapter 7 into an
   accumulator the window's size, and answers a window: the coverage buffer
   and its (x0, y0). It adds the window's width times height to st.cells.

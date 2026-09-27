@@ -55,4 +55,34 @@ public final class Groups {
         }
         return out;
     }
+
+    /**
+     * §20.10: draw_coverage(l, cov, paint, alpha) paints into a layer: at
+     * every pixel whose coverage times alpha is above 0, the paint's colour
+     * at the pixel center becomes the premultiplied pixel, source-over what
+     * is already there. Mutates the layer in place, the same as chapter 9's
+     * paint_shape.
+     */
+    public static void drawCoverage(Layer l, CoverageBuffer cov, Paint paint, double alpha) {
+        for (int y = 0; y < l.height; y++) {
+            for (int x = 0; x < l.width; x++) {
+                double k = cov.coverageAt(x, y) * alpha;
+                if (k > 0) {
+                    Color c = paint.paintAt(x + 0.5, y + 0.5);
+                    l.setPixel(x, y, Compositing.over(Pixel.fromColor(c, k), l.pixelAt(x, y)));
+                }
+            }
+        }
+    }
+
+    /** §20.10: mask_layer(l, cov) multiplies every premultiplied channel of every pixel by the coverage under it. */
+    public static void maskLayer(Layer l, CoverageBuffer cov) {
+        for (int y = 0; y < l.height; y++) {
+            for (int x = 0; x < l.width; x++) {
+                double k = cov.coverageAt(x, y);
+                Pixel p = l.pixelAt(x, y);
+                l.setPixel(x, y, new Pixel(p.r * k, p.g * k, p.b * k, p.a * k));
+            }
+        }
+    }
 }
