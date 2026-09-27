@@ -7,16 +7,18 @@ use std::fs;
 use std::path::Path;
 
 use renderer::{
-    blend_strip, break_demo, canvas_to_p6, canvas_to_ppm, caps_demo, clamp_pair, clip_demo,
-    composite_demo, dash_strip, disc_centers, disc_coverage, drift_demo, drops, even_marks,
-    extend_strip, fan_bresenham, fan_both_orders, fan_coverage, fan_wu, flip_trap, flower,
-    fold_demo, forms_demo, glyph_plate, gray_match, joins_plate, kern_demo, lcd_plate,
-    ligature_demo, mixed_demo, needles, offsets_plate, opacity_plate, painted_twice, plate_01,
-    plate_02, plate_03, plate_04, plate_05, plate_06, plate_07, plate_08, plate_09, plate_10,
-    plate_11, plate_12, plate_13, plate_14, plate_15, plate_16, plate_17, plate_18, plate_19,
-    porter_duff_table, quarter_match, ramp, seam, sizes, smoothing_demo, soft_square, spiral,
-    spiral_dashes, spiral_smooth, star_centers, star_coverage, star_exact, subpixel_strip,
-    three_filters, three_gradients, two_filters, two_strokes, word_demo,
+    atlas_corners, blend_strip, break_demo, canvas_to_p6, canvas_to_ppm, caps_demo, clamp_pair,
+    clip_demo, composite_demo, dash_strip, disc_centers, disc_coverage, drift_demo,
+    drops, error_map, even_marks, extend_strip, fan_bresenham, fan_both_orders, fan_coverage,
+    fan_wu, fields_vs_paths, fillets, flip_trap, flower, fold_demo, forms_demo, glyph_plate,
+    gray_match, joins_plate, kern_demo, lcd_plate, ligature_demo, mixed_demo, needles,
+    offsets_plate, opacity_plate, painted_twice, plate_01, plate_02, plate_03, plate_04, plate_05,
+    plate_06, plate_07, plate_08, plate_09, plate_10, plate_11, plate_12, plate_13, plate_14,
+    plate_15, plate_16, plate_17, plate_18, plate_19, plate_22, plate_23,
+    porter_duff_table, primitive_fields, quarter_match, ramp, seal, seam, sizes, smoothing_demo,
+    soft_square, spiral, spiral_dashes, spiral_smooth, star_centers, star_coverage, star_exact,
+    subpixel_strip, three_filters, three_gradients, title, trap_shrink, transform_demo,
+    two_filters, two_strokes, word_demo,
     aspect_demo, harbor, rose, tiger, work_map, render_svg_with, stats, read_file,
 };
 use std::time::Instant;
@@ -174,5 +176,42 @@ fn main() {
         }
     }
 
-    println!("wrote 75 renders to out/");
+    // Chapter 22: boolean path operations.
+    let t = Instant::now();
+    write_p6(out, "plate-22.ppm", canvas_to_p6(&plate_22()));
+    println!("plate-22: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "seal.ppm", canvas_to_p6(&seal()));
+    println!("seal: {:.2?}", t.elapsed());
+
+    // Chapter 23: distance fields.
+    let t = Instant::now();
+    write_p6(out, "primitive-fields.ppm", canvas_to_p6(&primitive_fields()));
+    println!("primitive-fields: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "error-map.ppm", canvas_to_p6(&error_map()));
+    println!("error-map: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "fields-vs-paths.ppm", canvas_to_p6(&fields_vs_paths()));
+    println!("fields-vs-paths: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "fillets.ppm", canvas_to_p6(&fillets()));
+    println!("fillets: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "transform-demo.ppm", canvas_to_p6(&transform_demo()));
+    println!("transform-demo: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "atlas-corners.ppm", canvas_to_p6(&atlas_corners()));
+    println!("atlas-corners: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "trap-shrink.ppm", canvas_to_p6(&trap_shrink()));
+    println!("trap-shrink: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "plate-23.ppm", canvas_to_p6(&plate_23()));
+    println!("plate-23: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "title.ppm", canvas_to_p6(&title()));
+    println!("title: {:.2?}", t.elapsed());
+
+    println!("wrote 86 renders to out/");
 }

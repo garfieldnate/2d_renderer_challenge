@@ -1,18 +1,21 @@
 # The 2D Renderer Challenge — Rust
 
-Chapters 1 (`The Canvas and the Color`) through 21 (`Making It Fast`),
+Chapters 1 (`The Canvas and the Color`) through 23 (`Distance Fields`),
 stdlib only except for one vendored crate: chapter 20 reads XML with
 `roxmltree` 0.20 (source under `vendor/`, `.cargo/config.toml` points cargo
 at it, so everything builds with `--offline` and no network). Chapter 16 needed a small hand-written JSON reader for the font
 file (`reference/chapter-16/roboto.json`); no crate was added for it. Chapter
 19 reuses that same reader for `reference/chapter-19/dejavu-arabic.json`,
 which carries four more optional sections (`kern`/`ligatures` since chapter
-18, `joining`/`forms`/`marks`/`anchors` new in chapter 19).
+18, `joining`/`forms`/`marks`/`anchors` new in chapter 19). Chapter 22 needs
+exact arithmetic beyond 64 bits in two places (a crossing's numerator, and
+comparing two crossings' exact positions in the Bentley-Ottmann sweep);
+Rust's `i128` covers both, still stdlib, still no new dependency.
 
 ## Build, test, render
 
 ```
-cargo test --release --offline   # every scenario in features/, chapters 1-21
+cargo test --release --offline   # every scenario in features/, chapters 1-23
 cargo run --release --offline --bin render_all   # writes all renders (P3 + P6) to out/,
                                                  # then prints chapter 21's work table
 cargo run --release --offline --example span_bench   # composite_span vs composite_span4
@@ -48,6 +51,28 @@ That's it — `cargo build` alone also works if you just want the library to com
   `draw_window`), 16-pixel tiles over a sparse accumulator
   (`classify_tiles`/`fill_path_tiled`/`draw_tiled`), the scalar and
   four-wide span compositors, and `render_svg_with(.., mode, ..)`.
+  Chapter 22 adds the grid (`grid`/`snap_point`/`orient`/`lex_less`),
+  `Seg`/`seg`/`path_segments`, `meet`/`crossing_point` (exact, via `i128`),
+  three interchangeable crossing finders (`find_splits(.., "brute" |
+  "sweep" | "bentley-ottmann", ..)`, the last a real Bentley-Ottmann sweep
+  with an ordered status and exact fractional events), `merge_segments`/
+  `split_segments`, `winding_beside`/`inside_rule`/`op_inside`/
+  `keep_edges`, `stitch` (furthest-right turns via an exact half-plus-cross
+  angular order), and `combine`/`simplify` — the whole boolean pipeline —
+  plus `struck_line`/`struck_segments` (the benchmark) and the seal.
+  Chapter 23 adds exact fields for primitives (`sd_circle`/
+  `distance_to_segment`/`sd_box`/`sd_rounded_box`/`sd_polygon`) and curves
+  (`solve_cubic`, `distance_to_quadratic`, `distance_to_cubic`/
+  `nearest_t_cubic` by Newton's method from nine seeds, `brute_distance`
+  as ground truth), a `Field` (`field`/`field_of`/`field_at`/
+  `field_range`/`field_coverage`), the one-line operations
+  (`field_offset`/`field_stroke`/`field_union`/`field_intersection`/
+  `field_difference`/`field_xor`), `smooth_min`/`field_smooth_union`, the
+  Felzenszwalb-Huttenlocher distance transform (`edt_1d`/
+  `distance_transform`/`field_from_coverage`), and glyph atlases
+  (`bake_sdf`/`bake_msdf`/`bake_mtsdf`, `color_edges`/`pseudo_distance` for
+  the multi-channel bake, `sample_field`/`median3`/`draw_baked`/
+  `draw_effect`).
 - `src/bin/render_all.rs` — renders every figure/plate to `out/`.
 - `examples/span_bench.rs` — times chapter 21's two span compositors.
 - `tests/*.rs` — one test file per `features/*.feature` file (Gherkin
@@ -68,7 +93,11 @@ That's it — `cargo build` alone also works if you just want the library to com
   `subpixels.ppm`, `smoothing.ppm`, `lcd.ppm` and `plate-17.ppm`. Chapter 18
   adds `kerning.ppm`, `breaking.ppm`, `drift.ppm` and `plate-18.ppm`; chapter
   19 adds `ligature.ppm`, `forms.ppm`, `word.ppm`, `mixed.ppm` and
-  `plate-19.ppm`. None of these collide with an earlier chapter's names.
+  `plate-19.ppm`. Chapter 22 adds `plate-22.ppm` and `seal.ppm`; chapter 23
+  adds `primitive-fields.ppm`, `error-map.ppm`, `fields-vs-paths.ppm`,
+  `fillets.ppm`, `transform-demo.ppm`, `atlas-corners.ppm`,
+  `trap-shrink.ppm`, `plate-23.ppm` and `title.ppm`. None of these collide
+  with an earlier chapter's names.
   Every render is checked against its own `reference/chapter-NN/` directory
   by the tests regardless.
 
@@ -826,3 +855,206 @@ while tallying `(partial, solid)` per tile.
 
 All five chapter 20/21 renders (`aspect_demo`, `harbor`, `rose`, `tiger`,
 `work_map`) are byte-identical to `reference/` (max_channel_difference 0).
+
+## Chapter 22 notes
+
+`grid(v)` is `floor(v * 256.0 + 0.5)` as an `i64`; `snap_point`/`orient`
+(chapter 4's `cross`, reused unchanged)/`lex_less` are the section's other
+three primitives. `Tuple` gained `PartialEq` (exact, component by
+component) for this chapter's grid points, which are always whole
+numbers; every earlier chapter keeps using `tuples_eq` for its tolerance.
+`Seg { lo, hi, wa, wb }` is built by `seg(a, b, wa, wb)`, which swaps ends
+and negates both windings when `a` comes after `b` in the sweep's order;
+`path_segments` snaps every edge and drops one whose ends land on the same
+point. `meet(s, t)` classifies the four ways (`"none"`/`"end"`/`"cross"`/
+`"touch"`/`"overlap"`) by four `orient` tests exactly as `chapter-22.html`
+describes: collinear (all four zero) routes to a lexicographic
+overlap-of-ranges check; a proper crossing needs each pair of the other
+segment's ends strictly on opposite sides; failing that, up to one
+endpoint resting strictly inside the other segment is a touch; anything
+else sharing an endpoint exactly is an end. `crossing_point`/
+`exact_crossing` do the whole computation in `i128` (`(2N + beta).div_euclid(2
+* beta)`, exact halves-up rounding via `div_euclid`, which rounds toward
+negative infinity for a positive divisor — exactly the `div` the chapter
+asks for).
+
+`find_splits` dispatches to three independent implementations that answer
+identical splits: `"brute"` (every pair), `"sweep"` (an active list sorted
+by `lo`, pruned by `lex_less(lo, hi)`), and `"bentley-ottmann"` — a real
+ordered status, processing events (grid points and, later, exact
+fractional crossings) in the sweep's order. The event queue holds an
+`EPoint` enum (`Grid(i64, i64)` or `Frac(i128, i128, i128)` for `X/D,
+Y/D`), compared exactly by cross-multiplying (`epoint_cmp`, up to ~100
+bits, well inside `i128`); `eorient` is the ~80-bit exact orientation test
+against a fractional event. The status splices in a freshly-ordered block
+at each event (`leaving_cmp`, `cross(t_dir, s_dir)`'s sign, ties by
+original index — the horizontal-last rule falls out of this for free,
+verified against the feature's own scenario rather than special-cased).
+`merge_segments`/`split_segments` are a straightforward transliteration of
+the chapter's own pseudo-code; the loop's exact pass/test counts (2 passes
+for two overlapping squares, 3 for the rounding-creates-a-new-meeting
+example, and the full `struck_segments(1)`/`struck_segments(2)` benchmark
+numbers) all matched by construction once `meet` and the three finders
+were right — no numbers needed adjusting to make a scenario pass.
+
+`winding_beside` doubles the midpoint (`lo + hi`) and compares every other
+segment's `lo`/`hi` doubled too, exactly as `chapter-22.html` says "to stay
+in whole numbers"; `inside_rule`/`op_inside`/`keep_edges` are one-liners.
+`stitch` was the one place the first draft went wrong: "turning furthest
+right" needs an angular order starting from *facing back the way you
+came*, sweeping counterclockwise, and in this book's clockwise-positive
+`cross` convention that means the half nearer `r` is `cross(r, d) < 0`,
+not `> 0` — the opposite of my first guess. Two scenarios failed
+immediately and unambiguously (`turning_furthest_right_keeps_two_squares_
+that_touch_at_a_corner_apart` merged the two squares into one contour;
+the star's evenodd `simplify` produced 2 contours instead of 5), which is
+exactly the kind of "can fail on the mistake it exists for" scenario the
+book's own testing notes ask for — flipping the sign of `ccw_half`'s
+branches fixed both instantly. `combine`/`simplify`/`point_lists` are the
+whole pipeline; `text_path`/`struck_line`/`struck_segments`/`rosette` and
+the plate/seal renders (`op_panel`/`plate_22`/`seal`) all matched the
+reference on the first render — `roboto()` (a small new public loader,
+also used by chapter 23) and chapter 16-19's existing `layout_run`/
+`glyph_path`/`text_matrix` needed no changes at all.
+
+Every chapter 22 scenario (56 across the nine feature files) is green,
+and both `plate-22.ppm` and `seal.ppm` are byte-identical to `reference/`.
+
+### Mutation testing (chapter 22)
+
+Three deliberate bugs, tested and reverted. Reversing `stitch`'s turn
+comparator (picking the furthest-*left* turn instead) was caught by three
+scenarios at once (`two_squares_four_ways`, the touching-corner scenario,
+and the star's crossings-become-corners scenario) — the same class of bug
+the real implementation actually had on the first pass, described above.
+Skipping the second and later passes of `split_segments` (returning after
+one cut) was caught immediately by the two-overlapping-squares scenario
+(12 segments expected, only some produced) and the three-pass
+rounding-creates-a-new-meeting scenario (`st.passes` pinned at 3, got 1),
+plus the Bentley-Ottmann benchmark's own segment count. Removing the
+`"touch"` case from `meet` entirely (folding it into `"none"`, a plausible
+slip for a reader who only thought of crossings and collinear overlaps)
+was caught by exactly one scenario — its own direct unit test
+(`an_end_touching_the_middle_of_another_segment_splits_it`) — and by
+*nothing else*, not even `robust22.rs`'s "a corner resting on an edge"
+scenario, which touches a vertex against an edge in exactly this way. The
+reason: that scenario's vertex sits at the far end of a long edge that
+doesn't need cutting there for the *final* stitched result to come out
+right (nothing else meets the uncut edge at that interior point), so the
+touch/no-touch distinction is invisible to it. This is worth knowing: a
+future scenario that stitches a third shape through that exact touch
+point would be the one to actually exercise this path end to end.
+
+## Chapter 23 notes
+
+`sd_circle`/`distance_to_segment`/`sd_box`/`sd_rounded_box`/`sd_polygon`
+are `chapter-23.html` §23.1's formulas verbatim (`sd_box`'s two-line
+formula is exactly as printed: `length(max(q, 0)) + min(max(qx, qy), 0)`);
+`sd_polygon` reuses chapter 5's `winding_at` and this chapter's own
+`inside_rule` (borrowed from chapter 22, since "inside under a fill rule"
+is the same question either way) for its sign. `solve_cubic` falls back to
+a quadratic then a linear solve as the leading coefficients vanish below
+`1e-12`, and picks Cardano's formula or the cosine (trigonometric) formula
+by the sign of the depressed cubic's discriminant — verified against six
+pinned cases including a triple-root-adjacent one, all exact.
+`distance_to_quadratic` finds the perpendicular-foot cubic's roots in
+`(0, 1)` via `solve_cubic` directly (no numeric solver at all);
+`nearest_t_cubic`/`distance_to_cubic` are nine seeds and Newton's method
+as prescribed, keeping the earliest candidate on a tie, which is exactly
+what makes the `(70, 80)` end-is-the-answer scenario come out at `t = 0`
+rather than a stationary point Newton would otherwise wander to.
+`brute_distance`/`weyl_points`/`max_curve_error` are the independent
+ground truth; both curve distance functions matched it to within `1e-6`
+over 10,000 Weyl-sequence points on the first attempt, and the
+loop-back-cubic scenario (where chapter 14's own `distance_to_curve`
+gets it wrong, by design) passed without adjustment.
+
+`Field { width, height, values }` plus `field`/`field_of`/`field_at`/
+`field_range`/`field_coverage` are chapter 2's `CoverageBuffer` pattern
+one level up; `polygon_field`/`coverage_error` close out §23.3.
+`field_offset`/`field_stroke`/`field_union`/`field_intersection`/
+`field_difference`/`field_xor` are each one line over `field_zip`, a
+private per-value zip helper; every one of the "for free" comparisons
+against chapters 13, 14 and 22's own stroke/offset/boolean code passed
+first try, pinned `ink` differences included. `smooth_min`/
+`field_smooth_union`/`fillet_field` are §23.5's one-line polynomial
+smooth minimum.
+
+`edt_1d` is Felzenszwalb and Huttenlocher's lower envelope of parabolas,
+transliterated from the chapter's own pseudo-code line for line (the
+`while s <= z[k]: k -= 1` loop never needs an extra guard against `k`
+going negative, because `z[0] = -infinity` stops it there by
+construction); `far_value`/`distance_transform`/
+`brute_distance_transform`/`bits_of`/`coverage_of`/`field_from_coverage`
+round out §23.6, and `distance_transform` matched `brute_distance_
+transform` over all 4096 pixels of `transform_bitmap()` on the first run.
+
+§23.7's glyph atlases were the chapter's biggest chunk of new code.
+`bake_box`/`bake_sdf` needed no surprises. `is_corner(a, b)` is literally
+`dot(a, b) <= 0 || abs(cross(a, b)) > sin(3)` — `3` in *radians*, which
+looks like a typo until you notice `sin(3 rad) = sin(pi - 3 rad) = sin(~8
+degrees)`, exactly the "turns by more than about eight degrees" the prose
+promises; it reads like a magic number until you do the trig. `color_edges`
+rotates a contour to its first corner and either colours every curve
+white (no corners), splits until there are at least three curves and
+bands them cyan/white/magenta (one corner), or alternates cyan/magenta by
+run with a yellow last run on an odd count (more corners) — all five
+`colouring_edges` fixtures (square, triangle, house, teardrop, circle)
+matched on the first try. `pseudo_distance` and `bake_msdf`'s per-channel
+"least distance, ties broken by which edge meets `p` closer to a right
+angle" selection are `chapter-23.html` §23.9's `msdf_texel`/
+`pseudo_distance` pseudo-code directly; `bake_mtsdf` adds `bake_sdf`'s
+field as a fourth channel. `sample_field`/`median3`/`draw_baked`/
+`draw_effect` share one bounds helper (`baked_bounds`); `draw_effect`
+takes a `k_of` closure in place of `clamp(0.5 - d, 0, 1)`, plus a flag for
+whether the distance comes from the fourth (true, unclamped) channel or
+the median of the first three.
+
+§23.8's `peanut`/`min_of` needed nothing but chapter 22's own `combine`
+for the "true" union.
+
+The plate (§23.9): `band_canvas`/`band_color` bands every field the same
+way; `primitive_fields`/`error_map`/`fillets`/`transform_demo`/
+`atlas_corners`/`trap_shrink`/`plate_23` all matched `reference/` on the
+first render. `title` needed one correction: "`draw_effect` four times
+over the run in order" means one full pass over every glyph per effect
+(all eight shadows, then all eight glows, then all eight fills, then all
+eight outlines) — not all four effects for one glyph before moving to the
+next. Doing it per-glyph left `max_channel_difference` at 6 (not 0);
+switching to per-effect passes (baking every glyph's `Baked` once,
+up front, then four loops over the placements) made it byte-identical.
+The book's own prose doesn't fully disambiguate this ("four times over
+the run" reads either way until you compare against the reference), which
+is worth a clarifying sentence — see **Prose problems** in `FEEDBACK.md`.
+
+Every chapter 23 scenario (36 across the nine feature files) is green,
+and all nine named renders, plus `plate-23.ppm`, are byte-identical to
+`reference/chapter-23/`.
+
+### Mutation testing (chapter 23)
+
+Four deliberate bugs, tested and reverted. Flipping `smooth_min`'s sign
+(adding the correction instead of subtracting it) was caught immediately
+and everywhere: both of `smooth23.rs`'s own scenarios, and every render
+that uses a fillet or a smooth union. Skipping the second
+(row) pass of `distance_transform` (returning the column pass's squared
+distances unchanged) was caught immediately by three of the four
+`transform23.rs` scenarios and the render suite. Removing `pseudo_distance`'s
+"past the end" special case (always falling through to the interior
+formula) was caught by its own direct scenario and by both `bake_msdf`
+scenarios/renders that exercise a real corner (`atlas-corners.ppm`,
+`three_channels_at_one_texel`) — corners are exactly where the distinction
+matters. The fourth is the one that survived almost everywhere:
+disabling `bake_msdf`'s "if two edges tie on distance at an end, prefer
+the one whose end direction is closer to a right angle to `p`" tie-break
+(always keeping whichever edge was found first) was caught by
+*only one scenario in the entire suite* — `three_channels_at_one_texel`
+— out of all 789 scenarios across 23 chapters, including `atlas_corners()`
+and `title()`, both of which bake and draw real glyph corners with
+`bake_msdf`/`bake_mtsdf` at visible sizes. The tie-break only matters
+exactly at a corner where two edges' nearest points are equidistant from
+a sampled texel, a narrow enough condition that neither rendered glyph's
+texel grid happens to land on one. This is the single most valuable
+finding of this round: `atlas_corners()`/`title()` prove `bake_msdf`
+produces a plausible-looking image without proving the tie-break is
+implemented at all.

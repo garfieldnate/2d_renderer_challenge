@@ -1052,7 +1052,11 @@ pub fn plate_03() -> Canvas {
 /// minus point comes out w = 0 (a vector), point plus vector comes out
 /// w = 1 (a point), and point plus point comes out w = 2, which is
 /// nobody's fault but the caller's.
-#[derive(Debug, Clone, Copy)]
+///
+/// `PartialEq` compares exactly, component by component -- fine (and
+/// needed) for chapter 22's grid points, which are always whole numbers;
+/// everywhere else, use `tuples_eq` for the book's usual tolerance.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tuple {
     pub x: f64,
     pub y: f64,
@@ -9275,4 +9279,2242 @@ pub fn work_map() -> Canvas {
 /// Plate 21: `work_map`.
 pub fn plate_21() -> Canvas {
     work_map()
+}
+
+// =======================================================================
+// Chapter 22: Boolean Path Operations
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 22.1 A grid
+// ---------------------------------------------------------------------
+
+/// Coordinates must lie within this many pixels of the origin, either way.
+pub const GRID_RANGE_PIXELS: i64 = 1024;
+
+/// Snaps a coordinate to a whole number of grid units, 1/256 of a pixel,
+/// halves up (toward +infinity).
+pub fn grid(v: f64) -> i64 {
+    (v * 256.0 + 0.5).floor() as i64
+}
+
+/// Snaps a point to the grid, both coordinates.
+pub fn snap_point(p: Tuple) -> Tuple {
+    point(grid(p.x) as f64, grid(p.y) as f64)
+}
+
+/// Chapter 4's cross product of `b - a` and `c - a`: positive when `c` is
+/// clockwise of the line from `a` to `b` on screen, negative when it's
+/// counterclockwise, 0 when the three are collinear. Exact on grid points.
+pub fn orient(a: Tuple, b: Tuple, c: Tuple) -> f64 {
+    cross(b - a, c - a)
+}
+
+/// The sweep's order: top to bottom, then left to right.
+pub fn lex_less(p: Tuple, q: Tuple) -> bool {
+    p.y < q.y || (p.y == q.y && p.x < q.x)
+}
+
+fn lex_le(p: Tuple, q: Tuple) -> bool {
+    lex_less(p, q) || tuples_eq(p, q)
+}
+
+fn lex_cmp(p: Tuple, q: Tuple) -> std::cmp::Ordering {
+    if tuples_eq(p, q) {
+        std::cmp::Ordering::Equal
+    } else if lex_less(p, q) {
+        std::cmp::Ordering::Less
+    } else {
+        std::cmp::Ordering::Greater
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 22.2 Where two segments meet
+// ---------------------------------------------------------------------
+
+/// A segment between two grid points, carrying how much it adds to the
+/// winding number of path A (`wa`) and of path B (`wb`). Its ends are
+/// stored in the sweep's order, `lo` before `hi`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Seg {
+    pub lo: Tuple,
+    pub hi: Tuple,
+    pub wa: i64,
+    pub wb: i64,
+}
+
+/// Builds a segment, swapping ends (and negating both windings) if `a`
+/// comes after `b` in the sweep's order.
+pub fn seg(a: Tuple, b: Tuple, wa: i64, wb: i64) -> Seg {
+    if lex_less(a, b) {
+        Seg { lo: a, hi: b, wa, wb }
+    } else {
+        Seg { lo: b, hi: a, wa: -wa, wb: -wb }
+    }
+}
+
+/// Snaps both ends of every edge of `p` and makes each a `Seg` with
+/// winding `(1, 0)` for operand `"a"` and `(0, 1)` for `"b"`, dropping any
+/// edge whose ends snap to the same point.
+pub fn path_segments(p: &Path, operand: &str) -> Vec<Seg> {
+    let (wa, wb) = if operand == "a" { (1, 0) } else { (0, 1) };
+    let mut out = Vec::new();
+    for (a, b) in edges(p) {
+        let sa = snap_point(a);
+        let sb = snap_point(b);
+        if tuples_eq(sa, sb) {
+            continue;
+        }
+        out.push(seg(sa, sb, wa, wb));
+    }
+    out
+}
+
+/// How two segments meet: `"none"`, `"end"`, `"cross"`, `"touch"` or
+/// `"overlap"`, and the points each has to be split at.
+#[derive(Debug, Clone)]
+pub struct Meet {
+    pub kind: String,
+    pub on_s: Vec<Tuple>,
+    pub on_t: Vec<Tuple>,
+}
+
+fn strictly_between(lo: Tuple, hi: Tuple, p: Tuple) -> bool {
+    lex_less(lo, p) && lex_less(p, hi)
+}
+
+/// Says how `s` and `t` meet, as a kind and the points each has to be
+/// split at. Every test is exact, with `orient`.
+pub fn meet(s: &Seg, t: &Seg) -> Meet {
+    let (a, b, c, d) = (s.lo, s.hi, t.lo, t.hi);
+    let d1 = orient(c, d, a);
+    let d2 = orient(c, d, b);
+    let d3 = orient(a, b, c);
+    let d4 = orient(a, b, d);
+
+    let collinear = d1 == 0.0 && d2 == 0.0 && d3 == 0.0 && d4 == 0.0;
+
+    if collinear {
+        let range_lo = if lex_less(a, c) { c } else { a };
+        let range_hi = if lex_less(b, d) { b } else { d };
+        if lex_less(range_hi, range_lo) {
+            return Meet { kind: "none".to_string(), on_s: vec![], on_t: vec![] };
+        }
+        if tuples_eq(range_lo, range_hi) {
+            return Meet { kind: "end".to_string(), on_s: vec![], on_t: vec![] };
+        }
+        let mut on_s = Vec::new();
+        for p in [c, d] {
+            if strictly_between(a, b, p) {
+                on_s.push(p);
+            }
+        }
+        let mut on_t = Vec::new();
+        for p in [a, b] {
+            if strictly_between(c, d, p) {
+                on_t.push(p);
+            }
+        }
+        return Meet { kind: "overlap".to_string(), on_s, on_t };
+    }
+
+    let opp = |x: f64, y: f64| (x > 0.0 && y < 0.0) || (x < 0.0 && y > 0.0);
+    if opp(d1, d2) && opp(d3, d4) {
+        let p = crossing_point(s, t);
+        let mut on_s = Vec::new();
+        if !tuples_eq(p, a) && !tuples_eq(p, b) {
+            on_s.push(p);
+        }
+        let mut on_t = Vec::new();
+        if !tuples_eq(p, c) && !tuples_eq(p, d) {
+            on_t.push(p);
+        }
+        return Meet { kind: "cross".to_string(), on_s, on_t };
+    }
+
+    let mut on_s = Vec::new();
+    let mut on_t = Vec::new();
+    if d1 == 0.0 && strictly_between(c, d, a) {
+        on_t.push(a);
+    }
+    if d2 == 0.0 && strictly_between(c, d, b) {
+        on_t.push(b);
+    }
+    if d3 == 0.0 && strictly_between(a, b, c) {
+        on_s.push(c);
+    }
+    if d4 == 0.0 && strictly_between(a, b, d) {
+        on_s.push(d);
+    }
+    if !on_s.is_empty() || !on_t.is_empty() {
+        return Meet { kind: "touch".to_string(), on_s, on_t };
+    }
+
+    if tuples_eq(a, c) || tuples_eq(a, d) || tuples_eq(b, c) || tuples_eq(b, d) {
+        return Meet { kind: "end".to_string(), on_s: vec![], on_t: vec![] };
+    }
+    Meet { kind: "none".to_string(), on_s: vec![], on_t: vec![] }
+}
+
+/// The exact crossing of the lines through `s` and `t`, as a whole-number
+/// numerator pair over a whole-number denominator (`X, Y, D`), `D > 0`.
+/// `None` when the lines are parallel.
+fn exact_crossing(s: &Seg, t: &Seg) -> Option<(i128, i128, i128)> {
+    let (a, b, c, d) = (s.lo, s.hi, t.lo, t.hi);
+    let ax = a.x.round() as i128;
+    let ay = a.y.round() as i128;
+    let bx = b.x.round() as i128;
+    let by = b.y.round() as i128;
+    let cx = c.x.round() as i128;
+    let cy = c.y.round() as i128;
+    let dx = d.x.round() as i128;
+    let dy = d.y.round() as i128;
+    let rbx = bx - ax;
+    let rby = by - ay;
+    let rdx = dx - cx;
+    let rdy = dy - cy;
+    let mut beta = rbx * rdy - rby * rdx;
+    let mut alpha = (cx - ax) * rdy - (cy - ay) * rdx;
+    if beta == 0 {
+        return None;
+    }
+    if beta < 0 {
+        beta = -beta;
+        alpha = -alpha;
+    }
+    let nx = ax * beta + rbx * alpha;
+    let ny = ay * beta + rby * alpha;
+    Some((nx, ny, beta))
+}
+
+fn round_frac(x: i128, d: i128) -> i64 {
+    (2 * x + d).div_euclid(2 * d) as i64
+}
+
+/// The exact crossing of the lines through `s` and `t`, rounded to the
+/// nearest grid point, halves up.
+pub fn crossing_point(s: &Seg, t: &Seg) -> Tuple {
+    let (x, y, d) = exact_crossing(s, t).expect("crossing_point: segments are parallel");
+    point(round_frac(x, d) as f64, round_frac(y, d) as f64)
+}
+
+// ---------------------------------------------------------------------
+// § 22.3 Splitting until nothing crosses
+// ---------------------------------------------------------------------
+
+/// A record of work done finding where segments meet, and splitting them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SweepStats {
+    pub tests: i64,
+    pub events: i64,
+    pub passes: i64,
+}
+
+pub fn sweep_stats() -> SweepStats {
+    SweepStats::default()
+}
+
+fn order_key(s: &Seg, p: Tuple) -> f64 {
+    dot(p - s.lo, s.hi - s.lo)
+}
+
+/// Drops a segment's own ends from its split-point list, orders what's
+/// left along it from `lo` to `hi`, and drops duplicates.
+fn finish_splits(points: &mut Vec<Tuple>, s: &Seg) {
+    points.retain(|p| !tuples_eq(*p, s.lo) && !tuples_eq(*p, s.hi));
+    points.sort_by(|p, q| {
+        order_key(s, *p).partial_cmp(&order_key(s, *q)).unwrap().then_with(|| lex_cmp(*p, *q))
+    });
+    points.dedup_by(|a, b| tuples_eq(*a, *b));
+}
+
+fn find_splits_brute(segs: &[Seg], st: &mut SweepStats) -> Vec<Vec<Tuple>> {
+    let n = segs.len();
+    let mut out: Vec<Vec<Tuple>> = vec![Vec::new(); n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            st.tests += 1;
+            let m = meet(&segs[i], &segs[j]);
+            out[i].extend(m.on_s.iter().copied());
+            out[j].extend(m.on_t.iter().copied());
+        }
+    }
+    for i in 0..n {
+        finish_splits(&mut out[i], &segs[i]);
+    }
+    out
+}
+
+fn seg_order_cmp(a: &Seg, b: &Seg) -> std::cmp::Ordering {
+    if tuples_eq(a.lo, b.lo) {
+        lex_cmp(a.hi, b.hi)
+    } else {
+        lex_cmp(a.lo, b.lo)
+    }
+}
+
+fn find_splits_sweep(segs: &[Seg], st: &mut SweepStats) -> Vec<Vec<Tuple>> {
+    let n = segs.len();
+    let mut out: Vec<Vec<Tuple>> = vec![Vec::new(); n];
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| seg_order_cmp(&segs[i], &segs[j]));
+    let mut active: Vec<usize> = Vec::new();
+    for &i in &order {
+        let lo = segs[i].lo;
+        active.retain(|&j| lex_less(lo, segs[j].hi));
+        for &j in &active {
+            st.tests += 1;
+            let m = meet(&segs[i], &segs[j]);
+            out[i].extend(m.on_s.iter().copied());
+            out[j].extend(m.on_t.iter().copied());
+        }
+        active.push(i);
+    }
+    for i in 0..n {
+        finish_splits(&mut out[i], &segs[i]);
+    }
+    out
+}
+
+/// An event point in the Bentley-Ottmann sweep: either a grid point (a
+/// segment's own end) or the exact, possibly fractional, crossing of two
+/// segments (`X / D, Y / D`, `D > 0`).
+#[derive(Debug, Clone, Copy)]
+enum EPoint {
+    Grid(i64, i64),
+    Frac(i128, i128, i128),
+}
+
+impl EPoint {
+    fn xyd(&self) -> (i128, i128, i128) {
+        match *self {
+            EPoint::Grid(x, y) => (x as i128, y as i128, 1),
+            EPoint::Frac(x, y, d) => (x, y, d),
+        }
+    }
+    fn rounded(&self) -> Tuple {
+        match *self {
+            EPoint::Grid(x, y) => point(x as f64, y as f64),
+            EPoint::Frac(x, y, d) => point(round_frac(x, d) as f64, round_frac(y, d) as f64),
+        }
+    }
+}
+
+fn epoint_cmp(a: &EPoint, b: &EPoint) -> std::cmp::Ordering {
+    let (ax, ay, ad) = a.xyd();
+    let (bx, by, bd) = b.xyd();
+    let ly = ay * bd;
+    let ry = by * ad;
+    if ly != ry {
+        return ly.cmp(&ry);
+    }
+    let lx = ax * bd;
+    let rx = bx * ad;
+    lx.cmp(&rx)
+}
+
+fn epoint_eq(a: &EPoint, b: &EPoint) -> bool {
+    epoint_cmp(a, b) == std::cmp::Ordering::Equal
+}
+
+/// `orient(lo, hi, p)`'s sign, exact, for a possibly-fractional event `p`.
+fn eorient(lo: Tuple, hi: Tuple, p: &EPoint) -> i128 {
+    let dx = (hi.x - lo.x).round() as i128;
+    let dy = (hi.y - lo.y).round() as i128;
+    let (px, py, d) = p.xyd();
+    let lox = lo.x.round() as i128;
+    let loy = lo.y.round() as i128;
+    dx * (py - d * loy) - dy * (px - d * lox)
+}
+
+fn dir_of(s: &Seg) -> Tuple {
+    s.hi - s.lo
+}
+
+/// The order two segments leave a point: `a` before `b` when
+/// `cross(b_dir, a_dir) > 0`, and when that's 0, the one earlier in the
+/// original list first. This puts a horizontal segment (which the
+/// sweep's order makes run left to right) last on its own.
+fn leaving_cmp(segs: &[Seg], a: usize, b: usize) -> std::cmp::Ordering {
+    let da = dir_of(&segs[a]);
+    let db = dir_of(&segs[b]);
+    let c = cross(db, da);
+    if c > 0.0 {
+        std::cmp::Ordering::Less
+    } else if c < 0.0 {
+        std::cmp::Ordering::Greater
+    } else {
+        a.cmp(&b)
+    }
+}
+
+fn find_splits_bo(segs: &[Seg], st: &mut SweepStats) -> Vec<Vec<Tuple>> {
+    let n = segs.len();
+    let mut out: Vec<Vec<Tuple>> = vec![Vec::new(); n];
+
+    let mut events: Vec<EPoint> = Vec::new();
+    for s in segs {
+        let lo_e = EPoint::Grid(s.lo.x.round() as i64, s.lo.y.round() as i64);
+        let hi_e = EPoint::Grid(s.hi.x.round() as i64, s.hi.y.round() as i64);
+        if !events.iter().any(|e| epoint_eq(e, &lo_e)) {
+            events.push(lo_e);
+        }
+        if !events.iter().any(|e| epoint_eq(e, &hi_e)) {
+            events.push(hi_e);
+        }
+    }
+
+    let mut status: Vec<usize> = Vec::new();
+
+    while !events.is_empty() {
+        let mut min_i = 0;
+        for i in 1..events.len() {
+            if epoint_cmp(&events[i], &events[min_i]) == std::cmp::Ordering::Less {
+                min_i = i;
+            }
+        }
+        let p = events.remove(min_i);
+        st.events += 1;
+
+        let mut before: Vec<usize> = Vec::new();
+        let mut block: Vec<usize> = Vec::new();
+        let mut after: Vec<usize> = Vec::new();
+        for &idx in &status {
+            let o = eorient(segs[idx].lo, segs[idx].hi, &p);
+            if o < 0 {
+                before.push(idx);
+            } else if o > 0 {
+                after.push(idx);
+            } else {
+                block.push(idx);
+            }
+        }
+
+        let mut c_list: Vec<usize> = Vec::new();
+        for &idx in &block {
+            let hi_e = EPoint::Grid(segs[idx].hi.x.round() as i64, segs[idx].hi.y.round() as i64);
+            if !epoint_eq(&hi_e, &p) {
+                c_list.push(idx);
+            }
+        }
+        let p_rounded = p.rounded();
+        for &idx in &c_list {
+            out[idx].push(p_rounded);
+        }
+
+        let mut u_list: Vec<usize> = Vec::new();
+        if let EPoint::Grid(gx, gy) = p {
+            for (idx, s) in segs.iter().enumerate() {
+                if s.lo.x.round() as i64 == gx && s.lo.y.round() as i64 == gy {
+                    u_list.push(idx);
+                }
+            }
+        }
+
+        let mut new_list: Vec<usize> = u_list;
+        new_list.extend(c_list);
+        new_list.sort_by(|&a, &b| leaving_cmp(segs, a, b));
+
+        let left_neighbor = before.last().copied();
+        let right_neighbor = after.first().copied();
+        let first_new = new_list.first().copied();
+        let last_new = new_list.last().copied();
+
+        {
+            let mut test_pair = |a: usize, b: usize| {
+                st.tests += 1;
+                let m = meet(&segs[a], &segs[b]);
+                if m.kind == "cross" {
+                    if let Some((x, y, d)) = exact_crossing(&segs[a], &segs[b]) {
+                        let ep = EPoint::Frac(x, y, d);
+                        if epoint_cmp(&ep, &p) == std::cmp::Ordering::Greater
+                            && !events.iter().any(|e| epoint_eq(e, &ep))
+                        {
+                            events.push(ep);
+                        }
+                    }
+                }
+            };
+
+            if new_list.is_empty() {
+                if let (Some(l), Some(r)) = (left_neighbor, right_neighbor) {
+                    test_pair(l, r);
+                }
+            } else {
+                if let Some(l) = left_neighbor {
+                    test_pair(l, first_new.unwrap());
+                }
+                if let Some(r) = right_neighbor {
+                    test_pair(last_new.unwrap(), r);
+                }
+            }
+        }
+
+        status = before;
+        status.extend(new_list);
+        status.extend(after);
+    }
+
+    for i in 0..n {
+        finish_splits(&mut out[i], &segs[i]);
+    }
+    out
+}
+
+/// Finds every segment's split points, by one of three methods: `"brute"`
+/// (every pair), `"sweep"` (an active list of segments in the current
+/// row), or `"bentley-ottmann"` (an ordered status, tested only against
+/// its neighbours). All three answer exactly the same splits.
+pub fn find_splits(segs: &[Seg], method: &str, st: &mut SweepStats) -> Vec<Vec<Tuple>> {
+    match method {
+        "brute" => find_splits_brute(segs, st),
+        "sweep" => find_splits_sweep(segs, st),
+        "bentley-ottmann" => find_splits_bo(segs, st),
+        _ => panic!("find_splits: unknown method {method}"),
+    }
+}
+
+/// Merges segments with the same `lo` and `hi` into one, adding up their
+/// windings, drops any segment whose windings are both 0, and sorts what's
+/// left in the sweep's order.
+pub fn merge_segments(segs: &[Seg]) -> Vec<Seg> {
+    let mut merged: Vec<Seg> = Vec::new();
+    for s in segs {
+        if let Some(existing) =
+            merged.iter_mut().find(|e: &&mut Seg| tuples_eq(e.lo, s.lo) && tuples_eq(e.hi, s.hi))
+        {
+            existing.wa += s.wa;
+            existing.wb += s.wb;
+        } else {
+            merged.push(*s);
+        }
+    }
+    merged.retain(|s| s.wa != 0 || s.wb != 0);
+    merged.sort_by(seg_order_cmp);
+    merged
+}
+
+/// Splits every segment until no two of them cross, going round as many
+/// passes as it takes (rounding a crossing can create a new one).
+pub fn split_segments(segs: &[Seg], method: &str, st: &mut SweepStats) -> Vec<Seg> {
+    let mut current = merge_segments(segs);
+    loop {
+        st.passes += 1;
+        let splits = find_splits(&current, method, st);
+        if splits.iter().all(|v| v.is_empty()) {
+            return current;
+        }
+        let mut next: Vec<Seg> = Vec::new();
+        for (i, s) in current.iter().enumerate() {
+            let pts = &splits[i];
+            let mut prev = s.lo;
+            for &p in pts {
+                next.push(seg(prev, p, s.wa, s.wb));
+                prev = p;
+            }
+            next.push(seg(prev, s.hi, s.wa, s.wb));
+        }
+        current = merge_segments(&next);
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 22.4 Which side is inside
+// ---------------------------------------------------------------------
+
+/// The winding numbers of paths A and B on each side of segment `i`:
+/// first the side where it doesn't count, then the side where it does
+/// (its left, or below it when it's horizontal).
+pub fn winding_beside(segs: &[Seg], i: usize) -> ((i64, i64), (i64, i64)) {
+    let m = segs[i].lo + segs[i].hi;
+    let mut sum_a = 0i64;
+    let mut sum_b = 0i64;
+    for (j, f) in segs.iter().enumerate() {
+        if j == i {
+            continue;
+        }
+        let flo2 = f.lo * 2.0;
+        let fhi2 = f.hi * 2.0;
+        let spans = lex_le(flo2, m) && lex_less(m, fhi2);
+        if spans && orient(flo2, fhi2, m) > 0.0 {
+            sum_a += f.wa;
+            sum_b += f.wb;
+        }
+    }
+    ((sum_a, sum_b), (sum_a + segs[i].wa, sum_b + segs[i].wb))
+}
+
+/// Whether a winding number is inside under a fill rule: nonzero when it
+/// isn't 0, even-odd when it's odd.
+pub fn inside_rule(w: i64, rule: &str) -> bool {
+    if rule == "evenodd" {
+        w.rem_euclid(2) != 0
+    } else {
+        w != 0
+    }
+}
+
+/// What each boolean operation calls "inside".
+pub fn op_inside(op: &str, in_a: bool, in_b: bool) -> bool {
+    match op {
+        "union" => in_a || in_b,
+        "intersection" => in_a && in_b,
+        "difference" => in_a && !in_b,
+        "xor" => in_a != in_b,
+        _ => panic!("op_inside: unknown op {op}"),
+    }
+}
+
+/// Keeps the segments where `op_inside` differs between the two sides, as
+/// `(from, to)` pairs with the inside on the right as you travel from `to`
+/// to `to`.
+pub fn keep_edges(segs: &[Seg], rule_a: &str, rule_b: &str, op: &str) -> Vec<(Tuple, Tuple)> {
+    let mut out = Vec::new();
+    for i in 0..segs.len() {
+        let (outside, inside) = winding_beside(segs, i);
+        let out_flag = op_inside(op, inside_rule(outside.0, rule_a), inside_rule(outside.1, rule_b));
+        let in_flag = op_inside(op, inside_rule(inside.0, rule_a), inside_rule(inside.1, rule_b));
+        if out_flag != in_flag {
+            if in_flag {
+                out.push((segs[i].lo, segs[i].hi));
+            } else {
+                out.push((segs[i].hi, segs[i].lo));
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------
+// § 22.5 Stitching
+// ---------------------------------------------------------------------
+
+/// Which half-turn `d` is in, relative to facing back along `r`: 0 for
+/// the half swept counterclockwise from just past `r`, up to and
+/// including straight ahead (the reverse of `r`); 1 for the rest, up to
+/// and including `r` itself (doubling back the way you came, the last
+/// resort). `cross(r, d) < 0` means `d` is counterclockwise of `r`, in
+/// this book's clockwise-positive convention.
+fn ccw_half(r: Tuple, d: Tuple) -> i32 {
+    let c = cross(r, d);
+    if c < 0.0 {
+        0
+    } else if c > 0.0 {
+        1
+    } else if dot(r, d) < 0.0 {
+        0
+    } else {
+        1
+    }
+}
+
+/// Orders directions by angle swept counterclockwise starting just past
+/// `r` (facing back the way you came): the smallest is the sharpest right
+/// turn from `r`.
+fn cmp_ccw_from(r: Tuple, d1: Tuple, d2: Tuple) -> std::cmp::Ordering {
+    let h1 = ccw_half(r, d1);
+    let h2 = ccw_half(r, d2);
+    if h1 != h2 {
+        return h1.cmp(&h2);
+    }
+    let c = cross(d1, d2);
+    if c < 0.0 {
+        std::cmp::Ordering::Less
+    } else if c > 0.0 {
+        std::cmp::Ordering::Greater
+    } else {
+        std::cmp::Ordering::Equal
+    }
+}
+
+fn drop_collinear(pts: &mut Vec<Tuple>) {
+    loop {
+        let n = pts.len();
+        if n < 3 {
+            return;
+        }
+        let mut remove_idx = None;
+        for i in 0..n {
+            let prev = pts[(i + n - 1) % n];
+            let cur = pts[i];
+            let next = pts[(i + 1) % n];
+            if orient(prev, cur, next) == 0.0 {
+                remove_idx = Some(i);
+                break;
+            }
+        }
+        match remove_idx {
+            Some(i) => {
+                pts.remove(i);
+            }
+            None => return,
+        }
+    }
+}
+
+fn rotate_to_top_left(pts: &mut Vec<Tuple>) {
+    if pts.is_empty() {
+        return;
+    }
+    let mut best = 0;
+    for i in 1..pts.len() {
+        if lex_less(pts[i], pts[best]) {
+            best = i;
+        }
+    }
+    pts.rotate_left(best);
+}
+
+fn cmp_point_list(a: &[Tuple], b: &[Tuple]) -> std::cmp::Ordering {
+    for i in 0..a.len().min(b.len()) {
+        if !tuples_eq(a[i], b[i]) {
+            return lex_cmp(a[i], b[i]);
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+/// Links `(from, to)` pairs into closed contours: from the first unused
+/// pair in the sweep's order, follow it, and at each vertex take the
+/// unused pair leaving it that turns furthest right, until back at the
+/// start. Drops collinear vertices, starts each contour at its
+/// topmost-then-leftmost point, and sorts the contours.
+pub fn stitch(kept: &[(Tuple, Tuple)]) -> Vec<Vec<Tuple>> {
+    let n = kept.len();
+    let mut used = vec![false; n];
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| {
+        let (fi, ti) = kept[i];
+        let (fj, tj) = kept[j];
+        if tuples_eq(fi, fj) {
+            lex_cmp(ti, tj)
+        } else {
+            lex_cmp(fi, fj)
+        }
+    });
+
+    let mut contours: Vec<Vec<Tuple>> = Vec::new();
+
+    loop {
+        let start_idx = match order.iter().find(|&&i| !used[i]) {
+            Some(&i) => i,
+            None => break,
+        };
+        let start_from = kept[start_idx].0;
+        let mut pts: Vec<Tuple> = vec![start_from];
+        used[start_idx] = true;
+        let mut came_from_dir = kept[start_idx].0 - kept[start_idx].1;
+        let mut at = kept[start_idx].1;
+        pts.push(at);
+
+        while !tuples_eq(at, start_from) {
+            let candidates: Vec<usize> =
+                (0..n).filter(|&i| !used[i] && tuples_eq(kept[i].0, at)).collect();
+            let mut best: Option<usize> = None;
+            for &c in &candidates {
+                let dc = kept[c].1 - kept[c].0;
+                match best {
+                    None => best = Some(c),
+                    Some(b) => {
+                        let db = kept[b].1 - kept[b].0;
+                        if cmp_ccw_from(came_from_dir, dc, db) == std::cmp::Ordering::Less {
+                            best = Some(c);
+                        }
+                    }
+                }
+            }
+            let chosen = best.expect("stitch: dead end -- an odd vertex");
+            used[chosen] = true;
+            came_from_dir = kept[chosen].0 - kept[chosen].1;
+            at = kept[chosen].1;
+            pts.push(at);
+        }
+        pts.pop();
+        contours.push(pts);
+    }
+
+    for c in contours.iter_mut() {
+        drop_collinear(c);
+        rotate_to_top_left(c);
+    }
+    contours.sort_by(|a, b| cmp_point_list(a, b));
+    contours
+}
+
+// ---------------------------------------------------------------------
+// § 22.6 Putting it together
+// ---------------------------------------------------------------------
+
+/// The whole boolean pipeline: splits both paths' edges against each
+/// other, classifies which side of each piece is inside, and stitches the
+/// kept pieces into an outline path.
+pub fn combine(a: &Path, rule_a: &str, b: &Path, rule_b: &str, op: &str) -> Path {
+    let mut st = sweep_stats();
+    let mut segs = path_segments(a, "a");
+    segs.extend(path_segments(b, "b"));
+    let segs = split_segments(&segs, "bentley-ottmann", &mut st);
+    let kept = keep_edges(&segs, rule_a, rule_b, op);
+    let contours = stitch(&kept);
+    let mut result = path();
+    for c in contours {
+        if c.is_empty() {
+            continue;
+        }
+        move_to(&mut result, point(c[0].x / 256.0, c[0].y / 256.0));
+        for p in &c[1..] {
+            line_to(&mut result, point(p.x / 256.0, p.y / 256.0));
+        }
+        close(&mut result);
+    }
+    result
+}
+
+/// One path's own self-crossings resolved by its fill rule, as a plain
+/// outline: `combine` against an empty second path.
+pub fn simplify(p: &Path, rule: &str) -> Path {
+    combine(p, rule, &path(), "nonzero", "union")
+}
+
+/// Each subpath's points, in order.
+pub fn point_lists(p: &Path) -> Vec<Vec<Tuple>> {
+    subpaths(p).iter().map(|sp| sp.points.clone()).collect()
+}
+
+// ---------------------------------------------------------------------
+// § 22.7 A faster way to find crossings -- the benchmark
+// ---------------------------------------------------------------------
+
+fn ch22_font() -> Font {
+    load_font(read_file("reference/chapter-16/roboto.json"))
+}
+
+/// Roboto, loaded once per call: the font chapters 16-19's plates and
+/// chapters 22-23's fields and bakes share.
+pub fn roboto() -> Font {
+    ch22_font()
+}
+
+/// One path holding, in order, the subpaths of every placed glyph of a
+/// run of text.
+pub fn text_path(font: &Font, text: &str, size: f64, x: f64, y: f64) -> Path {
+    let mut out = path();
+    for pl in layout_run(font, text, size, x, y, true) {
+        let gp = glyph_path(font, &pl.name, text_matrix(font, size, pl.x, pl.y), 0.1);
+        for sp in subpaths(&gp) {
+            if sp.points.is_empty() {
+                continue;
+            }
+            move_to(&mut out, sp.points[0]);
+            for p in &sp.points[1..] {
+                line_to(&mut out, *p);
+            }
+            if sp.closed {
+                close(&mut out);
+            }
+        }
+    }
+    out
+}
+
+fn struck_text(n: usize) -> Path {
+    let font = roboto();
+    let text = std::iter::repeat("Pathfinder").take(n).collect::<Vec<_>>().join(" ");
+    text_path(&font, &text, 120.0 / n as f64, 20.0, 160.0)
+}
+
+fn struck_bars(n: usize) -> Path {
+    let mut p = path();
+    for k in 0..(14 * n) {
+        let x = -40.0 + 48.0 * k as f64 / n as f64;
+        let pts = [
+            point(x, 100.0),
+            point(x + 22.0 / n as f64, 100.0),
+            point(x - 40.0 / n as f64, 200.0),
+            point(x - 62.0 / n as f64, 200.0),
+        ];
+        move_to(&mut p, pts[0]);
+        for pt in &pts[1..] {
+            line_to(&mut p, *pt);
+        }
+        close(&mut p);
+    }
+    p
+}
+
+/// The chapter's benchmark: the word "Pathfinder" `n` times with a space
+/// between, struck through by `14 n` slanting bars.
+pub fn struck_line(n: usize) -> (Path, Path) {
+    (struck_text(n), struck_bars(n))
+}
+
+/// `merge_segments` of `path_segments(text, "a")` and
+/// `path_segments(bars, "b")` for `struck_line(n)`.
+pub fn struck_segments(n: usize) -> Vec<Seg> {
+    let (text, bars) = struck_line(n);
+    let mut segs = path_segments(&text, "a");
+    segs.extend(path_segments(&bars, "b"));
+    merge_segments(&segs)
+}
+
+// ---------------------------------------------------------------------
+// § 22.9 Putting it together -- the plate
+// ---------------------------------------------------------------------
+
+const CH22_PAPER: Color = Color { red: 0.02, green: 0.02, blue: 0.025 };
+const CH22_DIM: Color = Color { red: 0.3, green: 0.3, blue: 0.34 };
+const CH22_MAGENTA: Color = Color { red: 0.85, green: 0.2, blue: 0.55 };
+const CH22_ORANGE: Color = Color { red: 0.9, green: 0.55, blue: 0.1 };
+
+fn ch22_hairline(c: &mut Canvas, p: &Path, width: f64, col: Color) {
+    let outline = stroke_to_path(p, width, "butt", "round", 4.0);
+    let cov = fill_path(&outline, "nonzero", c.width, c.height);
+    paint_through(c, &cov, col);
+}
+
+/// Path A: Roboto's `g`, through `text_matrix(font, 200, 40, 140)`.
+pub fn plate_glyph() -> Path {
+    let font = roboto();
+    glyph_path(&font, "g", text_matrix(&font, 200.0, 40.0, 140.0), 0.1)
+}
+
+/// Path B: chapter 5's star, scaled by 0.85 about its own center and
+/// moved so that center lands at (130, 104).
+pub fn plate_star() -> Path {
+    let m = translation(49.5, 23.5)
+        * translation(80.5, 80.5)
+        * scaling(0.85, 0.85)
+        * translation(-80.5, -80.5);
+    transform_path(&star(), m)
+}
+
+/// One panel of Plate 22: `combine(A, "nonzero", B, "evenodd", op)`
+/// filled and painted orange, with A, B and the result's hairlines over
+/// it.
+pub fn op_panel(op: &str) -> Canvas {
+    let a = plate_glyph();
+    let b = plate_star();
+    let mut c = canvas(200, 200);
+    fill(&mut c, CH22_PAPER);
+    let result = combine(&a, "nonzero", &b, "evenodd", op);
+    let cov = fill_path(&result, "nonzero", 200, 200);
+    paint_through(&mut c, &cov, CH22_ORANGE);
+    ch22_hairline(&mut c, &a, 1.0, CH22_DIM);
+    ch22_hairline(&mut c, &b, 1.0, CH22_DIM);
+    ch22_hairline(&mut c, &result, 1.0, CH22_MAGENTA);
+    c
+}
+
+/// The four panels side by side: union, intersection, difference, xor.
+pub fn plate_22() -> Canvas {
+    let ops = ["union", "intersection", "difference", "xor"];
+    let mut result = op_panel(ops[0]);
+    for op in &ops[1..] {
+        result = side_by_side(&result, &op_panel(op));
+    }
+    result
+}
+
+/// `n` circles of radius `r` spaced `d` from `(cx, cy)`, each XOR'ed into
+/// the last.
+pub fn rosette(cx: f64, cy: f64, n: usize, r: f64, d: f64) -> Path {
+    let mut p = path();
+    for k in 0..n {
+        let theta = 2.0 * std::f64::consts::PI * k as f64 / n as f64;
+        let circle = circle_path(cx + d * theta.cos(), cy + d * theta.sin(), r, 72);
+        p = combine(&p, "nonzero", &circle, "nonzero", "xor");
+    }
+    p
+}
+
+/// Sixty-one calls to `combine`, and one fill: a scalloped ring, a band,
+/// the word BOOLEAN, chapter 5's star, and a rosette, each XOR'ed or
+/// unioned or subtracted into the last.
+pub fn seal() -> Canvas {
+    let font = roboto();
+    let mut rim = circle_path(240.0, 240.0, 200.0, 120);
+    for k in 0..40 {
+        let theta = 2.0 * std::f64::consts::PI * k as f64 / 40.0;
+        let notch =
+            circle_path(240.0 + 200.0 * theta.cos(), 240.0 + 200.0 * theta.sin(), 16.0, 24);
+        rim = combine(&rim, "nonzero", &notch, "nonzero", "union");
+    }
+    let inner = circle_path(240.0, 240.0, 168.0, 120);
+    let ring = combine(&rim, "nonzero", &inner, "nonzero", "difference");
+    let band = polygon(&[
+        point(20.0, 196.0),
+        point(460.0, 196.0),
+        point(460.0, 284.0),
+        point(20.0, 284.0),
+    ]);
+    let mut s = combine(&ring, "nonzero", &band, "nonzero", "union");
+    let text = text_path(&font, "BOOLEAN", 84.0, 52.0, 270.0);
+    s = combine(&s, "nonzero", &text, "nonzero", "xor");
+    let moved_star = transform_path(&star(), translation(159.5, 23.5));
+    s = combine(&s, "nonzero", &moved_star, "evenodd", "xor");
+    let rose = rosette(240.0, 352.0, 16, 44.0, 36.0);
+    s = combine(&s, "nonzero", &rose, "nonzero", "xor");
+
+    let mut c = canvas(480, 480);
+    fill(&mut c, CH22_PAPER);
+    let cov = fill_path(&s, "nonzero", 480, 480);
+    paint_through(&mut c, &cov, CH22_ORANGE);
+    ch22_hairline(&mut c, &s, 0.75, CH22_MAGENTA);
+    c
+}
+
+// =======================================================================
+// Chapter 23: Distance Fields
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 23.1 Exact fields for primitives
+// ---------------------------------------------------------------------
+
+/// A signed distance: negative inside a shape, positive outside, its size
+/// the distance to the nearest point of the shape's edge.
+pub fn sd_circle(p: Tuple, c: Tuple, r: f64) -> f64 {
+    magnitude(p - c) - r
+}
+
+/// The distance from `p` to the segment `a`-`b`: no sign, since a segment
+/// has no inside.
+pub fn distance_to_segment(p: Tuple, a: Tuple, b: Tuple) -> f64 {
+    let ab = b - a;
+    let denom = dot(ab, ab);
+    let t = if denom == 0.0 { 0.0 } else { (dot(p - a, ab) / denom).clamp(0.0, 1.0) };
+    magnitude(p - (a + ab * t))
+}
+
+/// A box centered on `c`, `hw` and `hh` from the center to its sides.
+pub fn sd_box(p: Tuple, c: Tuple, hw: f64, hh: f64) -> f64 {
+    let qx = (p.x - c.x).abs() - hw;
+    let qy = (p.y - c.y).abs() - hh;
+    let ax = qx.max(0.0);
+    let ay = qy.max(0.0);
+    (ax * ax + ay * ay).sqrt() + qx.max(qy).min(0.0)
+}
+
+/// A box with its corners rounded by `r`: shrink the box by `r`, then
+/// subtract `r`.
+pub fn sd_rounded_box(p: Tuple, c: Tuple, hw: f64, hh: f64, r: f64) -> f64 {
+    sd_box(p, c, hw - r, hh - r) - r
+}
+
+/// The least distance to any edge of `path`, made negative where chapter
+/// 5's `winding_at` says `p` is inside under `rule`.
+pub fn sd_polygon(p: Tuple, path: &Path, rule: &str) -> f64 {
+    let mut best = f64::INFINITY;
+    for (a, b) in edges(path) {
+        let d = distance_to_segment(p, a, b);
+        if d < best {
+            best = d;
+        }
+    }
+    let w = winding_at(path, p.x, p.y);
+    if inside_rule(w, rule) {
+        -best
+    } else {
+        best
+    }
+}
+
+// ---------------------------------------------------------------------
+// § 23.2 Fields for curves
+// ---------------------------------------------------------------------
+
+fn solve_linear(c: f64, d: f64) -> Vec<f64> {
+    if c.abs() < 1e-12 {
+        vec![]
+    } else {
+        vec![-d / c]
+    }
+}
+
+fn solve_quadratic(b: f64, c: f64, d: f64) -> Vec<f64> {
+    if b.abs() < 1e-12 {
+        return solve_linear(c, d);
+    }
+    let disc = c * c - 4.0 * b * d;
+    if disc < 0.0 {
+        return vec![];
+    }
+    let sq = disc.sqrt();
+    let mut r = vec![(-c - sq) / (2.0 * b), (-c + sq) / (2.0 * b)];
+    r.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    r
+}
+
+/// The real roots of `a t^3 + b t^2 + c t + d = 0`, in increasing order.
+/// Falls back to the quadratic (then linear) when the leading
+/// coefficients vanish. Cardano's formula for one real root, the cosine
+/// formula for three.
+pub fn solve_cubic(a: f64, b: f64, c: f64, d: f64) -> Vec<f64> {
+    if a.abs() < 1e-12 {
+        return solve_quadratic(b, c, d);
+    }
+    let bb = b / a;
+    let cc = c / a;
+    let dd = d / a;
+    let shift = bb / 3.0;
+    let p = cc - bb * bb / 3.0;
+    let q = 2.0 * bb * bb * bb / 27.0 - bb * cc / 3.0 + dd;
+    let disc = (q * q) / 4.0 + (p * p * p) / 27.0;
+    if disc > 0.0 {
+        let sq = disc.sqrt();
+        let u = (-q / 2.0 + sq).cbrt();
+        let v = (-q / 2.0 - sq).cbrt();
+        vec![u + v - shift]
+    } else if p.abs() < 1e-12 {
+        vec![-shift]
+    } else {
+        let r = 2.0 * (-p / 3.0).sqrt();
+        let arg = (3.0 * q / (p * r)).clamp(-1.0, 1.0);
+        let theta = arg.acos() / 3.0;
+        let two_pi_3 = 2.0 * std::f64::consts::PI / 3.0;
+        let mut roots = vec![
+            r * theta.cos() - shift,
+            r * (theta - two_pi_3).cos() - shift,
+            r * (theta - 2.0 * two_pi_3).cos() - shift,
+        ];
+        roots.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        roots
+    }
+}
+
+fn nearest_t_quadratic(p: Tuple, c: &Curve) -> f64 {
+    let p0 = c.points[0];
+    let p1 = c.points[1];
+    let p2 = c.points[2];
+    let a0 = p0 - p;
+    let a1 = (p1 - p0) * 2.0;
+    let a2 = p0 - p1 * 2.0 + p2;
+    let roots =
+        solve_cubic(2.0 * dot(a2, a2), 3.0 * dot(a1, a2), dot(a1, a1) + 2.0 * dot(a0, a2), dot(a0, a1));
+    let mut ts = vec![0.0, 1.0];
+    for r in roots {
+        if r > 0.0 && r < 1.0 {
+            ts.push(r);
+        }
+    }
+    let mut best_t = ts[0];
+    let mut best_d = magnitude(point_at(c, best_t) - p);
+    for &t in &ts[1..] {
+        let d = magnitude(point_at(c, t) - p);
+        if d < best_d {
+            best_d = d;
+            best_t = t;
+        }
+    }
+    best_t
+}
+
+/// The distance from `p` to the nearest point of quadratic `c`: the
+/// perpendicular-foot condition is a cubic in `t`, solved exactly.
+pub fn distance_to_quadratic(p: Tuple, c: &Curve) -> f64 {
+    magnitude(point_at(c, nearest_t_quadratic(p, c)) - p)
+}
+
+/// The `t` of the nearest point of cubic `c` to `p`: both ends, and nine
+/// seeds refined by eight Newton steps each on the perpendicular-foot
+/// condition. The nearest wins; ties keep the earlier candidate (the ends
+/// first, then the seeds in order).
+pub fn nearest_t_cubic(p: Tuple, c: &Curve) -> f64 {
+    let mut candidates: Vec<f64> = vec![0.0, 1.0];
+    for i in 0..=8 {
+        let mut t = i as f64 / 8.0;
+        for _ in 0..8 {
+            let bt = point_at(c, t);
+            let d1 = derivative(c, t);
+            let d2 = second_derivative(c, t);
+            let f = dot(bt - p, d1);
+            let fp = dot(d1, d1) + dot(bt - p, d2);
+            if fp == 0.0 {
+                break;
+            }
+            t = (t - f / fp).clamp(0.0, 1.0);
+        }
+        candidates.push(t);
+    }
+    let mut best_t = candidates[0];
+    let mut best_d = magnitude(point_at(c, best_t) - p);
+    for &t in &candidates[1..] {
+        let d = magnitude(point_at(c, t) - p);
+        if d < best_d {
+            best_d = d;
+            best_t = t;
+        }
+    }
+    best_t
+}
+
+/// The distance from `p` to the nearest point of cubic `c`.
+pub fn distance_to_cubic(p: Tuple, c: &Curve) -> f64 {
+    let t = nearest_t_cubic(p, c);
+    magnitude(point_at(c, t) - p)
+}
+
+/// The ground truth by search: 129 samples, ternary search around every
+/// sample no farther than its neighbours.
+pub fn brute_distance(c: &Curve, p: Tuple) -> f64 {
+    let n = 128usize;
+    let dist = |t: f64| magnitude(point_at(c, t) - p);
+    let ts: Vec<f64> = (0..=n).map(|i| i as f64 / n as f64).collect();
+    let ds: Vec<f64> = ts.iter().map(|&t| dist(t)).collect();
+    let mut best = f64::INFINITY;
+    for i in 0..=n {
+        let left_ok = i == 0 || ds[i] <= ds[i - 1];
+        let right_ok = i == n || ds[i] <= ds[i + 1];
+        if !(left_ok && right_ok) {
+            continue;
+        }
+        let mut a = if i == 0 { ts[i] } else { ts[i - 1] };
+        let mut b = if i == n { ts[i] } else { ts[i + 1] };
+        for _ in 0..40 {
+            let m1 = a + (b - a) / 3.0;
+            let m2 = b - (b - a) / 3.0;
+            if dist(m1) < dist(m2) {
+                b = m2;
+            } else {
+                a = m1;
+            }
+        }
+        let d = dist((a + b) / 2.0);
+        if d < best {
+            best = d;
+        }
+    }
+    best
+}
+
+/// `n` points spread over a box the same way in every language, by two
+/// low-discrepancy (Weyl) sequences.
+pub fn weyl_points(n: usize, x0: f64, y0: f64, w: f64, h: f64) -> Vec<Tuple> {
+    const A: f64 = 0.7548776662466927;
+    const B: f64 = 0.5698402909980532;
+    (1..=n)
+        .map(|k| {
+            let ka = k as f64 * A;
+            let kb = k as f64 * B;
+            point(x0 + w * (ka - ka.floor()), y0 + h * (kb - kb.floor()))
+        })
+        .collect()
+}
+
+/// The greatest `|distance - brute_distance|` over `pts`, using the
+/// quadratic or cubic distance as `c` has three or four control points.
+pub fn max_curve_error(c: &Curve, pts: &[Tuple]) -> f64 {
+    let mut worst: f64 = 0.0;
+    for &p in pts {
+        let d = if c.points.len() == 3 { distance_to_quadratic(p, c) } else { distance_to_cubic(p, c) };
+        let b = brute_distance(c, p);
+        let e = (d - b).abs();
+        if e > worst {
+            worst = e;
+        }
+    }
+    worst
+}
+
+// ---------------------------------------------------------------------
+// § 23.3 Render it
+// ---------------------------------------------------------------------
+
+/// A width, a height and one number per pixel, row by row.
+#[derive(Debug, Clone)]
+pub struct Field {
+    pub width: usize,
+    pub height: usize,
+    pub values: Vec<f64>,
+}
+
+/// Samples `f` at every pixel center, `point(x + 0.5, y + 0.5)`.
+pub fn field<F: Fn(Tuple) -> f64>(width: usize, height: usize, f: F) -> Field {
+    let mut values = Vec::with_capacity(width * height);
+    for y in 0..height {
+        for x in 0..width {
+            values.push(f(point(x as f64 + 0.5, y as f64 + 0.5)));
+        }
+    }
+    Field { width, height, values }
+}
+
+/// A field built directly from a list of values, row by row.
+pub fn field_of(width: usize, height: usize, values: Vec<f64>) -> Field {
+    Field { width, height, values }
+}
+
+pub fn field_at(f: &Field, x: i64, y: i64) -> f64 {
+    f.values[y as usize * f.width + x as usize]
+}
+
+/// The least and greatest values in the field.
+pub fn field_range(f: &Field) -> (f64, f64) {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for &v in &f.values {
+        if v < lo {
+            lo = v;
+        }
+        if v > hi {
+            hi = v;
+        }
+    }
+    (lo, hi)
+}
+
+/// Chapter 2's coverage buffer from a field: `clamp(0.5 - d, 0, 1)` at
+/// every pixel.
+pub fn field_coverage(f: &Field) -> CoverageBuffer {
+    let mut cov = coverage_buffer(f.width, f.height);
+    for y in 0..f.height {
+        for x in 0..f.width {
+            let d = field_at(f, x as i64, y as i64);
+            set_coverage(&mut cov, x as i64, y as i64, (0.5 - d).clamp(0.0, 1.0));
+        }
+    }
+    cov
+}
+
+/// The field of `sd_polygon`.
+pub fn polygon_field(p: &Path, rule: &str, width: usize, height: usize) -> Field {
+    let rule = rule.to_string();
+    field(width, height, move |q| sd_polygon(q, p, &rule))
+}
+
+/// A coverage buffer of `|cov - exact|` at each pixel.
+pub fn coverage_error(cov: &CoverageBuffer, exact: &CoverageBuffer) -> CoverageBuffer {
+    let mut out = coverage_buffer(cov.width, cov.height);
+    for y in 0..cov.height {
+        for x in 0..cov.width {
+            let v = (coverage_at(cov, x as i64, y as i64) - coverage_at(exact, x as i64, y as i64)).abs();
+            set_coverage(&mut out, x as i64, y as i64, v);
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------
+// § 23.4 Chapters 13, 14 and 22 for free
+// ---------------------------------------------------------------------
+
+fn field_zip<F: Fn(f64, f64) -> f64>(a: &Field, b: &Field, f: F) -> Field {
+    let values = a.values.iter().zip(b.values.iter()).map(|(&x, &y)| f(x, y)).collect();
+    Field { width: a.width, height: a.height, values }
+}
+
+/// The shape grown by `r` (shrunk when `r` is negative): `d - r`.
+pub fn field_offset(f: &Field, r: f64) -> Field {
+    Field { width: f.width, height: f.height, values: f.values.iter().map(|&d| d - r).collect() }
+}
+
+/// A band `width` wide centered on the edge: `|d| - width / 2`.
+pub fn field_stroke(f: &Field, width: f64) -> Field {
+    Field {
+        width: f.width,
+        height: f.height,
+        values: f.values.iter().map(|&d| d.abs() - width / 2.0).collect(),
+    }
+}
+
+pub fn field_union(a: &Field, b: &Field) -> Field {
+    field_zip(a, b, |x, y| x.min(y))
+}
+
+pub fn field_intersection(a: &Field, b: &Field) -> Field {
+    field_zip(a, b, |x, y| x.max(y))
+}
+
+pub fn field_difference(a: &Field, b: &Field) -> Field {
+    field_zip(a, b, |x, y| x.max(-y))
+}
+
+pub fn field_xor(a: &Field, b: &Field) -> Field {
+    field_zip(a, b, |x, y| x.min(y).max(-(x.max(y))))
+}
+
+/// The field of `distance_to_cubic`: no sign, since one curve has no
+/// inside.
+pub fn cubic_field(c: &Curve, width: usize, height: usize) -> Field {
+    field(width, height, |p| distance_to_cubic(p, c))
+}
+
+/// `cubic((30, 150), (40, 20), (160, 180), (170, 50))`, the plate's curve.
+pub fn s_curve() -> Curve {
+    cubic(point(30.0, 150.0), point(40.0, 20.0), point(160.0, 180.0), point(170.0, 50.0))
+}
+
+fn quadratics_of_glyph(font: &Font, name: &str, m: Matrix3) -> Vec<Curve> {
+    let mut curves = Vec::new();
+    for contour in glyph_outline(font, name) {
+        for c in contour {
+            curves.push(transform_curve(&c, m));
+        }
+    }
+    curves
+}
+
+/// The field of chapter 22's `plate_glyph()` on a 200 by 200 canvas.
+pub fn plate_glyph_field() -> Field {
+    let font = roboto();
+    let m = text_matrix(&font, 200.0, 40.0, 140.0);
+    let curves = quadratics_of_glyph(&font, "g", m);
+    let outline = glyph_path(&font, "g", m, 0.01);
+    field(200, 200, move |p| {
+        let mut best = f64::INFINITY;
+        for c in &curves {
+            let d = distance_to_quadratic(p, c);
+            if d < best {
+                best = d;
+            }
+        }
+        let w = winding_at(&outline, p.x, p.y);
+        if inside_rule(w, "nonzero") {
+            -best
+        } else {
+            best
+        }
+    })
+}
+
+// ---------------------------------------------------------------------
+// § 23.5 Something paths can't do
+// ---------------------------------------------------------------------
+
+/// `min(a, b)` when `k` is 0 or less; otherwise dips below both by up to
+/// `k / 4` where they're within `k` of each other, rounding the crease
+/// where two shapes meet into a fillet.
+pub fn smooth_min(a: f64, b: f64, k: f64) -> f64 {
+    if k <= 0.0 {
+        return a.min(b);
+    }
+    let h = (k - (a - b).abs()).max(0.0) / k;
+    a.min(b) - h * h * k / 4.0
+}
+
+pub fn field_smooth_union(a: &Field, b: &Field, k: f64) -> Field {
+    field_zip(a, b, move |x, y| smooth_min(x, y, k))
+}
+
+/// A 160 by 160 field: a circle and a rounded box, smooth-unioned by `k`.
+pub fn fillet_field(k: f64) -> Field {
+    field(160, 160, move |p| {
+        smooth_min(
+            sd_circle(p, point(60.0, 70.0), 36.0),
+            sd_rounded_box(p, point(105.0, 95.0), 40.0, 25.0, 4.0),
+            k,
+        )
+    })
+}
+
+// ---------------------------------------------------------------------
+// § 23.6 The distance transform
+// ---------------------------------------------------------------------
+
+/// More than any squared distance on the grid, so "far" stays a whole
+/// number and infinity-minus-infinity never comes up.
+pub fn far_value(w: usize, h: usize) -> f64 {
+    (w * w + h * h) as f64
+}
+
+fn parabola_cross(f: &[f64], q: usize, p: usize) -> f64 {
+    ((f[q] + (q * q) as f64) - (f[p] + (p * p) as f64)) / (2.0 * q as f64 - 2.0 * p as f64)
+}
+
+/// The lower envelope of a row of parabolas, one foot per pixel:
+/// Felzenszwalb and Huttenlocher's one-dimensional squared distance
+/// transform.
+pub fn edt_1d(f: &[f64]) -> Vec<f64> {
+    let n = f.len();
+    let mut v = vec![0usize; n];
+    let mut z = vec![0.0f64; n + 2];
+    z[0] = f64::NEG_INFINITY;
+    z[1] = f64::INFINITY;
+    let mut k = 0usize;
+    for q in 1..n {
+        let mut s = parabola_cross(f, q, v[k]);
+        while s <= z[k] {
+            k -= 1;
+            s = parabola_cross(f, q, v[k]);
+        }
+        k += 1;
+        v[k] = q;
+        z[k] = s;
+        z[k + 1] = f64::INFINITY;
+    }
+    let mut d = vec![0.0; n];
+    let mut k2 = 0usize;
+    for q in 0..n {
+        while z[k2 + 1] < q as f64 {
+            k2 += 1;
+        }
+        let dq = q as f64 - v[k2] as f64;
+        d[q] = dq * dq + f[v[k2]];
+    }
+    d
+}
+
+/// For every pixel of a bitmap, the squared distance from its center to
+/// the nearest "on" center: `edt_1d` down every column, then along every
+/// row of the result.
+pub fn distance_transform(bits: &[bool], w: usize, h: usize) -> Vec<f64> {
+    let far = far_value(w, h);
+    let mut cols_done = vec![0.0; w * h];
+    for x in 0..w {
+        let col: Vec<f64> = (0..h).map(|y| if bits[y * w + x] { 0.0 } else { far }).collect();
+        let d = edt_1d(&col);
+        for y in 0..h {
+            cols_done[y * w + x] = d[y];
+        }
+    }
+    let mut out = vec![0.0; w * h];
+    for y in 0..h {
+        let row: Vec<f64> = (0..w).map(|x| cols_done[y * w + x]).collect();
+        let d = edt_1d(&row);
+        for x in 0..w {
+            out[y * w + x] = d[x];
+        }
+    }
+    out
+}
+
+/// The same, by trying every pixel that's on.
+pub fn brute_distance_transform(bits: &[bool], w: usize, h: usize) -> Vec<f64> {
+    let far = far_value(w, h);
+    let on: Vec<(usize, usize)> = (0..h)
+        .flat_map(|y| (0..w).filter(move |&x| bits[y * w + x]).map(move |x| (x, y)))
+        .collect();
+    let mut out = vec![far; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut best = far;
+            for &(ox, oy) in &on {
+                let dx = x as f64 - ox as f64;
+                let dy = y as f64 - oy as f64;
+                let d = dx * dx + dy * dy;
+                if d < best {
+                    best = d;
+                }
+            }
+            out[y * w + x] = best;
+        }
+    }
+    out
+}
+
+/// On where the coverage is at least 0.5.
+pub fn bits_of(cov: &CoverageBuffer) -> Vec<bool> {
+    (0..cov.height)
+        .flat_map(|y| (0..cov.width).map(move |x| coverage_at(cov, x as i64, y as i64) >= 0.5))
+        .collect()
+}
+
+/// A coverage buffer built directly from a list of values, row by row.
+pub fn coverage_of(w: usize, h: usize, values: &[f64]) -> CoverageBuffer {
+    let mut cov = coverage_buffer(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            set_coverage(&mut cov, x as i64, y as i64, values[y * w + x]);
+        }
+    }
+    cov
+}
+
+/// Any coverage buffer, turned into a field: two distance transforms,
+/// one to the nearest "on" pixel and one to the nearest "off", less half
+/// a pixel each, which puts the edge between the centers.
+pub fn field_from_coverage(cov: &CoverageBuffer) -> Field {
+    let w = cov.width;
+    let h = cov.height;
+    let bits = bits_of(cov);
+    let not_bits: Vec<bool> = bits.iter().map(|&b| !b).collect();
+    let d_on = distance_transform(&bits, w, h);
+    let d_off = distance_transform(&not_bits, w, h);
+    let mut values = vec![0.0; w * h];
+    for i in 0..w * h {
+        values[i] = if bits[i] { -(d_off[i].sqrt() - 0.5) } else { d_on[i].sqrt() - 0.5 };
+    }
+    Field { width: w, height: h, values }
+}
+
+/// Roboto's `g` at 48 pixels to the em, origin `(14, 44)`, filled by
+/// chapter 7 into a 64 by 64 buffer.
+pub fn transform_bitmap() -> CoverageBuffer {
+    let font = roboto();
+    let m = text_matrix(&font, 48.0, 14.0, 44.0);
+    let p = glyph_path(&font, "g", m, 0.1);
+    fill_path(&p, "nonzero", 64, 64)
+}
+
+// ---------------------------------------------------------------------
+// § 23.7 Glyph atlases
+// ---------------------------------------------------------------------
+
+/// A baked glyph: one or more fields (channels) over a texel box, with
+/// the box's own corner (`left`, `top`) in device pixels at the baked
+/// size.
+#[derive(Debug, Clone)]
+pub struct Baked {
+    pub channels: Vec<Field>,
+    pub left: i64,
+    pub top: i64,
+    pub width: usize,
+    pub height: usize,
+}
+
+/// Chapter 17's bitmap box at the quarter 0, grown by `spread` texels on
+/// every side, and the matrix that puts the box's own corner at the
+/// origin.
+pub fn bake_box(font: &Font, name: &str, size: f64, spread: f64) -> (i64, i64, usize, usize, Matrix3) {
+    let s = size / font.units_per_em;
+    let (x0, y0, x1, y1) = glyph_bounds(font, name);
+    let spread_i = spread.round() as i64;
+    let left = (x0 * s).floor() as i64 - spread_i;
+    let right = (x1 * s).ceil() as i64 + spread_i;
+    let top = (-y1 * s).floor() as i64 - spread_i;
+    let bottom = (-y0 * s).ceil() as i64 + spread_i;
+    let m = text_matrix(font, size, -left as f64, -top as f64);
+    (left, top, (right - left).max(0) as usize, (bottom - top).max(0) as usize, m)
+}
+
+/// A baked glyph: one field over the box, the glyph's signed distance at
+/// every texel center, clamped to `+/- spread`.
+pub fn bake_sdf(font: &Font, name: &str, size: f64, spread: f64) -> Baked {
+    let (left, top, width, height, m) = bake_box(font, name, size, spread);
+    let curves = quadratics_of_glyph(font, name, m);
+    let outline = glyph_path(font, name, m, 0.01);
+    let f = field(width, height, move |p| {
+        let mut best = f64::INFINITY;
+        for c in &curves {
+            let d = distance_to_quadratic(p, c);
+            if d < best {
+                best = d;
+            }
+        }
+        let w = winding_at(&outline, p.x, p.y);
+        let signed = if inside_rule(w, "nonzero") { -best } else { best };
+        signed.clamp(-spread, spread)
+    });
+    Baked { channels: vec![f], left, top, width, height }
+}
+
+/// Chapter 11's bilinear sample, in texel-center space.
+pub fn sample_field(f: &Field, sx: f64, sy: f64) -> f64 {
+    let gx = sx - 0.5;
+    let gy = sy - 0.5;
+    let x0 = gx.floor() as i64;
+    let y0 = gy.floor() as i64;
+    let fx = gx - x0 as f64;
+    let fy = gy - y0 as f64;
+    let get = |xi: i64, yi: i64| -> f64 {
+        let cx = xi.clamp(0, f.width as i64 - 1) as usize;
+        let cy = yi.clamp(0, f.height as i64 - 1) as usize;
+        f.values[cy * f.width + cx]
+    };
+    let v00 = get(x0, y0);
+    let v10 = get(x0 + 1, y0);
+    let v01 = get(x0, y0 + 1);
+    let v11 = get(x0 + 1, y0 + 1);
+    let top = v00 * (1.0 - fx) + v10 * fx;
+    let bottom = v01 * (1.0 - fx) + v11 * fx;
+    top * (1.0 - fy) + bottom * fy
+}
+
+pub fn median3(a: f64, b: f64, c: f64) -> f64 {
+    let lo = a.min(b);
+    let hi = a.max(b);
+    lo.max(hi.min(c))
+}
+
+fn baked_bounds(baked: &Baked, scale: f64, x: f64, y: f64) -> (i64, i64, i64, i64) {
+    let x0 = (x + baked.left as f64 * scale).floor() as i64;
+    let y0 = (y + baked.top as f64 * scale).floor() as i64;
+    let x1 = (x + (baked.left as f64 + baked.width as f64) * scale).ceil() as i64;
+    let y1 = (y + (baked.top as f64 + baked.height as f64) * scale).ceil() as i64;
+    (x0, y0, x1, y1)
+}
+
+/// Draws a baked glyph with its origin at `(x, y)`, each texel `scale`
+/// pixels wide: samples every channel, turns the one channel (or the
+/// median of the first three) into coverage by `clamp(0.5 - scale *
+/// distance, 0, 1)`, and mixes toward `col` in linear light.
+pub fn draw_baked(c: &mut Canvas, baked: &Baked, scale: f64, x: f64, y: f64, col: Color) {
+    let (x0, y0, x1, y1) = baked_bounds(baked, scale, x, y);
+    for py in y0..y1 {
+        if py < 0 || py as usize >= c.height {
+            continue;
+        }
+        for px in x0..x1 {
+            if px < 0 || px as usize >= c.width {
+                continue;
+            }
+            let u = (px as f64 + 0.5 - x) / scale - baked.left as f64;
+            let v = (py as f64 + 0.5 - y) / scale - baked.top as f64;
+            let samples: Vec<f64> = baked.channels.iter().map(|ch| sample_field(ch, u, v)).collect();
+            let distance =
+                if samples.len() == 1 { samples[0] } else { median3(samples[0], samples[1], samples[2]) };
+            let m = (0.5 - scale * distance).clamp(0.0, 1.0);
+            if m > 0.0 {
+                let existing = pixel_at(c, px, py);
+                write_pixel(c, px, py, mix_with(existing, col, m, true));
+            }
+        }
+    }
+}
+
+/// Draws a baked glyph the way `draw_baked` does, but with the distance
+/// (in pixels: `scale` times the fourth channel when `use_true_channel`,
+/// else `scale` times the median of the first three) turned into a mix
+/// by `k_of` instead of `clamp(0.5 - d, 0, 1)`.
+pub fn draw_effect<K: Fn(f64) -> f64>(
+    c: &mut Canvas,
+    baked: &Baked,
+    scale: f64,
+    x: f64,
+    y: f64,
+    col: Color,
+    use_true_channel: bool,
+    k_of: K,
+) {
+    let (x0, y0, x1, y1) = baked_bounds(baked, scale, x, y);
+    for py in y0..y1 {
+        if py < 0 || py as usize >= c.height {
+            continue;
+        }
+        for px in x0..x1 {
+            if px < 0 || px as usize >= c.width {
+                continue;
+            }
+            let u = (px as f64 + 0.5 - x) / scale - baked.left as f64;
+            let v = (py as f64 + 0.5 - y) / scale - baked.top as f64;
+            let samples: Vec<f64> = baked.channels.iter().map(|ch| sample_field(ch, u, v)).collect();
+            let distance_texels =
+                if use_true_channel { samples[3] } else { median3(samples[0], samples[1], samples[2]) };
+            let m = k_of(scale * distance_texels).clamp(0.0, 1.0);
+            if m > 0.0 {
+                let existing = pixel_at(c, px, py);
+                write_pixel(c, px, py, mix_with(existing, col, m, true));
+            }
+        }
+    }
+}
+
+/// Whether unit directions `a` (incoming) and `b` (outgoing) make a
+/// corner: turned by more than about eight degrees.
+pub fn is_corner(a: Tuple, b: Tuple) -> bool {
+    dot(a, b) <= 0.0 || cross(a, b).abs() > (3.0_f64).sin()
+}
+
+fn curve_chord_dir(c: &Curve) -> Tuple {
+    normalize(c.points[c.points.len() - 1] - c.points[0])
+}
+
+fn direction_at(c: &Curve, t: f64) -> Tuple {
+    let d = derivative(c, t);
+    if magnitude(d) < 1e-12 {
+        curve_chord_dir(c)
+    } else {
+        normalize(d)
+    }
+}
+
+const RED: i32 = 1;
+const GREEN: i32 = 2;
+const BLUE: i32 = 4;
+const CH23_YELLOW_MASK: i32 = 3;
+const CH23_MAGENTA_MASK: i32 = 5;
+const CH23_CYAN_MASK: i32 = 6;
+const CH23_WHITE_MASK: i32 = 7;
+
+/// One closed contour's curves, coloured for a multi-channel field:
+/// (curves, masks), rotated to start at the first corner. No corners:
+/// every mask white. One corner: split until there are at least three
+/// curves, then a third each of cyan, white, magenta. More corners: runs
+/// alternate cyan and magenta, the last yellow when the count is odd.
+pub fn color_edges(contour: &[Curve]) -> (Vec<Curve>, Vec<i32>) {
+    let m = contour.len();
+    let mut corner_idx: Vec<usize> = Vec::new();
+    for j in 0..m {
+        let prev = (j + m - 1) % m;
+        if is_corner(direction_at(&contour[prev], 1.0), direction_at(&contour[j], 0.0)) {
+            corner_idx.push(j);
+        }
+    }
+    if corner_idx.is_empty() {
+        return (contour.to_vec(), vec![CH23_WHITE_MASK; m]);
+    }
+
+    let start = corner_idx[0];
+    let mut curves: Vec<Curve> = (0..m).map(|i| contour[(start + i) % m].clone()).collect();
+    let mut rel_corners: Vec<usize> = corner_idx.iter().map(|&c| (c + m - start) % m).collect();
+    rel_corners.sort_unstable();
+
+    if rel_corners.len() == 1 {
+        while curves.len() < 3 {
+            let mut next = Vec::new();
+            for c in &curves {
+                let (a, b) = split_at(c, 0.5);
+                next.push(a);
+                next.push(b);
+            }
+            curves = next;
+        }
+        let mm = curves.len();
+        let masks: Vec<i32> = (0..mm)
+            .map(|j| match (3 * j) / mm {
+                0 => CH23_CYAN_MASK,
+                1 => CH23_WHITE_MASK,
+                _ => CH23_MAGENTA_MASK,
+            })
+            .collect();
+        (curves, masks)
+    } else {
+        let runs = rel_corners.len();
+        let mut masks = vec![0; curves.len()];
+        for (run_i, &c0) in rel_corners.iter().enumerate() {
+            let c1 = if run_i + 1 < runs { rel_corners[run_i + 1] } else { curves.len() };
+            let color = if run_i == runs - 1 && runs % 2 == 1 {
+                CH23_YELLOW_MASK
+            } else if run_i % 2 == 0 {
+                CH23_CYAN_MASK
+            } else {
+                CH23_MAGENTA_MASK
+            };
+            for k in c0..c1 {
+                masks[k] = color;
+            }
+        }
+        (curves, masks)
+    }
+}
+
+/// A straight edge as chapter 16 makes one: a quadratic with its control
+/// point at the chord's own midpoint.
+pub fn line_curve(a: Tuple, b: Tuple) -> Curve {
+    quadratic(a, (a + b) * 0.5, b)
+}
+
+/// Eight quadratics approximating a circle, ends on it at `2 pi i / 8`.
+pub fn circle_curves(cx: f64, cy: f64, r: f64) -> Vec<Curve> {
+    let n = 8;
+    let cr = r / (std::f64::consts::PI / 8.0).cos();
+    (0..n)
+        .map(|i| {
+            let a0 = 2.0 * std::f64::consts::PI * i as f64 / n as f64;
+            let a1 = 2.0 * std::f64::consts::PI * (i as f64 + 1.0) / n as f64;
+            let am = (a0 + a1) / 2.0;
+            let p0 = point(cx + r * a0.cos(), cy + r * a0.sin());
+            let p1 = point(cx + cr * am.cos(), cy + cr * am.sin());
+            let p2 = point(cx + r * a1.cos(), cy + r * a1.sin());
+            quadratic(p0, p1, p2)
+        })
+        .collect()
+}
+
+/// The distance from `p` to curve `c`'s nearest point at `t`, except past
+/// an end: there it's the distance to the line the edge would carry on
+/// along (its pseudo-distance), so a corner's two private channels see
+/// only their own edge, extended straight.
+pub fn pseudo_distance(p: Tuple, c: &Curve, t: f64, d: f64) -> f64 {
+    let start = c.points[0];
+    let end = c.points[c.points.len() - 1];
+    let start_dir = direction_at(c, 0.0);
+    let end_dir = direction_at(c, 1.0);
+    if (t == 0.0 && dot(p - start, start_dir) < 0.0) || (t == 1.0 && dot(p - end, end_dir) > 0.0) {
+        let (dir, anchor) = if t == 0.0 { (start_dir, start) } else { (end_dir, end) };
+        let side = cross(dir, p - anchor);
+        return if side > 0.0 { -side.abs() } else { side.abs() };
+    }
+    let dir = direction_at(c, t);
+    let side = cross(dir, p - point_at(c, t));
+    if side > 0.0 {
+        -d
+    } else {
+        d
+    }
+}
+
+/// A multi-channel field over the box: at each texel center, per channel,
+/// the least distance among the coloured edges carrying it (ties at an
+/// end broken by whichever edge meets `p` closer to a right angle), as
+/// that edge's `pseudo_distance`, clamped to `+/- spread`.
+pub fn bake_msdf(font: &Font, name: &str, size: f64, spread: f64) -> Baked {
+    let (left, top, width, height, m) = bake_box(font, name, size, spread);
+    let mut edges: Vec<(Curve, i32)> = Vec::new();
+    for contour in glyph_outline(font, name) {
+        let transformed: Vec<Curve> = contour.iter().map(|c| transform_curve(c, m)).collect();
+        let (colored, masks) = color_edges(&transformed);
+        for (c, mask) in colored.into_iter().zip(masks.into_iter()) {
+            edges.push((c, mask));
+        }
+    }
+    let edges = std::rc::Rc::new(edges);
+    let channel_bits = [RED, GREEN, BLUE];
+    let channels: Vec<Field> = channel_bits
+        .iter()
+        .map(|&ch| {
+            let edges = edges.clone();
+            field(width, height, move |p| {
+                let mut best: Option<(usize, f64, f64, f64)> = None; // (idx, d, t, o)
+                for (idx, (c, mask)) in edges.iter().enumerate() {
+                    if mask & ch == 0 {
+                        continue;
+                    }
+                    let t = nearest_t_quadratic(p, c);
+                    let d = magnitude(point_at(c, t) - p);
+                    let o = if t == 0.0 || t == 1.0 {
+                        let dir = direction_at(c, t);
+                        dot(dir, normalize(p - point_at(c, t))).abs()
+                    } else {
+                        0.0
+                    };
+                    let better = match best {
+                        None => true,
+                        Some((_, bd, _, bo)) => {
+                            if d < bd - 1e-12 {
+                                true
+                            } else {
+                                (d - bd).abs() <= 1e-12 && o < bo
+                            }
+                        }
+                    };
+                    if better {
+                        best = Some((idx, d, t, o));
+                    }
+                }
+                match best {
+                    Some((idx, d, t, _o)) => {
+                        let (c, _mask) = &edges[idx];
+                        pseudo_distance(p, c, t, d).clamp(-spread, spread)
+                    }
+                    None => spread,
+                }
+            })
+        })
+        .collect();
+    Baked { channels, left, top, width, height }
+}
+
+/// `bake_msdf` with `bake_sdf`'s ordinary signed distance as a fourth
+/// channel, for effects that reach away from the edge.
+pub fn bake_mtsdf(font: &Font, name: &str, size: f64, spread: f64) -> Baked {
+    let mut b = bake_msdf(font, name, size, spread);
+    let sdf = bake_sdf(font, name, size, spread);
+    b.channels.push(sdf.channels.into_iter().next().unwrap());
+    b
+}
+
+// ---------------------------------------------------------------------
+// § 23.8 Fields compose approximately
+// ---------------------------------------------------------------------
+
+/// Two circles of radius 40, overlapping in a waist.
+pub fn peanut() -> (Path, Path) {
+    (circle_path(60.0, 80.0, 40.0, 96), circle_path(110.0, 80.0, 40.0, 96))
+}
+
+pub fn min_of(a: f64, b: f64) -> f64 {
+    a.min(b)
+}
+
+// ---------------------------------------------------------------------
+// § 23.9 Putting it together -- the plate
+// ---------------------------------------------------------------------
+
+const CH23_PAPER: Color = Color { red: 0.02, green: 0.02, blue: 0.025 };
+const CH23_ORANGE: Color = Color { red: 0.9, green: 0.55, blue: 0.1 };
+const CH23_CYAN: Color = Color { red: 0.2, green: 0.75, blue: 0.9 };
+const CH23_MAGENTA: Color = Color { red: 0.85, green: 0.2, blue: 0.55 };
+const CH23_DIM: Color = Color { red: 0.3, green: 0.3, blue: 0.34 };
+const CH23_PALE: Color = Color { red: 0.92, green: 0.9, blue: 0.82 };
+const CH23_BLACK: Color = Color { red: 0.0, green: 0.0, blue: 0.0 };
+
+fn stack_below(a: &Canvas, b: &Canvas) -> Canvas {
+    let width = a.width.max(b.width);
+    let mut c = canvas(width, a.height + b.height);
+    for y in 0..a.height as i64 {
+        for x in 0..a.width as i64 {
+            write_pixel(&mut c, x, y, pixel_at(a, x, y));
+        }
+    }
+    for y in 0..b.height as i64 {
+        for x in 0..b.width as i64 {
+            write_pixel(&mut c, x, y + a.height as i64, pixel_at(b, x, y));
+        }
+    }
+    c
+}
+
+/// `paint_through` sampling the field's coverage.
+pub fn paint_field(c: &mut Canvas, f: &Field, col: Color) {
+    let cov = field_coverage(f);
+    paint_through(c, &cov, col);
+}
+
+/// Orange outside, cyan inside, banded every six pixels, pale near the
+/// zero line.
+fn band_color(d: f64) -> Color {
+    let tint = if d > 0.0 { CH23_ORANGE } else { CH23_CYAN };
+    let band_idx = (d.abs() / 6.0).floor() as i64;
+    let alpha = if band_idx.rem_euclid(2) == 0 { 0.12 } else { 0.3 };
+    let mut col = mix_with(CH23_PAPER, tint, alpha, true);
+    if d.abs() < 1.0 {
+        col = mix_with(col, CH23_PALE, 1.0 - d.abs(), true);
+    }
+    col
+}
+
+pub fn band_canvas(f: &Field) -> Canvas {
+    let mut c = canvas(f.width, f.height);
+    for y in 0..f.height {
+        for x in 0..f.width {
+            write_pixel(&mut c, x as i64, y as i64, band_color(field_at(f, x as i64, y as i64)));
+        }
+    }
+    c
+}
+
+/// Four 160 by 160 fields, banded: a circle, a box, a rounded box, and
+/// the star filled even-odd.
+pub fn primitive_fields() -> Canvas {
+    let f1 = field(160, 160, |p| sd_circle(p, point(80.0, 80.0), 50.0));
+    let f2 = field(160, 160, |p| sd_box(p, point(80.0, 80.0), 55.0, 35.0));
+    let f3 = field(160, 160, |p| sd_rounded_box(p, point(80.0, 80.0), 55.0, 35.0, 20.0));
+    let f4 = polygon_field(&star(), "evenodd", 160, 160);
+    let mut result = band_canvas(&f1);
+    for f in [&f2, &f3, &f4] {
+        result = side_by_side(&result, &band_canvas(f));
+    }
+    result
+}
+
+fn error_panel(err: &CoverageBuffer) -> Canvas {
+    let mut c = canvas(err.width, err.height);
+    for y in 0..err.height {
+        for x in 0..err.width {
+            let e = coverage_at(err, x as i64, y as i64);
+            let col = mix_with(CH23_PAPER, CH23_MAGENTA, (4.0 * e).min(1.0), true);
+            write_pixel(&mut c, x as i64, y as i64, col);
+        }
+    }
+    c
+}
+
+/// The star's field painted orange, then its error against chapter 7's
+/// exact fill, raw and after chapter 22's `simplify`.
+pub fn error_map() -> Canvas {
+    let s = star();
+    let exact = fill_path(&s, "nonzero", 160, 160);
+
+    let mut panel1 = canvas(160, 160);
+    fill(&mut panel1, CH23_PAPER);
+    let raw_field = polygon_field(&s, "nonzero", 160, 160);
+    paint_field(&mut panel1, &raw_field, CH23_ORANGE);
+
+    let raw_err = coverage_error(&field_coverage(&raw_field), &exact);
+    let panel2 = error_panel(&raw_err);
+
+    let clean_field = polygon_field(&simplify(&s, "nonzero"), "nonzero", 160, 160);
+    let clean_err = coverage_error(&field_coverage(&clean_field), &exact);
+    let panel3 = error_panel(&clean_err);
+
+    side_by_side(&side_by_side(&panel1, &panel2), &panel3)
+}
+
+fn path_panel(p: &Path) -> Canvas {
+    let mut c = canvas(200, 200);
+    fill(&mut c, CH23_PAPER);
+    paint_through(&mut c, &fill_path(p, "nonzero", 200, 200), CH23_ORANGE);
+    c
+}
+
+fn field_panel(f: &Field) -> Canvas {
+    let mut c = canvas(200, 200);
+    fill(&mut c, CH23_PAPER);
+    paint_field(&mut c, f, CH23_ORANGE);
+    c
+}
+
+/// Chapters 13, 14 and 22's work, by path (top row) and by field (bottom
+/// row): a stroke, a curve's stroke, and a boolean xor.
+pub fn fields_vs_paths() -> Canvas {
+    let moved_star = transform_path(&star(), translation(19.5, 19.5));
+
+    let p1 = path_panel(&stroke_to_path(&moved_star, 10.0, "round", "round", 4.0));
+    let p2 = path_panel(&stroke_curve_to_path(&s_curve(), 20.0, "round", 0.05));
+    let p3 = path_panel(&combine(&plate_glyph(), "nonzero", &plate_star(), "evenodd", "xor"));
+    let top = side_by_side(&side_by_side(&p1, &p2), &p3);
+
+    let q1 = field_panel(&field_stroke(&polygon_field(&moved_star, "nonzero", 200, 200), 10.0));
+    let q2 = field_panel(&field_stroke(&cubic_field(&s_curve(), 200, 200), 20.0));
+    let q3 = field_panel(&field_xor(&plate_glyph_field(), &polygon_field(&plate_star(), "evenodd", 200, 200)));
+    let bottom = side_by_side(&side_by_side(&q1, &q2), &q3);
+
+    stack_below(&top, &bottom)
+}
+
+fn fillet_panel(k: f64) -> Canvas {
+    let mut c = canvas(160, 160);
+    fill(&mut c, CH23_PAPER);
+    let f = fillet_field(k);
+    paint_field(&mut c, &f, CH23_ORANGE);
+    paint_field(&mut c, &field_stroke(&f, 1.5), CH23_PALE);
+    c
+}
+
+/// `fillet_field(k)` for `k = 0, 8, 16, 32`, side by side.
+pub fn fillets() -> Canvas {
+    let ks = [0.0, 8.0, 16.0, 32.0];
+    let mut result = fillet_panel(ks[0]);
+    for &k in &ks[1..] {
+        result = side_by_side(&result, &fillet_panel(k));
+    }
+    result
+}
+
+/// A bitmap, its field by the distance transform, and that field offset
+/// by 6, 3 and 0, each magnified 3 times.
+pub fn transform_demo() -> Canvas {
+    let bitmap = transform_bitmap();
+    let f = field_from_coverage(&bitmap);
+
+    let mut p1 = canvas(64, 64);
+    fill(&mut p1, CH23_PAPER);
+    paint_through(&mut p1, &bitmap, CH23_ORANGE);
+
+    let p2 = band_canvas(&f);
+
+    let mut p3 = canvas(64, 64);
+    fill(&mut p3, CH23_PAPER);
+    for (r, col) in [(6.0, CH23_MAGENTA), (3.0, CH23_CYAN), (0.0, CH23_ORANGE)] {
+        let offset = field_offset(&f, r);
+        paint_field(&mut p3, &field_stroke(&offset, 1.5), col);
+    }
+
+    let m1 = magnify(&p1, 3);
+    let m2 = magnify(&p2, 3);
+    let m3 = magnify(&p3, 3);
+    side_by_side(&side_by_side(&m1, &m2), &m3)
+}
+
+fn atlas_panel(baked: &Baked, scale: f64) -> Canvas {
+    let mut c = canvas(300, 400);
+    fill(&mut c, CH23_PAPER);
+    let x = 10.0 - baked.left as f64 * scale;
+    let y = 10.0 - baked.top as f64 * scale;
+    draw_baked(&mut c, baked, scale, x, y, CH23_ORANGE);
+    c
+}
+
+/// Four baked glyphs, single- then multi-channel, at two bake sizes.
+pub fn atlas_corners() -> Canvas {
+    let font = roboto();
+    let e_name = glyph_name(&font, 69);
+    let k_name = glyph_name(&font, 107);
+    let p1 = atlas_panel(&bake_sdf(&font, &e_name, 16.0, 3.0), 20.0);
+    let p2 = atlas_panel(&bake_msdf(&font, &e_name, 16.0, 3.0), 20.0);
+    let p3 = atlas_panel(&bake_msdf(&font, &k_name, 16.0, 3.0), 20.0);
+    let p4 = atlas_panel(&bake_msdf(&font, &k_name, 32.0, 3.0), 10.0);
+    side_by_side(&side_by_side(&side_by_side(&p1, &p2), &p3), &p4)
+}
+
+fn trap_panel(f: &Field) -> Canvas {
+    let mut c = canvas(170, 160);
+    fill(&mut c, CH23_PAPER);
+    paint_field(&mut c, &field_offset(f, -20.0), CH23_ORANGE);
+    paint_field(&mut c, &field_stroke(f, 1.5), CH23_DIM);
+    c
+}
+
+/// The peanut's union by `min` (wrong inside) and by chapter 22's
+/// `combine` (right), each shrunk by 20.
+pub fn trap_shrink() -> Canvas {
+    let (a, b) = peanut();
+    let fa = polygon_field(&a, "nonzero", 170, 160);
+    let fb = polygon_field(&b, "nonzero", 170, 160);
+    let min_field = field_union(&fa, &fb);
+    let union_path = combine(&a, "nonzero", &b, "nonzero", "union");
+    let true_field = polygon_field(&union_path, "nonzero", 170, 160);
+    side_by_side(&trap_panel(&min_field), &trap_panel(&true_field))
+}
+
+fn ampersand_field() -> Field {
+    let font = roboto();
+    let name = glyph_name(&font, 38);
+    let m = text_matrix(&font, 170.0, 38.0, 164.0);
+    let curves = quadratics_of_glyph(&font, &name, m);
+    let outline = glyph_path(&font, &name, m, 0.01);
+    field(200, 200, move |p| {
+        let mut best = f64::INFINITY;
+        for c in &curves {
+            let d = distance_to_quadratic(p, c);
+            if d < best {
+                best = d;
+            }
+        }
+        let w = winding_at(&outline, p.x, p.y);
+        if inside_rule(w, "nonzero") {
+            -best
+        } else {
+            best
+        }
+    })
+}
+
+/// One field, four ways: banded, filled, stroked, and glowing.
+pub fn plate_23() -> Canvas {
+    let f = ampersand_field();
+    let p1 = band_canvas(&f);
+
+    let mut p2 = canvas(200, 200);
+    fill(&mut p2, CH23_PAPER);
+    paint_field(&mut p2, &f, CH23_ORANGE);
+
+    let mut p3 = canvas(200, 200);
+    fill(&mut p3, CH23_PAPER);
+    paint_field(&mut p3, &field_stroke(&f, 4.0), CH23_CYAN);
+
+    let mut p4 = canvas(200, 200);
+    for y in 0..200i64 {
+        for x in 0..200i64 {
+            let d = field_at(&f, x, y);
+            let col =
+                if d > 0.0 { mix_with(CH23_PAPER, CH23_MAGENTA, 0.8 * (-d / 10.0).exp(), true) } else { CH23_PAPER };
+            write_pixel(&mut p4, x, y, col);
+        }
+    }
+    paint_field(&mut p4, &f, CH23_ORANGE);
+
+    side_by_side(&side_by_side(&side_by_side(&p1, &p2), &p3), &p4)
+}
+
+/// The word DISTANCE, each glyph baked `mtsdf` at 32 with spread 4, drawn
+/// at scale 5: a moved black shadow, a magenta glow, an orange fill and a
+/// pale outline, each its own formula on its own channel(s).
+pub fn title() -> Canvas {
+    let font = roboto();
+    let mut c = canvas(900, 220);
+    fill(&mut c, CH23_PAPER);
+    let placements = layout_run(&font, "DISTANCE", 160.0, 78.0, 172.0, true);
+    let baked: Vec<Baked> = placements.iter().map(|pl| bake_mtsdf(&font, &pl.name, 32.0, 4.0)).collect();
+    let scale = 5.0;
+    for (pl, b) in placements.iter().zip(baked.iter()) {
+        draw_effect(&mut c, b, scale, pl.x + 8.0, pl.y + 8.0, CH23_BLACK, true, |d| {
+            0.6 * ((10.0 - d) / 20.0).clamp(0.0, 1.0)
+        });
+    }
+    for (pl, b) in placements.iter().zip(baked.iter()) {
+        draw_effect(&mut c, b, scale, pl.x, pl.y, CH23_MAGENTA, true, |d| {
+            0.8 * (1.0 - (d / 20.0).clamp(0.0, 1.0)).powi(2)
+        });
+    }
+    for (pl, b) in placements.iter().zip(baked.iter()) {
+        draw_effect(&mut c, b, scale, pl.x, pl.y, CH23_ORANGE, false, |d| (0.5 - d).clamp(0.0, 1.0));
+    }
+    for (pl, b) in placements.iter().zip(baked.iter()) {
+        draw_effect(&mut c, b, scale, pl.x, pl.y, CH23_PALE, false, |d| {
+            (0.5 - (d.abs() - 1.5)).clamp(0.0, 1.0)
+        });
+    }
+    c
 }

@@ -58,8 +58,9 @@ Feature: Plate 23, and the chapter's renders
     title             900 by 220: the placements of chapter 18's
                       layout_run(Roboto, "DISTANCE", 160, 78, 172, true),
                       each glyph bake_mtsdf at 32 with spread 4, drawn at
-                      scale 5 by draw_effect four times over the run in
-                      order: moved by (8, 8), black, the true channel,
+                      scale 5 by draw_effect in four passes, each pass
+                      drawing every glyph of the run before the next
+                      pass starts: moved by (8, 8), black, the true channel,
                       0.6 clamp((10 - d) / 20); magenta, the true channel,
                       0.8 (1 - clamp(d / 20))²; orange, the median,
                       clamp(0.5 - d); pale, the median, clamp(0.5 - (|d|
