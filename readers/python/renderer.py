@@ -8588,16 +8588,15 @@ def keep_edges(segs, rule_a, rule_b, op):
 
 
 def _turn_half(r, v):
-    # cross > 0 is clockwise on this y-down screen (orient's convention),
-    # so counterclockwise from r -- the direction stitch sweeps -- is
-    # cross < 0.
+    # Exactly the book's formula: half 0 is cross(r, v) < 0, or cross(r, v)
+    # = 0 and dot(r, v) > 0 (v doubles straight back along r); half 1 is
+    # everything else. The lower half wins.
     c = cross(r, v)
     if c < 0:
         return 0
-    if c > 0:
-        return 2
-    d = dot(r, v)
-    return 3 if d > 0 else 1
+    if c == 0 and dot(r, v) > 0:
+        return 0
+    return 1
 
 
 def _turn_cmp(r, u, v):
