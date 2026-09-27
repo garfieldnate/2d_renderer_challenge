@@ -5,14 +5,15 @@ Feature: Chapters 13, 14 and 22 for free
   centered on the edge, with round joins and round caps. field_union(a,
   b) is min(a, b), field_intersection(a, b) is max(a, b),
   field_difference(a, b) is max(a, -b), and field_xor(a, b) is
-  max(min(a, b), -max(a, b)). cubic_field(c, width, height) is the field of distance_to_cubic, with
-  no sign, since one curve has no inside. s_curve() is cubic(point(30, 150),
-  point(40, 20), point(160, 180), point(170, 50)). plate_glyph_field() is
-  the field of chapter 22's plate_glyph() on a 200 by 200 canvas: the
-  least distance_to_quadratic to the glyph's quadratics, each through
-  text_matrix(font, 200, 40, 140) by chapter 8's transform_curve, made
-  negative where glyph_path through the same matrix, flattened to 0.01,
-  winds nonzero around the point.
+  max(min(a, b), -max(a, b)). cubic_field(c, width, height) is the field
+  of distance_to_cubic, with no sign, since one curve has no inside.
+  s_curve() is cubic(point(30, 150), point(40, 20), point(160, 180),
+  point(170, 50)). plate_glyph_field() is the field of chapter 22's
+  plate_glyph() on a 200 by 200 canvas: the least distance_to_quadratic
+  to the glyph's quadratics, each through text_matrix(font, 200, 40,
+  140) by chapter 8's transform_curve, made negative where glyph_path
+  through the same matrix, flattened to 0.01, winds nonzero around the
+  point.
 
   Scenario: One line each
     Given a ← field_of(3, 1, [-2, 1, 3])

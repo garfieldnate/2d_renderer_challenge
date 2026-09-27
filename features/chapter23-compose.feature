@@ -1,11 +1,12 @@
 Feature: Fields compose approximately
   peanut() is two circles, circle_path(60, 80, 40, 96) and
   circle_path(110, 80, 40, 96), overlapping in a waist around x = 85.
-  min of their two fields is the field of their union outside it, and
-  it isn't inside: at a point deep in the waist, the nearest edge of each
+  min of their two fields is the field of their union outside it, and it
+  isn't inside: at a point deep in the waist, the nearest edge of each
   circle is buried inside the other, and min measures to it anyway. The
-  true field of the union is the field of chapter 22's combine of the two
-  paths. min_of(a, b) is the smaller number. Shrink both by 20 and the difference is a shape.
+  true field of the union is the field of chapter 22's combine of the
+  two paths. min_of(a, b) is the smaller number. Shrink both by 20 and
+  the difference is a shape.
 
   Scenario: min is right outside and wrong inside
     Given a ← peanut()[0]

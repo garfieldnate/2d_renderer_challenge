@@ -618,8 +618,8 @@
   <p>Everything so far is correct, and nearly all of the time goes into meeting pairs of segments
     that are nowhere near each other. The chapter's benchmark is <code>struck_line(1)</code>: the
     word <em>Pathfinder</em> in Roboto at 120 pixels, 787 segments once it's flattened and snapped,
-    struck through by fourteen slanting bars. Its first pass meets 309,291 pairs, and 184 of them
-    need cutting.</p>
+    struck through by fourteen slanting bars. Its first pass meets 309,291 pairs to find 184 places
+    that need cutting.</p>
 
   <p>Two segments can only meet if they share a row. So sort them by their tops and sweep down the
     canvas with an <em>active list</em>, chapter 6's idea again: when a segment's top arrives, drop

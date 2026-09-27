@@ -2,12 +2,13 @@ Feature: Rendering a field
   A field is a width, a height and one number per pixel, row by row.
   field(width, height, fn) samples fn at every pixel center, point(x +
   0.5, y + 0.5); field_of(width, height, values) makes one from a list;
-  field_at(f, x, y) reads one, and field_range(f) is (least, greatest). field_coverage(f) is chapter 2's coverage
-  buffer with clamp(0.5 - d, 0, 1) at each pixel: a pixel whose center is
-  on the edge is half covered, and the coverage ramps to 0 and 1 over one
-  pixel either side. polygon_field(p, rule, width, height) is the field of
-  sd_polygon. coverage_error(cov, exact) is a coverage buffer of |cov -
-  exact| at each pixel. simplify is chapter 22's.
+  field_at(f, x, y) reads one, and field_range(f) is (least, greatest).
+  field_coverage(f) is chapter 2's coverage buffer with clamp(0.5 - d,
+  0, 1) at each pixel: a pixel whose center is on the edge is half
+  covered, and the coverage ramps to 0 and 1 over one pixel either side.
+  polygon_field(p, rule, width, height) is the field of sd_polygon.
+  coverage_error(cov, exact) is a coverage buffer of |cov - exact| at
+  each pixel. simplify is chapter 22's.
 
   Scenario: A field is sampled at pixel centers
     Given f ← circle_field(8, 8, 3, 16, 16)
