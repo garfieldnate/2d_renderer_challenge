@@ -162,16 +162,70 @@ def expand_step(step_text, example):
 
 
 def parse_comparison(text):
-    """Parse a comparison like '1.0 = 1.0000001 ± 0.00001'."""
-    # Try to match: a OP b [± tolerance]
-    match = re.match(r'^(.*?)\s*(!=|<=|>=|≤|≥|≠|=|<|>)\s*(.*?)(?:\s*±\s*(.*))?$', text)
-    if match:
-        left = match.group(1).strip()
-        op = match.group(2).strip()
-        right = match.group(3).strip()
-        tol_str = match.group(4).strip() if match.group(4) else None
-        return left, op, right, tol_str
-    return None
+    """Parse a comparison like '1.0 = 1.0000001 ± 0.00001'.
+
+    Scans character by character rather than with a plain regex, tracking
+    quotes and bracket depth, because chapter 20's scenarios embed raw XML
+    text (with its own '=' signs inside quoted attribute values, e.g.
+    parse_xml("<rect width='10' .../>")) directly in a comparison step. A
+    naive regex's non-greedy left group happily matches the FIRST '=' it
+    finds -- including one inside a quoted string -- which corrupts the
+    split. Only a '=' (or another comparison operator, or the tolerance
+    marker '±') seen outside any quote and at bracket depth 0 is the real
+    one."""
+    n = len(text)
+    i = 0
+    depth = 0
+    quote = None
+    tokens = []  # (start, end, token) for operators/tolerance found at top level
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            i += 1
+            continue
+        if ch in '([{':
+            depth += 1
+            i += 1
+            continue
+        if ch in ')]}':
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0:
+            two = text[i:i + 2]
+            if two in ('!=', '<=', '>='):
+                tokens.append((i, i + 2, two))
+                i += 2
+                continue
+            if ch in '≤≥≠=<>':
+                tokens.append((i, i + 1, ch))
+                i += 1
+                continue
+            if ch == '±':
+                tokens.append((i, i + 1, '±'))
+                i += 1
+                continue
+        i += 1
+
+    if not tokens:
+        return None
+
+    op_start, op_end, op = tokens[0]
+    left = text[:op_start].strip()
+    tol_str = None
+    right = text[op_end:].strip()
+    for (s, e, tk) in tokens[1:]:
+        if tk == '±':
+            right = text[op_end:s].strip()
+            tol_str = text[e:].strip()
+            break
+    return left, op, right, tol_str
 
 
 def evaluate_expression(expr_str, ctx):
@@ -554,6 +608,57 @@ def evaluate_expression(expr_str, ctx):
             'mixed_demo': renderer.mixed_demo,
             'cluster_plate': renderer.cluster_plate,
             'plate_19': renderer.plate_19,
+            # Chapter 20
+            'parse_xml': renderer.parse_xml,
+            'attribute': renderer.attribute,
+            'children': renderer.children,
+            'find_by_id': renderer.find_by_id,
+            'read_number': renderer.read_number,
+            'number_list': renderer.number_list,
+            'read_flag': renderer.read_flag,
+            'path_commands': renderer.path_commands,
+            'arc_cubics': renderer.arc_cubics,
+            'build_path': renderer.build_path,
+            'commands_bounds': renderer.commands_bounds,
+            'parse_transform': renderer.parse_transform,
+            'parse_color': renderer.parse_color,
+            'computed_style': renderer.computed_style,
+            'initial_style': renderer.initial_style,
+            'shape_commands': renderer.shape_commands,
+            'view_box_matrix': renderer.view_box_matrix,
+            'transformed_paint': renderer.transformed_paint,
+            'gradient_stops': renderer.gradient_stops,
+            'paint_server': renderer.paint_server,
+            'draw_coverage': renderer.draw_coverage,
+            'union_coverage': renderer.union_coverage,
+            'clip_coverage': renderer.clip_coverage,
+            'mask_layer': renderer.mask_layer,
+            'render_svg': renderer.render_svg,
+            'aspect_demo': renderer.aspect_demo,
+            'harbor': renderer.harbor,
+            'rose': renderer.rose,
+            'tiger': renderer.tiger,
+            'plate_20': renderer.plate_20,
+            # Chapter 21
+            'stats': renderer.stats,
+            'fill_path_counted': renderer.fill_path_counted,
+            'draw_coverage_counted': renderer.draw_coverage_counted,
+            'render_svg_with': renderer.render_svg_with,
+            'fill_bounds': renderer.fill_bounds,
+            'fill_path_bounded': renderer.fill_path_bounded,
+            'coverage_in': renderer.coverage_in,
+            'full_coverage': renderer.full_coverage,
+            'draw_window': renderer.draw_window,
+            'classify_tiles': renderer.classify_tiles,
+            'fill_path_tiled': renderer.fill_path_tiled,
+            'tile_count': renderer.tile_count,
+            'draw_tiled': renderer.draw_tiled,
+            'composite_span': renderer.composite_span,
+            'composite_span4': renderer.composite_span4,
+            'layers_equal': renderer.layers_equal,
+            'tile_work': renderer.tile_work,
+            'work_map': renderer.work_map,
+            'plate_21': renderer.plate_21,
         }
         namespace.update(ctx.variables)
 

@@ -455,6 +455,9 @@
   <span class="kw">Scenario</span>: Curves are flattened after the transform, so a bigger curve gets more points
     <span class="kw">Then</span>  length(subpaths(build_path(path_commands("M0 0 Q10 0 10 10"), identity(), 0.1))[0].points) = 13
     <span class="kw">And</span>   length(subpaths(build_path(path_commands("M0 0 Q10 0 10 10"), scaling(10, 10), 0.1))[0].points) = 33
+    <span class="kw">And</span>   length(subpaths(build_path(path_commands("M0 0 C10 0 10 10 0 10"), identity(), 0.1))[0].points) = 17
+    <span class="kw">And</span>   length(subpaths(build_path(path_commands("M0 0 C10 0 10 10 0 10"), scaling(10, 10), 0.1))[0].points) = 33
+    <span class="kw">And</span>   length(subpaths(build_path(path_commands("M0 0 A5 5 0 0 1 10 0"), scaling(10, 10), 0.1))[0].points) = 33
 
   <span class="kw">Scenario</span>: An arc in a path ends exactly at its end point
     <span class="kw">When</span>  p ← build_path(path_commands("M0 0 A5 5 0 0 1 10 0"), identity(), 0.1)

@@ -69,6 +69,9 @@ Feature: From commands to a path
   Scenario: Curves are flattened after the transform, so a bigger curve gets more points
     Then  length(subpaths(build_path(path_commands("M0 0 Q10 0 10 10"), identity(), 0.1))[0].points) = 13
     And   length(subpaths(build_path(path_commands("M0 0 Q10 0 10 10"), scaling(10, 10), 0.1))[0].points) = 33
+    And   length(subpaths(build_path(path_commands("M0 0 C10 0 10 10 0 10"), identity(), 0.1))[0].points) = 17
+    And   length(subpaths(build_path(path_commands("M0 0 C10 0 10 10 0 10"), scaling(10, 10), 0.1))[0].points) = 33
+    And   length(subpaths(build_path(path_commands("M0 0 A5 5 0 0 1 10 0"), scaling(10, 10), 0.1))[0].points) = 33
 
   Scenario: An arc in a path ends exactly at its end point
     When  p ← build_path(path_commands("M0 0 A5 5 0 0 1 10 0"), identity(), 0.1)

@@ -3086,6 +3086,14 @@ class Stop:
         self.offset = offset
         self.color = color
 
+    def __eq__(self, other):
+        if not isinstance(other, Stop):
+            return False
+        return abs(self.offset - other.offset) <= 0.0001 and self.color == other.color
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
     def __repr__(self):
         return f"Stop({self.offset}, {self.color})"
 
@@ -3256,6 +3264,9 @@ def paint_at(paint, x, y):
         sampler = _SAMPLERS[paint.filt]
         p = sampler(paint.img, src.x, src.y, paint.extend)
         return pixel_color(p)
+    if isinstance(paint, TransformedPaint):
+        src = paint.inv * point(x, y)
+        return paint_at(paint.paint, src.x, src.y)
     raise TypeError(f"unknown paint type: {paint!r}")
 
 
@@ -3848,8 +3859,11 @@ def _arc_points(c, a0, a1, r, steps):
 
 def _arc_steps(a0, a1):
     """How many segments to sample an arc's sweep into: roughly one every
-    1/16 of a turn, never fewer than two."""
-    return max(2, math.ceil(abs(a1 - a0) / (math.pi / 16)))
+    1/16 of a turn, never fewer than two. The epsilon keeps a sweep that
+    lands a hair past an exact multiple of pi/16 (a semicircle's floating
+    point delta can come out as 16.000000000000004) from rounding up to
+    one extra step -- a round cap must be sixteen steps on every machine."""
+    return max(2, math.ceil(abs(a1 - a0) / (math.pi / 16) - 0.000000001))
 
 
 def _dedupe_points(points):
@@ -6195,3 +6209,1847 @@ def cluster_plate():
 def plate_19():
     """Chapter 19's plate: characters in, glyphs out, clusters joined."""
     return cluster_plate()
+
+
+# ============================================================
+# Chapter 20: Rendering SVG
+# ============================================================
+
+import re as _re20
+import xml.etree.ElementTree as _ET20
+
+
+# --- 20.1 The document ---
+
+class XMLElement:
+    """A thin wrapper around ElementTree's Element: a local name (its
+    namespace stripped), its attributes exactly as written, and its
+    child elements in document order (text and comments excluded)."""
+
+    def __init__(self, elem):
+        self._elem = elem
+        tag = elem.tag
+        if isinstance(tag, str) and '}' in tag:
+            tag = tag.split('}', 1)[1]
+        self.name = tag
+        self._children = [XMLElement(c) for c in list(elem)
+                           if isinstance(c.tag, str)]
+
+    def __repr__(self):
+        return f"XMLElement({self.name!r})"
+
+
+def parse_xml(text):
+    """Parse an XML document and return its root element."""
+    root = _ET20.fromstring(text)
+    return XMLElement(root)
+
+
+def attribute(el, name):
+    """An element's attribute, exactly as written, or none."""
+    if el is None:
+        return None
+    return el._elem.attrib.get(name)
+
+
+def children(el):
+    """An element's child elements, in document order."""
+    return el._children
+
+
+def find_by_id(root, id_):
+    """The element anywhere in the document whose id is id_, or none."""
+    if attribute(root, "id") == id_:
+        return root
+    for c in children(root):
+        found = find_by_id(c, id_)
+        if found is not None:
+            return found
+    return None
+
+
+# --- 20.2 Numbers ---
+
+def read_number(s, i):
+    """Read one number starting at index i of s. A number is an optional
+    sign, digits, an optional point and more digits (at least one digit
+    somewhere), and an optional exponent (e/E, an optional sign, and at
+    least one digit -- an e with no digit after it isn't part of the
+    number). Answers the number and the index right past it, or none
+    and i when there's no number there."""
+    n = len(s)
+    j = i
+    if j < n and s[j] in '+-':
+        j += 1
+    int_start = j
+    while j < n and s[j].isdigit():
+        j += 1
+    has_int = j > int_start
+    has_frac = False
+    if j < n and s[j] == '.':
+        j += 1
+        frac_start = j
+        while j < n and s[j].isdigit():
+            j += 1
+        has_frac = j > frac_start
+    if not has_int and not has_frac:
+        return None, i
+    k = j
+    if k < n and s[k] in 'eE':
+        k2 = k + 1
+        if k2 < n and s[k2] in '+-':
+            k2 += 1
+        exp_start = k2
+        while k2 < n and s[k2].isdigit():
+            k2 += 1
+        if k2 > exp_start:
+            j = k2
+    return float(s[i:j]), j
+
+
+def _skip_ws_comma(s, i):
+    n = len(s)
+    while i < n and s[i] in ' \t\r\n':
+        i += 1
+    return i
+
+
+def number_list(s):
+    """Read as many numbers as s has: whitespace-separated, at most one
+    comma (with whitespace allowed around it) between any two, stopping
+    at the first thing that isn't a number."""
+    if not s:
+        return ()
+    n = len(s)
+    i = 0
+    nums = []
+    first = True
+    while True:
+        i = _skip_ws_comma(s, i)
+        if not first:
+            if i < n and s[i] == ',':
+                i += 1
+                i = _skip_ws_comma(s, i)
+        val, j = read_number(s, i)
+        if val is None:
+            break
+        nums.append(val)
+        i = j
+        first = False
+    return tuple(nums)
+
+
+def read_flag(s, i):
+    """Read one arc flag: the single character 0 or 1, no separator
+    needed. Answers the flag and the index right past it, or none and i."""
+    if i < len(s) and s[i] in '01':
+        return int(s[i]), i + 1
+    return None, i
+
+
+# --- 20.3 Path data ---
+
+class Command:
+    """One path command: an op (M, L, C, Q, A or Z) and its numeric args,
+    always absolute."""
+
+    def __init__(self, op, args):
+        self.op = op
+        self.args = tuple(args)
+
+    def __repr__(self):
+        return f"Command({self.op!r}, {self.args!r})"
+
+
+def _pd_ws(s, i):
+    n = len(s)
+    while i < n and s[i] in ' \t\r\n,':
+        i += 1
+    return i
+
+
+def _pd_num(s, i):
+    i = _pd_ws(s, i)
+    return read_number(s, i)
+
+
+def _pd_flag(s, i):
+    i = _pd_ws(s, i)
+    return read_flag(s, i)
+
+
+def path_commands(d):
+    """Turn a d attribute into a list of commands, each with an op and
+    its args, in absolute coordinates and six ops only: M, L, C, Q, A, Z."""
+    if not d:
+        return []
+    s = d
+    n = len(s)
+    i = _pd_ws(s, 0)
+    if i >= n or s[i] not in 'Mm':
+        return []
+
+    cmds = []
+    cur = point(0, 0)
+    start = point(0, 0)
+    prev_c2 = None
+    prev_q1 = None
+    letter = s[i]
+    i += 1
+    first_of_group = True
+
+    while True:
+        rel = letter.islower()
+        base = letter.upper()
+
+        if base == 'M':
+            x, j = _pd_num(s, i)
+            if x is None:
+                break
+            y, j = _pd_num(s, j)
+            if y is None:
+                break
+            i = j
+            cur = point(cur.x + x, cur.y + y) if rel else point(x, y)
+            if first_of_group:
+                cmds.append(Command('M', (cur.x, cur.y)))
+                start = cur
+            else:
+                cmds.append(Command('L', (cur.x, cur.y)))
+            prev_c2 = prev_q1 = None
+            first_of_group = False
+        elif base == 'L':
+            x, j = _pd_num(s, i)
+            if x is None:
+                break
+            y, j = _pd_num(s, j)
+            if y is None:
+                break
+            i = j
+            cur = point(cur.x + x, cur.y + y) if rel else point(x, y)
+            cmds.append(Command('L', (cur.x, cur.y)))
+            prev_c2 = prev_q1 = None
+            first_of_group = False
+        elif base == 'H':
+            x, j = _pd_num(s, i)
+            if x is None:
+                break
+            i = j
+            cur = point(cur.x + x, cur.y) if rel else point(x, cur.y)
+            cmds.append(Command('L', (cur.x, cur.y)))
+            prev_c2 = prev_q1 = None
+            first_of_group = False
+        elif base == 'V':
+            y, j = _pd_num(s, i)
+            if y is None:
+                break
+            i = j
+            cur = point(cur.x, cur.y + y) if rel else point(cur.x, y)
+            cmds.append(Command('L', (cur.x, cur.y)))
+            prev_c2 = prev_q1 = None
+            first_of_group = False
+        elif base == 'C':
+            vals = []
+            j = i
+            ok = True
+            for _ in range(6):
+                v, j = _pd_num(s, j)
+                if v is None:
+                    ok = False
+                    break
+                vals.append(v)
+            if not ok:
+                break
+            i = j
+            x1, y1, x2, y2, x, y = vals
+            if rel:
+                x1 += cur.x; y1 += cur.y
+                x2 += cur.x; y2 += cur.y
+                x += cur.x; y += cur.y
+            cmds.append(Command('C', (x1, y1, x2, y2, x, y)))
+            prev_c2 = point(x2, y2)
+            prev_q1 = None
+            cur = point(x, y)
+            first_of_group = False
+        elif base == 'Q':
+            vals = []
+            j = i
+            ok = True
+            for _ in range(4):
+                v, j = _pd_num(s, j)
+                if v is None:
+                    ok = False
+                    break
+                vals.append(v)
+            if not ok:
+                break
+            i = j
+            x1, y1, x, y = vals
+            if rel:
+                x1 += cur.x; y1 += cur.y
+                x += cur.x; y += cur.y
+            cmds.append(Command('Q', (x1, y1, x, y)))
+            prev_q1 = point(x1, y1)
+            prev_c2 = None
+            cur = point(x, y)
+            first_of_group = False
+        elif base == 'S':
+            vals = []
+            j = i
+            ok = True
+            for _ in range(4):
+                v, j = _pd_num(s, j)
+                if v is None:
+                    ok = False
+                    break
+                vals.append(v)
+            if not ok:
+                break
+            i = j
+            x2, y2, x, y = vals
+            if rel:
+                x2 += cur.x; y2 += cur.y
+                x += cur.x; y += cur.y
+            if prev_c2 is not None:
+                x1 = 2 * cur.x - prev_c2.x
+                y1 = 2 * cur.y - prev_c2.y
+            else:
+                x1, y1 = cur.x, cur.y
+            cmds.append(Command('C', (x1, y1, x2, y2, x, y)))
+            prev_c2 = point(x2, y2)
+            prev_q1 = None
+            cur = point(x, y)
+            first_of_group = False
+        elif base == 'T':
+            x, j = _pd_num(s, i)
+            if x is None:
+                break
+            y, j = _pd_num(s, j)
+            if y is None:
+                break
+            i = j
+            if rel:
+                x += cur.x; y += cur.y
+            if prev_q1 is not None:
+                x1 = 2 * cur.x - prev_q1.x
+                y1 = 2 * cur.y - prev_q1.y
+            else:
+                x1, y1 = cur.x, cur.y
+            cmds.append(Command('Q', (x1, y1, x, y)))
+            prev_q1 = point(x1, y1)
+            prev_c2 = None
+            cur = point(x, y)
+            first_of_group = False
+        elif base == 'A':
+            j = i
+            rx, j = _pd_num(s, j)
+            if rx is None:
+                break
+            ry, j = _pd_num(s, j)
+            if ry is None:
+                break
+            rot, j = _pd_num(s, j)
+            if rot is None:
+                break
+            large, j = _pd_flag(s, j)
+            if large is None:
+                break
+            sweep, j = _pd_flag(s, j)
+            if sweep is None:
+                break
+            x, j = _pd_num(s, j)
+            if x is None:
+                break
+            y, j = _pd_num(s, j)
+            if y is None:
+                break
+            i = j
+            if rel:
+                x += cur.x; y += cur.y
+            cmds.append(Command('A', (abs(rx), abs(ry), rot, large, sweep, x, y)))
+            prev_c2 = prev_q1 = None
+            cur = point(x, y)
+            first_of_group = False
+        elif base == 'Z':
+            cmds.append(Command('Z', ()))
+            cur = start
+            prev_c2 = prev_q1 = None
+            i = _pd_ws(s, i)
+            if i >= n or not s[i].isalpha():
+                break
+            letter = s[i]
+            i += 1
+            first_of_group = True
+            continue
+        else:
+            break
+
+        i = _pd_ws(s, i)
+        if i >= n:
+            break
+        if s[i].isalpha():
+            letter = s[i]
+            i += 1
+            first_of_group = True
+
+    return cmds
+
+
+# --- 20.4 From commands to a path ---
+
+def arc_cubics(x1, y1, rx, ry, angle, large, sweep, x2, y2):
+    """Turn an SVG arc into cubics: one piece per quarter turn or less,
+    each with handles 4/3 tan(d/4) of a radius along the ellipse's own
+    tangents. Coincident endpoints give no cubics; a zero radius gives
+    one straight cubic, its control points at the thirds of the chord."""
+    if x1 == x2 and y1 == y2:
+        return []
+    if rx == 0 or ry == 0:
+        p0, p3 = point(x1, y1), point(x2, y2)
+        c1 = point(p0.x + (p3.x - p0.x) / 3.0, p0.y + (p3.y - p0.y) / 3.0)
+        c2 = point(p0.x + (p3.x - p0.x) * 2.0 / 3.0, p0.y + (p3.y - p0.y) * 2.0 / 3.0)
+        return [cubic(p0, c1, c2, p3)]
+
+    a = arc(x1, y1, rx, ry, math.radians(angle), large, sweep, x2, y2)
+    if a is None:
+        return []
+
+    delta = a.delta
+    steps = max(1, math.ceil(abs(delta) / (math.pi / 2) - 0.000001))
+    cphi = math.cos(a.phi)
+    sphi = math.sin(a.phi)
+
+    def ellipse_point(theta):
+        ex = a.rx * math.cos(theta)
+        ey = a.ry * math.sin(theta)
+        return point(a.cx + cphi * ex - sphi * ey, a.cy + sphi * ex + cphi * ey)
+
+    def ellipse_tangent(theta):
+        dex = -a.rx * math.sin(theta)
+        dey = a.ry * math.cos(theta)
+        return vector(cphi * dex - sphi * dey, sphi * dex + cphi * dey)
+
+    step_angle = delta / steps
+    cubics = []
+    for k in range(steps):
+        t0 = a.theta1 + step_angle * k
+        t1 = a.theta1 + step_angle * (k + 1)
+        d = t1 - t0
+        p0 = point(x1, y1) if k == 0 else ellipse_point(t0)
+        p3 = point(x2, y2) if k == steps - 1 else ellipse_point(t1)
+        klen = (4.0 / 3.0) * math.tan(d / 4.0)
+        v0 = ellipse_tangent(t0)
+        v1 = ellipse_tangent(t1)
+        c1 = point(p0.x + klen * v0.x, p0.y + klen * v0.y)
+        c2 = point(p3.x - klen * v1.x, p3.y - klen * v1.y)
+        cubics.append(cubic(p0, c1, c2, p3))
+    return cubics
+
+
+def build_path(cmds, m, tolerance):
+    """Walk the commands, keeping a current point in user space, and
+    build a chapter 5 path in device space: points go through m, curves
+    go through m and are then flattened. A subpath that's nothing but
+    its moveto is dropped."""
+    p = path()
+    cur = point(0, 0)
+    start = point(0, 0)
+    for c in cmds:
+        if c.op == 'M':
+            x, y = c.args
+            cur = point(x, y)
+            start = cur
+            move_to(p, m * cur)
+        elif c.op == 'L':
+            x, y = c.args
+            cur = point(x, y)
+            line_to(p, m * cur)
+        elif c.op == 'C':
+            x1, y1, x2, y2, x, y = c.args
+            crv = transform_curve(cubic(cur, point(x1, y1), point(x2, y2), point(x, y)), m)
+            flatten_into_path(p, crv, tolerance)
+            cur = point(x, y)
+        elif c.op == 'Q':
+            x1, y1, x, y = c.args
+            crv = transform_curve(quadratic(cur, point(x1, y1), point(x, y)), m)
+            flatten_into_path(p, crv, tolerance)
+            cur = point(x, y)
+        elif c.op == 'A':
+            rx, ry, rot, large, sweep, x, y = c.args
+            for piece in arc_cubics(cur.x, cur.y, rx, ry, rot, large, sweep, x, y):
+                flatten_into_path(p, transform_curve(piece, m), tolerance)
+            cur = point(x, y)
+        elif c.op == 'Z':
+            close(p)
+            cur = start
+    p.subpaths = [sp for sp in p.subpaths if len(sp.points) > 1 or sp.closed]
+    return p
+
+
+def commands_bounds(cmds):
+    """The tight box of the geometry in user space: every M and L point
+    and chapter 8's curve_bounds of every curve (arcs included, once
+    they're cubics)."""
+    xs = []
+    ys = []
+    cur = point(0, 0)
+    start = point(0, 0)
+    for c in cmds:
+        if c.op == 'M':
+            x, y = c.args
+            cur = point(x, y)
+            start = cur
+            xs.append(cur.x); ys.append(cur.y)
+        elif c.op == 'L':
+            x, y = c.args
+            cur = point(x, y)
+            xs.append(cur.x); ys.append(cur.y)
+        elif c.op == 'C':
+            x1, y1, x2, y2, x, y = c.args
+            b = curve_bounds(cubic(cur, point(x1, y1), point(x2, y2), point(x, y)))
+            xs.extend([b[0], b[2]]); ys.extend([b[1], b[3]])
+            cur = point(x, y)
+        elif c.op == 'Q':
+            x1, y1, x, y = c.args
+            b = curve_bounds(quadratic(cur, point(x1, y1), point(x, y)))
+            xs.extend([b[0], b[2]]); ys.extend([b[1], b[3]])
+            cur = point(x, y)
+        elif c.op == 'A':
+            rx, ry, rot, large, sweep, x, y = c.args
+            for piece in arc_cubics(cur.x, cur.y, rx, ry, rot, large, sweep, x, y):
+                b = curve_bounds(piece)
+                xs.extend([b[0], b[2]]); ys.extend([b[1], b[3]])
+            cur = point(x, y)
+        elif c.op == 'Z':
+            cur = start
+    if not xs:
+        return (0.0, 0.0, 0.0, 0.0)
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+# --- 20.5 The transform attribute ---
+
+def _svg_transform_fn(name, args):
+    if name == 'matrix':
+        if len(args) != 6:
+            return None
+        a, b, c, d, e, f = args
+        return matrix3(a, c, e, b, d, f, 0, 0, 1)
+    if name == 'translate':
+        if len(args) == 1:
+            return translation(args[0], 0)
+        if len(args) == 2:
+            return translation(args[0], args[1])
+        return None
+    if name == 'scale':
+        if len(args) == 1:
+            return scaling(args[0], args[0])
+        if len(args) == 2:
+            return scaling(args[0], args[1])
+        return None
+    if name == 'rotate':
+        if len(args) == 1:
+            return rotation(math.radians(args[0]))
+        if len(args) == 3:
+            ang, cx, cy = args
+            return translation(cx, cy) * rotation(math.radians(ang)) * translation(-cx, -cy)
+        return None
+    if name == 'skewX':
+        if len(args) != 1:
+            return None
+        return shearing(math.tan(math.radians(args[0])), 0)
+    if name == 'skewY':
+        if len(args) != 1:
+            return None
+        return shearing(0, math.tan(math.radians(args[0])))
+    return None
+
+
+def parse_transform(s):
+    """Turn a transform list into one chapter 4 matrix, multiplying its
+    functions in the order they're written. Anything that doesn't parse
+    -- an empty attribute, an unknown function, the wrong number of
+    numbers, a missing parenthesis -- is the identity."""
+    if not s:
+        return identity()
+    n = len(s)
+    i = 0
+
+    def ws(i):
+        while i < n and s[i] in ' \t\r\n,':
+            i += 1
+        return i
+
+    i = ws(i)
+    fns = []
+    while i < n:
+        start = i
+        while i < n and s[i].isalpha():
+            i += 1
+        if i == start:
+            return identity()
+        name = s[start:i]
+        i = ws(i)
+        if i >= n or s[i] != '(':
+            return identity()
+        i += 1
+        close_idx = s.find(')', i)
+        if close_idx == -1:
+            return identity()
+        args = number_list(s[i:close_idx])
+        i = close_idx + 1
+        fn = _svg_transform_fn(name, args)
+        if fn is None:
+            return identity()
+        fns.append(fn)
+        i = ws(i)
+    result = identity()
+    for fn in fns:
+        result = result * fn
+    return result
+
+
+# --- 20.6 Colours and the cascade ---
+
+_SVG_NAMED_COLORS = {
+    "black": (0, 0, 0), "silver": (192, 192, 192), "gray": (128, 128, 128),
+    "white": (255, 255, 255), "maroon": (128, 0, 0), "red": (255, 0, 0),
+    "purple": (128, 0, 128), "fuchsia": (255, 0, 255), "green": (0, 128, 0),
+    "lime": (0, 255, 0), "olive": (128, 128, 0), "yellow": (255, 255, 0),
+    "navy": (0, 0, 128), "blue": (0, 0, 255), "teal": (0, 128, 128),
+    "aqua": (0, 255, 255), "orange": (255, 165, 0),
+}
+
+
+def _svg_byte_to_light(b):
+    b = max(0.0, min(255.0, b))
+    return decode(b / 255.0)
+
+
+def parse_color(s):
+    """Read a colour and answer it in linear light. #rgb, #rrggbb,
+    rgb(r, g, b) (0-255 or percentages), and the seventeen names; hex
+    digits and names in either case, whitespace around the value
+    ignored. Anything else is none."""
+    if s is None:
+        return None
+    v = s.strip()
+    if not v:
+        return None
+    low = v.lower()
+    if low in _SVG_NAMED_COLORS:
+        r, g, b = _SVG_NAMED_COLORS[low]
+        return color(_svg_byte_to_light(r), _svg_byte_to_light(g), _svg_byte_to_light(b))
+    m = _re20.match(r'^#([0-9a-fA-F]{3})$', v)
+    if m:
+        h = m.group(1)
+        r = int(h[0] * 2, 16); g = int(h[1] * 2, 16); b = int(h[2] * 2, 16)
+        return color(_svg_byte_to_light(r), _svg_byte_to_light(g), _svg_byte_to_light(b))
+    m = _re20.match(r'^#([0-9a-fA-F]{6})$', v)
+    if m:
+        h = m.group(1)
+        r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
+        return color(_svg_byte_to_light(r), _svg_byte_to_light(g), _svg_byte_to_light(b))
+    m = _re20.match(r'^rgb\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*([^,]+?)\s*\)$', v, _re20.IGNORECASE)
+    if m:
+        vals = []
+        for token in m.groups():
+            token = token.strip()
+            if token.endswith('%'):
+                try:
+                    pct = float(token[:-1])
+                except ValueError:
+                    return None
+                byte = pct / 100.0 * 255.0
+            else:
+                try:
+                    byte = float(token)
+                except ValueError:
+                    return None
+            vals.append(byte)
+        r, g, b = vals
+        return color(_svg_byte_to_light(r), _svg_byte_to_light(g), _svg_byte_to_light(b))
+    return None
+
+
+def _svg_num_prop(v):
+    v = v.strip()
+    if v.endswith('px'):
+        v = v[:-2].strip()
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
+def _svg_valid_rule(v):
+    v = v.strip()
+    return (v, True) if v in ("nonzero", "evenodd") else (None, False)
+
+
+def _svg_valid_cap(v):
+    v = v.strip()
+    return (v, True) if v in ("butt", "round", "square") else (None, False)
+
+
+def _svg_valid_join(v):
+    v = v.strip()
+    return (v, True) if v in ("miter", "round", "bevel") else (None, False)
+
+
+def _svg_valid_paint(v):
+    v = v.strip()
+    if v == "none":
+        return None, True
+    if _re20.match(r'^url\(#[^)]*\)$', v):
+        return v, True
+    c = parse_color(v)
+    if c is not None:
+        return c, True
+    return None, False
+
+
+def _svg_valid_color_only(v):
+    c = parse_color(v.strip())
+    return (c, True) if c is not None else (None, False)
+
+
+def _svg_valid_clip_ref(v):
+    v = v.strip()
+    if v == "none":
+        return None, True
+    if _re20.match(r'^url\(#[^)]*\)$', v):
+        return v, True
+    return None, False
+
+
+def _svg_valid_number(v):
+    n = _svg_num_prop(v)
+    return (n, True) if n is not None else (None, False)
+
+
+def _svg_valid_nonneg(v):
+    n = _svg_num_prop(v)
+    return (n, True) if (n is not None and n >= 0) else (None, False)
+
+
+def _svg_valid_min1(v):
+    n = _svg_num_prop(v)
+    return (n, True) if (n is not None and n >= 1) else (None, False)
+
+
+def _svg_valid_clamped01(v):
+    n = _svg_num_prop(v)
+    return (clamp(n), True) if n is not None else (None, False)
+
+
+def _svg_valid_dasharray(v):
+    v = v.strip()
+    if v == "none":
+        return None, True
+    nums = number_list(v)
+    return (nums, True) if nums else (None, False)
+
+
+# (css name -> (attribute name, validator, inherited))
+_SVG_STYLE_PROPS = {
+    "fill": ("fill", _svg_valid_paint, True),
+    "fill-opacity": ("fill_opacity", _svg_valid_clamped01, True),
+    "fill-rule": ("fill_rule", _svg_valid_rule, True),
+    "stroke": ("stroke", _svg_valid_paint, True),
+    "stroke-width": ("stroke_width", _svg_valid_nonneg, True),
+    "stroke-opacity": ("stroke_opacity", _svg_valid_clamped01, True),
+    "stroke-linecap": ("stroke_linecap", _svg_valid_cap, True),
+    "stroke-linejoin": ("stroke_linejoin", _svg_valid_join, True),
+    "stroke-miterlimit": ("stroke_miterlimit", _svg_valid_min1, True),
+    "stroke-dasharray": ("stroke_dasharray", _svg_valid_dasharray, True),
+    "stroke-dashoffset": ("stroke_dashoffset", _svg_valid_number, True),
+    "clip-rule": ("clip_rule", _svg_valid_rule, True),
+    "opacity": ("opacity", _svg_valid_clamped01, False),
+    "clip-path": ("clip_path", _svg_valid_clip_ref, False),
+    "stop-color": ("stop_color", _svg_valid_color_only, False),
+}
+
+_SVG_STYLE_INITIAL = {
+    "fill": color(0, 0, 0),
+    "fill_opacity": 1.0,
+    "fill_rule": "nonzero",
+    "stroke": None,
+    "stroke_width": 1.0,
+    "stroke_opacity": 1.0,
+    "stroke_linecap": "butt",
+    "stroke_linejoin": "miter",
+    "stroke_miterlimit": 4.0,
+    "stroke_dasharray": None,
+    "stroke_dashoffset": 0.0,
+    "clip_rule": "nonzero",
+    "opacity": 1.0,
+    "clip_path": None,
+    "stop_color": color(0, 0, 0),
+}
+
+
+class Style:
+    """The computed value of every property this chapter reads."""
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+    def __repr__(self):
+        return f"Style({self.__dict__!r})"
+
+
+def initial_style():
+    """Every property at its initial value, the parent of the root."""
+    return Style(**dict(_SVG_STYLE_INITIAL))
+
+
+def _svg_style_declarations(style_attr):
+    decls = {}
+    if not style_attr:
+        return decls
+    for part in style_attr.split(';'):
+        part = part.strip()
+        if not part or ':' not in part:
+            continue
+        name, val = part.split(':', 1)
+        decls[name.strip()] = val.strip()
+    return decls
+
+
+def computed_style(el, parent):
+    """The element's value for every property: an inherited property
+    starts at the parent's value and any other at its initial value;
+    presentation attributes override that, then style declarations
+    override those. inherit always takes the parent's value. A value
+    that doesn't parse is ignored."""
+    result = Style()
+    decls = _svg_style_declarations(attribute(el, "style"))
+    for css_name, (attr, validator, inherited) in _SVG_STYLE_PROPS.items():
+        value = getattr(parent, attr) if inherited else _SVG_STYLE_INITIAL[attr]
+        pres = attribute(el, css_name)
+        if pres is not None:
+            pv = pres.strip()
+            if pv == "inherit":
+                value = getattr(parent, attr)
+            else:
+                parsed, ok = validator(pv)
+                if ok:
+                    value = parsed
+        if css_name in decls:
+            dv = decls[css_name]
+            if dv == "inherit":
+                value = getattr(parent, attr)
+            else:
+                parsed, ok = validator(dv)
+                if ok:
+                    value = parsed
+        setattr(result, attr, value)
+    return result
+
+
+# --- 20.7 Basic shapes ---
+
+def _svg_num_attr(el, name, default=0.0):
+    v = attribute(el, name)
+    if v is None:
+        return default
+    val, _ = read_number(v.strip(), 0)
+    return val if val is not None else default
+
+
+def _rect_commands(el):
+    x = _svg_num_attr(el, "x", 0.0)
+    y = _svg_num_attr(el, "y", 0.0)
+    w = _svg_num_attr(el, "width", 0.0)
+    h = _svg_num_attr(el, "height", 0.0)
+    if w <= 0 or h <= 0:
+        return []
+    rx_attr = attribute(el, "rx")
+    ry_attr = attribute(el, "ry")
+    rx = _svg_num_attr(el, "rx") if rx_attr is not None else None
+    ry = _svg_num_attr(el, "ry") if ry_attr is not None else None
+    if rx is not None and rx < 0:
+        rx = None
+    if ry is not None and ry < 0:
+        ry = None
+    if rx is None and ry is not None:
+        rx = ry
+    if ry is None and rx is not None:
+        ry = rx
+    if rx is None and ry is None:
+        rx = ry = 0.0
+    rx = min(rx, w / 2.0)
+    ry = min(ry, h / 2.0)
+
+    if rx <= 0 or ry <= 0:
+        return [Command('M', (x, y)), Command('L', (x + w, y)),
+                Command('L', (x + w, y + h)), Command('L', (x, y + h)),
+                Command('Z', ())]
+
+    return [
+        Command('M', (x + rx, y)),
+        Command('L', (x + w - rx, y)),
+        Command('A', (rx, ry, 0, 0, 1, x + w, y + ry)),
+        Command('L', (x + w, y + h - ry)),
+        Command('A', (rx, ry, 0, 0, 1, x + w - rx, y + h)),
+        Command('L', (x + rx, y + h)),
+        Command('A', (rx, ry, 0, 0, 1, x, y + h - ry)),
+        Command('L', (x, y + ry)),
+        Command('A', (rx, ry, 0, 0, 1, x + rx, y)),
+        Command('Z', ()),
+    ]
+
+
+def _ellipse_commands(el, is_circle):
+    cx = _svg_num_attr(el, "cx", 0.0)
+    cy = _svg_num_attr(el, "cy", 0.0)
+    if is_circle:
+        rx = ry = _svg_num_attr(el, "r", 0.0)
+    else:
+        rx = _svg_num_attr(el, "rx", 0.0)
+        ry = _svg_num_attr(el, "ry", 0.0)
+    if rx <= 0 or ry <= 0:
+        return []
+    return [
+        Command('M', (cx + rx, cy)),
+        Command('A', (rx, ry, 0, 0, 1, cx, cy + ry)),
+        Command('A', (rx, ry, 0, 0, 1, cx - rx, cy)),
+        Command('A', (rx, ry, 0, 0, 1, cx, cy - ry)),
+        Command('A', (rx, ry, 0, 0, 1, cx + rx, cy)),
+        Command('Z', ()),
+    ]
+
+
+def _points_pairs(s):
+    nums = number_list(s if s else "")
+    if len(nums) % 2:
+        nums = nums[:-1]
+    return [(nums[i], nums[i + 1]) for i in range(0, len(nums), 2)]
+
+
+def shape_commands(el):
+    """The commands a shape element stands for, in six ops only. A
+    shape that doesn't render, or an element that isn't a shape, has
+    no commands."""
+    name = el.name
+    if name == "path":
+        return path_commands(attribute(el, "d"))
+    if name == "rect":
+        return _rect_commands(el)
+    if name == "circle":
+        return _ellipse_commands(el, True)
+    if name == "ellipse":
+        return _ellipse_commands(el, False)
+    if name == "line":
+        x1 = _svg_num_attr(el, "x1", 0.0)
+        y1 = _svg_num_attr(el, "y1", 0.0)
+        x2 = _svg_num_attr(el, "x2", 0.0)
+        y2 = _svg_num_attr(el, "y2", 0.0)
+        return [Command('M', (x1, y1)), Command('L', (x2, y2))]
+    if name == "polyline" or name == "polygon":
+        pairs = _points_pairs(attribute(el, "points"))
+        if not pairs:
+            return []
+        cmds = [Command('M', pairs[0])] + [Command('L', p) for p in pairs[1:]]
+        if name == "polygon":
+            cmds.append(Command('Z', ()))
+        return cmds
+    return []
+
+
+# --- 20.8 viewBox and preserveAspectRatio ---
+
+_ALIGN_FX = {"xMin": 0.0, "xMid": 0.5, "xMax": 1.0}
+_ALIGN_FY = {"YMin": 0.0, "YMid": 0.5, "YMax": 1.0}
+
+
+def view_box_matrix(view_box, aspect, width, height):
+    """The matrix that carries the viewBox rectangle onto a width by
+    height viewport, honouring preserveAspectRatio."""
+    if not isinstance(view_box, str):
+        return identity()
+    nums = number_list(view_box)
+    if len(nums) != 4:
+        return identity()
+    minx, miny, bw, bh = nums
+    if bw <= 0 or bh <= 0:
+        return identity()
+    sx = width / bw
+    sy = height / bh
+    a = aspect.strip() if isinstance(aspect, str) else "xMidYMid meet"
+    if a == "none":
+        return scaling(sx, sy) * translation(-minx, -miny)
+    parts = a.split()
+    align = parts[0] if parts and parts[0] in _ALIGN_FX_KEYS else "xMidYMid"
+    meet_or_slice = parts[1] if len(parts) > 1 and parts[1] in ("meet", "slice") else "meet"
+    s = min(sx, sy) if meet_or_slice == "meet" else max(sx, sy)
+    fx = _ALIGN_FX[align[:4]]
+    fy = _ALIGN_FY[align[4:]]
+    ox = (width - bw * s) * fx
+    oy = (height - bh * s) * fy
+    return translation(ox, oy) * scaling(s, s) * translation(-minx, -miny)
+
+
+_ALIGN_FX_KEYS = ("xMinYMin", "xMinYMid", "xMinYMax", "xMidYMin", "xMidYMid",
+                   "xMidYMax", "xMaxYMin", "xMaxYMid", "xMaxYMax")
+
+
+# --- 20.9 Paint servers ---
+
+class TransformedPaint:
+    """A paint seen through a matrix: samples the inner paint at the
+    device point walked back through the matrix's inverse."""
+
+    def __init__(self, paint, m):
+        self.paint = paint
+        self.inv = inverse(m)
+
+
+def transformed_paint(paint, m):
+    return TransformedPaint(paint, m)
+
+
+def _svg_percent_or_number(v, default):
+    if v is None:
+        return default
+    v = v.strip()
+    if v.endswith('%'):
+        val, _ = read_number(v[:-1], 0)
+        return (val / 100.0) if val is not None else default
+    val, _ = read_number(v, 0)
+    return val if val is not None else default
+
+
+def gradient_stops(el):
+    """The stop children of a gradient element, in order: an offset
+    clamped to [0, 1] and raised to the offset before it, and a colour
+    from the computed stop-color."""
+    stops = []
+    last_offset = 0.0
+    parent_style = initial_style()
+    for c in children(el):
+        if c.name != "stop":
+            continue
+        st = computed_style(c, parent_style)
+        off = _svg_percent_or_number(attribute(c, "offset"), 0.0)
+        off = clamp(off)
+        if off < last_offset:
+            off = last_offset
+        last_offset = off
+        stops.append(stop(off, st.stop_color))
+    return stops
+
+
+def paint_server(root, ref, bbox, ctm):
+    """Build the paint a url(#id) reference names: a linearGradient or
+    radialGradient, in objectBoundingBox or userSpaceOnUse coordinates,
+    with gradientTransform applied last. none when there's nothing
+    usable to paint with."""
+    m = _re20.match(r'^url\(#([^)]*)\)$', ref) if isinstance(ref, str) else None
+    if not m:
+        return None
+    el = find_by_id(root, m.group(1))
+    if el is None or el.name not in ("linearGradient", "radialGradient"):
+        return None
+    stops = gradient_stops(el)
+    if not stops:
+        return None
+
+    units = attribute(el, "gradientUnits") or "objectBoundingBox"
+    bx0, by0, bx1, by1 = bbox
+    if units == "userSpaceOnUse":
+        space = ctm
+    else:
+        bw = bx1 - bx0
+        bh = by1 - by0
+        if bw == 0 or bh == 0:
+            return None
+        space = ctm * translation(bx0, by0) * scaling(bw, bh)
+
+    gt = parse_transform(attribute(el, "gradientTransform"))
+    m_full = space * gt
+
+    spread = attribute(el, "spreadMethod") or "pad"
+    if spread not in ("pad", "reflect", "repeat"):
+        spread = "pad"
+
+    if len(stops) == 1:
+        return TransformedPaint(solid(stops[0].color), identity())
+
+    if el.name == "linearGradient":
+        x1 = _svg_percent_or_number(attribute(el, "x1"), 0.0)
+        y1 = _svg_percent_or_number(attribute(el, "y1"), 0.0)
+        x2 = _svg_percent_or_number(attribute(el, "x2"), 1.0)
+        y2 = _svg_percent_or_number(attribute(el, "y2"), 0.0)
+        if x1 == x2 and y1 == y2:
+            return TransformedPaint(solid(stops[-1].color), identity())
+        g = linear_gradient(point(x1, y1), point(x2, y2), stops, spread)
+        return transformed_paint(g, m_full)
+    else:
+        cx = _svg_percent_or_number(attribute(el, "cx"), 0.5)
+        cy = _svg_percent_or_number(attribute(el, "cy"), 0.5)
+        r = _svg_percent_or_number(attribute(el, "r"), 0.5)
+        fx = _svg_percent_or_number(attribute(el, "fx"), cx)
+        fy = _svg_percent_or_number(attribute(el, "fy"), cy)
+        fr = _svg_percent_or_number(attribute(el, "fr"), 0.0)
+        if r == 0:
+            return TransformedPaint(solid(stops[-1].color), identity())
+        g = radial_gradient(point(fx, fy), fr, point(cx, cy), r, stops, spread)
+        return transformed_paint(g, m_full)
+
+
+# --- 20.11 Clips and group opacity ---
+
+def draw_coverage(l, cov, paint, alpha):
+    """Paint through coverage into a layer: at every pixel whose
+    coverage times alpha is above 0, the paint's colour becomes the
+    premultiplied pixel and goes over what's there."""
+    for y in range(min(l.height, cov.height)):
+        for x in range(min(l.width, cov.width)):
+            k = coverage_at(cov, x, y) * alpha
+            if k > 0:
+                c = paint_at(paint, x + 0.5, y + 0.5)
+                l.pixels[y][x] = over(from_color(c, k), l.pixels[y][x])
+
+
+def union_coverage(a, b):
+    """The alpha of one silhouette over the other: 1 - (1 - a)(1 - b)."""
+    width = min(a.width, b.width)
+    height = min(a.height, b.height)
+    result = CoverageBuffer(width, height)
+    for y in range(height):
+        for x in range(width):
+            av = coverage_at(a, x, y)
+            bv = coverage_at(b, x, y)
+            result.coverage[y][x] = 1.0 - (1.0 - av) * (1.0 - bv)
+    return result
+
+
+def mask_layer(l, cov):
+    """Multiply every premultiplied channel of every pixel by the
+    coverage under it."""
+    result = Layer(l.width, l.height)
+    for y in range(l.height):
+        for x in range(l.width):
+            k = coverage_at(cov, x, y)
+            p = l.pixels[y][x]
+            result.pixels[y][x] = Pixel(p.r * k, p.g * k, p.b * k, p.a * k)
+    return result
+
+
+def clip_coverage(root, ref, m, width, height):
+    """The coverage of the clipPath a url(#id) names: the union of the
+    fill of every shape child, each built through m times the
+    clipPath's own transform times the child's, under the child's
+    clip-rule. A clipPath with no shapes clips everything away; a
+    reference to nothing, or to something that isn't a clipPath, clips
+    nothing."""
+    match = _re20.match(r'^url\(#([^)]*)\)$', ref) if isinstance(ref, str) else None
+    if not match:
+        return None
+    el = find_by_id(root, match.group(1))
+    if el is None or el.name != "clipPath":
+        return full_clip(width, height)
+    cm = m * parse_transform(attribute(el, "transform"))
+    result = None
+    for child in children(el):
+        cmds = shape_commands(child)
+        if not cmds:
+            continue
+        child_m = cm * parse_transform(attribute(child, "transform"))
+        if not is_invertible(child_m):
+            continue
+        style = computed_style(child, initial_style())
+        dev = build_path(cmds, child_m, 0.1)
+        cov = fill_path(dev, style.clip_rule, width, height)
+        result = cov if result is None else union_coverage(result, cov)
+    if result is None:
+        return coverage_buffer(width, height)
+    return result
+
+
+# --- 20.10 / 20.12 The walker ---
+
+_SVG_SHAPE_NAMES = ("path", "rect", "circle", "ellipse", "line", "polyline", "polygon")
+
+
+def draw_shape(el, l, style, m, minv, clip, width, height, root, mode='legacy', st=None):
+    """Draw a shape's fill and then its stroke into a layer. mode picks
+    which of chapter 21's three ways does the actual fill+paint work
+    ("legacy" is chapter 20's plain fill_path/draw_coverage, byte
+    for byte); st collects its work counters."""
+    cmds = shape_commands(el)
+    if not cmds:
+        return
+    dev = build_path(cmds, m, 0.1)
+
+    if style.fill is not None:
+        paint = solid(style.fill) if isinstance(style.fill, Color) \
+            else paint_server(root, style.fill, commands_bounds(cmds), m)
+        if paint is not None:
+            _mode_fill_and_draw(dev, style.fill_rule, style.fill_opacity, paint,
+                                 clip, l, width, height, mode, st)
+
+    if style.stroke is not None and style.stroke_width > 0:
+        paint = solid(style.stroke) if isinstance(style.stroke, Color) \
+            else paint_server(root, style.stroke, commands_bounds(cmds), m)
+        if paint is not None:
+            user = transform_path(dev, minv)
+            if style.stroke_dasharray:
+                user = dash(user, list(style.stroke_dasharray), style.stroke_dashoffset)
+            outline = stroke_to_path(user, style.stroke_width, style.stroke_linecap,
+                                      style.stroke_linejoin, style.stroke_miterlimit)
+            outline_dev = transform_path(outline, m)
+            _mode_fill_and_draw(outline_dev, "nonzero", style.stroke_opacity, paint,
+                                 clip, l, width, height, mode, st)
+
+
+def render_element(el, l, parent_style, m, width, height, root, mode='legacy', st=None):
+    """Walk one element: skip anything that isn't svg, g or a shape;
+    otherwise compute its style and matrix, and either walk its
+    children (svg/g) or draw itself (a shape). An element with opacity
+    below 1, or an svg/g with a clip, draws into its own layer first."""
+    is_group = el.name in ("svg", "g")
+    is_shape = el.name in _SVG_SHAPE_NAMES
+    if not is_group and not is_shape:
+        return
+
+    style = computed_style(el, parent_style)
+    m = m * parse_transform(attribute(el, "transform"))
+
+    clip = None
+    if style.clip_path is not None:
+        clip = clip_coverage(root, style.clip_path, m, width, height)
+
+    own_layer = (style.opacity < 1.0) or (clip is not None and is_group)
+    target = layer(width, height) if own_layer else l
+
+    if is_group:
+        for child in children(el):
+            render_element(child, target, style, m, width, height, root, mode, st)
+    else:
+        if not is_invertible(m):
+            pass
+        else:
+            minv = inverse(m)
+            draw_shape(el, target, style, m, minv,
+                       (clip if (clip is not None and not own_layer) else None),
+                       width, height, root, mode, st)
+
+    if own_layer:
+        masked = mask_layer(target, clip) if clip is not None else target
+        result = pop_group_with_opacity(masked, l, style.opacity)
+        for y in range(l.height):
+            for x in range(l.width):
+                l.pixels[y][x] = result.pixels[y][x]
+
+
+def render_svg(text, width, height):
+    """Draw an SVG document onto a width by height canvas: a transparent
+    layer, walked from the root with the viewBox as the starting
+    matrix, flattened over white paper."""
+    root = parse_xml(text)
+    l = layer(width, height)
+    vb = attribute(root, "viewBox")
+    aspect = attribute(root, "preserveAspectRatio")
+    m = view_box_matrix(vb, aspect, width, height)
+    render_element(root, l, initial_style(), m, width, height, root)
+    return flatten_layer(l, color(1, 1, 1))
+
+
+def render_svg_with(text, width, height, mode, st):
+    """Chapter 20's render_svg with every fill and stroke done one of
+    chapter 21's three ways ("whole", "bounded" or "tiled"), counting
+    the work into st. Draws exactly the bytes render_svg draws."""
+    root = parse_xml(text)
+    l = layer(width, height)
+    vb = attribute(root, "viewBox")
+    aspect = attribute(root, "preserveAspectRatio")
+    m = view_box_matrix(vb, aspect, width, height)
+    render_element(root, l, initial_style(), m, width, height, root, mode, st)
+    return flatten_layer(l, color(1, 1, 1))
+
+
+# --- 20.12 renders ---
+
+def aspect_demo():
+    """One portrait drawing in five landscape viewports: none, xMinYMid
+    meet, xMidYMid meet, xMaxYMid meet, xMidYMid slice. Each 120x90
+    viewport sits in a 10px margin of PAPER on a 660x110 canvas; the
+    dark border is the viewBox's own edge, stroked two user units wide."""
+    modes = ["none", "xMinYMid meet", "xMidYMid meet", "xMaxYMid meet", "xMidYMid slice"]
+    margin = 10
+    cell_w, cell_h = 120, 90
+    total_w = margin + 5 * (cell_w + margin)
+    total_h = margin * 2 + cell_h
+    c = canvas(total_w, total_h)
+    fill(c, PAPER)
+    drawing = (
+        "<svg viewBox='0 0 60 80'>"
+        "<rect width='60' height='80' fill='#f4d8a8'/>"
+        "<circle cx='30' cy='26' r='14' fill='#e8553a'/>"
+        "<path d='M2,79 L22,44 L49,79 Z' fill='#3b5b7a'/>"
+        "<path d='M23,79 L44,52 L59,79 Z' fill='#3b5b7a'/>"
+        "<rect x='1' y='1' width='58' height='78' fill='none' stroke='#1a1a1a' stroke-width='2'/>"
+        "</svg>"
+    )
+    for i, mode in enumerate(modes):
+        root = parse_xml(drawing)
+        l = layer(cell_w, cell_h)
+        vb = attribute(root, "viewBox")
+        m = view_box_matrix(vb, mode, cell_w, cell_h)
+        render_element(root, l, initial_style(), m, cell_w, cell_h, root)
+        panel = flatten_layer(l, color(1, 1, 1))
+        ox = margin + i * (cell_w + margin)
+        for y in range(cell_h):
+            for x in range(cell_w):
+                write_pixel(c, ox + x, margin + y, pixel_at(panel, x, y))
+    return c
+
+
+def harbor():
+    """harbor.svg, drawn by render_svg."""
+    return render_svg(read_file("reference/chapter-20/harbor.svg"), 480, 320)
+
+
+def rose():
+    """rose.svg, drawn by render_svg."""
+    return render_svg(read_file("reference/chapter-20/rose.svg"), 400, 400)
+
+
+def tiger():
+    """tiger.svg, the Ghostscript tiger, drawn by render_svg."""
+    return render_svg(read_file("reference/chapter-20/tiger.svg"), 450, 450)
+
+
+def plate_20():
+    """Chapter 20's plate: the tiger."""
+    return tiger()
+
+
+# ============================================================
+# Chapter 21: Making It Fast
+# ============================================================
+
+# --- 21.1 Counting the work ---
+
+class Stats:
+    """A counter record: cells (accumulator cells a running sum
+    resolved), blends (pixels composited one at a time), copies (pixels
+    written without a blend)."""
+
+    def __init__(self):
+        self.cells = 0
+        self.blends = 0
+        self.copies = 0
+
+    def __repr__(self):
+        return f"Stats(cells={self.cells}, blends={self.blends}, copies={self.copies})"
+
+
+def stats():
+    """A fresh stats record, all counters at 0."""
+    return Stats()
+
+
+def fill_path_counted(p, rule, width, height, st):
+    """Chapter 7's fill_path, adding width*height to st.cells -- chapter
+    7 resolves every cell of the canvas whatever the path."""
+    st.cells += width * height
+    return fill_path(p, rule, width, height)
+
+
+def draw_coverage_counted(l, cov, paint, alpha, st):
+    """Chapter 20's draw_coverage, adding 1 to st.blends for every pixel
+    it composites."""
+    for y in range(min(l.height, cov.height)):
+        for x in range(min(l.width, cov.width)):
+            k = coverage_at(cov, x, y) * alpha
+            if k > 0:
+                c = paint_at(paint, x + 0.5, y + 0.5)
+                l.pixels[y][x] = over(from_color(c, k), l.pixels[y][x])
+                st.blends += 1
+
+
+# --- 21.2 Bounds ---
+
+class Window:
+    """A coverage buffer sized to a path's own bounds, and where it
+    sits on the canvas."""
+
+    def __init__(self, cov, x0, y0):
+        self.cov = cov
+        self.x0 = x0
+        self.y0 = y0
+
+
+def fill_bounds(p, width, height):
+    """The window of whole pixels a path can reach: the floor of its
+    least x and y, one more than the floor of its greatest, each cut to
+    the canvas. (0, 0, 0, 0) for an empty path or an empty window."""
+    if not p.subpaths:
+        return (0, 0, 0, 0)
+    minx, miny, maxx, maxy = bounds(p)
+    x0 = max(0, math.floor(minx))
+    y0 = max(0, math.floor(miny))
+    x1 = min(width, math.floor(maxx) + 1)
+    y1 = min(height, math.floor(maxy) + 1)
+    if x0 >= x1 or y0 >= y1:
+        return (0, 0, 0, 0)
+    return (x0, y0, x1, y1)
+
+
+def fill_path_bounded(p, rule, width, height, st):
+    """Move the path by (-x0, -y0), fill it with chapter 7 into an
+    accumulator the window's size, and answer a window."""
+    x0, y0, x1, y1 = fill_bounds(p, width, height)
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return Window(coverage_buffer(0, 0), x0, y0)
+    moved = transform_path(p, translation(-x0, -y0))
+    cov = fill_path(moved, rule, w, h)
+    st.cells += w * h
+    return Window(cov, x0, y0)
+
+
+def coverage_in(c, x, y):
+    """Read a window, a plain coverage buffer, or a tiled coverage at a
+    canvas pixel -- 0 outside a window's own bounds."""
+    if isinstance(c, Window):
+        lx, ly = x - c.x0, y - c.y0
+        if lx < 0 or ly < 0 or lx >= c.cov.width or ly >= c.cov.height:
+            return 0.0
+        return coverage_at(c.cov, lx, ly)
+    if isinstance(c, TiledCoverage):
+        return _tiled_coverage_at(c, x, y)
+    return coverage_at(c, x, y)
+
+
+def full_coverage(c, width, height):
+    """Turn a window, a plain coverage buffer or a tiled coverage into
+    a canvas-sized coverage buffer."""
+    result = CoverageBuffer(width, height)
+    for y in range(height):
+        for x in range(width):
+            result.coverage[y][x] = coverage_in(c, x, y)
+    return result
+
+
+def draw_window(l, win, paint, alpha, st):
+    """draw_coverage over a window's own pixels only."""
+    cov = win.cov
+    for ly in range(cov.height):
+        y = win.y0 + ly
+        if y < 0 or y >= l.height:
+            continue
+        for lx in range(cov.width):
+            x = win.x0 + lx
+            if x < 0 or x >= l.width:
+                continue
+            k = coverage_at(cov, lx, ly) * alpha
+            if k > 0:
+                c = paint_at(paint, x + 0.5, y + 0.5)
+                l.pixels[y][x] = over(from_color(c, k), l.pixels[y][x])
+                st.blends += 1
+
+
+# --- 21.3 Tiles ---
+
+TILE_SIZE = 16
+
+
+def _tile_grid_size(width, height):
+    return (width + TILE_SIZE - 1) // TILE_SIZE, (height + TILE_SIZE - 1) // TILE_SIZE
+
+
+class TiledCoverage:
+    """The class of every tile ("empty"/"solid"/"partial") and the
+    resolved cells of the partial ones."""
+
+    def __init__(self, classes, values, width, height):
+        self.classes = classes
+        self.values = values
+        self.width = width
+        self.height = height
+
+
+def _tiled_coverage_at(t, x, y):
+    ty, tx = y // TILE_SIZE, x // TILE_SIZE
+    if ty < 0 or ty >= len(t.classes) or tx < 0 or tx >= len(t.classes[0]):
+        return 0.0
+    cls = t.classes[ty][tx]
+    if cls == "solid":
+        return 1.0
+    if cls == "empty":
+        return 0.0
+    return t.values.get((x, y), 0.0)
+
+
+def _classify_or_fill_tiles(p, rule, width, height, st, resolve):
+    """Shared machinery for classify_tiles and fill_path_tiled: deposit
+    the path's edges into an accumulator scoped to its own bounds, then
+    classify (and optionally resolve) each tile that overlaps those
+    bounds. resolve=False builds only the class grid; resolve=True also
+    fills the value dict and counts st.cells."""
+    tiles_x, tiles_y = _tile_grid_size(width, height)
+    classes = [["empty"] * tiles_x for _ in range(tiles_y)]
+    values = {}
+    x0, y0, x1, y1 = fill_bounds(p, width, height)
+    if x0 >= x1 or y0 >= y1:
+        return classes, values
+
+    w, h = x1 - x0, y1 - y0
+    moved = transform_path(p, translation(-x0, -y0))
+    acc = accumulator(w, h)
+    for e in edges(moved):
+        accumulate(acc, e.a, e.b)
+
+    tile_x0, tile_x1 = x0 // TILE_SIZE, (x1 - 1) // TILE_SIZE
+    tile_y0, tile_y1 = y0 // TILE_SIZE, (y1 - 1) // TILE_SIZE
+
+    for ty in range(tile_y0, tile_y1 + 1):
+        # the tile's own full extent, clipped only to the canvas -- NOT
+        # to the path's bounds. A tile whose top or bottom edge falls
+        # outside [y0, y1) still has to be checked whole: the rows
+        # inside the bounds carry a real running sum while the rows
+        # outside it carry 0, and a horizontal edge (which deposits
+        # nothing at all) only shows up as exactly that disagreement.
+        # Clipping the scan to the bounds hides it and paints the tile
+        # solid, chapter 21's own name for this bug.
+        row0, row1 = ty * TILE_SIZE, min(height, ty * TILE_SIZE + TILE_SIZE)
+        for tx in range(tile_x0, tile_x1 + 1):
+            col0, col1 = tx * TILE_SIZE, min(width, tx * TILE_SIZE + TILE_SIZE)
+            lcol0 = max(0, min(w, col0 - x0))
+
+            scan_row0, scan_row1 = max(row0, y0), min(row1, y1)
+            scan_col0, scan_col1 = max(col0, x0), min(col1, x1)
+
+            partial = False
+            if scan_row0 < scan_row1 and scan_col0 < scan_col1:
+                for real_row in range(scan_row0, scan_row1):
+                    lrow = real_row - y0
+                    for real_col in range(scan_col0, scan_col1):
+                        lcol = real_col - x0
+                        if abs(area_at(acc, lcol, lrow)) > 1e-9 or abs(cover_at(acc, lcol, lrow)) > 1e-9:
+                            partial = True
+                            break
+                    if partial:
+                        break
+
+            n_val = None
+            if not partial:
+                for real_row in range(row0, row1):
+                    if real_row < y0 or real_row >= y1:
+                        running = 0.0
+                    else:
+                        lrow = real_row - y0
+                        running = 0.0
+                        for c in range(0, lcol0):
+                            running += cover_at(acc, c, lrow)
+                    nearest = round(running)
+                    if abs(running - nearest) > 0.000001:
+                        partial = True
+                        break
+                    if n_val is None:
+                        n_val = nearest
+                    elif nearest != n_val:
+                        partial = True
+                        break
+
+            if partial:
+                classes[ty][tx] = "partial"
+                if resolve:
+                    # Every pixel of the tile (clipped only to the
+                    # canvas) is resolved, cells outside the path's own
+                    # bounds reading as (0, 0) -- the pseudocode's own
+                    # "for every row/column of it", not just its
+                    # intersection with the bounds.
+                    for real_row in range(row0, row1):
+                        in_row = y0 <= real_row < y1
+                        lrow = real_row - y0
+                        running = 0.0
+                        if in_row:
+                            for c in range(0, lcol0):
+                                running += cover_at(acc, c, lrow)
+                        for real_col in range(col0, col1):
+                            in_cell = in_row and x0 <= real_col < x1
+                            if in_cell:
+                                lcol = real_col - x0
+                                area = area_at(acc, lcol, lrow)
+                                cover = cover_at(acc, lcol, lrow)
+                            else:
+                                area = cover = 0.0
+                            values[(real_col, real_row)] = apply_rule(running + area, rule)
+                            running += cover
+                            st.cells += 1
+            else:
+                classes[ty][tx] = "solid" if apply_rule(n_val, rule) == 1 else "empty"
+
+    return classes, values
+
+
+def classify_tiles(p, rule, width, height):
+    """The class of every 16-pixel tile: "empty" outside the path's
+    bounds, "partial" when an edge deposited into it or its rows
+    disagree, "solid"/"empty" otherwise, from the whole number arriving
+    at its left edge."""
+    classes, _ = _classify_or_fill_tiles(p, rule, width, height, None, False)
+    return classes
+
+
+def fill_path_tiled(p, rule, width, height, st):
+    """Resolve the cells of the partial tiles only, adding the count
+    resolved to st.cells, and answer the tiled coverage."""
+    classes, values = _classify_or_fill_tiles(p, rule, width, height, st, True)
+    return TiledCoverage(classes, values, width, height)
+
+
+def tile_count(classes, kind):
+    """How many tiles of a grid are of a kind."""
+    return sum(1 for row in classes for c in row if c == kind)
+
+
+def draw_tiled(l, t, paint, alpha, st):
+    """Paint a tiled coverage into a layer, tile by tile: a solid tile
+    at alpha 1 with a solid paint copies its colour (a copy, exactly
+    what the blend would have produced); anything else in a non-empty
+    tile blends."""
+    tiles_y = len(t.classes)
+    tiles_x = len(t.classes[0]) if tiles_y else 0
+    is_solid_paint = isinstance(paint, SolidPaint)
+    for ty in range(tiles_y):
+        row0 = ty * TILE_SIZE
+        row1 = min(t.height, row0 + TILE_SIZE)
+        for tx in range(tiles_x):
+            cls = t.classes[ty][tx]
+            if cls == "empty":
+                continue
+            col0 = tx * TILE_SIZE
+            col1 = min(t.width, col0 + TILE_SIZE)
+            if cls == "solid":
+                if is_solid_paint and alpha == 1:
+                    src = Pixel(paint.color.red, paint.color.green, paint.color.blue, 1.0)
+                    for y in range(row0, min(row1, l.height)):
+                        for x in range(col0, min(col1, l.width)):
+                            l.pixels[y][x] = src
+                            st.copies += 1
+                else:
+                    k = 1.0 * alpha
+                    for y in range(row0, min(row1, l.height)):
+                        for x in range(col0, min(col1, l.width)):
+                            if k > 0:
+                                c = paint.color if is_solid_paint else paint_at(paint, x + 0.5, y + 0.5)
+                                l.pixels[y][x] = over(from_color(c, k), l.pixels[y][x])
+                                st.blends += 1
+            else:
+                for y in range(row0, min(row1, l.height)):
+                    for x in range(col0, min(col1, l.width)):
+                        k = t.values.get((x, y), 0.0) * alpha
+                        if k > 0:
+                            c = paint_at(paint, x + 0.5, y + 0.5)
+                            l.pixels[y][x] = over(from_color(c, k), l.pixels[y][x])
+                            st.blends += 1
+
+
+# --- 21.4 / 21.5 Spans ---
+
+def composite_span(l, y, x, ks, c):
+    """Composite colour c into row y of a layer through a run of
+    coverages, one pixel at a time: no test for k = 0."""
+    for i, k in enumerate(ks):
+        px = x + i
+        if px < 0 or px >= l.width or y < 0 or y >= l.height:
+            continue
+        t = 1 - k
+        d = l.pixels[y][px]
+        l.pixels[y][px] = Pixel(c.red * k + t * d.r, c.green * k + t * d.g,
+                                 c.blue * k + t * d.b, k + t * d.a)
+
+
+def composite_span4(l, y, x, ks, c):
+    """The same composite, four pixels to a step (each lane the exact
+    scalar arithmetic, no fused multiply-add), the leftover pixels one
+    at a time."""
+    n = len(ks)
+    i = 0
+    while i + 4 <= n:
+        for j in range(4):
+            k = ks[i + j]
+            px = x + i + j
+            if 0 <= px < l.width and 0 <= y < l.height:
+                t = 1 - k
+                d = l.pixels[y][px]
+                l.pixels[y][px] = Pixel(c.red * k + t * d.r, c.green * k + t * d.g,
+                                         c.blue * k + t * d.b, k + t * d.a)
+        i += 4
+    while i < n:
+        k = ks[i]
+        px = x + i
+        if 0 <= px < l.width and 0 <= y < l.height:
+            t = 1 - k
+            d = l.pixels[y][px]
+            l.pixels[y][px] = Pixel(c.red * k + t * d.r, c.green * k + t * d.g,
+                                     c.blue * k + t * d.b, k + t * d.a)
+        i += 1
+
+
+def layers_equal(a, b):
+    """True when every channel of every pixel of two layers is the
+    same number, exactly -- no tolerance."""
+    if a.width != b.width or a.height != b.height:
+        return False
+    for y in range(a.height):
+        for x in range(a.width):
+            pa, pb = a.pixels[y][x], b.pixels[y][x]
+            if pa.r != pb.r or pa.g != pb.g or pa.b != pb.b or pa.a != pb.a:
+                return False
+    return True
+
+
+# --- 21.6 / 21.7 render_svg_with, and the plate ---
+
+def _mode_fill_and_draw(dev_path, rule, alpha, paint, clip, l, width, height, mode, st):
+    if mode == 'legacy':
+        cov = fill_path(dev_path, rule, width, height)
+        if clip is not None:
+            cov = multiply_coverage(cov, clip)
+        draw_coverage(l, cov, paint, alpha)
+    elif mode == 'whole':
+        cov = fill_path_counted(dev_path, rule, width, height, st)
+        if clip is not None:
+            cov = multiply_coverage(cov, clip)
+        draw_coverage_counted(l, cov, paint, alpha, st)
+    elif mode == 'bounded':
+        win = fill_path_bounded(dev_path, rule, width, height, st)
+        if clip is not None:
+            cov = multiply_coverage(full_coverage(win, width, height), clip)
+            draw_coverage_counted(l, cov, paint, alpha, st)
+        else:
+            draw_window(l, win, paint, alpha, st)
+    elif mode == 'tiled':
+        t = fill_path_tiled(dev_path, rule, width, height, st)
+        if clip is not None:
+            cov = multiply_coverage(full_coverage(t, width, height), clip)
+            draw_coverage_counted(l, cov, paint, alpha, st)
+        else:
+            draw_tiled(l, t, paint, alpha, st)
+    else:
+        raise ValueError(f"unknown mode: {mode}")
+
+
+def tile_work(text, width, height):
+    """For every tile, how many of the document's fills and strokes
+    classified it partial and how many solid, as (partial, solid)."""
+    tiles_x, tiles_y = _tile_grid_size(width, height)
+    work = [[[0, 0] for _ in range(tiles_x)] for _ in range(tiles_y)]
+
+    def accumulate_classes(classes):
+        for ty in range(len(classes)):
+            row = classes[ty]
+            for tx in range(len(row)):
+                c = row[tx]
+                if c == "partial":
+                    work[ty][tx][0] += 1
+                elif c == "solid":
+                    work[ty][tx][1] += 1
+
+    def walk(el, parent_style, m, root):
+        is_group = el.name in ("svg", "g")
+        is_shape = el.name in _SVG_SHAPE_NAMES
+        if not is_group and not is_shape:
+            return
+        style = computed_style(el, parent_style)
+        m2 = m * parse_transform(attribute(el, "transform"))
+        if is_group:
+            for child in children(el):
+                walk(child, style, m2, root)
+            return
+        if not is_invertible(m2):
+            return
+        cmds = shape_commands(el)
+        if not cmds:
+            return
+        dev = build_path(cmds, m2, 0.1)
+        if style.fill is not None:
+            paint = solid(style.fill) if isinstance(style.fill, Color) \
+                else paint_server(root, style.fill, commands_bounds(cmds), m2)
+            if paint is not None:
+                accumulate_classes(classify_tiles(dev, style.fill_rule, width, height))
+        if style.stroke is not None and style.stroke_width > 0:
+            paint = solid(style.stroke) if isinstance(style.stroke, Color) \
+                else paint_server(root, style.stroke, commands_bounds(cmds), m2)
+            if paint is not None:
+                minv = inverse(m2)
+                user = transform_path(dev, minv)
+                if style.stroke_dasharray:
+                    user = dash(user, list(style.stroke_dasharray), style.stroke_dashoffset)
+                outline = stroke_to_path(user, style.stroke_width, style.stroke_linecap,
+                                          style.stroke_linejoin, style.stroke_miterlimit)
+                accumulate_classes(classify_tiles(transform_path(outline, m2), "nonzero", width, height))
+
+    root = parse_xml(text)
+    vb = attribute(root, "viewBox")
+    aspect = attribute(root, "preserveAspectRatio")
+    m0 = view_box_matrix(vb, aspect, width, height)
+    walk(root, initial_style(), m0, root)
+    return [[tuple(cell) for cell in row] for row in work]
+
+
+def work_map():
+    """910x450 paper: the tiger drawn by the tiled walker at (0, 0),
+    and from x = 460 one square per tile of it, magenta for work done,
+    cyan for a tile skipped solid, paper for one skipped empty."""
+    tw, th = 450, 450
+    text = read_file("reference/chapter-20/tiger.svg")
+    c = canvas(910, 450)
+    fill(c, PAPER)
+
+    st = stats()
+    tiger_canvas = render_svg_with(text, tw, th, "tiled", st)
+    for y in range(th):
+        for x in range(tw):
+            write_pixel(c, x, y, pixel_at(tiger_canvas, x, y))
+
+    work = tile_work(text, tw, th)
+    tiles_y = len(work)
+    tiles_x = len(work[0]) if tiles_y else 0
+    max_partial = 0
+    for row in work:
+        for partial, _ in row:
+            if partial > max_partial:
+                max_partial = partial
+
+    magenta = color(0.85, 0.2, 0.55)
+    cyan = color(0.2, 0.75, 0.9)
+    ox = 460
+    for ty in range(tiles_y):
+        row0 = ty * TILE_SIZE
+        # The inset is one pixel in from the tile's own nominal 16-tall
+        # edges, not from wherever the canvas happens to cut it short:
+        # an edge tile only 2 rows tall (450 isn't a multiple of 16)
+        # still insets from row0 and row0+15, which leaves exactly its
+        # one surviving row to draw, not zero.
+        row_lo = row0 + 1
+        row_hi = min(th, row0 + TILE_SIZE - 1)
+        for tx in range(tiles_x):
+            col0 = tx * TILE_SIZE
+            col_lo = col0 + 1
+            col_hi = min(tw, col0 + TILE_SIZE - 1)
+            partial, solid_n = work[ty][tx]
+            if partial > 0:
+                t = 0.15 + 0.85 * (partial / max_partial) if max_partial > 0 else 1.0
+                col = mix(PAPER, magenta, t)
+            elif solid_n != 0:
+                col = mix(PAPER, cyan, 0.6)
+            else:
+                col = PAPER
+            for y in range(row_lo, row_hi):
+                for x in range(col_lo, col_hi):
+                    write_pixel(c, ox + x, y, col)
+    return c
+
+
+def plate_21():
+    """Chapter 21's plate: the work map."""
+    return work_map()
