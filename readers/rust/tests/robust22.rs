@@ -81,6 +81,19 @@ fn two_triangles_that_share_only_their_top_point_stay_two_contours() {
 }
 
 #[test]
+fn at_a_shared_corner_the_furthest_right_turn_is_not_the_first_edge_in_the_list() {
+    let a = polygon(&[point(1.0, 0.0), point(3.0, 2.0), point(2.0, 4.0)]);
+    let b = polygon(&[point(3.0, 2.0), point(4.0, 3.0), point(4.0, 4.0)]);
+    assert_eq!(
+        point_lists(&combine(&a, "nonzero", &b, "nonzero", "union")),
+        vec![
+            vec![point(1.0, 0.0), point(3.0, 2.0), point(2.0, 4.0)],
+            vec![point(3.0, 2.0), point(4.0, 3.0), point(4.0, 4.0)],
+        ]
+    );
+}
+
+#[test]
 fn a_corner_resting_on_an_edge() {
     let a = polygon(&[point(0.0, 0.0), point(10.0, 0.0), point(10.0, 10.0), point(0.0, 10.0)]);
     let b = polygon(&[point(5.0, 10.0), point(8.0, 15.0), point(2.0, 15.0)]);
