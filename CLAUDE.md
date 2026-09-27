@@ -381,6 +381,40 @@ parent)`: 15 properties (table in §20.6), style attr beats presentation attrs, 
   coverage ~1e-16 (running-sum crumbs) — the trap. Plate: `work_map()` 910x450, tiger + per-tile
   partial/solid counts from `tile_work`. Figure JS = chapter 20 walker with an onFill hook +
   classify port, byte-exact.
+- Chapter 22 booleans: every coordinate snapped to 1/256 px (`grid(v) = floor(v*256+0.5)`), held as
+  whole grid units within +-1024 px, so `orient` is exact even in doubles. `seg(a, b, wa, wb)` stores
+  lo/hi in the sweep order (`lex_less`: y then x) and re-signs the windings when it swaps. `meet(s, t)`
+  kinds none/end/cross/touch/overlap with split lists; `crossing_point` is the EXACT crossing rounded
+  halves up by `(2N + beta) div 2beta` (64-bit; N ~ 2^59). `split_segments` = merge, find, cut (split
+  points ordered by dot(q - lo, hi - lo)), merge, repeat until a pass finds nothing (the pass that finds
+  nothing is counted; the 3-segment example (2,0)-(10,12), (9,0)-(6,7), (7,4)-(3,7) needs 3 passes).
+  `merge_segments` sums windings, drops (0,0), sorts by lo then hi. Classification `winding_beside` is
+  chapter 5's winding_at at the doubled midpoint with the half-open rule in lex order and f counting when
+  orient(f.lo, f.hi, m) > 0; first pair is the side where the segment doesn't count, second adds its own
+  windings (its left, or below when horizontal). `keep_edges` directs kept edges inside-on-the-right
+  (clockwise). `stitch`: first unused pair in sweep order, at each vertex the unused edge turning furthest
+  right, stop at the start vertex, drop collinear vertices, rotate to topmost-then-leftmost, sort
+  contours: results are canonical so scenarios compare point lists. Three finders give identical splits:
+  "brute" (every pair), "sweep" (active list, drop hi not after s.lo), "bentley-ottmann" (ordered status,
+  exact rational events (X/D, Y/D) needing ~100-bit compares, the textbook U/L/C handling, tests only
+  neighbours; `sweep_stats()` counts tests/events/passes, pinned). `combine(a, ra, b, rb, op)` ops
+  union/intersection/difference/xor; `simplify(p, rule)`. Plate: Roboto g (nonzero) vs chapter 5's
+  star (even-odd) four ways; demo `seal()` is 61 combines. Benchmark `struck_line(n)`. Trap:
+  `float_crossing` lies on neither segment; the grid moves crossings by <= 1/512 px.
+- Chapter 23 fields: negative inside; `clamp(0.5 - d)` is coverage. `sd_polygon` signs by winding_at
+  (so a self-crossing nonzero path has buried edges: simplify first, pinned). Quadratic distance exact via
+  `solve_cubic`; cubic by Newton from nine seeds PLUS both ends (without the ends a scenario fails).
+  Chapter 14's `distance_to_curve` is fooled by looping cubics (pinned as >= 5.4 vs the true 5.379229);
+  chapter 23's `brute_distance` refines every local-minimum sample, and `weyl_points` (R2 sequence) makes
+  the 10,000 test points. Field ops are one line each; `smooth_min` polynomial. EDT is Felzenszwalb with a
+  finite far value w^2 + h^2 (exact, equals brute force). Atlases: `bake_box` is chapter 17's box grown
+  by spread; SDF/MSDF/MTSDF; edge colouring (corner = dot <= 0 or |cross| > sin 3; none -> white; one ->
+  cyan/white/magenta thirds; more -> alternate cyan/magenta, odd -> last yellow); per channel nearest by
+  true distance with the orthogonality tie-break at ends, then pseudo-distance; no error-correction pass
+  (it changed almost nothing; strokes under ~2 texels notch, shown with k at 16 px). Glows/shadows read
+  the MTSDF true channel (the median makes far-field false edges). Trap: min is not the union's field
+  inside (the peanut shrunk by 20 splits in two). Renders are slow in Python (~2 min for the plate
+  feature); every figure script redraws all nine byte for byte.
 - Runner learned `≥`. Figure JS `mag` must be `sqrt(x*x+y*y)` to mirror chapter 4's `magnitude`
   (Math.hypot differs in the last bit and flipped one byte of the spiral).
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and

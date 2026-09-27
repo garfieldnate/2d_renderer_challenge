@@ -1,0 +1,1188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 23 · Distance Fields — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 23 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-22.html">← 22</a> · <a href="#plate">Plate&nbsp;23</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Twenty-Three</p>
+    <h1>Distance Fields</h1>
+    <p class="hook">Chapter 13 needed about 120 lines to stroke a path. Chapter 14 needed 130 more to
+      do it properly for curves, and chapter 22 needed 260 to cut one path with another, most of them
+      spent on making floating point tell the truth. Here are all three again:
+      <code>|d| − w/2</code>, <code>d − r</code> and <code>max(min(a, b), −max(a, b))</code>. That's
+      the stroke, the offset and the exclusive-or, one line each, and they work on any shape at all.
+      The catch is the letter <code>d</code>. This chapter stores, at every pixel, the distance to the
+      nearest edge instead of how much of the pixel is covered, and a startling amount of the book
+      turns into arithmetic on that one number. It isn't free, and by the end you'll know exactly what
+      it costs.</p>
+  </header>
+
+  <p>A <em>signed distance field</em> gives every point the distance to the nearest point of a
+    shape's edge, negative inside and positive outside. The edge is where the field is 0, so drawing
+    the shape is asking which pixels have a field near 0, and a field is a different answer to the
+    question every chapter since chapter 2 has asked: what is this shape, as numbers? Coverage
+    answers "how much of this pixel". A field answers "how far to the edge", and the second answer
+    turns out to know things about the neighbourhood that the first never did.</p>
+
+  <h2><span class="sec">§ 23.1</span> Exact fields for primitives</h2>
+
+  <p>A circle's field is the distance to its center less its radius. A segment's field is the
+    distance to its nearest point, found by projecting onto it and clamping to its ends; it has no
+    sign, because a segment has no inside. A box's is two lines that are worth staring at until they
+    make sense: measure how far outside each pair of sides the point is, <code>qx</code> and
+    <code>qy</code>; the length of the positive parts is the distance when you're outside, and the
+    larger of the two is the (negative) distance when you're inside, the nearest side. Round the box
+    by shrinking it by <code>r</code> and subtracting <code>r</code>. That's the first sign of what's
+    coming: rounding every corner of a shape is subtracting a number.</p>
+
+  <p>A polygon is the least distance to any of its edges, which is the size; and the sign is chapter
+    5's winding number, under whichever fill rule you like. That's the one place a field needs the
+    whole path at once, and it's the one place a field can get the wrong answer from a perfectly good
+    path, which §&nbsp;23.3 finds.</p>
+
+  <figure>
+    <canvas id="fig231" role="img" aria-label="Four square panels of banded contour lines. Inside each shape the bands are cyan, outside they are orange, and a pale line marks the shape's edge where the field is zero. The shapes are a circle, a box, a rounded box, and a five-pointed star filled even-odd, whose center pentagon has orange bands because it is outside"></canvas>
+    <figcaption><span class="fig">Figure 23.1</span> Four fields, in bands six pixels wide: cyan inside, orange outside, pale where the field is 0. Outside the box the bands round its corners; inside they stay square. The star is filled even-odd, so its middle is outside and banded orange.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter23-primitives.feature">
+    <p class="label">features/chapter23-primitives.feature</p>
+<pre><code><span class="kw">Feature</span>: Exact fields for primitives
+  A signed distance is negative inside a shape and positive outside, and
+  its size is the distance to the nearest point of the shape's edge.
+  sd_circle(p, c, r) is magnitude(p - c) - r. distance_to_segment(p, a,
+  b) has no sign, because a segment has no inside: the distance from p to
+  a + t (b - a), with t = dot(p - a, b - a) / dot(b - a, b - a) clamped
+  to [0, 1], or to a when a = b. sd_box(p, c, hw, hh) is a box centered
+  on c, hw and hh from the center to its sides: with qx = |p.x - c.x| - hw
+  and qy = |p.y - c.y| - hh, it's the length of (max(qx, 0), max(qy, 0))
+  plus min(max(qx, qy), 0). sd_rounded_box(p, c, hw, hh, r) is
+  sd_box(p, c, hw - r, hh - r) - r. sd_polygon(p, path, rule) is the least
+  distance_to_segment over chapter 5's edges(path), made negative when
+  chapter 5's winding_at says p is inside under the rule.
+
+  <span class="kw">Scenario</span>: A circle
+    <span class="kw">Then</span>  sd_circle(point(3, 4), point(0, 0), 2) = 3
+    <span class="kw">And</span>   sd_circle(point(1, 0), point(0, 0), 2) = -1
+    <span class="kw">And</span>   sd_circle(point(2, 0), point(0, 0), 2) = 0
+
+  <span class="kw">Scenario</span>: A segment, beside it and beyond its ends
+    <span class="kw">Then</span>  distance_to_segment(point(5, 3), point(0, 0), point(10, 0)) = 3
+    <span class="kw">And</span>   distance_to_segment(point(-3, 4), point(0, 0), point(10, 0)) = 5
+    <span class="kw">And</span>   distance_to_segment(point(13, -4), point(0, 0), point(10, 0)) = 5
+    <span class="kw">And</span>   distance_to_segment(point(3, 4), point(0, 0), point(0, 0)) = 5
+
+  <span class="kw">Scenario</span>: A box, beside a side, off a corner, and inside
+    <span class="kw">Then</span>  sd_box(point(13, 0), point(0, 0), 10, 5) = 3
+    <span class="kw">And</span>   sd_box(point(13, 9), point(0, 0), 10, 5) = 5
+    <span class="kw">And</span>   sd_box(point(2, 1), point(0, 0), 10, 5) = -4
+    <span class="kw">And</span>   sd_box(point(-2, -4), point(0, 0), 10, 5) = -1
+
+  <span class="kw">Scenario</span>: Rounding a box rounds its corners and nothing else
+    <span class="kw">Then</span>  sd_rounded_box(point(13, 9), point(0, 0), 10, 5, 2) = 5.810250
+    <span class="kw">And</span>   sd_rounded_box(point(13, 0), point(0, 0), 10, 5, 2) = 3
+    <span class="kw">And</span>   sd_rounded_box(point(0, 0), point(0, 0), 10, 5, 2) = -5
+
+  <span class="kw">Scenario</span>: A polygon's sign comes from chapter 5's winding number
+    <span class="kw">Given</span> sq ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">Then</span>  sd_polygon(point(5, 3), sq, "nonzero") = -3
+    <span class="kw">And</span>   sd_polygon(point(13, 14), sq, "nonzero") = 5
+    <span class="kw">And</span>   sd_polygon(point(80.5, 80.5), star(), "nonzero") = -21.631190
+    <span class="kw">And</span>   sd_polygon(point(80.5, 80.5), star(), "evenodd") = 21.631190</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 23.2</span> Fields for curves</h2>
+
+  <p>The distance to a curve is the distance to its nearest point, and the nearest point
+    <code>B(t)</code> is where the line from <code>p</code> meets the curve at right angles:
+    <code>(B(t) − p) · B′(t) = 0</code>. For a quadratic, <code>B</code> has degree two and
+    <code>B′</code> degree one, so that's a cubic in <code>t</code>, and cubics have a formula.
+    Solve it, keep the roots between 0 and 1, add the two ends, and the nearest of those points is
+    the answer, exactly. The formula has two branches, one real root or three, and the scenarios pin
+    both, along with the cases where the leading coefficients vanish because the curve is a straight
+    line in disguise, which is what every TrueType line segment is.</p>
+
+  <p>For a cubic the same condition has degree five, and quintics don't have a formula. So guess and
+    improve: nine seeds along the curve, eight steps of Newton's method from each, and the nearest
+    result. And the two ends, on their own, because Newton's method starting at an end can walk away
+    from it toward a stationary point inside the curve, while the end was the answer all along. The
+    scenario with the point at (70, 80) is that case; a version without the ends says 59.7 where the
+    answer is 50.</p>
+
+  <p>Both are testable against a brute-force search, and the test is where this section earned its
+    keep. The first ground truth was chapter 14's <code>distance_to_curve</code>, which samples the
+    curve at 65 points and refines around the best one. Against two hundred random cubics it
+    disagreed with Newton twice, by up to a tenth of a pixel. The Newton answer was right: on a cubic that loops back past the
+    point, the best sample was near the wrong stretch of the curve, and chapter 14 refined the
+    wrong minimum. That search is fine for what chapter 14 used it for, curves that don't loop. The
+    brute force here refines around every sample that's closer than its neighbours, and against it
+    both fields agree with it to within 10<sup>−11</sup> over ten thousand points.</p>
+
+  <div class="test" data-feature="chapter23-curves.feature">
+    <p class="label">features/chapter23-curves.feature</p>
+<pre><code><span class="kw">Feature</span>: Fields for curves
+  solve_cubic(a, b, c, d) is the real roots of a t³ + b t² + c t + d = 0 in
+  increasing order: when |a| &lt; 10⁻¹² it solves b t² + c t + d = 0 instead
+  (and when |b| &lt; 10⁻¹² too, c t + d = 0, with no roots when |c| &lt; 10⁻¹²).
+  The cubic's roots come from the depressed cubic by Cardano's formula
+  when there's one and by the cosine formula when there are three.
+  distance_to_quadratic(p, c): with a0 = P0 - p, a1 = 2 (P1 - P0) and
+  a2 = P0 - 2 P1 + P2, the nearest point is at t = 0, t = 1, or a root in
+  (0, 1) of solve_cubic(2 dot(a2, a2), 3 dot(a1, a2), dot(a1, a1) +
+  2 dot(a0, a2), dot(a0, a1)); the answer is the least distance from p to
+  point_at(c, t) over those t. distance_to_cubic(p, c) is the distance to
+  point_at(c, nearest_t_cubic(p, c)): start from both ends, t = 0 and
+  t = 1, and from nine seeds t = i / 8 for i from 0 to 8 take eight
+  Newton steps each on f(t) = dot(B(t) - p, B'(t)), with f'(t) =
+  dot(B'(t), B'(t)) + dot(B(t) - p, B''(t)), t ← clamp(t - f / f', 0, 1),
+  stopping early when f' = 0; the t whose point is nearest wins, the ends
+  first, then the seeds in order, ties kept. brute_distance(c, p) is
+  the ground truth by search: the distances at t = i / 128 for i from 0 to
+  128, and for every sample no farther than its neighbours (the ends have
+  one) 40 rounds of ternary search between its neighbours' t, the least
+  of all. weyl_points(n, x0, y0, w, h) is n points spread over a box the
+  same way in every language: point k, for k from 1 to n, is (x0 + w
+  frac(k a), y0 + h frac(k b)), with a = 0.7548776662466927, b =
+  0.5698402909980532 and frac(v) = v - floor(v). max_curve_error(c, pts)
+  is the greatest |distance - brute_distance| over the points, with the
+  quadratic or the cubic distance as c has three or four points.
+
+  <span class="kw">Scenario</span>: Cubic roots, and the cases that aren't cubic
+    <span class="kw">Then</span>  solve_cubic(1, -6, 11, -6) = [1, 2, 3]
+    <span class="kw">And</span>   solve_cubic(1, 0, 0, -8) = [2]
+    <span class="kw">And</span>   solve_cubic(2, 0, -2, 0) = [-1, 0, 1]
+    <span class="kw">And</span>   solve_cubic(0, 1, -3, 2) = [1, 2]
+    <span class="kw">And</span>   solve_cubic(0, 0, 2, -1) = [0.5]
+    <span class="kw">And</span>   solve_cubic(0, 0, 0, 1) = []
+
+  <span class="kw">Scenario</span>: The nearest point of a quadratic
+    <span class="kw">Given</span> flat ← quadratic(point(0, 0), point(5, 0), point(10, 0))
+    <span class="kw">And</span>   arch ← quadratic(point(10, 80), point(50, -20), point(90, 80))
+    <span class="kw">Then</span>  distance_to_quadratic(point(5, 3), flat) = 3
+    <span class="kw">And</span>   distance_to_quadratic(point(13, 4), flat) = 5
+    <span class="kw">And</span>   distance_to_quadratic(point(50, 20), arch) = 10
+    <span class="kw">And</span>   distance_to_quadratic(point(50, 60), arch) = 26.532998
+
+  <span class="kw">Scenario</span>: The nearest point of a cubic can be an end that Newton walks away from
+    <span class="kw">Given</span> c ← cubic(point(30, 50), point(10, 40), point(10, 70), point(10, 100))
+    <span class="kw">Then</span>  distance_to_cubic(point(70, 80), c) = 50
+    <span class="kw">And</span>   nearest_t_cubic(point(70, 80), c) = 0
+
+  <span class="kw">Scenario</span>: The points are the same everywhere
+    <span class="kw">Given</span> pts ← weyl_points(2, 0, 0, 100, 100)
+    <span class="kw">Then</span>  pts[0] = point(75.48776662466927, 56.98402909980532)
+    <span class="kw">And</span>   pts[1] = point(50.97553324933854, 13.968058199610638)
+
+  <span class="kw">Scenario</span>: Both fields match a brute-force search over 10,000 points
+    <span class="kw">Given</span> pts ← weyl_points(10000, 0, 0, 100, 100)
+    <span class="kw">Then</span>  max_curve_error(quadratic(point(10, 80), point(50, -20), point(90, 80)), pts) ≤ 0.000001
+    <span class="kw">And</span>   max_curve_error(cubic(point(10, 80), point(30, -10), point(70, 120), point(90, 20)), pts) ≤ 0.000001
+
+  <span class="kw">Scenario</span>: A cubic that loops back past the point
+    <span class="kw">Given</span> c ← cubic(point(83.1679, 49.0113), point(3.7744, 16.9556), point(9.872, 71.7692), point(90.0182, 19.9317))
+    <span class="kw">Then</span>  distance_to_cubic(point(52.2111, 45.0896), c) = 5.379229 ± 0.00001
+    <span class="kw">And</span>   brute_distance(c, point(52.2111, 45.0896)) = 5.379229 ± 0.00001
+    <span class="kw">And</span>   distance_to_curve(c, point(52.2111, 45.0896)) ≥ 5.4</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 23.3</span> Render it</h2>
+
+  <p>A field becomes coverage in one line: <code>clamp(0.5 − d, 0, 1)</code>. A pixel whose center is
+    on the edge is half covered, and the coverage ramps to nothing half a pixel outside and to
+    everything half a pixel in. That's the whole rasterizer. Now diff it against chapter 7's exact
+    one and measure where it's wrong, because it is.</p>
+
+  <p>Along an edge that runs with the pixels, it's exact: a pixel 0.2 inside the edge of an
+    axis-aligned box is 0.7 covered, and that's what both say. Along a slanted edge, it's a little
+    off, because a pixel is a square and the coverage of a square by a half-plane isn't a straight
+    ramp: at 45° the true ramp is gentler at its ends, and the linear one can be off by 0.043; the
+    scenario's pixel is off by 0.035.
+    At a corner it's a long way off. The field measures to the corner point itself, so its
+    zero line goes round the corner instead of into it, and at the tips of the star the error is
+    nearly half a pixel's worth of ink.</p>
+
+  <figure>
+    <canvas id="fig232" role="img" aria-label="Three panels. Left: chapter 5's star filled from its field, faint lines visible across its interior. Middle: the error against the exact fill, drawn in magenta, bright along the pentagon of edges inside the star and faint along the outer edges and at the points. Right: the error once the star is simplified first, with the interior pentagon gone and only the faint outline and the points remaining"></canvas>
+    <figcaption><span class="fig">Figure 23.2</span> The star filled nonzero from its field, then the error against chapter 7, four times brighter than life. The bright pentagon is edges that aren't edges any more: the fill rule buried them, the field still measures to them. On the right, the field of chapter 22's simplified star, whose error is the outline's slant and its points.</figcaption>
+  </figure>
+
+  <p>And inside the star there's an error that isn't in any textbook, because it's this book's own
+    doing. The star is five crossing edges filled nonzero, so the pentagon in the middle is inside
+    and the edges running across it aren't the shape's edge any more. The fill rule knows that; the
+    field doesn't. It measures to every edge, finds the buried ones half a pixel away, and draws a
+    faint seam along each. The fix is chapter 22: <code>simplify</code> the path first, and the
+    field measures to the real outline. The total error drops from 44.8 pixels' worth of ink to 9.8,
+    and what's left is the points.</p>
+
+  <div class="test" data-feature="chapter23-render.feature">
+    <p class="label">features/chapter23-render.feature</p>
+<pre><code><span class="kw">Feature</span>: Rendering a field
+  A field is a width, a height and one number per pixel, row by row.
+  field(width, height, fn) samples fn at every pixel center, point(x +
+  0.5, y + 0.5); field_of(width, height, values) makes one from a list;
+  field_at(f, x, y) reads one, and field_range(f) is (least, greatest). field_coverage(f) is chapter 2's coverage
+  buffer with clamp(0.5 - d, 0, 1) at each pixel: a pixel whose center is
+  on the edge is half covered, and the coverage ramps to 0 and 1 over one
+  pixel either side. polygon_field(p, rule, width, height) is the field of
+  sd_polygon. coverage_error(cov, exact) is a coverage buffer of |cov -
+  exact| at each pixel. simplify is chapter 22's.
+
+  <span class="kw">Scenario</span>: A field is sampled at pixel centers
+    <span class="kw">Given</span> f ← circle_field(8, 8, 3, 16, 16)
+    <span class="kw">Then</span>  field_at(f, 8, 8) = -2.292893
+    <span class="kw">And</span>   field_at(f, 11, 8) = 0.535534
+    <span class="kw">And</span>   coverage_at(field_coverage(f), 8, 8) = 1
+    <span class="kw">And</span>   coverage_at(field_coverage(f), 11, 8) = 0
+
+  <span class="kw">Scenario</span>: Along an edge that runs with the pixels, the field is exact
+    <span class="kw">Given</span> box ← polygon(point(10.3, 12.7), point(50.6, 12.7), point(50.6, 40.2), point(10.3, 40.2))
+    <span class="kw">When</span>  cov ← field_coverage(polygon_field(box, "nonzero", 64, 64))
+    <span class="kw">And</span>   exact ← fill_path(box, "nonzero", 64, 64)
+    <span class="kw">Then</span>  coverage_at(cov, 10, 25) = 0.7
+    <span class="kw">And</span>   coverage_at(exact, 10, 25) = 0.7
+    <span class="kw">And</span>   coverage_at(cov, 10, 12) = 0.3
+    <span class="kw">And</span>   coverage_at(exact, 10, 12) = 0.21
+    <span class="kw">And</span>   max_coverage_difference(cov, exact) = 0.12
+
+  <span class="kw">Scenario</span>: Along a slanted edge it's a little off
+    <span class="kw">Given</span> d ← polygon(point(74.37, 40.21), point(40.37, 74.21), point(6.37, 40.21), point(40.37, 6.21))
+    <span class="kw">When</span>  cov ← field_coverage(polygon_field(d, "nonzero", 80, 80))
+    <span class="kw">And</span>   exact ← fill_path(d, "nonzero", 80, 80)
+    <span class="kw">Then</span>  coverage_at(cov, 71, 43) = 0.203015
+    <span class="kw">And</span>   coverage_at(exact, 71, 43) = 0.1682
+
+  <span class="kw">Scenario</span>: At the star's points it's a long way off, and inside it's wrong until the path is simplified
+    <span class="kw">Given</span> exact ← fill_path(star(), "nonzero", 160, 160)
+    <span class="kw">When</span>  raw ← coverage_error(field_coverage(polygon_field(star(), "nonzero", 160, 160)), exact)
+    <span class="kw">And</span>   clean ← coverage_error(field_coverage(polygon_field(simplify(star(), "nonzero"), "nonzero", 160, 160)), exact)
+    <span class="kw">Then</span>  max_coverage_difference(field_coverage(polygon_field(star(), "nonzero", 160, 160)), exact) = 0.491037
+    <span class="kw">And</span>   ink(raw) = 44.800368
+    <span class="kw">And</span>   ink(clean) = 9.808571
+    <span class="kw">And</span>   coverage_at(raw, 80, 80) = 0
+    <span class="kw">And</span>   coverage_at(raw, 80, 58) = 0.131190
+    <span class="kw">And</span>   coverage_at(clean, 80, 58) = 0</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 23.4</span> Chapters 13, 14 and 22 for free</h2>
+
+  <p>Grow a shape by <code>r</code>: every point that was <code>r</code> or closer to it is now in it,
+    and its field is <code>d − r</code>. A stroke <code>w</code> wide is every point within
+    <code>w/2</code> of the edge, <code>|d| − w/2</code>, with round joins and round caps because
+    distance is round. A union is everything inside either, and inside either means the smaller field
+    is negative: <code>min(a, b)</code>. Intersection is <code>max</code>, difference is
+    <code>max(a, −b)</code>, and exclusive-or is inside one and not both. Each is one line, applied
+    at every pixel, and none of them has a special case.</p>
+
+  <p>Figure 23.3 draws three earlier chapters' work both ways, the top row by path and the bottom by
+    field. The star's stroke by field and by chapter 13's stroker, with round joins, differ by at
+    most 0.41 at any pixel and by 4.4 pixels of ink in 5,906; the difference is mostly chapter 13's
+    arcs, which are sixteen-sided polygons, against the field's true circles. The curve's stroke
+    differs from chapter 14's by at most 0.08. The exclusive-or differs from chapter 22's plate by
+    at most 0.41, at the corners, where the field rounds and the path doesn't.</p>
+
+  <figure>
+    <canvas id="fig233" role="img" aria-label="Two rows of three panels, all orange on dark paper. Top row, drawn by paths: a stroked five-pointed star, a thick S-shaped curve with round ends, and the exclusive-or of a letter g and a star. Bottom row, drawn by fields: the same three, indistinguishable at this size"></canvas>
+    <figcaption><span class="fig">Figure 23.3</span> Top, chapters 13, 14 and 22. Bottom, one line each on a field. The sharpest difference anywhere is 0.41 of a pixel, at corners.</figcaption>
+  </figure>
+
+  <p>That's the honest comparison of code length, too. The field versions need the fields, which
+    are the thirty lines of §&nbsp;23.1 and the sixty of §&nbsp;23.2, and then each operation is one
+    line. The path versions need 120, 130 and 260 lines, and give you a path at the end, which you
+    can stroke again, offset exactly, save as SVG and scale to a billboard. The field gives you a
+    grid of numbers at one resolution. That trade is the chapter.</p>
+
+  <div class="test" data-feature="chapter23-free.feature">
+    <p class="label">features/chapter23-free.feature</p>
+<pre><code><span class="kw">Feature</span>: Chapters 13, 14 and 22 for free
+  Every one of these is one line, applied at every pixel of a field.
+  field_offset(f, r) is d - r: the shape grown by r, or shrunk when r is
+  negative. field_stroke(f, width) is |d| - width / 2: a band width wide
+  centered on the edge, with round joins and round caps. field_union(a,
+  b) is min(a, b), field_intersection(a, b) is max(a, b),
+  field_difference(a, b) is max(a, -b), and field_xor(a, b) is
+  max(min(a, b), -max(a, b)). cubic_field(c, width, height) is the field of distance_to_cubic, with
+  no sign, since one curve has no inside. s_curve() is cubic(point(30, 150),
+  point(40, 20), point(160, 180), point(170, 50)). plate_glyph_field() is
+  the field of chapter 22's plate_glyph() on a 200 by 200 canvas: the
+  least distance_to_quadratic to the glyph's quadratics, each through
+  text_matrix(font, 200, 40, 140) by chapter 8's transform_curve, made
+  negative where glyph_path through the same matrix, flattened to 0.01,
+  winds nonzero around the point.
+
+  <span class="kw">Scenario</span>: One line each
+    <span class="kw">Given</span> a ← field_of(3, 1, [-2, 1, 3])
+    <span class="kw">And</span>   b ← field_of(3, 1, [1, -4, 2])
+    <span class="kw">Then</span>  field_union(a, b).values = [-2, -4, 2]
+    <span class="kw">And</span>   field_intersection(a, b).values = [1, 1, 3]
+    <span class="kw">And</span>   field_difference(a, b).values = [-1, 4, 3]
+    <span class="kw">And</span>   field_xor(a, b).values = [-1, -1, 2]
+    <span class="kw">And</span>   field_offset(a, 2).values = [-4, -1, 1]
+    <span class="kw">And</span>   field_stroke(a, 2).values = [1, 0, 2]
+
+  <span class="kw">Scenario</span>: A stroke by field and chapter 13's round stroke
+    <span class="kw">Given</span> sp ← transform_path(star(), translation(19.5, 19.5))
+    <span class="kw">When</span>  by_path ← fill_path(stroke_to_path(sp, 10, "round", "round", 4), "nonzero", 200, 200)
+    <span class="kw">And</span>   by_field ← field_coverage(field_stroke(polygon_field(sp, "nonzero", 200, 200), 10))
+    <span class="kw">Then</span>  max_coverage_difference(by_path, by_field) ≤ 0.42
+    <span class="kw">And</span>   ink(by_path) = 5906.224083
+    <span class="kw">And</span>   ink(by_field) = 5901.860165
+
+  <span class="kw">Scenario</span>: A curve's stroke by field and chapter 14's
+    <span class="kw">When</span>  by_path ← fill_path(stroke_curve_to_path(s_curve(), 20, "round", 0.05), "nonzero", 200, 200)
+    <span class="kw">And</span>   by_field ← field_coverage(field_stroke(cubic_field(s_curve(), 200, 200), 20))
+    <span class="kw">Then</span>  max_coverage_difference(by_path, by_field) ≤ 0.08
+    <span class="kw">And</span>   ink(by_field) - ink(by_path) = 4.120488 ± 0.001
+
+  <span class="kw">Scenario</span>: Chapter 22's plate by field
+    <span class="kw">When</span>  by_path ← fill_path(combine(plate_glyph(), "nonzero", plate_star(), "evenodd", "xor"), "nonzero", 200, 200)
+    <span class="kw">And</span>   by_field ← field_coverage(field_xor(plate_glyph_field(), polygon_field(plate_star(), "evenodd", 200, 200)))
+    <span class="kw">Then</span>  max_coverage_difference(by_path, by_field) ≤ 0.42
+    <span class="kw">And</span>   ink(by_field) - ink(by_path) = 2.279815 ± 0.001</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 23.5</span> Something paths can't do</h2>
+
+  <p><code>min(a, b)</code> has a crease wherever <code>a = b</code>, and the crease is the sharp
+    corner where two shapes meet. Replace it with a function that agrees with <code>min</code> when
+    <code>a</code> and <code>b</code> are far apart and dips a little below both when they're close,
+    and the crease fills in. The polynomial smooth minimum dips by at most <code>k/4</code>, only
+    where <code>|a − b| &lt; k</code>, and the result is a fillet whose size <code>k</code> controls.
+    It's a shape with no path expression: not a circular arc, not any curve chapter 8 can write, but
+    a blend that sweeps smoothly out of one outline and into the other.</p>
+
+  <figure>
+    <canvas id="fig234" role="img" aria-label="Four panels, each a circle overlapping a rounded rectangle, filled orange with a pale outline. From left to right the crease where they meet fills in more and more, from a sharp notch to a broad smooth fillet"></canvas>
+    <figcaption><span class="fig">Figure 23.4</span> A circle and a rounded box, smooth-unioned with <code>k</code> = 0, 8, 16 and 32. The first is <code>min</code>. The others are shapes no path in this book can describe exactly.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter23-smooth.feature">
+    <p class="label">features/chapter23-smooth.feature</p>
+<pre><code><span class="kw">Feature</span>: Something paths can't do
+  smooth_min(a, b, k) is min(a, b) when k is 0 or less. Otherwise, with
+  h = max(k - |a - b|, 0) / k, it's min(a, b) - h² k / 4: the same as
+  min where a and b are more than k apart, and up to k / 4 less where
+  they're close, which rounds the crease where two shapes meet into a
+  fillet. field_smooth_union(a, b, k) applies it at every pixel.
+  fillet_field(k) is a 160 by 160 field of smooth_min(sd_circle(p,
+  point(60, 70), 36), sd_rounded_box(p, point(105, 95), 40, 25, 4), k).
+
+  <span class="kw">Scenario</span>: Far apart it's min; close together it's less
+    <span class="kw">Then</span>  smooth_min(1, 5, 2) = 1
+    <span class="kw">And</span>   smooth_min(3, 3, 4) = 2
+    <span class="kw">And</span>   smooth_min(2, 3, 4) = 1.4375
+    <span class="kw">And</span>   smooth_min(2, 3, 0) = 2
+
+  <span class="kw">Scenario</span>: The fillet fills the crease
+    <span class="kw">Given</span> sharp ← fillet_field(0)
+    <span class="kw">And</span>   filleted ← fillet_field(32)
+    <span class="kw">Then</span>  field_at(sharp, 98, 63) = 3.044846
+    <span class="kw">And</span>   field_at(filleted, 98, 63) = -3.320843
+    <span class="kw">And</span>   field_at(sharp, 60, 70) = field_at(filleted, 60, 70)
+    <span class="kw">And</span>   field_smooth_union(fillet_field(0), fillet_field(0), 0).values = fillet_field(0).values</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>Photoshop's layer styles, <em>Stroke</em>, <em>Outer Glow</em>, <em>Drop Shadow</em> and its
+      <em>Spread</em> slider, are at heart thresholds and falloffs on a distance field of the layer's pixels,
+      which is why they're instant and why their corners come out round. Illustrator's <em>Offset
+      Path</em> is the exact version, on the path, and it's noticeably slower.</p>
+  </aside>
+
+  <h2><span class="sec">§ 23.6</span> The distance transform</h2>
+
+  <p>Every field so far came from a path. A distance transform makes one from pixels: a bitmap, a
+    coverage buffer, a scan of a signature. Decide which pixels are on, and find, for every pixel,
+    the squared distance to the nearest center that's on. Trying every pair is exact and takes
+    <em>n</em><sup>2</sup> steps; Felzenszwalb and Huttenlocher's transform is exact and takes
+    <em>n</em>.</p>
+
+  <p>It works one line at a time, and it's the prettiest trick in the chapter. In one dimension, each
+    pixel <code>p</code> offers every <code>q</code> the distance <code>(q − p)² + f[p]</code>, a
+    parabola with its foot at height <code>f[p]</code>; the answer at <code>q</code> is the lowest
+    parabola there. The lower envelope of a row of parabolas can be built left to right, because each
+    new one either takes over from some point on or doesn't matter, and <code>z</code> records where
+    each takes over. In two dimensions, do every column, then every row of what the columns gave you,
+    because a squared distance is a squared distance down plus a squared distance across.</p>
+
+<pre><code>edt_1d(f):                                   <span class="cm">// d[q] = min over p of (q − p)² + f[p]</span>
+  k ← 0;  v[0] ← 0;  z[0] ← −∞;  z[1] ← +∞
+  <span class="kw">for</span> q from 1 to n − 1:
+    s ← ((f[q] + q²) − (f[v[k]] + v[k]²)) / (2q − 2v[k])      <span class="cm">// where q's parabola crosses v[k]'s</span>
+    <span class="kw">while</span> s ≤ z[k]:                          <span class="cm">// v[k] never gets to be lowest</span>
+      k ← k − 1
+      s ← ((f[q] + q²) − (f[v[k]] + v[k]²)) / (2q − 2v[k])
+    k ← k + 1;  v[k] ← q;  z[k] ← s;  z[k + 1] ← +∞
+  k ← 0
+  <span class="kw">for</span> q from 0 to n − 1:
+    <span class="kw">while</span> z[k + 1] &lt; q: k ← k + 1
+    d[q] ← (q − v[k])² + f[v[k]]</code></pre>
+
+  <p>Use <code>w² + h²</code> for "far", not infinity: infinity minus infinity is nobody's friend,
+    and a finite far value keeps every number a whole number. The only division's result is compared
+    and never stored, and two different fractions with denominators this small are always farther
+    apart than a double's rounding, so the answer is exact, and the scenario checks it against trying
+    every pixel. Then a signed field from any coverage buffer is two transforms, one to the nearest
+    pixel that's on and one to the nearest that's off, less half a pixel each, which puts the edge
+    between the centers.</p>
+
+  <figure>
+    <canvas id="fig235" role="img" aria-label="Three panels, magnified. Left: a small letter g as an orange bitmap. Middle: the field computed from that bitmap, in cyan bands inside and orange outside. Right: three outlines of the g, the letter itself in orange and two larger offsets of it in cyan and magenta, drawn from the same field"></canvas>
+    <figcaption><span class="fig">Figure 23.5</span> A 64-pixel bitmap of a <em>g</em>, its field by the distance transform, and that field offset by 0, 3 and 6. No path went in; the offsets are still one line each.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter23-transform.feature">
+    <p class="label">features/chapter23-transform.feature</p>
+<pre><code><span class="kw">Feature</span>: The distance transform
+  edt_1d(f) is, for every q, the least of (q - p)² + f[p] over every p, by
+  Felzenszwalb and Huttenlocher's lower envelope of parabolas: v lists the
+  parabolas on the envelope and z where each takes over, starting v[0] =
+  0, z[0] = -∞, z[1] = +∞, k = 0. For q from 1: s ← ((f[q] + q²) -
+  (f[v[k]] + v[k]²)) / (2q - 2 v[k]); while s ≤ z[k], k ← k - 1 and
+  compute s again; then k ← k + 1, v[k] ← q, z[k] ← s, z[k + 1] ← +∞.
+  <span class="kw">Then</span>, with k back at 0, for each q: while z[k + 1] &lt; q, k ← k + 1; and
+  d[q] = (q - v[k])² + f[v[k]]. far_value(w, h) is w² + h², more than any
+  squared distance on the grid. distance_transform(bits, w, h) takes a
+  bitmap, row by row, and answers for every pixel the squared distance
+  from its center to the nearest center that's on: f is 0 where on and
+  far_value where off; run edt_1d down every column, then along every
+  row of the result. Where nothing is on, every answer is far_value. Every
+  number is a whole number and the only division is compared, never kept,
+  so the answer is exact. brute_distance_transform(bits, w, h) is the same
+  by trying every pixel that's on, far_value when none is. bits_of(cov) is
+  on where the coverage is at least 0.5. field_from_coverage(cov) turns
+  any coverage buffer into a field: at a pixel that's off, the square root
+  of its squared distance to the nearest on pixel, less 0.5; at one that's
+  on, minus (the square root of its squared distance to the nearest off
+  pixel, less 0.5). coverage_of(w, h, values) makes a coverage buffer
+  from a list, row by row. transform_bitmap() is Roboto's g at 48 pixels to the
+  em, origin (14, 44), filled by chapter 7 into a 64 by 64 buffer.
+
+  <span class="kw">Scenario</span>: One row
+    <span class="kw">Given</span> big ← far_value(5, 1)
+    <span class="kw">Then</span>  big = 26
+    <span class="kw">And</span>   edt_1d([0, big, big, 0, big]) = [0, 1, 1, 0, 1]
+    <span class="kw">And</span>   edt_1d([big, big, big, big, 0]) = [16, 9, 4, 1, 0]
+    <span class="kw">And</span>   edt_1d([4, big, 0, big, big]) = [4, 1, 0, 1, 4]
+
+  <span class="kw">Scenario</span>: Columns, then rows
+    <span class="kw">Given</span> bits ← [false, false, false, false, false, false, false, false, false, false, false, false, true, false, false, false, false, false, false, false, false, false, false, false, false]
+    <span class="kw">Then</span>  distance_transform(bits, 5, 5) = [8, 5, 4, 5, 8, 5, 2, 1, 2, 5, 4, 1, 0, 1, 4, 5, 2, 1, 2, 5, 8, 5, 4, 5, 8]
+    <span class="kw">And</span>   distance_transform([false, false, false, false, false, false], 3, 2) = [13, 13, 13, 13, 13, 13]
+
+  <span class="kw">Scenario</span>: The transform matches trying every pixel, exactly
+    <span class="kw">Given</span> bits ← bits_of(transform_bitmap())
+    <span class="kw">Then</span>  distance_transform(bits, 64, 64) = brute_distance_transform(bits, 64, 64)
+
+  <span class="kw">Scenario</span>: Any coverage becomes a field
+    <span class="kw">Given</span> cov ← transform_bitmap()
+    <span class="kw">When</span>  f ← field_from_coverage(cov)
+    <span class="kw">Then</span>  field_from_coverage(coverage_of(4, 1, [0, 0.4, 0.6, 1])).values = [1.5, 0.5, -0.5, -1.5]
+    <span class="kw">And</span>   field_at(f, 0, 0) = 27.784271
+    <span class="kw">And</span>   field_range(f) = (-2.5, 31.702484)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 23.7</span> Glyph atlases</h2>
+
+  <p>Here is why distance fields are everywhere. Bake a glyph's field once, small, into a texture:
+    chapter 17's bitmap box, grown by a few texels, with the distance at every texel center.
+    Then draw it at any size by sampling that texture bilinearly, as chapter 11 does, and turning the
+    interpolated distance into coverage. The distance interpolates far better than coverage does,
+    because a field is smooth where coverage is a cliff, so a glyph baked at 16 pixels can be drawn
+    at 320 and still have edges, where chapter 17's bitmap magnified would be a pile of bricks. Most game engines draw their
+    text this way.</p>
+
+  <p>Look at the corners, though. Bilinear interpolation of one number can only draw zero lines that
+    are smooth at the scale of a texel, and a corner isn't. At twenty times, the <em>E</em>'s corners
+    are round and its arms end in knobs. The cure is Chlumsky's multi-channel field, and it's a
+    lovely piece of reasoning. Give each edge of the outline a colour, a set of two of the three
+    channels, so that at every corner the two edges that meet share exactly one channel. In each
+    channel store the distance to the nearest edge that carries it, and past an edge's ends, the
+    distance to the line the edge would carry on along, its <em>pseudo-distance</em>. Now near a
+    corner each of the two private channels sees only its own edge, extended straight past the
+    corner, and the median of the three channels is the smaller of two half-planes: a sharp
+    corner, recovered from three smooth numbers.</p>
+
+  <figure>
+    <canvas id="fig236" role="img" aria-label="The outline of a capital E, each edge drawn in one of two colours, cyan and magenta, alternating at every corner, with the corners marked by small dots"></canvas>
+    <figcaption><span class="fig">Figure 23.6</span> The <em>E</em>'s edges, coloured by <code>color_edges</code>. Cyan carries green and blue, magenta red and blue: every corner is between the two, so they share only blue there.</figcaption>
+  </figure>
+
+  <p>The colouring rule is small. Find the corners, where the curve's direction turns by more than
+    about eight degrees. With no corners, every edge is white, all three channels, and the field is
+    an ordinary one. With one corner, a teardrop, split the contour into three runs from the corner
+    and colour them cyan, white and magenta. With more, alternate cyan and magenta at every corner,
+    and if the count is odd make the last run yellow so that it doesn't meet the first in two
+    channels. Any two neighbouring runs then share exactly one channel.</p>
+
+  <p>It has one real limit, and the figure shows it. The <em>k</em> baked at 16 pixels has strokes
+    about one and a half texels wide, and there the channels of the two sides of a stroke fight
+    over the same texels: its diagonals come out notched. Baked at 32, three texels to a stroke, it's
+    clean. Multi-channel fields need about two texels across the thinnest stroke, which is why
+    atlases for them are baked at 32 or 48 pixels, not 16. And the median is only a distance near
+    the edge. Far from it the extended lines of other edges make false near-misses, so effects that
+    reach away from the edge, a glow or a shadow, read a fourth channel that holds the ordinary
+    distance. That's <code>bake_mtsdf</code>, and the title below uses it.</p>
+
+  <figure>
+    <canvas id="fig237" role="img" aria-label="Four large letters in orange: an E with rounded corners and knobbed arm ends, an E with sharp corners, a k with notched jagged diagonals, and a clean sharp k"></canvas>
+    <figcaption><span class="fig">Figure 23.7</span> <em>E</em> baked at 16 pixels, drawn at 20×: one channel, then three. <em>k</em> baked at 16, three channels, notched where its strokes are thinner than two texels; then baked at 32, clean.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter23-atlas.feature">
+    <p class="label">features/chapter23-atlas.feature</p>
+<pre><code><span class="kw">Feature</span>: Glyph atlases
+  bake_box(font, name, size, spread) is chapter 17's bitmap box at the
+  quarter 0 grown by spread texels on every side: with s = size /
+  units_per_em and glyph_bounds (x0, y0, x1, y1), left = floor(x0 s) -
+  spread, right = ceil(x1 s) + spread, top = floor(-y1 s) - spread,
+  bottom = ceil(-y0 s) + spread, and the answer is (left, top, right -
+  left, bottom - top) and the matrix text_matrix(font, size, -left,
+  -top), which puts the box's corner at the origin. bake_sdf(font, name,
+  size, spread) is a baked glyph: one field over the box, the glyph's
+  signed distance at every texel center (the least distance_to_quadratic
+  to its quadratics through the matrix, negative where glyph_path through
+  the matrix at 0.01 winds nonzero), clamped to ±spread; and its left and
+  top. sample_field(f, sx, sy) is chapter 11's bilinear sample in
+  texel-center space: gx = sx - 0.5, gy = sy - 0.5, the four texels
+  round (floor(gx), floor(gy)) clamped to the field, blended by the
+  fractions. median3(a, b, c) is max(min(a, b), min(max(a, b), c)).
+  draw_baked(c, baked, scale, x, y, col) draws a baked glyph with its
+  origin at (x, y), each texel scale pixels wide: for every pixel of the
+  canvas from floor(x + left × scale), floor(y + top × scale) to ceil(x +
+  (left + width) × scale), ceil(y + (top + height) × scale), exclusive,
+  u = (px + 0.5 - x) / scale - left and v likewise; sample every channel
+  at (u, v); the distance in texels is the one channel or the median of
+  three; and the pixel mixes toward col in linear light by clamp(0.5 -
+  scale × distance, 0, 1) when that's above 0.
+
+  A multi-channel field colours the edges. The channels are the bits RED
+  1, GREEN 2 and BLUE 4; an edge is CYAN (6), MAGENTA (5), YELLOW (3) or
+  WHITE (7). is_corner(a, b), for unit directions, is dot(a, b) ≤ 0 or
+  |cross(a, b)| &gt; sin(3). color_edges(contour) takes one closed contour's
+  curves and answers (curves, masks): the corners are the curves whose
+  start direction (derivative at 0, or the chord where that's zero,
+  normalized) makes a corner with the end direction of the curve before.
+  No corners: every mask WHITE. Otherwise the curves are rotated to start
+  at the first corner. One corner: while there are fewer than 3 curves,
+  split every curve at 0.5; then curve j of m is CYAN, WHITE or MAGENTA
+  as floor(3j / m) is 0, 1 or 2. More corners: each corner starts a run,
+  runs alternate CYAN and MAGENTA from the first, and when the number of
+  runs is odd the last is YELLOW. Neighbouring runs share exactly one
+  channel. pseudo_distance(p, c, t, d), for the nearest t of curve c and
+  its distance d: at t = 0 with dot(p - start, start direction) &lt; 0, or
+  at t = 1 with dot(p - end, end direction) &gt; 0, it's |cross(direction, p
+  - that end)|, the distance to the end's tangent line; otherwise d. It's
+  negative when cross(direction at t, p - point_at(c, t)) &gt; 0, the
+  curve's right, which is inside for the clockwise contours chapter 16's
+  flip makes. bake_msdf(font, name, size, spread) has three channels over
+  the box; at each texel center p, for each channel, of the coloured
+  edges that carry it, the one with the least distance wins, and when
+  two are within 10⁻¹² of each other at an end, the one whose end
+  direction is more nearly at right angles to p - that end, by the least
+  |dot(direction, unit(p - end))|; the channel is that edge's
+  pseudo_distance, clamped to ±spread. bake_mtsdf adds bake_sdf's field
+  as a fourth channel. line_curve(a, b) is a straight edge as chapter 16
+  makes one, quadratic(a, (a + b) / 2, b); circle_curves(cx, cy, r) is
+  eight quadratics, ends on the circle at angles 2πi / 8 and controls at
+  radius r / cos(π / 8) halfway between.
+
+  <span class="kw">Scenario</span>: The box a glyph is baked into
+    <span class="kw">Given</span> f ← roboto()
+    <span class="kw">When</span>  b ← bake_sdf(f, glyph_name(f, 69), 16, 3)
+    <span class="kw">Then</span>  b.left = -2
+    <span class="kw">And</span>   b.top = -15
+    <span class="kw">And</span>   b.width = 14
+    <span class="kw">And</span>   b.height = 18
+    <span class="kw">And</span>   field_at(b.channels[0], 0, 0) = 3
+    <span class="kw">And</span>   field_at(b.channels[0], 4, 9) = -0.401566
+
+  <span class="kw">Scenario</span>: What a corner is
+    <span class="kw">Then</span>  is_corner(vector(1, 0), vector(0, 1)) = true
+    <span class="kw">And</span>   is_corner(vector(1, 0), vector(-1, 0)) = true
+    <span class="kw">And</span>   is_corner(vector(1, 0), vector(0.995004165, 0.099833417)) = false
+    <span class="kw">And</span>   is_corner(vector(1, 0), vector(0.980066578, 0.198669331)) = true
+
+  <span class="kw">Scenario</span>: Colouring edges
+    <span class="kw">Given</span> sq ← [line_curve(point(0, 0), point(10, 0)), line_curve(point(10, 0), point(10, 10)), line_curve(point(10, 10), point(0, 10)), line_curve(point(0, 10), point(0, 0))]
+    <span class="kw">And</span>   tri ← [line_curve(point(0, 0), point(10, 0)), line_curve(point(10, 0), point(5, 8)), line_curve(point(5, 8), point(0, 0))]
+    <span class="kw">And</span>   house ← [line_curve(point(0, 0), point(10, 0)), line_curve(point(10, 0), point(10, 10)), line_curve(point(10, 10), point(5, 15)), line_curve(point(5, 15), point(0, 10)), line_curve(point(0, 10), point(0, 0))]
+    <span class="kw">And</span>   drop ← [quadratic(point(0, 0), point(20, -20), point(30, 0)), quadratic(point(30, 0), point(40, 20), point(20, 20)), quadratic(point(20, 20), point(0, 20), point(0, 0))]
+    <span class="kw">Then</span>  color_edges(sq)[1] = [6, 5, 6, 5]
+    <span class="kw">And</span>   color_edges(tri)[1] = [6, 5, 3]
+    <span class="kw">And</span>   color_edges(house)[1] = [6, 5, 6, 5, 3]
+    <span class="kw">And</span>   color_edges(drop)[1] = [6, 7, 5]
+    <span class="kw">And</span>   color_edges(circle_curves(50, 50, 40))[1] = [7, 7, 7, 7, 7, 7, 7, 7]
+
+  <span class="kw">Scenario</span>: Pseudo-distance runs straight on past an end
+    <span class="kw">Given</span> e ← line_curve(point(0, 0), point(10, 0))
+    <span class="kw">Then</span>  pseudo_distance(point(5, 3), e, 0.5, 3) = -3
+    <span class="kw">And</span>   pseudo_distance(point(5, -3), e, 0.5, 3) = 3
+    <span class="kw">And</span>   pseudo_distance(point(14, 3), e, 1, 5) = -3
+    <span class="kw">And</span>   pseudo_distance(point(-4, -3), e, 0, 5) = 3
+
+  <span class="kw">Scenario</span>: A texel's own value is at its center
+    <span class="kw">Given</span> f ← field_of(3, 2, [0, 4, 8, 2, 6, 10])
+    <span class="kw">Then</span>  sample_field(f, 1.5, 0.5) = 4
+    <span class="kw">And</span>   sample_field(f, 1, 0.5) = 2
+    <span class="kw">And</span>   sample_field(f, 1.5, 1) = 5
+    <span class="kw">And</span>   sample_field(f, 0, 0) = 0
+    <span class="kw">And</span>   sample_field(f, 9, 9) = 10
+
+  <span class="kw">Scenario</span>: The median
+    <span class="kw">Then</span>  median3(1, 5, 3) = 3
+    <span class="kw">And</span>   median3(-2, 4, -1) = -1
+    <span class="kw">And</span>   median3(7, 7, 2) = 7
+
+  <span class="kw">Scenario</span>: Three channels at one texel
+    <span class="kw">Given</span> f ← roboto()
+    <span class="kw">When</span>  m ← bake_msdf(f, glyph_name(f, 69), 16, 3)
+    <span class="kw">Then</span>  field_at(m.channels[0], 4, 9) = -0.320313
+    <span class="kw">And</span>   field_at(m.channels[1], 4, 9) = -0.242188
+    <span class="kw">And</span>   field_at(m.channels[2], 4, 9) = -0.320313</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 23.8</span> Fields compose approximately</h2>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p><code>min(a, b)</code> is not the signed distance field of the union. It's right outside:
+      the nearest edge of the union from outside is the nearer of the two shapes' nearest edges. It's
+      wrong inside, because the nearest edge of each shape may be buried inside the other. Two
+      circles of radius 40 whose centers are 50 apart make a peanut, and at the middle of its waist
+      <code>min</code> says the edge is 15 away, the depth inside each circle; the real edge is the
+      notch where the circles cross, 31.2 away. The fill doesn't care, because the sign is right
+      everywhere, so the error is invisible until you offset or stroke the result. Then it's very
+      visible: shrink the peanut by 20 through <code>min</code> and it falls into two separate
+      discs; shrink the true field of chapter 22's union by 20 and it stays one peanut with a waist.
+      Every operation in §&nbsp;23.4 has this problem: its answer is a field whose zero line is
+      right and whose values aren't distances any more, so the second operation is working from bad
+      data. Distance fields compose approximately. Paths compose exactly. That trade is the whole
+      chapter.</p>
+  </div>
+
+  <figure>
+    <canvas id="fig238" role="img" aria-label="Two panels, each showing the outline of two overlapping circles forming a peanut shape. Left: shrunk by min, the orange fill is two separate discs. Right: shrunk from the true field, the orange fill is one connected peanut with a narrow waist"></canvas>
+    <figcaption><span class="fig">Figure 23.8</span> The peanut shrunk by 20. Left, the union by <code>min</code>; right, the field of the union chapter 22 computed. Same outline, different insides.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter23-compose.feature">
+    <p class="label">features/chapter23-compose.feature</p>
+<pre><code><span class="kw">Feature</span>: Fields compose approximately
+  peanut() is two circles, circle_path(60, 80, 40, 96) and
+  circle_path(110, 80, 40, 96), overlapping in a waist around x = 85.
+  min of their two fields is the field of their union outside it, and
+  it isn't inside: at a point deep in the waist, the nearest edge of each
+  circle is buried inside the other, and min measures to it anyway. The
+  true field of the union is the field of chapter 22's combine of the two
+  paths. min_of(a, b) is the smaller number. Shrink both by 20 and the difference is a shape.
+
+  <span class="kw">Scenario</span>: min is right outside and wrong inside
+    <span class="kw">Given</span> a ← peanut()[0]
+    <span class="kw">And</span>   b ← peanut()[1]
+    <span class="kw">And</span>   u ← combine(a, "nonzero", b, "nonzero", "union")
+    <span class="kw">Then</span>  min_of(sd_polygon(point(85, 20), a, "nonzero"), sd_polygon(point(85, 20), b, "nonzero")) = 25.000200 ± 0.001
+    <span class="kw">And</span>   sd_polygon(point(85, 20), u, "nonzero") = 24.998 ± 0.001
+    <span class="kw">And</span>   min_of(sd_polygon(point(85, 80), a, "nonzero"), sd_polygon(point(85, 80), b, "nonzero")) = -14.992 ± 0.001
+    <span class="kw">And</span>   sd_polygon(point(85, 80), u, "nonzero") = -31.203 ± 0.001
+    <span class="kw">And</span>   min_of(sd_polygon(point(60, 80), a, "nonzero"), sd_polygon(point(60, 80), b, "nonzero")) = -39.979 ± 0.001
+    <span class="kw">And</span>   sd_polygon(point(60, 80), u, "nonzero") = -39.978 ± 0.001</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 23.9</span> Putting it together</h2>
+
+  <p>The heart of the multi-channel bake is one texel, and it fits in a screen. Everything above it
+    is the box and the colouring; everything after is <code>draw_baked</code> taking a median.</p>
+
+<pre><code>msdf_texel(p, edges, spread):                <span class="cm">// edges: (curve, mask) pairs</span>
+  <span class="kw">for</span> each channel ch of RED, GREEN, BLUE:
+    best ← none
+    <span class="kw">for</span> each (c, mask) of edges <span class="kw">with</span> mask <span class="kw">and</span> ch:
+      d, t ← the distance from p to c and the t of its nearest point
+      o ← |dot(direction at t, unit(p − point_at(c, t)))| <span class="kw">if</span> t is 0 or 1, <span class="kw">else</span> 0
+      <span class="kw">if</span> best is none, or d &lt; best.d − 10⁻¹², or (|d − best.d| ≤ 10⁻¹² <span class="kw">and</span> o &lt; best.o):
+        best ← (c, t, d, o)
+    value[ch] ← clamp(pseudo_distance(p, best.c, best.t, best.d), −spread, spread)
+  <span class="kw">answer</span> value
+
+pseudo_distance(p, c, t, d):
+  <span class="kw">if</span> (t = 0 <span class="kw">and</span> dot(p − c's start, start direction) &lt; 0)
+     <span class="kw">or</span> (t = 1 <span class="kw">and</span> dot(p − c's end, end direction) &gt; 0):
+    side ← cross(that direction, p − that end)          <span class="cm">// past the end: the tangent line</span>
+    <span class="kw">answer</span> −|side| <span class="kw">if</span> side &gt; 0 <span class="kw">else</span> |side|
+  side ← cross(direction at t, p − point_at(c, t))
+  <span class="kw">answer</span> −d <span class="kw">if</span> side &gt; 0 <span class="kw">else</span> d                   <span class="cm">// inside is on the right</span></code></pre>
+
+  <p>The plate is one field, an ampersand's, used four ways, each a line over the same array: its
+    bands; a threshold, which is the fill; an absolute value, which is the outline; and a falloff,
+    which is the glow. The title is the payoff for the atlas: eight glyphs baked at 32 pixels into
+    four channels each, drawn five times bigger, with a shadow and a glow read from the true channel
+    and the fill and the outline from the median, every one of them a formula on a distance.</p>
+
+  <div class="test" data-feature="chapter23-plate.feature">
+    <p class="label">features/chapter23-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 23, and the chapter's renders
+  Every render is on chapter 16's paper with its inks: orange (0.9, 0.55,
+  0.1), cyan (0.2, 0.75, 0.9), magenta (0.85, 0.2, 0.55), dim (0.3, 0.3,
+  0.34), pale (0.92, 0.9, 0.82) and black. paint_field(c, f, col) is
+  chapter 2's paint_through(c, field_coverage(f), col). Panels sit side
+  by side left to right, and a second row goes under the first.
+  band_color(d) is the tint, orange when d &gt; 0 and cyan when it isn't,
+  mixed into paper in linear light by 0.12 when floor(|d| / 6) is even
+  and 0.3 when it's odd; then, where |d| &lt; 1, mixed toward pale by 1 -
+  |d|. band_canvas(f) is a canvas of band_color at every pixel.
+
+    primitive_fields  band_canvas of four 160 by 160 fields: sd_circle
+                      about (80, 80) radius 50; sd_box about (80, 80),
+                      55 by 35; sd_rounded_box, the same with r = 20; and
+                      polygon_field(star(), "evenodd")
+    error_map         160 by 160 panels: polygon_field(star(),
+                      "nonzero") painted orange; then that field's
+                      coverage_error against chapter 7's fill of the star,
+                      and the error of the field of simplify(star(),
+                      "nonzero"), each pixel paper mixed toward magenta by
+                      min(1, 4 × error)
+    fields_vs_paths   200 by 200 panels, top row by path: chapter 13's
+                      stroke_to_path of the star moved by (19.5, 19.5),
+                      10 wide, round caps and joins, miter limit 4; chapter
+                      14's stroke_curve_to_path(s_curve(), 20, "round",
+                      0.05); chapter 22's xor of plate_glyph() nonzero and
+                      plate_star() even-odd; each filled nonzero, painted
+                      orange. Bottom row by field: field_stroke of the
+                      moved star's polygon_field by 10, field_stroke of
+                      cubic_field(s_curve()) by 20, and field_xor of
+                      plate_glyph_field() and polygon_field(plate_star(),
+                      "evenodd"), each painted orange
+    fillets           four 160 by 160 panels, fillet_field(k) for k = 0,
+                      8, 16, 32, painted orange, then its field_stroke
+                      by 1.5 painted pale
+    transform_demo    three 64 by 64 panels, magnified 3 times by chapter
+                      2's magnify: transform_bitmap() painted orange;
+                      band_canvas of its field_from_coverage; and that
+                      field offset by 6, 3 and 0, each stroked 1.5 wide,
+                      painted magenta, cyan and orange in that order
+    atlas_corners     four 300 by 400 panels, each drawing one baked glyph
+                      in orange with draw_baked at (10 - left × scale,
+                      10 - top × scale), so the box's corner is at (10,
+                      10): E (bake_sdf at 16, spread 3, scale 20); E
+                      (bake_msdf at 16, spread 3, scale 20); k (bake_msdf
+                      at 16, spread 3, scale 20); k (bake_msdf at 32,
+                      spread 3, scale 10)
+    trap_shrink       two 170 by 160 panels of the peanut: the fields'
+                      union by min, then the field of combine's union;
+                      each offset by -20 painted orange, then stroked 1.5
+                      wide unshrunk, painted dim
+    plate_23          plate_field(), Roboto's ampersand at 170 pixels to
+                      the em from (38, 164) in a 200 by 200 field, four
+                      ways: band_canvas; painted orange; field_stroke by
+                      4 painted cyan; and glowing, every pixel with d &gt; 0
+                      paper mixed toward magenta by 0.8 exp(-d / 10), then
+                      painted orange
+    title             900 by 220: the placements of chapter 18's
+                      layout_run(Roboto, "DISTANCE", 160, 78, 172, true),
+                      each glyph bake_mtsdf at 32 with spread 4, drawn at
+                      scale 5 by draw_effect four times over the run in
+                      order: moved by (8, 8), black, the true channel,
+                      0.6 clamp((10 - d) / 20); magenta, the true channel,
+                      0.8 (1 - clamp(d / 20))²; orange, the median,
+                      clamp(0.5 - d); pale, the median, clamp(0.5 - (|d|
+                      - 1.5)); every clamp to [0, 1]
+
+  draw_effect(c, baked, scale, x, y, col, true, k_of) is draw_baked with
+  the distance in pixels, scale × the fourth channel's sample when true
+  is set and scale × the median of the first three when it isn't, turned
+  into a mix by k_of instead of clamp(0.5 - d, 0, 1).
+
+  <span class="kw">Scenario Outline</span>: Each render matches its reference
+    <span class="kw">Given</span> c ← &lt;render&gt;()
+    <span class="kw">And</span>   ref ← read_file(&lt;file&gt;)
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = &lt;w&gt;
+    <span class="kw">And</span>   c.height = &lt;h&gt;
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+    <span class="kw">Examples</span>:
+      | render           | file                                            | w    | h   |
+      | primitive_fields | "reference/chapter-23/primitive-fields.ppm"     | 640  | 160 |
+      | error_map        | "reference/chapter-23/error-map.ppm"            | 480  | 160 |
+      | fields_vs_paths  | "reference/chapter-23/fields-vs-paths.ppm"      | 600  | 400 |
+      | fillets          | "reference/chapter-23/fillets.ppm"              | 640  | 160 |
+      | transform_demo   | "reference/chapter-23/transform-demo.ppm"       | 576  | 192 |
+      | atlas_corners    | "reference/chapter-23/atlas-corners.ppm"        | 1200 | 400 |
+      | trap_shrink      | "reference/chapter-23/trap-shrink.ppm"          | 340  | 160 |
+      | title            | "reference/chapter-23/title.ppm"                | 900  | 220 |
+
+  <span class="kw">Scenario</span>: What the renders show
+    <span class="kw">Given</span> bands ← canvas_to_p6(primitive_fields())
+    <span class="kw">And</span>   errors ← canvas_to_p6(error_map())
+    <span class="kw">And</span>   both ← canvas_to_p6(fields_vs_paths())
+    <span class="kw">And</span>   fil ← canvas_to_p6(fillets())
+    <span class="kw">And</span>   atlas ← canvas_to_p6(atlas_corners())
+    <span class="kw">And</span>   shrunk ← canvas_to_p6(trap_shrink())
+    <span class="kw">Then</span>  ppm_pixel(bands, 80, 80) = (57, 92, 101) ± 1
+    <span class="kw">And</span>   ppm_pixel(bands, 80, 30) = (185, 188, 184) ± 1
+    <span class="kw">And</span>   ppm_pixel(bands, 560, 80) = (145, 117, 62) ± 1
+    <span class="kw">And</span>   ppm_pixel(errors, 80, 80) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(errors, 240, 58) = (180, 95, 149) ± 1
+    <span class="kw">And</span>   ppm_pixel(errors, 400, 58) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(both, 529, 114) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(both, 529, 314) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(both, 529, 75) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(fil, 98, 63) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(fil, 578, 63) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(atlas, 78, 83) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(atlas, 378, 83) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(shrunk, 85, 80) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(shrunk, 255, 80) = (243, 196, 89) ± 1
+
+  <span class="kw">Scenario</span>: Plate 23
+    <span class="kw">Given</span> c ← plate_23()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-23/plate-23.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 800
+    <span class="kw">And</span>   c.height = 200
+    <span class="kw">And</span>   ppm_pixel(p6, 3, 3) = (99, 82, 52) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 206, 3) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 283, 45) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 606, 100) = (45, 40, 48) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure>
+    <canvas id="fig239" role="img" aria-label="The word DISTANCE in large orange capitals with a thin pale outline and a soft magenta glow, on dark paper"></canvas>
+    <figcaption><span class="fig">Figure 23.9</span> Eight glyphs baked at 32 pixels and drawn at 160: shadow, glow, fill and outline, four formulas on four channels.</figcaption>
+  </figure>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate23" role="img" aria-label="Four panels of the same ampersand. First, its distance field as banded contours, cyan inside and orange outside. Second, filled orange. Third, a cyan outline. Fourth, filled orange with a soft magenta glow around it"></canvas>
+    <figcaption><span class="fig">Plate 23</span> One field, three renders. Fill, outline and glow are a threshold, an absolute value and a falloff, one line each, over the same array.</figcaption>
+  </figure>
+
+  <p>Rasterization was a choice, not a law. The first twenty-two chapters made one choice and followed
+    it all the way to the tiger; this one made the other and found a different set of cheap things,
+    offsets and blends and glows, and a different set of impossible ones, sharp corners and exact
+    composition. The last chapter goes back to paths and coverage, and asks what's left of them when
+    you're only allowed to do what a GPU does.</p>
+
+  <nav class="endnav">
+    <a href="chapter-22.html">← 22 · Boolean Path Operations</a>
+    <span>Chapter 23 · Distance Fields</span>
+    <span>Next: 24 · Doing It the GPU's Way (not yet written)</span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+/* the figures draw from this subset of reference/chapter-16/roboto.json */
+
+function toByte(light){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255+0.5);}
+function lerp3(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+var GLYPHS={"units_per_em":2048,"ascender":1900,"descender":-500,"line_gap":0,"cmap":{"38":"ampersand","65":"A","67":"C","68":"D","69":"E","73":"I","78":"N","83":"S","84":"T","103":"g","107":"k"},"glyphs":{".notdef":{"advance":908,"contours":[[[808,0,true],[100,0,true],[100,1456,true],[808,1456,true]],[[754,84,true],[754,1371,true],[480,728,true]],[[154,1359,true],[154,96,true],[422,728,true]],[[194,54,true],[709,54,true],[451,660,true]],[[451,796,true],[709,1402,true],[194,1402,true]]],"components":[]},"A":{"advance":1336,"contours":[[[973,380,true],[363,380,true],[226,0,true],[28,0,true],[584,1456,true],[752,1456,true],[1309,0,true],[1112,0,true]],[[421,538,true],[916,538,true],[668,1219,true]]],"components":[]},"C":{"advance":1333,"contours":[[[1240,462,true],[1213,231,false],[926,-20,false],[688,-20,true],[430,-20,false],[119,350,false],[119,660,true],[119,800,true],[119,1003,false],[264,1311,false],[530,1476,false],[705,1476,true],[937,1476,false],[1217,1217,false],[1240,988,true],[1047,988,true],[1022,1162,false],[855,1318,false],[705,1318,true],[521,1318,false],[312,1046,false],[312,795,true],[312,654,true],[312,417,false],[510,137,false],[688,137,true],[848,137,false],[1019,282,false],[1047,462,true]]],"components":[]},"D":{"advance":1343,"contours":[[[169,0,true],[169,1456,true],[580,1456,true],[770,1456,false],[1062,1288,false],[1221,978,false],[1222,777,true],[1222,684,true],[1222,478,false],[1063,168,false],[768,2,false],[572,0,true]],[[361,1298,true],[361,157,true],[563,157,true],[785,157,false],[1032,433,false],[1032,688,true],[1032,773,true],[1032,1021,false],[799,1296,false],[585,1298,true]]],"components":[]},"E":{"advance":1164,"contours":[[[992,673,true],[361,673,true],[361,157,true],[1094,157,true],[1094,0,true],[169,0,true],[169,1456,true],[1084,1456,true],[1084,1298,true],[361,1298,true],[361,830,true],[992,830,true]]],"components":[]},"I":{"advance":557,"contours":[[[375,0,true],[183,0,true],[183,1456,true],[375,1456,true]]],"components":[]},"N":{"advance":1460,"contours":[[[1288,0,true],[1095,0,true],[362,1122,true],[362,0,true],[169,0,true],[169,1456,true],[362,1456,true],[1097,329,true],[1097,1456,true],[1288,1456,true]]],"components":[]},"S":{"advance":1215,"contours":[[[598,649,true],[351,720,false],[126,927,false],[126,1079,true],[126,1251,false],[401,1476,false],[621,1476,true],[771,1476,false],[1006,1360,false],[1135,1156,false],[1135,1035,true],[942,1035,true],[942,1167,false],[774,1318,false],[621,1318,true],[479,1318,false],[320,1193,false],[320,1082,true],[320,993,false],[471,870,false],[834,768,false],[1039,645,false],[1138,481,false],[1138,370,true],[1138,193,false],[862,-20,false],[631,-20,true],[481,-20,false],[221,95,false],[80,295,false],[80,422,true],[273,422,true],[273,290,false],[468,137,false],[631,137,true],[783,137,false],[945,261,false],[945,475,false],[795,592,false]]],"components":[]},"T":{"advance":1222,"contours":[[[1175,1298,true],[707,1298,true],[707,0,true],[516,0,true],[516,1298,true],[49,1298,true],[49,1456,true],[1175,1456,true]]],"components":[]},"ampersand":{"advance":1273,"contours":[[[101,391,true],[101,496,false],[218,672,false],[383,789,true],[286,907,false],[220,1051,false],[220,1122,true],[220,1288,false],[416,1476,false],[584,1476,true],[734,1476,false],[930,1301,false],[930,1168,true],[930,1080,false],[841,931,false],[730,849,true],[623,770,true],[947,383,true],[1015,513,false],[1015,672,true],[1182,672,true],[1182,417,false],[1059,249,true],[1267,0,true],[1045,0,true],[948,115,true],[874,49,false],[675,-20,false],[572,-20,true],[359,-20,false],[101,206,false]],[[572,131,true],[719,131,false],[841,243,true],[486,668,true],[453,644,true],[286,521,false],[286,391,true],[286,273,false],[439,131,false]],[[405,1128,true],[405,1032,false],[523,888,true],[641,971,true],[709,1019,false],[759,1106,false],[759,1168,true],[759,1235,false],[659,1324,false],[583,1324,true],[501,1324,false],[405,1213,false]]],"components":[]},"g":{"advance":1149,"contours":[[[96,550,true],[96,803,false],[330,1102,false],[523,1102,true],[721,1102,false],[832,962,true],[841,1082,true],[1010,1082,true],[1010,26,true],[1010,-184,false],[761,-426,false],[551,-426,true],[434,-426,false],[210,-326,false],[151,-239,true],[247,-128,true],[366,-275,false],[538,-275,true],[673,-275,false],[824,-123,false],[824,15,true],[824,108,true],[713,-20,false],[521,-20,true],[331,-20,false],[96,286,false]],[[282,529,true],[282,346,false],[432,137,false],[567,137,true],[742,137,false],[824,296,true],[824,790,true],[739,945,false],[569,945,true],[434,945,false],[282,735,false]]],"components":[]},"k":{"advance":1038,"contours":[[[442,501,true],[326,380,true],[326,0,true],[141,0,true],[141,1536,true],[326,1536,true],[326,607,true],[425,726,true],[762,1082,true],[987,1082,true],[566,630,true],[1036,0,true],[819,0,true]]],"components":[]}},"kern":[["A","C",-11],["A","T",-129],["C","T",-29],["D","A",-21],["D","T",-27],["E","T",20],["E","g",-19],["I","A",18],["I","T",-29],["N","A",18],["N","T",-29],["T","A",-79],["T","C",-28],["T","S",-16],["T","T",16],["T","g",-99],["k","g",-20]]};
+function blit(ctx,pixels,pw,ph,scale,ox,oy){var img=ctx.createImageData(pw,ph);for(var i=0;i<pw*ph;i++){img.data[i*4]=pixels[i][0];img.data[i*4+1]=pixels[i][1];img.data[i*4+2]=pixels[i][2];img.data[i*4+3]=255;}var off=Plate.offcan(pw,ph);off.getContext('2d').putImageData(img,0,0);ctx.imageSmoothingEnabled=false;ctx.drawImage(off,ox,oy,pw*scale,ph*scale);}
+
+/* vectors and matrices (chapters 4 and 13) */
+function sub(a,b){return [a[0]-b[0],a[1]-b[1]];}
+function mag(v){return Math.sqrt(v[0]*v[0]+v[1]*v[1]);}
+function unit(a,b){var d=sub(b,a),m=mag(d);return [d[0]/m,d[1]/m];}
+function perp(v){return [-v[1],v[0]];}
+function crss(a,b){return a[0]*b[1]-a[1]*b[0];}
+function add(p,v,s){return [p[0]+v[0]*s,p[1]+v[1]*s];}
+function intersect(p1,d1,p2,d2){var den=crss(d1,d2);if(Math.abs(den)<1e-12)return null;var t=crss(sub(p2,p1),d2)/den;return add(p1,d1,t);}
+function arc(pts,c,a0,a1,r,steps){for(var k=0;k<=steps;k++){var a=a0+(a1-a0)*k/steps;pts.push([c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)]);}}
+function arcSteps(a0,a1){return Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/16)-1e-9));}
+function angBetween(a,b){var d=((b-a)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);return d>Math.PI?d-2*Math.PI:d;}
+function mat(a,b,c,d,e,f,g,h,i){return [a,b,c,d,e,f,g,h,i];}
+function mmul(m,n){var o=[];for(var r=0;r<3;r++)for(var c=0;c<3;c++){var s=0;for(var k=0;k<3;k++)s+=m[r*3+k]*n[k*3+c];o.push(s);}return o;}
+function apply(m,p){return [m[0]*p[0]+m[1]*p[1]+m[2],m[3]*p[0]+m[4]*p[1]+m[5]];}
+function translation(x,y){return mat(1,0,x,0,1,y,0,0,1);}
+function scaling(x,y){return mat(x,0,0,0,y,0,0,0,1);}
+
+/* curves (chapter 8) */
+function lerpP(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];}
+function decasteljau(pts,t){var left=[pts[0]],right=[pts[pts.length-1]],p=pts.slice();while(p.length>1){var q=[];for(var i=0;i<p.length-1;i++)q.push(lerpP(p[i],p[i+1],t));p=q;left.push(p[0]);right.push(p[p.length-1]);}return {at:p[0],left:left,right:right.reverse()};}
+function pointAt(c,t){return decasteljau(c,t).at;}
+function flatness(c){var a=c[0],b=c[c.length-1],dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy),w=0;for(var i=1;i<c.length-1;i++){var p=c[i],d=L===0?Math.hypot(p[0]-a[0],p[1]-a[1]):Math.abs((p[0]-a[0])*dy-(p[1]-a[1])*dx)/L;w=Math.max(w,d);}return w;}
+function flattenInto(c,tol,out){if(flatness(c)<=tol)out.push(c[c.length-1]);else{var d=decasteljau(c,0.5);flattenInto(d.left,tol,out);flattenInto(d.right,tol,out);}}
+function flatten(c,tol){var out=[c[0]];flattenInto(c,tol,out);return out;}
+function flattenIntoPath(pts,c,tol){var f=flatten(c,tol);if(pts.length&&pts[pts.length-1][0]===f[0][0]&&pts[pts.length-1][1]===f[0][1])f=f.slice(1);return pts.concat(f);}
+function transformCurve(c,m){return c.map(function(p){return apply(m,p);});}
+function quadBounds(c){var xs=[c[0][0],c[2][0]],ys=[c[0][1],c[2][1]];[0,1].forEach(function(k){var den=c[0][k]-2*c[1][k]+c[2][k];if(Math.abs(den)>1e-12){var t=(c[0][k]-c[1][k])/den;if(t>0&&t<1){var q=pointAt(c,t);(k?ys:xs).push(q[k]);}}});return [Math.min.apply(null,xs),Math.min.apply(null,ys),Math.max.apply(null,xs),Math.max.apply(null,ys)];}
+
+/* chapter 16: glyphs */
+function impliedPoints(contour){var out=[],n=contour.length;for(var i=0;i<n;i++){var cur=contour[i],nxt=contour[(i+1)%n];out.push(cur);if(!cur[2]&&!nxt[2])out.push([(cur[0]+nxt[0])/2,(cur[1]+nxt[1])/2,1]);}for(var k=0;k<out.length;k++)if(out[k][2])return out.slice(k).concat(out.slice(0,k));return out;}
+function contourCurves(contour){var pts=impliedPoints(contour),curves=[],n=pts.length,i=0;while(i<n){var a=pts[i],b=pts[(i+1)%n];if(b[2]){curves.push([[a[0],a[1]],[(a[0]+b[0])/2,(a[1]+b[1])/2],[b[0],b[1]]]);i+=1;}else{var c=pts[(i+2)%n];curves.push([[a[0],a[1]],[b[0],b[1]],[c[0],c[1]]]);i+=2;}}return curves;}
+function componentMatrix(t){return mat(t[0],t[2],t[4],t[1],t[3],t[5],0,0,1);}
+function glyphOutline(font,name){var g=font.glyphs[name],out=g.contours.map(contourCurves);g.components.forEach(function(comp){var m=componentMatrix(comp.transform);glyphOutline(font,comp.glyph).forEach(function(contour){out.push(contour.map(function(c){return transformCurve(c,m);}));});});return out;}
+function glyphBounds(font,name){var boxes=[];glyphOutline(font,name).forEach(function(contour){contour.forEach(function(c){boxes.push(quadBounds(c));});});if(!boxes.length)return [0,0,0,0];return [Math.min.apply(null,boxes.map(function(b){return b[0];})),Math.min.apply(null,boxes.map(function(b){return b[1];})),Math.max.apply(null,boxes.map(function(b){return b[2];})),Math.max.apply(null,boxes.map(function(b){return b[3];}))];}
+function textMatrix(font,size,x,y){var s=size/font.units_per_em;return mmul(translation(x,y),scaling(s,-s));}
+function glyphPath(font,name,m,tol){return glyphOutline(font,name).map(function(contour){var pts=[];contour.forEach(function(c){pts=flattenIntoPath(pts,transformCurve(c,m),tol);});return pts;});}
+function glyphNameOf(font,ch){return font.cmap[String(ch.charCodeAt(0))]||'.notdef';}
+/* the stroker (chapter 13), for emboldening */
+function segRect(a,b,h){var d=unit(a,b),n=perp(d);return [add(a,n,h),add(b,n,h),add(b,n,-h),add(a,n,-h)];}
+function joinShape(v,din,dout,h,join,ml){var turn=crss(din,dout);if(Math.abs(turn)<1e-12)return null;var s=turn>0?-1:1,nin=perp(din).map(function(x){return x*s;}),nout=perp(dout).map(function(x){return x*s;}),a=add(v,nin,h),b=add(v,nout,h);
+  if(join==='bevel')return [v,a,b];
+  if(join==='round'){var a0=Math.atan2(a[1]-v[1],a[0]-v[0]),a1=a0+angBetween(a0,Math.atan2(b[1]-v[1],b[0]-v[0]));var p=[v];arc(p,v,a0,a1,h,arcSteps(a0,a1));return p;}
+  var m=intersect(a,din,b,dout);if(m&&mag(sub(m,v))<=ml*h)return [v,a,m,b];return [v,a,b];}
+function capShape(p,dout,h,cap){var n=perp(dout);if(cap==='butt')return null;
+  if(cap==='square'){var l=add(p,n,h),r=add(p,n,-h);return [l,add(l,dout,h),add(r,dout,h),r];}
+  var a0=Math.atan2(n[1],n[0]),d=angBetween(a0,Math.atan2(dout[1],dout[0]));var a1=a0+(d>0?Math.PI:-Math.PI),pts=[];arc(pts,p,a0,a1,h,arcSteps(a0,a1));return pts;}
+function dedupe(pts){var o=[pts[0]];for(var i=1;i<pts.length;i++)if(mag(sub(pts[i],o[o.length-1]))>1e-9)o.push(pts[i]);return o;}
+function area(sp){var s=0;for(var i=0;i<sp.length;i++){var a=sp[i],b=sp[(i+1)%sp.length];s+=a[0]*b[1]-b[0]*a[1];}return s/2;}
+function strokeToPath(pts,closed,width,cap,join,ml){var h=width/2,subs=[];pts=dedupe(pts);if(closed&&pts.length>1&&mag(sub(pts[pts.length-1],pts[0]))<=1e-9)pts.pop();
+  function emit(sp){if(!sp)return;if(area(sp)>0)sp.reverse();subs.push(sp);}
+  if(pts.length<2){if(cap==='round'){var d=[];arc(d,pts[0],0,2*Math.PI,h,48);emit(d);}else if(cap==='square'){var c=pts[0];emit([[c[0]-h,c[1]-h],[c[0]+h,c[1]-h],[c[0]+h,c[1]+h],[c[0]-h,c[1]+h]]);}return subs;}
+  var segs=[];for(var i=0;i<pts.length-1;i++)segs.push([pts[i],pts[i+1]]);if(closed)segs.push([pts[pts.length-1],pts[0]]);
+  segs.forEach(function(s){emit(segRect(s[0],s[1],h));});
+  var dirs=segs.map(function(s){return unit(s[0],s[1]);}),nj=closed?segs.length:segs.length-1;
+  for(var k=0;k<nj;k++){var v=segs[(k+1)%segs.length][0];emit(joinShape(v,dirs[k],dirs[(k+1)%segs.length],h,join,ml));}
+  if(!closed){emit(capShape(pts[0],dirs[0].map(function(x){return -x;}),h,cap));emit(capShape(pts[pts.length-1],dirs[dirs.length-1],h,cap));}
+  return subs;}
+
+/* fill a list of closed subpaths (chapter 7, nonzero) */
+function edgesOf(subs){var out=[];subs.forEach(function(sp){var n=sp.length;for(var i=0;i<n;i++)out.push([sp[i],sp[(i+1)%n]]);});return out;}
+function fillSubs(subs,w,h){var acc={area:new Array(w*h).fill(0),cover:new Array(w*h).fill(0)};edgesOf(subs).forEach(function(e){var a=e[0],b=e[1];if(a[1]===b[1])return;var sign=a[1]>b[1]?1:-1,top=a[1]>b[1]?b:a,bot=a[1]>b[1]?a:b,slope=(bot[0]-top[0])/(bot[1]-top[1]);var first=Math.max(Math.floor(top[1]),0),last=Math.min(Math.ceil(bot[1])-1,h-1);for(var row=first;row<=last;row++){var y0=Math.max(top[1],row),y1=Math.min(bot[1],row+1),x0=top[0]+(y0-top[1])*slope,x1=top[0]+(y1-top[1])*slope,xa=Math.min(x0,x1),xb=Math.max(x0,x1),ca=Math.floor(xa),cb=Math.floor(xb);function ad(x,ar,co){if(x<0){x=0;ar=co;}if(x>=w)return;var idx=row*w+x;acc.area[idx]+=ar;acc.cover[idx]+=co;}var hg=sign*(y1-y0);if(ca===cb){var xm=(xa+xb)/2-ca;ad(ca,hg*(1-xm),hg);}else{var dx=xb-xa;for(var c=ca;c<=cb;c++){var lo=Math.max(xa,c),hi=Math.min(xb,c+1),sh=hg*(hi-lo)/dx,mm=(lo+hi)/2-c;ad(c,sh*(1-mm),sh);}}}});var cov=new Array(w*h).fill(0);for(var row=0;row<h;row++){var run=0;for(var x=0;x<w;x++){var idx=row*w+x;cov[idx]=Math.min(1,Math.abs(run+acc.area[idx]));run+=acc.cover[idx];}}return cov;}
+function kernOf(font,a,b){if(!font.kernMap){font.kernMap={};font.kern.forEach(function(k){font.kernMap[k[0]+'\u0001'+k[1]]=k[2];});}return font.kernMap[a+'\u0001'+b]||0;}
+function layoutRun(font,text,size,x,y,kerning){var s=size/font.units_per_em,out=[],pen=x,prev=null;for(var i=0;i<text.length;i++){var name=glyphNameOf(font,text[i]);if(kerning&&prev!==null)pen+=kernOf(font,prev,name)*s;out.push({name:name,x:pen,y:y});pen+=font.glyphs[name].advance*s;prev=name;}return out;}
+/* chapter 22: the grid, segments, splitting, classifying, stitching */
+var GRID=256;
+function grid(v){return Math.floor(v*GRID+0.5);}
+function lt(p,q){return p[1]<q[1]||(p[1]===q[1]&&p[0]<q[0]);}
+function orient(a,b,c){return (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);}
+function seg(a,b,wa,wb){return lt(b,a)?{l:b,h:a,wa:-wa,wb:-wb}:{l:a,h:b,wa:wa,wb:wb};}
+function pathSegments(p,wa,wb){var out=[];edgesOf(p).forEach(function(e){var l=[grid(e[0][0]),grid(e[0][1])],h=[grid(e[1][0]),grid(e[1][1])];if(l[0]!==h[0]||l[1]!==h[1])out.push(seg(l,h,wa,wb));});return out;}
+function roundDiv(n,d){var q=(2n*n+d)/(2n*d),r=(2n*n+d)%(2n*d);if(r<0n)q-=1n;return Number(q);}
+function crossing(s,t){var a=s.l,b=s.h,c=t.l,d=t.h,beta=BigInt(orient([0,0],[b[0]-a[0],b[1]-a[1]],[d[0]-c[0],d[1]-c[1]])),alpha=BigInt((c[0]-a[0])*(d[1]-c[1])-(c[1]-a[1])*(d[0]-c[0]));if(beta<0n){alpha=-alpha;beta=-beta;}
+  return [roundDiv(BigInt(a[0])*beta+BigInt(b[0]-a[0])*alpha,beta),roundDiv(BigInt(a[1])*beta+BigInt(b[1]-a[1])*alpha,beta)];}
+function same(p,q){return p[0]===q[0]&&p[1]===q[1];}
+function between(p,a,b){return lt(a,p)&&lt(p,b);}
+function meet(s,t){var a=s.l,b=s.h,c=t.l,d=t.h;
+  if(Math.max(a[0],b[0])<Math.min(c[0],d[0])||Math.max(c[0],d[0])<Math.min(a[0],b[0])||b[1]<c[1]||d[1]<a[1])return [[],[]];
+  var o1=orient(a,b,c),o2=orient(a,b,d),o3=orient(c,d,a),o4=orient(c,d,b),os=[],ot=[];
+  if(o1===0&&o2===0){[c,d].forEach(function(q){if(between(q,a,b))os.push(q);});[a,b].forEach(function(q){if(between(q,c,d))ot.push(q);});return [os,ot];}
+  if(o1*o2<0&&o3*o4<0){var p=crossing(s,t);return [same(p,a)||same(p,b)?[]:[p],same(p,c)||same(p,d)?[]:[p]];}
+  if(o1===0&&between(c,a,b))os.push(c);if(o2===0&&between(d,a,b))os.push(d);if(o3===0&&between(a,c,d))ot.push(a);if(o4===0&&between(b,c,d))ot.push(b);
+  return [os,ot];}
+function findSplits(segs){/* the active-list sweep; brute force finds the same */
+  var order=segs.map(function(s,i){return i;}).sort(function(i,j){var s=segs[i],t=segs[j];return s.l[1]-t.l[1]||s.l[0]-t.l[0]||s.h[1]-t.h[1]||s.h[0]-t.h[0];});
+  var splits={},active=[];function put(i,pts){pts.forEach(function(q){if(!same(q,segs[i].l)&&!same(q,segs[i].h))(splits[i]=splits[i]||[]).push(q);});}
+  order.forEach(function(i){var s=segs[i];active=active.filter(function(j){return lt(s.l,segs[j].h);});active.forEach(function(j){var m=meet(s,segs[j]);put(i,m[0]);put(j,m[1]);});active.push(i);});
+  return splits;}
+function along(s,pts){var l=s.l,h=s.h,seen={},u=[];pts.forEach(function(q){var k=q[0]+','+q[1];if(!seen[k]){seen[k]=1;u.push(q);}});
+  function dt(q){return (q[0]-l[0])*(h[0]-l[0])+(q[1]-l[1])*(h[1]-l[1]);}return u.sort(function(p,q){return dt(p)-dt(q)||p[1]-q[1]||p[0]-q[0];});}
+function merge(segs){var acc={},keys=[];segs.forEach(function(s){var k=s.l[1]+','+s.l[0]+','+s.h[1]+','+s.h[0];if(acc[k]){acc[k].wa+=s.wa;acc[k].wb+=s.wb;}else{acc[k]={l:s.l,h:s.h,wa:s.wa,wb:s.wb};keys.push(acc[k]);}});
+  return keys.filter(function(s){return s.wa!==0||s.wb!==0;}).sort(function(s,t){return s.l[1]-t.l[1]||s.l[0]-t.l[0]||s.h[1]-t.h[1]||s.h[0]-t.h[0];});}
+function splitSegments(segs){segs=merge(segs);for(;;){var sp=findSplits(segs),any=false,out=[];
+  segs.forEach(function(s,i){if(!sp[i]){out.push(s);return;}any=true;var ch=[s.l].concat(along(s,sp[i])).concat([s.h]);for(var k=0;k+1<ch.length;k++)if(!same(ch[k],ch[k+1]))out.push(seg(ch[k],ch[k+1],s.wa,s.wb));});
+  if(!any)return segs;segs=merge(out);}}
+function insideRule(w,rule){return rule==='nonzero'?w!==0:((w%2)+2)%2===1;}
+function opInside(op,a,b){return op==='union'?a||b:op==='intersection'?a&&b:op==='difference'?a&&!b:a!==b;}
+function windingBeside(segs,i){var e=segs[i],mx=e.l[0]+e.h[0],my=e.l[1]+e.h[1],wa=0,wb=0;
+  for(var j=0;j<segs.length;j++){if(j===i)continue;var f=segs[j],lx=2*f.l[0],ly=2*f.l[1],hx=2*f.h[0],hy=2*f.h[1];
+    if((ly<my||(ly===my&&lx<=mx))&&(my<hy||(my===hy&&mx<hx))&&orient([lx,ly],[hx,hy],[mx,my])>0){wa+=f.wa;wb+=f.wb;}}
+  return [[wa,wb],[wa+e.wa,wb+e.wb]];}
+function keepEdges(segs,ra,rb,op){var kept=[];segs.forEach(function(e,i){var w=windingBeside(segs,i),out=opInside(op,insideRule(w[0][0],ra),insideRule(w[0][1],rb)),inn=opInside(op,insideRule(w[1][0],ra),insideRule(w[1][1],rb));if(out!==inn)kept.push(inn?[e.l,e.h]:[e.h,e.l]);});return kept;}
+function halfOf(r,v){var cr=r[0]*v[1]-r[1]*v[0],dt=r[0]*v[0]+r[1]*v[1];return (cr<0||(cr===0&&dt>0))?0:1;}
+function stitch(kept){var order=kept.map(function(k,i){return i;}).sort(function(i,j){var a=kept[i],b=kept[j];return a[0][1]-b[0][1]||a[0][0]-b[0][0]||a[1][1]-b[1][1]||a[1][0]-b[1][0];});
+  var from={},used=[],dirs=kept.map(function(k){return [k[1][0]-k[0][0],k[1][1]-k[0][1]];}),out=[];order.forEach(function(k){var key=kept[k][0].join(',');(from[key]=from[key]||[]).push(k);});
+  order.forEach(function(k0){if(used[k0])return;var start=kept[k0][0],pts=[],k=k0;for(;;){used[k]=true;pts.push(kept[k][0]);var v=kept[k][1];if(same(v,start))break;
+      var d=dirs[k],r=[-d[0],-d[1]],best=null;(from[v.join(',')]||[]).forEach(function(j){if(used[j])return;if(best===null){best=j;return;}var hv=halfOf(r,dirs[j]),hb=halfOf(r,dirs[best]),b=dirs[best],w=dirs[j];if(hv<hb||(hv===hb&&b[0]*w[1]-b[1]*w[0]>0))best=j;});k=best;}
+    for(var changed=true;changed&&pts.length>=3;){changed=false;for(var q=0;q<pts.length;q++){var u=pts[(q-1+pts.length)%pts.length],c=pts[q],w=pts[(q+1)%pts.length];if((c[0]-u[0])*(w[1]-c[1])-(c[1]-u[1])*(w[0]-c[0])===0){pts.splice(q,1);changed=true;break;}}}
+    var f=0;for(var q=1;q<pts.length;q++)if(lt(pts[q],pts[f]))f=q;out.push(pts.slice(f).concat(pts.slice(0,f)));});
+  out.sort(function(a,b){for(var i=0;i<Math.min(a.length,b.length);i++){if(a[i][1]!==b[i][1])return a[i][1]-b[i][1];if(a[i][0]!==b[i][0])return a[i][0]-b[i][0];}return a.length-b.length;});
+  return out;}
+function combine(a,ra,b,rb,op){var segs=splitSegments(pathSegments(a,1,0).concat(pathSegments(b,0,1)));
+  return stitch(keepEdges(segs,ra,rb,op)).map(function(c){return c.map(function(q){return [q[0]/GRID,q[1]/GRID];});});}
+
+/* the renders */
+var PAPER=[0.02,0.02,0.025],INK=[0.9,0.55,0.1],DIM=[0.3,0.3,0.34],MAGENTA=[0.85,0.2,0.55];
+function Buf(w,h,paper){this.w=w;this.h=h;this.p=[];for(var i=0;i<w*h;i++)this.p.push(paper.slice());}
+Buf.prototype.paint=function(cov,col){for(var i=0;i<this.w*this.h;i++){var k=cov[i];if(k>0)this.p[i]=lerp3(this.p[i],col,k);}};
+Buf.prototype.bytes=function(){return this.p.map(function(c){return c.map(toByte);});};
+function hairline(b,p,col,width){var subs=[];p.forEach(function(sp){subs=subs.concat(strokeToPath(sp,true,width,'butt','round',4));});b.paint(fillSubs(subs,b.w,b.h),col);}
+function star(){var p=[];for(var k=0;k<5;k++){var a=(-90+144*k)*(Math.PI/180);p.push([80.5+70*Math.cos(a),80.5+70*Math.sin(a)]);}return [p];}
+function circlePath(cx,cy,r,n){var p=[];for(var k=0;k<n;k++){var a=2*Math.PI*k/n;p.push([cx+r*Math.cos(a),cy+r*Math.sin(a)]);}return [p];}
+function transformPath(p,m){return p.map(function(sp){return sp.map(function(q){return apply(m,q);});});}
+function polygon(pts){return [pts];}
+function textPath(font,text,size,x,y){var out=[];layoutRun(font,text,size,x,y,true).forEach(function(pl){out=out.concat(glyphPath(font,pl.name,textMatrix(font,size,pl.x,pl.y),0.1));});return out;}
+function plateGlyph(){return glyphPath(GLYPHS,glyphNameOf(GLYPHS,'g'),textMatrix(GLYPHS,200,40,140),0.1);}
+function plateStar(){return transformPath(star(),mmul(mmul(mmul(translation(130-80.5,104-80.5),translation(80.5,80.5)),scaling(0.85,0.85)),translation(-80.5,-80.5)));}
+var OPS=['union','intersection','difference','xor'];
+/* chapter 14: curves offset and stroked */
+function splitAt(c,t){var d=decasteljau(c,t);return [d.left,d.right];}
+function derivative(c,t){var n=c.length-1,d=[];for(var i=0;i<n;i++)d.push([(c[i+1][0]-c[i][0])*n,(c[i+1][1]-c[i][1])*n]);while(d.length>1){var q=[];for(var j=0;j<d.length-1;j++)q.push(lerpP(d[j],d[j+1],t));d=q;}return d[0];}
+function second(c,t){var p=c;if(c.length===3)return [2*(p[0][0]-2*p[1][0]+p[2][0]),2*(p[0][1]-2*p[1][1]+p[2][1])];var ax=p[0][0]-2*p[1][0]+p[2][0],ay=p[0][1]-2*p[1][1]+p[2][1],bx=p[1][0]-2*p[2][0]+p[3][0],by=p[1][1]-2*p[2][1]+p[3][1];return [6*((1-t)*ax+t*bx),6*((1-t)*ay+t*by)];}
+function liveT(c,t){return mag(derivative(c,t))<1e-9?(t<0.5?t+1e-4:t-1e-4):t;}
+function tangentAt(c,t){var v=derivative(c,liveT(c,t)),m=mag(v);return [v[0]/m,v[1]/m];}
+function normalAt(c,t){return perp(tangentAt(c,t));}
+function offsetPoint(c,t,d){var p=pointAt(c,t),n=normalAt(c,t);return [p[0]+n[0]*d,p[1]+n[1]*d];}
+function curvature(c,t){t=liveT(c,t);var v=derivative(c,t),a=second(c,t),s=mag(v);return crss(v,a)/(s*s*s);}
+function cusps(c,d){var out=[],f=function(t){return 1-curvature(c,t)*d;},prev=f(0);for(var i=1;i<=64;i++){var t=i/64,cur=f(t);if((prev<0)!==(cur<0)){var lo=(i-1)/64,hi=t,flo=prev;for(var k=0;k<40;k++){var mid=(lo+hi)/2,fm=f(mid);if((fm<0)===(flo<0)){lo=mid;flo=fm;}else hi=mid;}out.push((lo+hi)/2);}prev=cur;}return out;}
+function fitOffset(c,d){var p0=offsetPoint(c,0,d),p3=offsetPoint(c,1,d),t0=tangentAt(c,0),t1=tangentAt(c,1),m=offsetPoint(c,0.5,d),r=[(8*m[0]-4*p0[0]-4*p3[0])/3,(8*m[1]-4*p0[1]-4*p3[1])/3],den=crss(t0,t1),a,b;if(Math.abs(den)<1e-9){a=b=mag(sub(p3,p0))/3;}else{a=crss(r,t1)/den;b=crss(r,t0)/den;}return [p0,[p0[0]+a*t0[0],p0[1]+a*t0[1]],[p3[0]-b*t1[0],p3[1]-b*t1[1]],p3];}
+function offsetError(c,d,f){var w=0;for(var i=0;i<=16;i++){var t=i/16;w=Math.max(w,mag(sub(pointAt(f,t),offsetPoint(c,t,d))));}return w;}
+function subCurve(c,t0,t1){var right=t0>0?splitAt(c,t0)[1]:c;return t1<1?splitAt(right,(t1-t0)/(1-t0))[0]:right;}
+function offsetInto(c,d,tol,out,depth){var f=fitOffset(c,d);if(offsetError(c,d,f)<=tol||depth>=16){out.push(f);return;}var lr=splitAt(c,0.5);offsetInto(lr[0],d,tol,out,depth+1);offsetInto(lr[1],d,tol,out,depth+1);}
+function offsetCurve(c,d,tol){var ts=[0];cusps(c,d).forEach(function(t){if(t-ts[ts.length-1]>1e-9&&1-t>1e-9)ts.push(t);});ts.push(1);var out=[];for(var i=0;i<ts.length-1;i++)offsetInto(subCurve(c,ts[i],ts[i+1]),d,tol,out,0);return out;}
+function capPoints(p,dout,h,cap){var s=capShape(p,dout,h,cap);return s?s:[];}
+function strokeCurve(c,width,cap,tol){var h=width/2,pts=[];offsetCurve(c,h,tol).forEach(function(pc){pts=pts.concat(flatten(pc,tol));});pts=pts.concat(capPoints(pointAt(c,1),tangentAt(c,1),h,cap));offsetCurve(c,-h,tol).reverse().forEach(function(pc){pts=pts.concat(flatten(pc,tol).reverse());});var t0=tangentAt(c,0);pts=pts.concat(capPoints(pointAt(c,0),[-t0[0],-t0[1]],h,cap));pts=dedupe(pts);if(pts.length>1&&mag(sub(pts[pts.length-1],pts[0]))<1e-9)pts.pop();return [pts];}
+
+/* chapter 5's winding number, and chapter 2's magnify */
+function windingAt(p,x,y){var w=0;edgesOf(p).forEach(function(e){var a=e[0],b=e[1],c=(b[0]-a[0])*(y-a[1])-(b[1]-a[1])*(x-a[0]);if(a[1]<=y){if(b[1]>y&&c>0)w++;}else if(b[1]<=y&&c<0)w--;});return w;}
+function magnify(c,k){var o=new Buf(c.w*k,c.h*k,PAPER);for(var y=0;y<c.h*k;y++)for(var x=0;x<c.w*k;x++)o.p[y*c.w*k+x]=c.p[Math.floor(y/k)*c.w+Math.floor(x/k)];return o;}
+
+/* chapter 23: fields */
+function clamp(v,lo,hi){lo=lo===undefined?0:lo;hi=hi===undefined?1:hi;return v<lo?lo:v>hi?hi:v;}
+function dot(a,b){return a[0]*b[0]+a[1]*b[1];}
+function sdCircle(p,c,r){return mag(sub(p,c))-r;}
+function distanceToSegment(p,a,b){var ab=sub(b,a),L=dot(ab,ab),t=L===0?0:clamp(dot(sub(p,a),ab)/L);return mag(sub(p,[a[0]+ab[0]*t,a[1]+ab[1]*t]));}
+function sdBox(p,c,hw,hh){var qx=Math.abs(p[0]-c[0])-hw,qy=Math.abs(p[1]-c[1])-hh;return Math.sqrt(Math.pow(Math.max(qx,0),2)+Math.pow(Math.max(qy,0),2))+Math.min(Math.max(qx,qy),0);}
+function sdRoundedBox(p,c,hw,hh,r){return sdBox(p,c,hw-r,hh-r)-r;}
+function insideBy(w,rule){return rule==='nonzero'?w!==0:((w%2)+2)%2===1;}
+function sdPolygon(p,pa,rule){var d=Infinity;edgesOf(pa).forEach(function(e){d=Math.min(d,distanceToSegment(p,e[0],e[1]));});return insideBy(windingAt(pa,p[0],p[1]),rule)?-d:d;}
+function solveCubic(a,b,c,d){if(Math.abs(a)<1e-12){if(Math.abs(b)<1e-12){if(Math.abs(c)<1e-12)return [];return [-d/c];}var disc=c*c-4*b*d;if(disc<0)return [];var s=Math.sqrt(disc);return [(-c-s)/(2*b),(-c+s)/(2*b)].sort(function(x,y){return x-y;});}
+  b=b/a;c=c/a;d=d/a;var p=c-b*b/3,q=2*b*b*b/27-b*c/3+d,shift=-b/3,disc=q*q/4+p*p*p/27;
+  if(disc>0){var s=Math.sqrt(disc),A=-q/2+s,B=-q/2-s;return [Math.sign(A)*Math.pow(Math.abs(A),1/3)+Math.sign(B)*Math.pow(Math.abs(B),1/3)+shift];}
+  if(p===0)return [shift];var r=Math.sqrt(-p/3),phi=Math.acos(clamp(3*q/(2*p)/r,-1,1))/3,roots=[];for(var k=0;k<3;k++)roots.push(2*r*Math.cos(phi-2*Math.PI*k/3)+shift);return roots.sort(function(x,y){return x-y;});}
+function nearestOnQuadratic(p,c){var a0=sub(c[0],p),a1=[(c[1][0]-c[0][0])*2,(c[1][1]-c[0][1])*2],a2=[c[0][0]-c[1][0]*2+c[2][0],c[0][1]-c[1][1]*2+c[2][1]],ts=[0,1];
+  solveCubic(2*dot(a2,a2),3*dot(a1,a2),dot(a1,a1)+2*dot(a0,a2),dot(a0,a1)).forEach(function(t){if(t>0&&t<1)ts.push(t);});
+  var best=null;ts.forEach(function(t){var d=mag(sub(pointAt(c,t),p));if(best===null||d<best[0]||(d===best[0]&&t<best[1]))best=[d,t];});return best;}
+function distanceToQuadratic(p,c){return nearestOnQuadratic(p,c)[0];}
+function nearestTCubic(p,c){var bt=0,best=mag(sub(pointAt(c,0),p)),d=mag(sub(pointAt(c,1),p));if(d<best){bt=1;best=d;}
+  for(var i=0;i<9;i++){var t=i/8;for(var n=0;n<8;n++){var q=sub(pointAt(c,t),p),d1=derivative(c,t),d2=second(c,t),f=dot(q,d1),fp=dot(d1,d1)+dot(q,d2);if(fp===0)break;t=clamp(t-f/fp);}d=mag(sub(pointAt(c,t),p));if(d<best){bt=t;best=d;}}return bt;}
+function distanceToCubic(p,c){return mag(sub(pointAt(c,nearestTCubic(p,c)),p));}
+function Field(w,h,v){this.w=w;this.h=h;this.v=v||new Array(w*h).fill(0);}
+function field(w,h,fn){var f=new Field(w,h);for(var y=0;y<h;y++)for(var x=0;x<w;x++)f.v[y*w+x]=fn([x+0.5,y+0.5]);return f;}
+function fieldCoverage(f){return f.v.map(function(d){return clamp(0.5-d);});}
+function polygonField(pa,rule,w,h){return field(w,h,function(q){return sdPolygon(q,pa,rule);});}
+function glyphCurves(font,name,m){var out=[];glyphOutline(font,name).forEach(function(ct){ct.forEach(function(c){out.push(transformCurve(c,m));});});return out;}
+function sdCurves(p,curves,signPath,rule){var d=Infinity;curves.forEach(function(c){d=Math.min(d,c.length===3?distanceToQuadratic(p,c):distanceToCubic(p,c));});return insideBy(windingAt(signPath,p[0],p[1]),rule)?-d:d;}
+function glyphField(font,name,m,w,h){var cs=glyphCurves(font,name,m),sp=glyphPath(font,name,m,0.01);return field(w,h,function(q){return sdCurves(q,cs,sp,'nonzero');});}
+function fmap(f,fn){return new Field(f.w,f.h,f.v.map(fn));}
+function fzip(a,b,fn){return new Field(a.w,a.h,a.v.map(function(x,i){return fn(x,b.v[i]);}));}
+function fieldOffset(f,r){return fmap(f,function(d){return d-r;});}
+function fieldStroke(f,w){return fmap(f,function(d){return Math.abs(d)-w/2;});}
+function fieldUnion(a,b){return fzip(a,b,Math.min);}
+function fieldXor(a,b){return fzip(a,b,function(x,y){return Math.max(Math.min(x,y),-Math.max(x,y));});}
+function smoothMin(a,b,k){if(k<=0)return Math.min(a,b);var h=Math.max(k-Math.abs(a-b),0)/k;return Math.min(a,b)-h*h*k/4;}
+/* the distance transform */
+function edt1d(f){var n=f.length,v=new Array(n).fill(0),z=new Array(n+1).fill(0),k=0;z[0]=-Infinity;z[1]=Infinity;
+  function meetAt(q,p){return ((f[q]+q*q)-(f[p]+p*p))/(2*q-2*p);}
+  for(var q=1;q<n;q++){var s=meetAt(q,v[k]);while(s<=z[k]){k--;s=meetAt(q,v[k]);}k++;v[k]=q;z[k]=s;z[k+1]=Infinity;}
+  var d=new Array(n);k=0;for(var q=0;q<n;q++){while(z[k+1]<q)k++;d[q]=(q-v[k])*(q-v[k])+f[v[k]];}return d;}
+function distanceTransform(bits,w,h){var big=w*w+h*h,g=bits.map(function(b){return b?0:big;});
+  for(var x=0;x<w;x++){var col=[];for(var y=0;y<h;y++)col.push(g[y*w+x]);col=edt1d(col);for(var y=0;y<h;y++)g[y*w+x]=col[y];}
+  var out=[];for(var y=0;y<h;y++)out=out.concat(edt1d(g.slice(y*w,(y+1)*w)));return out;}
+function fieldFromCoverage(cov,w,h){var on=cov.map(function(v){return v>=0.5;}),ti=distanceTransform(on,w,h),to=distanceTransform(on.map(function(b){return !b;}),w,h);
+  return new Field(w,h,on.map(function(b,i){return b?-(Math.sqrt(to[i])-0.5):Math.sqrt(ti[i])-0.5;}));}
+/* atlases */
+function bakeBox(font,name,size,spread){var s=size/font.units_per_em,b=glyphBounds(font,name),left=Math.floor(b[0]*s)-spread,right=Math.ceil(b[2]*s)+spread,top=Math.floor(-b[3]*s)-spread,bottom=Math.ceil(-b[1]*s)+spread;
+  return {left:left,top:top,w:right-left,h:bottom-top,m:textMatrix(font,size,-left,-top)};}
+function bakeSdf(font,name,size,spread){var bx=bakeBox(font,name,size,spread),cs=glyphCurves(font,name,bx.m),sp=glyphPath(font,name,bx.m,0.01);
+  return {ch:[field(bx.w,bx.h,function(q){return clamp(sdCurves(q,cs,sp,'nonzero'),-spread,spread);})],left:bx.left,top:bx.top,w:bx.w,h:bx.h};}
+function sampleField(f,sx,sy){var gx=sx-0.5,gy=sy-0.5,x0=Math.floor(gx),y0=Math.floor(gy),fx=gx-x0,fy=gy-y0;
+  function at(ix,iy){ix=ix<0?0:ix>=f.w?f.w-1:ix;iy=iy<0?0:iy>=f.h?f.h-1:iy;return f.v[iy*f.w+ix];}
+  var top=at(x0,y0)+(at(x0+1,y0)-at(x0,y0))*fx,bot=at(x0,y0+1)+(at(x0+1,y0+1)-at(x0,y0+1))*fx;return top+(bot-top)*fy;}
+function median3(a,b,c){return Math.max(Math.min(a,b),Math.min(Math.max(a,b),c));}
+function drawEffect(buf,bk,scale,x,y,col,useTrue,kOf){var x0=Math.floor(x+bk.left*scale),y0=Math.floor(y+bk.top*scale),x1=Math.ceil(x+(bk.left+bk.w)*scale),y1=Math.ceil(y+(bk.top+bk.h)*scale);
+  for(var py=Math.max(0,y0);py<Math.min(buf.h,y1);py++)for(var px=Math.max(0,x0);px<Math.min(buf.w,x1);px++){var u=(px+0.5-x)/scale-bk.left,v=(py+0.5-y)/scale-bk.top,d;
+    if(useTrue)d=sampleField(bk.ch[3],u,v)*scale;else if(bk.ch.length===1)d=sampleField(bk.ch[0],u,v)*scale;else d=median3(sampleField(bk.ch[0],u,v),sampleField(bk.ch[1],u,v),sampleField(bk.ch[2],u,v))*scale;
+    var k=kOf(d);if(k>0){var i=py*buf.w+px;buf.p[i]=lerp3(buf.p[i],col,k);}}}
+function drawBaked(buf,bk,scale,x,y,col){drawEffect(buf,bk,scale,x,y,col,false,function(d){return clamp(0.5-d);});}
+var RED=1,GREEN=2,BLUE=4,CYAN_E=6,MAGENTA_E=5,YELLOW_E=3,WHITE_E=7,CORNER_SIN=Math.sin(3.0);
+function dirAt(c,t){var d=derivative(c,t);if(mag(d)<1e-12)d=sub(c[c.length-1],c[0]);var m=mag(d);return [d[0]*(1/m),d[1]*(1/m)];}
+function isCorner(a,b){return dot(a,b)<=0||Math.abs(crss(a,b))>CORNER_SIN;}
+function colorEdges(ct){var n=ct.length,corners=[];for(var i=0;i<n;i++)if(isCorner(dirAt(ct[(i-1+n)%n],1),dirAt(ct[i],0)))corners.push(i);
+  if(!corners.length)return [ct.slice(),ct.map(function(){return WHITE_E;})];var st=corners[0],cs=ct.slice(st).concat(ct.slice(0,st));
+  if(corners.length===1){while(cs.length<3){var o=[];cs.forEach(function(c){var h=splitAt(c,0.5);o.push(h[0],h[1]);});cs=o;}var m=cs.length,runs=[CYAN_E,WHITE_E,MAGENTA_E];return [cs,cs.map(function(c,j){return runs[Math.floor(3*j/m)];})];}
+  var rel=corners.map(function(i){return ((i-st)%n+n)%n;}),r=-1,cnt=corners.length,masks=[];for(var j=0;j<n;j++){if(rel.indexOf(j)>=0)r++;masks.push(cnt%2===1&&r===cnt-1?YELLOW_E:(r%2===0?CYAN_E:MAGENTA_E));}return [cs,masks];}
+function glyphEdges(font,name,m){var out=[];glyphOutline(font,name).forEach(function(ct){var ce=colorEdges(ct.map(function(c){return transformCurve(c,m);}));ce[0].forEach(function(c,i){out.push([c,ce[1][i]]);});});return out;}
+function pseudoDistance(p,c,t,d){if(t===0||t===1){var e=pointAt(c,t),tn=dirAt(c,t),al=dot(sub(p,e),tn);if((t===0&&al<0)||(t===1&&al>0)){var sd=crss(tn,sub(p,e));return sd>0?-Math.abs(sd):Math.abs(sd);}}
+  var side=crss(dirAt(c,t),sub(p,pointAt(c,t)));return side>0?-d:d;}
+function orthogonality(p,c,t){var v=sub(p,pointAt(c,t)),m=mag(v);return m===0?0:Math.abs(dot(dirAt(c,t),[v[0]*(1/m),v[1]*(1/m)]));}
+function msdfTexel(p,es,spread){return [RED,GREEN,BLUE].map(function(ch){var best=null;es.forEach(function(e){if(!(e[1]&ch))return;var n=nearestOnQuadratic(p,e[0]),o=(n[1]===0||n[1]===1)?orthogonality(p,e[0],n[1]):0;
+    if(best===null||n[0]<best.d-1e-12||(Math.abs(n[0]-best.d)<=1e-12&&o<best.o))best={c:e[0],t:n[1],d:n[0],o:o};});return clamp(pseudoDistance(p,best.c,best.t,best.d),-spread,spread);});}
+function bakeMsdf(font,name,size,spread){var bx=bakeBox(font,name,size,spread),es=glyphEdges(font,name,bx.m),ch=[new Field(bx.w,bx.h),new Field(bx.w,bx.h),new Field(bx.w,bx.h)];
+  for(var y=0;y<bx.h;y++)for(var x=0;x<bx.w;x++){var v=msdfTexel([x+0.5,y+0.5],es,spread);for(var k=0;k<3;k++)ch[k].v[y*bx.w+x]=v[k];}return {ch:ch,left:bx.left,top:bx.top,w:bx.w,h:bx.h};}
+function bakeMtsdf(font,name,size,spread){var m=bakeMsdf(font,name,size,spread);m.ch.push(bakeSdf(font,name,size,spread).ch[0]);return m;}
+
+/* the renders */
+var CYAN=[0.2,0.75,0.9],PALE=[0.92,0.9,0.82],BLACK=[0,0,0];
+function bandColor(d){var col=lerp3(PAPER,d>0?INK:CYAN,Math.floor(Math.abs(d)/6)%2===0?0.12:0.3);if(Math.abs(d)<1)col=lerp3(col,PALE,1-Math.abs(d));return col;}
+function bandBuf(f){var b=new Buf(f.w,f.h,PAPER);f.v.forEach(function(d,i){b.p[i]=bandColor(d);});return b;}
+function paintField(b,f,col){b.paint(fieldCoverage(f),col);}
+function row(bs){var W=0;bs.forEach(function(b){W+=b.w;});var o=new Buf(W,bs[0].h,PAPER),x0=0;bs.forEach(function(b){for(var y=0;y<b.h;y++)for(var x=0;x<b.w;x++)o.p[y*W+x0+x]=b.p[y*b.w+x];x0+=b.w;});return o;}
+function stack(a,b){var o=new Buf(a.w,a.h+b.h,PAPER);o.p=a.p.concat(b.p);return o;}
+function out(b){return {bytes:b.bytes(),w:b.w,h:b.h};}
+function primitiveFields(){var c=[80,80];return out(row([bandBuf(field(160,160,function(q){return sdCircle(q,c,50);})),bandBuf(field(160,160,function(q){return sdBox(q,c,55,35);})),bandBuf(field(160,160,function(q){return sdRoundedBox(q,c,55,35,20);})),bandBuf(polygonField(star(),'evenodd',160,160))]));}
+function simplify(p,rule){return combine(p,rule,[],'nonzero','union');}
+function errorMap(){var exact=fillSubs(star(),160,160),raw=polygonField(star(),'nonzero',160,160),clean=polygonField(simplify(star(),'nonzero'),'nonzero',160,160),left=new Buf(160,160,PAPER);paintField(left,raw,INK);var ps=[left];
+  [raw,clean].forEach(function(f){var cv=fieldCoverage(f),b=new Buf(160,160,PAPER);cv.forEach(function(v,i){b.p[i]=lerp3(PAPER,MAGENTA,Math.min(1,4*Math.abs(v-exact[i])));});ps.push(b);});return out(row(ps));}
+function sCurve(){return [[30,150],[40,20],[160,180],[170,50]];}
+function plateGlyphField(){return glyphField(GLYPHS,glyphNameOf(GLYPHS,'g'),textMatrix(GLYPHS,200,40,140),200,200);}
+function fieldsVsPaths(){var sp=transformPath(star(),translation(19.5,19.5)),top=[],bot=[];function pan(cov){var b=new Buf(200,200,PAPER);b.paint(cov,INK);return b;}
+  var st=[];sp.forEach(function(s){st=st.concat(strokeToPath(s,true,10,'round','round',4));});top.push(pan(fillSubs(st,200,200)));
+  top.push(pan(fillSubs(strokeCurve(sCurve(),20,'round',0.05),200,200)));
+  top.push(pan(fillSubs(combine(plateGlyph(),'nonzero',plateStar(),'evenodd','xor'),200,200)));
+  bot.push(pan(fieldCoverage(fieldStroke(polygonField(sp,'nonzero',200,200),10))));
+  bot.push(pan(fieldCoverage(fieldStroke(field(200,200,function(q){return distanceToCubic(q,sCurve());}),20))));
+  bot.push(pan(fieldCoverage(fieldXor(plateGlyphField(),polygonField(plateStar(),'evenodd',200,200)))));
+  return out(stack(row(top),row(bot)));}
+function filletField(k){var c0=[60,70],c1=[105,95];return field(160,160,function(q){return smoothMin(sdCircle(q,c0,36),sdRoundedBox(q,c1,40,25,4),k);});}
+function fillets(){return out(row([0,8,16,32].map(function(k){var f=filletField(k),b=new Buf(160,160,PAPER);paintField(b,f,INK);paintField(b,fieldStroke(f,1.5),PALE);return b;})));}
+function transformBitmap(){return fillSubs(glyphPath(GLYPHS,glyphNameOf(GLYPHS,'g'),textMatrix(GLYPHS,48,14,44),0.1),64,64);}
+function transformDemo(){var cov=transformBitmap(),f=fieldFromCoverage(cov,64,64),a=new Buf(64,64,PAPER);a.paint(cov,INK);var c=new Buf(64,64,PAPER);
+  [[6,MAGENTA],[3,CYAN],[0,INK]].forEach(function(rc){paintField(c,fieldStroke(fieldOffset(f,rc[0]),1.5),rc[1]);});return out(magnify(row([a,bandBuf(f),c]),3));}
+function bakedPanel(bk,scale){var b=new Buf(300,400,PAPER);drawBaked(b,bk,scale,10-bk.left*scale,10-bk.top*scale,INK);return b;}
+function atlasCorners(){var f=GLYPHS;return out(row([bakedPanel(bakeSdf(f,'E',16,3),20),bakedPanel(bakeMsdf(f,'E',16,3),20),bakedPanel(bakeMsdf(f,'k',16,3),20),bakedPanel(bakeMsdf(f,'k',32,3),10)]));}
+function trapShrink(){var a=circlePath(60,80,40,96),b=circlePath(110,80,40,96),byMin=fieldUnion(polygonField(a,'nonzero',170,160),polygonField(b,'nonzero',170,160)),exact=polygonField(combine(a,'nonzero',b,'nonzero','union'),'nonzero',170,160);
+  return out(row([byMin,exact].map(function(f){var c=new Buf(170,160,PAPER);paintField(c,fieldOffset(f,-20),INK);paintField(c,fieldStroke(f,1.5),DIM);return c;})));}
+function plateField(){return glyphField(GLYPHS,glyphNameOf(GLYPHS,'&'),textMatrix(GLYPHS,170,38,164),200,200);}
+function plate23(){var f=plateField(),filled=new Buf(200,200,PAPER),outline=new Buf(200,200,PAPER),glow=new Buf(200,200,PAPER);paintField(filled,f,INK);paintField(outline,fieldStroke(f,4),CYAN);
+  f.v.forEach(function(d,i){if(d>0)glow.p[i]=lerp3(PAPER,MAGENTA,0.8*Math.exp(-d/10));});paintField(glow,f,INK);return out(row([bandBuf(f),filled,outline,glow]));}
+function title(){var f=GLYPHS,run=layoutRun(f,'DISTANCE',160,78,172,true),baked={},b=new Buf(900,220,PAPER);run.forEach(function(pl){if(!baked[pl.name])baked[pl.name]=bakeMtsdf(f,pl.name,32,4);});
+  [[8,8,BLACK,true,function(d){return 0.6*clamp((10-d)/20);}],[0,0,MAGENTA,true,function(d){return 0.8*Math.pow(1-clamp(d/20),2);}],[0,0,INK,false,function(d){return clamp(0.5-d);}],[0,0,PALE,false,function(d){return clamp(0.5-(Math.abs(d)-1.5));}]].forEach(function(ps){
+    run.forEach(function(pl){drawEffect(b,baked[pl.name],5,pl.x+ps[0],pl.y+ps[1],ps[2],ps[3],ps[4]);});});return out(b);}
+
+function fit(ctx,g,w,h){var sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;if(g.h*sc>h)sc=h/g.h;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,(h-g.h*sc)/2);}
+
+Plate.add('fig231', 0.25, function (ctx, w, h, p) { fit(ctx,primitiveFields(),w,h); });
+Plate.add('fig232', 0.3334, function (ctx, w, h, p) { fit(ctx,errorMap(),w,h); });
+Plate.add('fig233', 0.6667, function (ctx, w, h, p) { fit(ctx,fieldsVsPaths(),w,h); });
+Plate.add('fig234', 0.25, function (ctx, w, h, p) { fit(ctx,fillets(),w,h); });
+Plate.add('fig235', 0.3334, function (ctx, w, h, p) { fit(ctx,transformDemo(),w,h); });
+
+/* ---------- Figure 23.6: the E's edges, coloured ---------- */
+Plate.add('fig236', 0.62, function (ctx, w, h, p) {
+  var size=h*0.9/(GLYPHS.units_per_em*0.75),m=textMatrix(GLYPHS,h*0.9,w/2-0.3*h,h*0.88),es=glyphEdges(GLYPHS,'E',m),cols={6:p.cyan,5:p.magenta,3:p.ink2,7:p.ink3};
+  ctx.lineWidth=3;es.forEach(function(e){var c=e[0];ctx.strokeStyle=cols[e[1]];ctx.beginPath();ctx.moveTo(c[0][0],c[0][1]);for(var k=1;k<=24;k++){var q=pointAt(c,k/24);ctx.lineTo(q[0],q[1]);}ctx.stroke();});
+  es.forEach(function(e){var q=e[0][0];ctx.fillStyle=p.ink;ctx.beginPath();ctx.arc(q[0],q[1],3.2,0,2*Math.PI);ctx.fill();});
+  Plate.label(ctx,'CYAN · GREEN + BLUE',8,h-22,p.cyan,9.5);Plate.label(ctx,'MAGENTA · RED + BLUE',8,h-8,p.magenta,9.5);
+});
+
+Plate.add('fig237', 0.3334, function (ctx, w, h, p) { fit(ctx,atlasCorners(),w,h); });
+Plate.add('fig238', 0.4706, function (ctx, w, h, p) { fit(ctx,trapShrink(),w,h); });
+Plate.add('fig239', 0.2445, function (ctx, w, h, p) { fit(ctx,title(),w,h); });
+Plate.add('plate23', 0.25, function (ctx, w, h, p) { fit(ctx,plate23(),w,h); });
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, sub, mag, unit, perp, crss, add, arc, arcSteps, angBetween, mat, mmul, apply, translation, scaling, lerpP, decasteljau, pointAt, flatness, flattenInto, flatten, flattenIntoPath, transformCurve, quadBounds, impliedPoints, contourCurves, componentMatrix, glyphOutline, glyphBounds, textMatrix, glyphPath, glyphNameOf, segRect, joinShape, capShape, dedupe, area, strokeToPath, edgesOf, fillSubs, kernOf, layoutRun,
+   grid, lt, orient, seg, pathSegments, roundDiv, crossing, same, between, meet, findSplits, along, merge, splitSegments, insideRule, opInside, windingBeside, keepEdges, halfOf, stitch, combine, Buf, star, circlePath, transformPath, plateGlyph, plateStar,
+   splitAt, derivative, second, liveT, tangentAt, normalAt, offsetPoint, curvature, cusps, fitOffset, offsetError, subCurve, offsetInto, offsetCurve, capPoints, strokeCurve,
+   windingAt, magnify, clamp, dot, sdCircle, distanceToSegment, sdBox, sdRoundedBox, insideBy, sdPolygon, solveCubic, nearestOnQuadratic, distanceToQuadratic, nearestTCubic, distanceToCubic, Field, field, fieldCoverage, polygonField, glyphCurves, sdCurves, glyphField, fmap, fzip, fieldOffset, fieldStroke, fieldUnion, fieldXor, smoothMin, edt1d, distanceTransform, fieldFromCoverage, bakeBox, bakeSdf, sampleField, median3, drawEffect, drawBaked, dirAt, isCorner, colorEdges, glyphEdges, pseudoDistance, orthogonality, msdfTexel, bakeMsdf, bakeMtsdf,
+   bandColor, bandBuf, paintField, row, stack, out, primitiveFields, simplify, errorMap, sCurve, plateGlyphField, fieldsVsPaths, filletField, fillets, transformBitmap, transformDemo, bakedPanel, atlasCorners, trapShrink, plateField, plate23, title, fit].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>
