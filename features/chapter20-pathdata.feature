@@ -59,6 +59,7 @@ Feature: Path data
     When  cmds ← path_commands("M0 0 C10 0 20 10 20 20 S30 40 40 40")
     Then  cmds[2].op = "C"
     And   cmds[2].args = (20, 30, 30, 40, 40, 40)
+    And   path_commands("M0 0 C10 0 20 10 20 20 S30 40 40 40 S50 30 60 20")[3].args = (50, 40, 50, 30, 60, 20)
 
   Scenario: S after anything but a cubic starts its curve at the current point
     When  cmds ← path_commands("M0 0 L5 5 S10 0 20 0")

@@ -269,6 +269,7 @@
     <span class="kw">When</span>  cmds ← path_commands("M0 0 C10 0 20 10 20 20 S30 40 40 40")
     <span class="kw">Then</span>  cmds[2].op = "C"
     <span class="kw">And</span>   cmds[2].args = (20, 30, 30, 40, 40, 40)
+    <span class="kw">And</span>   path_commands("M0 0 C10 0 20 10 20 20 S30 40 40 40 S50 30 60 20")[3].args = (50, 40, 50, 30, 60, 20)
 
   <span class="kw">Scenario</span>: S after anything but a cubic starts its curve at the current point
     <span class="kw">When</span>  cmds ← path_commands("M0 0 L5 5 S10 0 20 0")
