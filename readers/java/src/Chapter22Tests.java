@@ -769,6 +769,14 @@ public final class Chapter22Tests {
                     List.of(List.of(pt(5, 0), pt(3, 8), pt(0, 8)), List.of(pt(5, 0), pt(10, 8), pt(7, 8))));
         });
 
+        scenario("Robust: at a shared corner the furthest right turn is not the first edge in the list", () -> {
+            Path a = Paths.polygon(pt(1, 0), pt(3, 2), pt(2, 4));
+            Path b = Paths.polygon(pt(3, 2), pt(4, 3), pt(4, 4));
+            assertPointListsEq("union",
+                    BoolCombine.pointLists(BoolCombine.combine(a, "nonzero", b, "nonzero", "union")),
+                    List.of(List.of(pt(1, 0), pt(3, 2), pt(2, 4)), List.of(pt(3, 2), pt(4, 3), pt(4, 4))));
+        });
+
         scenario("Robust: a corner resting on an edge", () -> {
             Path a = Paths.polygon(pt(0, 0), pt(10, 0), pt(10, 10), pt(0, 10));
             Path b = Paths.polygon(pt(5, 10), pt(8, 15), pt(2, 15));

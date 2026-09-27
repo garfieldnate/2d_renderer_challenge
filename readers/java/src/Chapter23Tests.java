@@ -210,7 +210,7 @@ public final class Chapter23Tests {
             assertDoubleEq("exact(71,43)", exact.coverageAt(71, 43), 0.1682);
         });
 
-        scenario("Render: at the star's points it's a long way off, and inside it's wrong until simplified", () -> {
+        scenario("Render: at the star's points it's a long way off, and inside it's wrong until the path is simplified", () -> {
             Path star = Figures.star();
             CoverageBuffer exact = Fill.fillPath(star, "nonzero", 160, 160);
             CoverageBuffer rawCov = Fields.fieldCoverage(Fields.polygonField(star, "nonzero", 160, 160));

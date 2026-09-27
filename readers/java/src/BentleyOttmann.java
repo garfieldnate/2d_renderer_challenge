@@ -16,7 +16,12 @@ import java.util.TreeSet;
 final class BentleyOttmann {
     private BentleyOttmann() {}
 
-    /** A live piece of an original segment, from its current start to its original end. */
+    /**
+     * A segment as it stands in the status, always with the ends it had when
+     * find_splits was called -- nothing is cut during the sweep. Every test
+     * and every crossing uses lo/hi exactly as given; only the recorded split
+     * points (in the output list) accumulate as the sweep runs.
+     */
     private static final class Piece {
         final Tuple lo;
         final Tuple hi;
@@ -180,7 +185,13 @@ final class BentleyOttmann {
 
             List<Piece> block = new ArrayList<>(status.subList(blockStart, blockEnd));
             Tuple roundedP = p.toGrid();
-            List<Piece> cutRemainders = new ArrayList<>();
+            // C: the block's segments whose hi isn't P -- they pass through P
+            // with P strictly inside. Record P (rounded) as a split point of
+            // each, but carry the piece itself forward UNCHANGED: nothing is
+            // cut here, so every later test and crossing still uses the
+            // original ends. (L, whose hi is exactly P, ends here and isn't
+            // carried forward.)
+            List<Piece> cThrough = new ArrayList<>();
             for (Piece pc : block) {
                 if (sameEventAsGrid(p, pc.hi)) {
                     // L: this piece's hi is exactly P -- it ends here, no continuation.
@@ -190,15 +201,7 @@ final class BentleyOttmann {
                 if (!Grid.samePoint(roundedP, orig.lo) && !Grid.samePoint(roundedP, orig.hi)) {
                     out.get(pc.origIndex).add(roundedP);
                 }
-                // Rounding can push the cut point off the piece's true line by up
-                // to half a unit; a remainder that would run backward (the
-                // rounded point landing lex-after the piece's own hi) has
-                // nothing left to track -- drop it rather than splice in a
-                // malformed, direction-reversed piece.
-                if (!Grid.samePoint(roundedP, pc.hi) && !Grid.lexLess(pc.hi, roundedP)) {
-                    Tuple newLo = Grid.lexLess(roundedP, pc.lo) ? pc.lo : roundedP;
-                    cutRemainders.add(new Piece(newLo, pc.hi, pc.origIndex));
-                }
+                cThrough.add(pc);
             }
 
             List<Piece> u = new ArrayList<>();
@@ -210,7 +213,7 @@ final class BentleyOttmann {
             }
 
             List<Piece> newBlock = new ArrayList<>(u);
-            newBlock.addAll(cutRemainders);
+            newBlock.addAll(cThrough);
             newBlock.sort((s, t) -> {
                 double ds = s.hi.x - s.lo.x, dsY = s.hi.y - s.lo.y;
                 double dt = t.hi.x - t.lo.x, dtY = t.hi.y - t.lo.y;
