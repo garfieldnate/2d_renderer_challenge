@@ -37,6 +37,11 @@ Feature: The hard cases
     And   b ← polygon(point(5, 0), point(3, 8), point(0, 8))
     Then  point_lists(combine(a, "nonzero", b, "nonzero", "union")) = [[point(5, 0), point(3, 8), point(0, 8)], [point(5, 0), point(10, 8), point(7, 8)]]
 
+  Scenario: At a shared corner the furthest right turn is not the first edge in the list
+    Given a ← polygon(point(1, 0), point(3, 2), point(2, 4))
+    And   b ← polygon(point(3, 2), point(4, 3), point(4, 4))
+    Then  point_lists(combine(a, "nonzero", b, "nonzero", "union")) = [[point(1, 0), point(3, 2), point(2, 4)], [point(3, 2), point(4, 3), point(4, 4)]]
+
   Scenario: A corner resting on an edge
     Given a ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
     And   b ← polygon(point(5, 10), point(8, 15), point(2, 15))

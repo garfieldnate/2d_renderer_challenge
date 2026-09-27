@@ -127,9 +127,9 @@ def decode(file_value):
         return ((file_value + 0.055) / 1.055) ** 2.4
 
 
-def clamp(value):
-    """Clamp a value to [0, 1]."""
-    return max(0.0, min(1.0, value))
+def clamp(value, lo=0.0, hi=1.0):
+    """Clamp a value to [lo, hi] (defaulting to [0, 1])."""
+    return max(lo, min(hi, value))
 
 
 def round_half_up(x):
@@ -8085,3 +8085,1812 @@ def work_map():
 def plate_21():
     """Chapter 21's plate: the work map."""
     return work_map()
+
+
+# ============================================================================
+# Chapter 22: Boolean Path Operations
+# ============================================================================
+
+import heapq as _heapq22
+import functools as _functools22
+from fractions import Fraction as _Fraction22
+
+
+def grid(v):
+    """Snap a pixel coordinate to a whole number of 1/256-pixel grid units,
+    rounding halves up (toward +infinity)."""
+    return math.floor(v * 256 + 0.5)
+
+
+def snap_point(p):
+    """Snap a point's coordinates to the grid."""
+    return point(grid(p.x), grid(p.y))
+
+
+def orient(a, b, c):
+    """Chapter 4's cross(b - a, c - a) on grid points, exact: positive when
+    c is clockwise of the line from a to b on screen, negative when
+    counterclockwise, 0 when the three are collinear."""
+    return cross(b - a, c - a)
+
+
+def lex_less(p, q):
+    """The sweep's order: top to bottom, then left to right."""
+    if p.y != q.y:
+        return p.y < q.y
+    return p.x < q.x
+
+
+def _lex_le(p, q):
+    return lex_less(p, q) or (p.x == q.x and p.y == q.y)
+
+
+def _lex_max(p, q):
+    return q if lex_less(p, q) else p
+
+
+def _lex_min(p, q):
+    return p if lex_less(p, q) else q
+
+
+def _lex_key(p):
+    return (p.y, p.x)
+
+
+def _strictly_inside(q, lo, hi):
+    """q is on the line through lo/hi and strictly between them in the
+    sweep's order."""
+    if orient(lo, hi, q) != 0:
+        return False
+    return lex_less(lo, q) and lex_less(q, hi)
+
+
+class Seg:
+    """A segment between two grid points, lo before hi in the sweep's
+    order, carrying how much it adds to the winding number of path A (wa)
+    and path B (wb)."""
+
+    def __init__(self, lo, hi, wa, wb):
+        self.lo = lo
+        self.hi = hi
+        self.wa = wa
+        self.wb = wb
+
+    def __eq__(self, other):
+        if not isinstance(other, Seg):
+            return False
+        return (self.lo == other.lo and self.hi == other.hi and
+                self.wa == other.wa and self.wb == other.wb)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __repr__(self):
+        return f"Seg({self.lo!r}, {self.hi!r}, {self.wa}, {self.wb})"
+
+
+def seg(a, b, wa, wb):
+    """A segment between two grid points, storing its ends in the sweep's
+    order (swapping and negating the windings if they arrive reversed)."""
+    if lex_less(b, a):
+        return Seg(b, a, -wa, -wb)
+    return Seg(a, b, wa, wb)
+
+
+def path_segments(p, operand):
+    """Every edge of p, snapped to the grid, as a seg with winding (1, 0)
+    for operand "a" and (0, 1) for "b", dropping an edge whose ends snap
+    to the same point."""
+    wa, wb = (1, 0) if operand == "a" else (0, 1)
+    result = []
+    for e in edges(p):
+        a = snap_point(e.a)
+        b = snap_point(e.b)
+        if a == b:
+            continue
+        result.append(seg(a, b, wa, wb))
+    return result
+
+
+class Meet:
+    def __init__(self, kind, on_s, on_t):
+        self.kind = kind
+        self.on_s = on_s
+        self.on_t = on_t
+
+
+def crossing_point(s, t):
+    """The exact crossing of s and t, rounded to the nearest grid point,
+    halves up."""
+    a, b, c, d = s.lo, s.hi, t.lo, t.hi
+    dcd = d - c
+    beta = cross(b - a, dcd)
+    alpha = cross(c - a, dcd)
+    if beta < 0:
+        beta, alpha = -beta, -alpha
+    nx = a.x * beta + (b.x - a.x) * alpha
+    ny = a.y * beta + (b.y - a.y) * alpha
+    gx = (2 * nx + beta) // (2 * beta)
+    gy = (2 * ny + beta) // (2 * beta)
+    return point(gx, gy)
+
+
+def meet(s, t):
+    """How s and t meet, as a kind and two lists of split points."""
+    a, b, c, d = s.lo, s.hi, t.lo, t.hi
+    collinear = orient(a, b, c) == 0 and orient(a, b, d) == 0
+    if collinear:
+        start_ov = _lex_max(a, c)
+        end_ov = _lex_min(b, d)
+        if lex_less(start_ov, end_ov):
+            on_s = sorted([q for q in (c, d) if _strictly_inside(q, a, b)], key=_lex_key)
+            on_t = sorted([q for q in (a, b) if _strictly_inside(q, c, d)], key=_lex_key)
+            return Meet("overlap", on_s, on_t)
+        elif start_ov == end_ov:
+            return Meet("end", [], [])
+        else:
+            return Meet("none", [], [])
+
+    os1 = orient(a, b, c)
+    os2 = orient(a, b, d)
+    ot1 = orient(c, d, a)
+    ot2 = orient(c, d, b)
+    if os1 * os2 < 0 and ot1 * ot2 < 0:
+        p = crossing_point(s, t)
+        on_s = [] if (p == a or p == b) else [p]
+        on_t = [] if (p == c or p == d) else [p]
+        return Meet("cross", on_s, on_t)
+
+    on_s = []
+    on_t = []
+    if os1 == 0 and _strictly_inside(c, a, b):
+        on_s.append(c)
+    if os2 == 0 and _strictly_inside(d, a, b):
+        on_s.append(d)
+    if ot1 == 0 and _strictly_inside(a, c, d):
+        on_t.append(a)
+    if ot2 == 0 and _strictly_inside(b, c, d):
+        on_t.append(b)
+    if on_s or on_t:
+        on_s.sort(key=_lex_key)
+        on_t.sort(key=_lex_key)
+        return Meet("touch", on_s, on_t)
+
+    if a == c or a == d or b == c or b == d:
+        return Meet("end", [], [])
+    return Meet("none", [], [])
+
+
+class SweepStats:
+    def __init__(self):
+        self.tests = 0
+        self.events = 0
+        self.passes = 0
+
+    def __repr__(self):
+        return f"SweepStats(tests={self.tests}, events={self.events}, passes={self.passes})"
+
+
+def sweep_stats():
+    return SweepStats()
+
+
+def _order_splits(seg_obj, pts):
+    """Split points along seg_obj, deduplicated, without its own ends, in
+    order along it from lo to hi."""
+    lo, hi = seg_obj.lo, seg_obj.hi
+    direction = hi - lo
+    seen_keys = set()
+    result = []
+    for p in pts:
+        if p == lo or p == hi:
+            continue
+        key = (p.x, p.y)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        result.append(p)
+    result.sort(key=lambda p: (dot(p - lo, direction), p.y, p.x))
+    return result
+
+
+def _find_splits_brute(segs, st):
+    n = len(segs)
+    raw = [[] for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            st.tests += 1
+            m = meet(segs[i], segs[j])
+            raw[i].extend(m.on_s)
+            raw[j].extend(m.on_t)
+    return [_order_splits(segs[i], raw[i]) for i in range(n)]
+
+
+def _find_splits_sweep(segs, st):
+    n = len(segs)
+    raw = [[] for _ in range(n)]
+    order = sorted(range(n), key=lambda i: (segs[i].lo.y, segs[i].lo.x, segs[i].hi.y, segs[i].hi.x))
+    active = []
+    for i in order:
+        s = segs[i]
+        active = [j for j in active if lex_less(s.lo, segs[j].hi)]
+        for j in active:
+            st.tests += 1
+            m = meet(s, segs[j])
+            raw[i].extend(m.on_s)
+            raw[j].extend(m.on_t)
+        active.append(i)
+    return [_order_splits(segs[i], raw[i]) for i in range(n)]
+
+
+def _orient_xy(lo, hi, p):
+    dx = hi[0] - lo[0]
+    dy = hi[1] - lo[1]
+    return dx * (p[1] - lo[1]) - dy * (p[0] - lo[0])
+
+
+def _lex_less_xy(p, q):
+    if p[1] != q[1]:
+        return p[1] < q[1]
+    return p[0] < q[0]
+
+
+class _BOItem:
+    __slots__ = ("lo", "hi", "orig")
+
+    def __init__(self, lo, hi, orig):
+        self.lo = lo
+        self.hi = hi
+        self.orig = orig
+
+
+def _find_splits_bentley_ottmann(segs, st):
+    n = len(segs)
+    raw_splits = [[] for _ in range(n)]
+    raw_seen = [set() for _ in range(n)]
+
+    def add_split(idx, gp):
+        if gp not in raw_seen[idx]:
+            raw_seen[idx].add(gp)
+            raw_splits[idx].append(gp)
+
+    lo_dict = {}
+    for i, s in enumerate(segs):
+        key = (s.lo.x, s.lo.y)
+        lo_dict.setdefault(key, []).append(i)
+
+    heap = []
+    seen_events = set()
+
+    def push_event(pt):
+        if pt not in seen_events:
+            seen_events.add(pt)
+            _heapq22.heappush(heap, (pt[1], pt[0]))
+
+    for s in segs:
+        push_event((s.lo.x, s.lo.y))
+        push_event((s.hi.x, s.hi.y))
+
+    status = []
+
+    def exact_crossing(a_lo, a_hi, b_lo, b_hi):
+        dcx, dcy = b_hi[0] - b_lo[0], b_hi[1] - b_lo[1]
+        bax, bay = a_hi[0] - a_lo[0], a_hi[1] - a_lo[1]
+        beta = bax * dcy - bay * dcx
+        if beta == 0:
+            return None
+        cax, cay = b_lo[0] - a_lo[0], b_lo[1] - a_lo[1]
+        alpha = cax * dcy - cay * dcx
+        x = _Fraction22(a_lo[0] * beta + bax * alpha, beta)
+        y = _Fraction22(a_lo[1] * beta + bay * alpha, beta)
+        if x.denominator == 1:
+            x = x.numerator
+        if y.denominator == 1:
+            y = y.numerator
+        return (x, y)
+
+    def test(s_item, t_item, p):
+        st.tests += 1
+        pt = exact_crossing(s_item.lo, s_item.hi, t_item.lo, t_item.hi)
+        if pt is None:
+            return
+        os1 = _orient_xy(s_item.lo, s_item.hi, t_item.lo)
+        os2 = _orient_xy(s_item.lo, s_item.hi, t_item.hi)
+        ot1 = _orient_xy(t_item.lo, t_item.hi, s_item.lo)
+        ot2 = _orient_xy(t_item.lo, t_item.hi, s_item.hi)
+        if not (os1 * os2 < 0 and ot1 * ot2 < 0):
+            return
+        if _lex_less_xy(p, pt):
+            push_event(pt)
+
+    def leave_cmp(item_a, item_b):
+        sa, ia = item_a
+        sb, ib = item_b
+        dax, day = sa.hi[0] - sa.lo[0], sa.hi[1] - sa.lo[1]
+        dbx, dby = sb.hi[0] - sb.lo[0], sb.hi[1] - sb.lo[1]
+        c = dbx * day - dby * dax
+        if c > 0:
+            return -1
+        if c < 0:
+            return 1
+        if ia < ib:
+            return -1
+        if ia > ib:
+            return 1
+        return 0
+
+    while heap:
+        y, x = _heapq22.heappop(heap)
+        p = (x, y)
+        st.events += 1
+        before, block, after = [], [], []
+        for it in status:
+            o = _orient_xy(it.lo, it.hi, p)
+            if o < 0:
+                before.append(it)
+            elif o > 0:
+                after.append(it)
+            else:
+                block.append(it)
+        L = [it for it in block if it.hi == p]
+        C = [it for it in block if it.hi != p]
+
+        new_items = []
+        if C:
+            gx = math.floor(p[0] + _Fraction22(1, 2))
+            gy = math.floor(p[1] + _Fraction22(1, 2))
+            gp = (gx, gy)
+        for it in C:
+            # Record the split at the rounded grid point (final filtering
+            # against the segment's true original ends happens later, in
+            # _order_splits), but keep the CONTINUATION at the exact
+            # (possibly fractional) event point p, not the rounded one.
+            # Rounding a continuation's own start can push it past its
+            # own hi in the sweep's order (two points on the same grid
+            # row, tie-broken by x) -- fine for split_segments's next
+            # pass on the actually-cut pieces, but it would corrupt this
+            # single sweep's ordering invariant (a status item's lo must
+            # stay before p). The exact point never has that problem: by
+            # construction it's strictly between the piece's own lo and
+            # hi in the sweep's order.
+            add_split(it.orig, gp)
+            new_items.append(_BOItem(p, it.hi, it.orig))
+        for i in lo_dict.get(p, []):
+            s = segs[i]
+            new_items.append(_BOItem((s.lo.x, s.lo.y), (s.hi.x, s.hi.y), i))
+
+        if new_items:
+            tagged = [(it, it.orig) for it in new_items]
+            tagged.sort(key=_functools22.cmp_to_key(leave_cmp))
+            new_items = [it for it, _ in tagged]
+
+        status = before + new_items + after
+
+        if not new_items:
+            if before and after:
+                test(before[-1], after[0], p)
+        else:
+            if before:
+                test(before[-1], new_items[0], p)
+            if after:
+                test(new_items[-1], after[0], p)
+
+    return [_order_splits(segs[i], [point(x, y) for (x, y) in raw_splits[i]]) for i in range(n)]
+
+
+def find_splits(segs, method, st):
+    """How segs need to be split, per segment, by one of three methods
+    that all find the same splits: "brute" (every pair), "sweep" (an
+    active list) or "bentley-ottmann" (an ordered status)."""
+    if method == "brute":
+        return _find_splits_brute(segs, st)
+    if method == "sweep":
+        return _find_splits_sweep(segs, st)
+    if method == "bentley-ottmann":
+        return _find_splits_bentley_ottmann(segs, st)
+    raise ValueError(f"unknown method: {method}")
+
+
+def merge_segments(segs):
+    """Segments with the same lo and hi become one, adding up their
+    windings; a segment whose windings add to nothing is dropped."""
+    grouped = {}
+    order = []
+    for s in segs:
+        key = (s.lo.x, s.lo.y, s.hi.x, s.hi.y)
+        if key not in grouped:
+            grouped[key] = [s.lo, s.hi, 0, 0]
+            order.append(key)
+        entry = grouped[key]
+        entry[2] += s.wa
+        entry[3] += s.wb
+    result = []
+    for key in order:
+        lo, hi, wa, wb = grouped[key]
+        if wa == 0 and wb == 0:
+            continue
+        result.append(Seg(lo, hi, wa, wb))
+    result.sort(key=lambda s: (s.lo.y, s.lo.x, s.hi.y, s.hi.x))
+    return result
+
+
+def split_segments(segs, method, st):
+    """Merge, find the splits, and cut, looping until a pass finds
+    nothing."""
+    segs = merge_segments(segs)
+    while True:
+        st.passes += 1
+        splits = find_splits(segs, method, st)
+        if all(len(s) == 0 for s in splits):
+            return segs
+        pieces = []
+        for i, s in enumerate(segs):
+            pts = splits[i]
+            if not pts:
+                pieces.append(s)
+                continue
+            chain = [s.lo] + pts + [s.hi]
+            for a, b in zip(chain, chain[1:]):
+                pieces.append(seg(a, b, s.wa, s.wb))
+        segs = merge_segments(pieces)
+
+
+def winding_beside(segs, i):
+    """The winding numbers of A and B on each side of segment i: first
+    the side where it doesn't count, then the side where it does (its
+    left, or below it when it's horizontal)."""
+    s = segs[i]
+    m = s.lo + s.hi  # doubled midpoint
+    wa = wb = 0
+    for j, f in enumerate(segs):
+        if j == i:
+            continue
+        lo2 = point(f.lo.x * 2, f.lo.y * 2)
+        hi2 = point(f.hi.x * 2, f.hi.y * 2)
+        if _lex_le(lo2, m) and lex_less(m, hi2):
+            if orient(lo2, hi2, m) > 0:
+                wa += f.wa
+                wb += f.wb
+    return ((wa, wb), (wa + s.wa, wb + s.wb))
+
+
+def inside_rule(w, rule):
+    """Whether a winding number is inside under a fill rule."""
+    if rule == "evenodd":
+        return w % 2 != 0
+    return w != 0
+
+
+def op_inside(op, in_a, in_b):
+    """What each boolean operation calls inside."""
+    if op == "union":
+        return in_a or in_b
+    if op == "intersection":
+        return in_a and in_b
+    if op == "difference":
+        return in_a and not in_b
+    if op == "xor":
+        return in_a != in_b
+    raise ValueError(f"unknown op: {op}")
+
+
+def keep_edges(segs, rule_a, rule_b, op):
+    """The segments on the boundary of the result, as (from, to) pairs
+    with the inside on the right."""
+    kept = []
+    for i, s in enumerate(segs):
+        (wa0, wb0), (wa1, wb1) = winding_beside(segs, i)
+        out_in = op_inside(op, inside_rule(wa0, rule_a), inside_rule(wb0, rule_b))
+        in_in = op_inside(op, inside_rule(wa1, rule_a), inside_rule(wb1, rule_b))
+        if out_in != in_in:
+            kept.append((s.lo, s.hi) if in_in else (s.hi, s.lo))
+    return kept
+
+
+def _turn_half(r, v):
+    # cross > 0 is clockwise on this y-down screen (orient's convention),
+    # so counterclockwise from r -- the direction stitch sweeps -- is
+    # cross < 0.
+    c = cross(r, v)
+    if c < 0:
+        return 0
+    if c > 0:
+        return 2
+    d = dot(r, v)
+    return 3 if d > 0 else 1
+
+
+def _turn_cmp(r, u, v):
+    hu, hv = _turn_half(r, u), _turn_half(r, v)
+    if hu != hv:
+        return -1 if hu < hv else 1
+    c = cross(u, v)
+    if c < 0:
+        return -1
+    if c > 0:
+        return 1
+    return 0
+
+
+def _drop_collinear(points):
+    if len(points) < 3:
+        return list(points)
+    pts = list(points)
+    changed = True
+    while changed and len(pts) >= 3:
+        changed = False
+        n = len(pts)
+        keep = []
+        for i in range(n):
+            prev = pts[(i - 1) % n]
+            cur = pts[i]
+            nxt = pts[(i + 1) % n]
+            if orient(prev, cur, nxt) == 0:
+                changed = True
+                continue
+            keep.append(cur)
+        pts = keep
+    return pts
+
+
+def _rotate_to_top(points):
+    if not points:
+        return points
+    idx = min(range(len(points)), key=lambda i: (points[i].y, points[i].x))
+    return points[idx:] + points[:idx]
+
+
+def stitch(kept):
+    """Link the kept (from, to) pairs into closed contours."""
+    remaining = list(kept)
+    n = len(remaining)
+    used = [False] * n
+    by_from = {}
+    for idx, (a, b) in enumerate(remaining):
+        by_from.setdefault((a.x, a.y), []).append(idx)
+
+    order_idxs = sorted(range(n), key=lambda i: (remaining[i][0].y, remaining[i][0].x,
+                                                  remaining[i][1].y, remaining[i][1].x))
+
+    contours = []
+    for start_i in order_idxs:
+        if used[start_i]:
+            continue
+        start_pt, first_to = remaining[start_i]
+        used[start_i] = True
+        path_pts = [start_pt]
+        prev_pt = start_pt
+        cur_pt = first_to
+        while cur_pt != start_pt:
+            path_pts.append(cur_pt)
+            candidates = [i for i in by_from.get((cur_pt.x, cur_pt.y), []) if not used[i]]
+            if not candidates:
+                break
+            if len(candidates) == 1:
+                nxt_i = candidates[0]
+            else:
+                r = point(prev_pt.x - cur_pt.x, prev_pt.y - cur_pt.y)
+                best = candidates[0]
+                best_v = point(remaining[best][1].x - cur_pt.x, remaining[best][1].y - cur_pt.y)
+                for i in candidates[1:]:
+                    v = point(remaining[i][1].x - cur_pt.x, remaining[i][1].y - cur_pt.y)
+                    if _turn_cmp(r, v, best_v) < 0:
+                        best, best_v = i, v
+                nxt_i = best
+            used[nxt_i] = True
+            prev_pt, cur_pt = cur_pt, remaining[nxt_i][1]
+        contours.append(path_pts)
+
+    contours = [_rotate_to_top(_drop_collinear(c)) for c in contours]
+    contours.sort(key=lambda c: [(p.y, p.x) for p in c])
+    return contours
+
+
+def combine(a, rule_a, b, rule_b, op):
+    """The whole boolean-operation pipeline: split, classify, stitch."""
+    segs = merge_segments(path_segments(a, "a") + path_segments(b, "b"))
+    segs = split_segments(segs, "sweep", sweep_stats())
+    kept = keep_edges(segs, rule_a, rule_b, op)
+    contours = stitch(kept)
+    result = path()
+    for c in contours:
+        if not c:
+            continue
+        move_to(result, point(c[0].x / 256, c[0].y / 256))
+        for p in c[1:]:
+            line_to(result, point(p.x / 256, p.y / 256))
+        close(result)
+    return result
+
+
+def simplify(p, rule):
+    """combine with an empty second path: a plain outline from p's own
+    fill rule and self-crossings."""
+    return combine(p, rule, path(), "nonzero", "union")
+
+
+def point_lists(p):
+    """The list of each subpath's points."""
+    return [list(sp.points) for sp in subpaths(p)]
+
+
+def text_path(font, text, size, x, y):
+    """One path holding the subpaths of every glyph of a run, flattened to
+    0.1 pixel."""
+    result = path()
+    for placement in layout_run(font, text, size, x, y, True):
+        m = text_matrix(font, size, placement.x, placement.y)
+        gp = glyph_path(font, placement.name, m, 0.1)
+        for sp in subpaths(gp):
+            if not sp.points:
+                continue
+            move_to(result, sp.points[0])
+            for pt in sp.points[1:]:
+                line_to(result, pt)
+            if sp.closed:
+                close(result)
+    return result
+
+
+def roboto():
+    """Roboto, loaded from the reference font data."""
+    return load_font(read_file("reference/chapter-16/roboto.json"))
+
+
+def struck_line(n):
+    """The chapter's benchmark: (text, bars)."""
+    font = roboto()
+    text = " ".join(["Pathfinder"] * n)
+    size = 120 / n
+    text_p = text_path(font, text, size, 20, 160)
+    bars = path()
+    for k in range(14 * n):
+        x = -40 + 48 * k / n
+        pts = [point(x, 100), point(x + 22 / n, 100),
+                point(x - 40 / n, 200), point(x - 62 / n, 200)]
+        move_to(bars, pts[0])
+        for pt in pts[1:]:
+            line_to(bars, pt)
+        close(bars)
+    return (text_p, bars)
+
+
+def struck_segments(n):
+    """merge_segments of the benchmark's two paths."""
+    text_p, bars = struck_line(n)
+    return merge_segments(path_segments(text_p, "a") + path_segments(bars, "b"))
+
+
+def plate_glyph():
+    """Roboto's g, as chapter 16's glyph_path, flattened to 0.1 pixel."""
+    font = roboto()
+    m = text_matrix(font, 200, 40, 140)
+    return glyph_path(font, "g", m, 0.1)
+
+
+def plate_star():
+    """Chapter 5's star, scaled by 0.85 about its center and moved to
+    (130, 104)."""
+    m = translation(49.5, 23.5) * translation(80.5, 80.5) * scaling(0.85, 0.85) * translation(-80.5, -80.5)
+    return transform_path(star(), m)
+
+
+def op_panel(op):
+    """One panel of plate 22: the result of combine(A, "nonzero", B,
+    "evenodd", op), filled and outlined over both operands' hairlines."""
+    w, h = 200, 200
+    c = canvas(w, h)
+    fill(c, PAPER)
+    a = plate_glyph()
+    b = plate_star()
+    r = combine(a, "nonzero", b, "evenodd", op)
+    cov = fill_path(r, "nonzero", w, h)
+    paint_through(c, cov, INKS[0])
+    for pth, ink in ((a, _GLYPH_DIM), (b, _GLYPH_DIM), (r, _STROKE_MAG)):
+        outline = stroke_to_path(pth, 1, "butt", "round", 4)
+        ocov = fill_path(outline, "nonzero", w, h)
+        paint_through(c, ocov, ink)
+    return c
+
+
+def plate_22():
+    """The four panels side by side: union, intersection, difference,
+    xor."""
+    panels = [op_panel(op) for op in ("union", "intersection", "difference", "xor")]
+    out = panels[0]
+    for p in panels[1:]:
+        out = side_by_side(out, p)
+    return out
+
+
+def rosette(cx, cy, n, r, d):
+    """n circles xor'ed together in a ring."""
+    p = path()
+    for k in range(n):
+        cxk = cx + d * math.cos(2 * math.pi * k / n)
+        cyk = cy + d * math.sin(2 * math.pi * k / n)
+        circ = circle_path(cxk, cyk, r, 72)
+        p = combine(p, "nonzero", circ, "nonzero", "xor")
+    return p
+
+
+def seal():
+    """Sixty-one boolean operations: a scalloped, banded, lettered
+    seal."""
+    w = h = 480
+    c = canvas(w, h)
+    fill(c, PAPER)
+
+    rim = circle_path(240, 240, 200, 120)
+    for k in range(40):
+        cx = 240 + 200 * math.cos(2 * math.pi * k / 40)
+        cy = 240 + 200 * math.sin(2 * math.pi * k / 40)
+        rim = combine(rim, "nonzero", circle_path(cx, cy, 16, 24), "nonzero", "union")
+
+    ring = combine(rim, "nonzero", circle_path(240, 240, 168, 120), "nonzero", "difference")
+
+    band = polygon(point(20, 196), point(460, 196), point(460, 284), point(20, 284))
+    s = combine(ring, "nonzero", band, "nonzero", "union")
+
+    font = roboto()
+    text = text_path(font, "BOOLEAN", 84, 52, 270)
+    s = combine(s, "nonzero", text, "nonzero", "xor")
+
+    star_m = transform_path(star(), translation(159.5, 23.5))
+    s = combine(s, "nonzero", star_m, "evenodd", "xor")
+
+    rose = rosette(240, 352, 16, 44, 36)
+    s = combine(s, "nonzero", rose, "nonzero", "xor")
+
+    cov = fill_path(s, "nonzero", w, h)
+    paint_through(c, cov, INKS[0])
+    outline = stroke_to_path(s, 0.75, "butt", "round", 4)
+    ocov = fill_path(outline, "nonzero", w, h)
+    paint_through(c, ocov, _STROKE_MAG)
+    return c
+
+
+def float_crossing(a, b, c, d):
+    """The trap: the crossing of the line through a and b with the line
+    through c and d, computed in ordinary floating point."""
+    t = cross(c - a, d - c) / cross(b - a, d - c)
+    return a + (b - a) * t
+
+
+# ============================================================================
+# Chapter 23: Distance Fields
+# ============================================================================
+
+def sd_circle(p, c, r):
+    """The signed distance to a circle: negative inside."""
+    return magnitude(p - c) - r
+
+
+def distance_to_segment(p, a, b):
+    """The (unsigned) distance from p to the segment a-b."""
+    if a == b:
+        return magnitude(p - a)
+    ab = b - a
+    t = dot(p - a, ab) / dot(ab, ab)
+    t = max(0.0, min(1.0, t))
+    proj = a + ab * t
+    return magnitude(p - proj)
+
+
+def sd_box(p, c, hw, hh):
+    """The signed distance to an axis-aligned box, half-width hw and
+    half-height hh about c."""
+    qx = abs(p.x - c.x) - hw
+    qy = abs(p.y - c.y) - hh
+    return magnitude(vector(max(qx, 0.0), max(qy, 0.0))) + min(max(qx, qy), 0.0)
+
+
+def sd_rounded_box(p, c, hw, hh, r):
+    """A box with its corners rounded by r."""
+    return sd_box(p, c, hw - r, hh - r) - r
+
+
+def sd_polygon(p, path_obj, rule):
+    """The signed distance to a polygon's outline: the least distance to
+    any edge, negative where the path's winding number is inside under
+    rule."""
+    best = None
+    for e in edges(path_obj):
+        d = distance_to_segment(p, e.a, e.b)
+        if best is None or d < best:
+            best = d
+    if best is None:
+        return 0.0
+    w = winding_at(path_obj, p.x, p.y)
+    if inside_rule(w, rule):
+        return -best
+    return best
+
+
+# --- Chapter 23: curves ---
+
+def _cbrt(x):
+    if x < 0:
+        return -((-x) ** (1.0 / 3.0))
+    return x ** (1.0 / 3.0)
+
+
+def _solve_quadratic_linear(b, c, d):
+    eps = 1e-12
+    if abs(b) < eps:
+        if abs(c) < eps:
+            return []
+        return [-d / c]
+    disc = c * c - 4 * b * d
+    if disc < 0:
+        return []
+    if disc == 0:
+        return [-c / (2 * b)]
+    sq = math.sqrt(disc)
+    return sorted([(-c - sq) / (2 * b), (-c + sq) / (2 * b)])
+
+
+def solve_cubic(a, b, c, d):
+    """The real roots of a*t^3 + b*t^2 + c*t + d = 0, in increasing
+    order."""
+    eps = 1e-12
+    if abs(a) < eps:
+        return _solve_quadratic_linear(b, c, d)
+    b, c, d = b / a, c / a, d / a
+    shift = b / 3.0
+    p = c - b * b / 3.0
+    q = 2 * b ** 3 / 27.0 - b * c / 3.0 + d
+    disc = (q / 2.0) ** 2 + (p / 3.0) ** 3
+    if disc > 1e-9:
+        sq = math.sqrt(disc)
+        u = _cbrt(-q / 2.0 + sq)
+        v = _cbrt(-q / 2.0 - sq)
+        return [u + v - shift]
+    elif disc < -1e-9:
+        r = math.sqrt(-(p / 3.0) ** 3)
+        arg = max(-1.0, min(1.0, -q / (2 * r)))
+        theta = math.acos(arg)
+        m = 2 * math.sqrt(-p / 3.0)
+        roots = [m * math.cos((theta - 2 * math.pi * k) / 3.0) - shift for k in range(3)]
+        roots.sort()
+        return roots
+    else:
+        u = _cbrt(-q / 2.0)
+        r1 = 2 * u - shift
+        r2 = -u - shift
+        seen = {}
+        for r in (r1, r2):
+            seen[round(r, 9)] = r
+        return sorted(seen.values())
+
+
+def _quad_nearest_t(p, c):
+    p0, p1, p2 = c.points
+    a0 = p0 - p
+    a1 = (p1 - p0) * 2
+    a2 = p0 - p1 * 2 + p2
+    roots = solve_cubic(2 * dot(a2, a2), 3 * dot(a1, a2),
+                         dot(a1, a1) + 2 * dot(a0, a2), dot(a0, a1))
+    ts = [0.0, 1.0] + [t for t in roots if 0 < t < 1]
+    best_t = ts[0]
+    best_d = magnitude(point_at(c, best_t) - p)
+    for t in ts[1:]:
+        dd = magnitude(point_at(c, t) - p)
+        if dd < best_d:
+            best_d = dd
+            best_t = t
+    return best_t, best_d
+
+
+def distance_to_quadratic(p, c):
+    """The distance from p to the nearest point of a quadratic."""
+    _, d = _quad_nearest_t(p, c)
+    return d
+
+
+def nearest_t_cubic(p, c):
+    """The t of the nearest point of a cubic to p: both ends, and nine
+    seeds refined by eight Newton steps each."""
+    candidates = [0.0, 1.0]
+    for i in range(9):
+        t = i / 8.0
+        for _ in range(8):
+            v = derivative(c, t)
+            a = second_derivative(c, t)
+            diff = point_at(c, t) - p
+            f = dot(diff, v)
+            fp = dot(v, v) + dot(diff, a)
+            if fp == 0:
+                break
+            t = max(0.0, min(1.0, t - f / fp))
+        candidates.append(t)
+    best_t = candidates[0]
+    best_d = magnitude(point_at(c, best_t) - p)
+    for t in candidates[1:]:
+        d = magnitude(point_at(c, t) - p)
+        if d < best_d:
+            best_d = d
+            best_t = t
+    return best_t
+
+
+def distance_to_cubic(p, c):
+    """The distance from p to the nearest point of a cubic."""
+    t = nearest_t_cubic(p, c)
+    return magnitude(point_at(c, t) - p)
+
+
+def brute_distance(c, p):
+    """The ground truth: 129 samples, refined by ternary search around
+    every local minimum."""
+    n = 128
+    ts = [i / n for i in range(n + 1)]
+    dists = [magnitude(point_at(c, t) - p) for t in ts]
+    best = min(dists)
+    for i in range(len(ts)):
+        left_ok = (i == 0) or dists[i] <= dists[i - 1]
+        right_ok = (i == len(ts) - 1) or dists[i] <= dists[i + 1]
+        if not (left_ok and right_ok):
+            continue
+        a = ts[i - 1] if i > 0 else ts[i]
+        b = ts[i + 1] if i < len(ts) - 1 else ts[i]
+        for _ in range(40):
+            m1 = a + (b - a) / 3
+            m2 = b - (b - a) / 3
+            d1 = magnitude(point_at(c, m1) - p)
+            d2 = magnitude(point_at(c, m2) - p)
+            if d1 < d2:
+                b = m2
+            else:
+                a = m1
+        d = magnitude(point_at(c, (a + b) / 2) - p)
+        best = min(best, d)
+    return best
+
+
+def weyl_points(n, x0, y0, w, h):
+    """n points spread over a box the same way in every language, by a
+    low-discrepancy (Weyl) sequence."""
+    a = 0.7548776662466927
+    b = 0.5698402909980532
+    pts = []
+    for k in range(1, n + 1):
+        fx = k * a - math.floor(k * a)
+        fy = k * b - math.floor(k * b)
+        pts.append(point(x0 + w * fx, y0 + h * fy))
+    return pts
+
+
+def max_curve_error(c, pts):
+    """The greatest disagreement between the exact distance and the
+    brute-force ground truth."""
+    dist_fn = distance_to_quadratic if len(c.points) == 3 else distance_to_cubic
+    worst = 0.0
+    for p in pts:
+        d = dist_fn(p, c)
+        bd = brute_distance(c, p)
+        worst = max(worst, abs(d - bd))
+    return worst
+
+
+# --- Chapter 23: rendering a field ---
+
+class Field:
+    """A width, a height, and one number per pixel, row by row."""
+
+    def __init__(self, width, height, values):
+        self.width = width
+        self.height = height
+        self.values = list(values)
+
+    def __repr__(self):
+        return f"Field({self.width}, {self.height})"
+
+
+def field(width, height, fn):
+    """Sample fn at every pixel center."""
+    values = [fn(point(x + 0.5, y + 0.5)) for y in range(height) for x in range(width)]
+    return Field(width, height, values)
+
+
+def field_of(width, height, values):
+    return Field(width, height, values)
+
+
+def field_at(f, x, y):
+    return f.values[y * f.width + x]
+
+
+def field_range(f):
+    return (min(f.values), max(f.values))
+
+
+def field_coverage(f):
+    """Chapter 2's coverage buffer with clamp(0.5 - d, 0, 1) at each
+    pixel."""
+    cov = coverage_buffer(f.width, f.height)
+    for y in range(f.height):
+        for x in range(f.width):
+            d = field_at(f, x, y)
+            cov.coverage[y][x] = max(0.0, min(1.0, 0.5 - d))
+    return cov
+
+
+def polygon_field(p, rule, width, height):
+    """The field of sd_polygon."""
+    return field(width, height, lambda pt: sd_polygon(pt, p, rule))
+
+
+def coverage_error(cov, exact):
+    """A coverage buffer of |cov - exact| at each pixel."""
+    out = coverage_buffer(cov.width, cov.height)
+    for y in range(cov.height):
+        for x in range(cov.width):
+            out.coverage[y][x] = abs(coverage_at(cov, x, y) - coverage_at(exact, x, y))
+    return out
+
+
+def paint_field(c, f, col):
+    """Chapter 2's paint_through of a field's coverage."""
+    paint_through(c, field_coverage(f), col)
+
+
+# --- Chapter 23: chapters 13, 14 and 22 for free ---
+
+def field_offset(f, r):
+    """The shape grown by r (shrunk when r is negative)."""
+    return Field(f.width, f.height, [v - r for v in f.values])
+
+
+def field_stroke(f, width):
+    """A band width wide centered on the edge."""
+    half = width / 2.0
+    return Field(f.width, f.height, [abs(v) - half for v in f.values])
+
+
+def field_union(a, b):
+    return Field(a.width, a.height, [min(x, y) for x, y in zip(a.values, b.values)])
+
+
+def field_intersection(a, b):
+    return Field(a.width, a.height, [max(x, y) for x, y in zip(a.values, b.values)])
+
+
+def field_difference(a, b):
+    return Field(a.width, a.height, [max(x, -y) for x, y in zip(a.values, b.values)])
+
+
+def field_xor(a, b):
+    return Field(a.width, a.height,
+                 [max(min(x, y), -max(x, y)) for x, y in zip(a.values, b.values)])
+
+
+def cubic_field(c, width, height):
+    """The (unsigned) field of distance_to_cubic."""
+    return field(width, height, lambda p: distance_to_cubic(p, c))
+
+
+def s_curve():
+    """The chapter's sample cubic."""
+    return cubic(point(30, 150), point(40, 20), point(160, 180), point(170, 50))
+
+
+def plate_glyph_field():
+    """The field of chapter 22's plate_glyph() on a 200 by 200 canvas."""
+    font = roboto()
+    m = text_matrix(font, 200, 40, 140)
+    quads = [transform_curve(c, m) for contour in glyph_outline(font, "g") for c in contour]
+    gp = glyph_path(font, "g", m, 0.01)
+
+    def fn(p):
+        d = min(distance_to_quadratic(p, c) for c in quads)
+        if winding_at(gp, p.x, p.y) != 0:
+            d = -d
+        return d
+
+    return field(200, 200, fn)
+
+
+# --- Chapter 23: something paths can't do ---
+
+def smooth_min(a, b, k):
+    """The polynomial smooth minimum: min(a, b) when k <= 0, and up to
+    k / 4 less where a and b are within k of each other."""
+    if k <= 0:
+        return min(a, b)
+    h = max(k - abs(a - b), 0.0) / k
+    return min(a, b) - h * h * k / 4.0
+
+
+def field_smooth_union(a, b, k):
+    return Field(a.width, a.height, [smooth_min(x, y, k) for x, y in zip(a.values, b.values)])
+
+
+def fillet_field(k):
+    """A circle and a rounded box, smooth-unioned with fillet size k."""
+    def fn(p):
+        return smooth_min(sd_circle(p, point(60, 70), 36),
+                           sd_rounded_box(p, point(105, 95), 40, 25, 4), k)
+    return field(160, 160, fn)
+
+
+# --- Chapter 23: the distance transform ---
+
+def far_value(w, h):
+    return w * w + h * h
+
+
+def edt_1d(f):
+    """The lower envelope of parabolas, Felzenszwalb and Huttenlocher's
+    exact 1D distance transform."""
+    n = len(f)
+    v = [0] * n
+    z = [0.0] * (n + 1)
+    k = 0
+    v[0] = 0
+    z[0] = float('-inf')
+    z[1] = float('inf')
+    for q in range(1, n):
+        while True:
+            s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k])
+            if s <= z[k]:
+                k -= 1
+            else:
+                break
+        k += 1
+        v[k] = q
+        z[k] = s
+        z[k + 1] = float('inf')
+    d = [0] * n
+    k = 0
+    for q in range(n):
+        while z[k + 1] < q:
+            k += 1
+        d[q] = (q - v[k]) ** 2 + f[v[k]]
+    return d
+
+
+def distance_transform(bits, w, h):
+    """The squared distance from every pixel's center to the nearest
+    center that's on, exact and O(n)."""
+    fv = far_value(w, h)
+    grid_vals = [[0 if bits[y * w + x] else fv for x in range(w)] for y in range(h)]
+    col_result = [[0] * w for _ in range(h)]
+    for x in range(w):
+        col = [grid_vals[y][x] for y in range(h)]
+        d = edt_1d(col)
+        for y in range(h):
+            col_result[y][x] = d[y]
+    out = [0] * (w * h)
+    for y in range(h):
+        d = edt_1d(col_result[y])
+        for x in range(w):
+            out[y * w + x] = d[x]
+    return out
+
+
+def brute_distance_transform(bits, w, h):
+    """The same, by trying every pixel that's on."""
+    on_pts = [(x, y) for y in range(h) for x in range(w) if bits[y * w + x]]
+    fv = far_value(w, h)
+    out = []
+    for y in range(h):
+        for x in range(w):
+            if not on_pts:
+                out.append(fv)
+            else:
+                out.append(min((x - ox) ** 2 + (y - oy) ** 2 for ox, oy in on_pts))
+    return out
+
+
+def bits_of(cov):
+    """On where the coverage is at least 0.5."""
+    return [cov.coverage[y][x] >= 0.5 for y in range(cov.height) for x in range(cov.width)]
+
+
+def coverage_of(w, h, values):
+    cov = coverage_buffer(w, h)
+    for y in range(h):
+        for x in range(w):
+            cov.coverage[y][x] = values[y * w + x]
+    return cov
+
+
+def field_from_coverage(cov):
+    """Turn any coverage buffer into a field, via two distance
+    transforms."""
+    w, h = cov.width, cov.height
+    bits = bits_of(cov)
+    not_bits = [not b for b in bits]
+    d_on = distance_transform(bits, w, h)
+    d_off = distance_transform(not_bits, w, h)
+    values = []
+    for i in range(w * h):
+        if bits[i]:
+            values.append(-(math.sqrt(d_off[i]) - 0.5))
+        else:
+            values.append(math.sqrt(d_on[i]) - 0.5)
+    return Field(w, h, values)
+
+
+def transform_bitmap():
+    """Roboto's g at 48 pixels to the em, filled into a 64 by 64
+    buffer."""
+    font = roboto()
+    m = text_matrix(font, 48, 14, 44)
+    gp = glyph_path(font, "g", m, 0.1)
+    return fill_path(gp, "nonzero", 64, 64)
+
+
+# --- Chapter 23: glyph atlases ---
+
+class Baked:
+    """A baked glyph: one field per channel, plus its box's origin."""
+
+    def __init__(self, channels, left, top, width, height):
+        self.channels = channels
+        self.left = left
+        self.top = top
+        self.width = width
+        self.height = height
+
+
+def bake_box(font, name, size, spread):
+    """The bitmap box a glyph is baked into, grown by spread texels, and
+    the matrix that puts the box's corner at the origin."""
+    s = size / font.units_per_em
+    x0, y0, x1, y1 = glyph_bounds(font, name)
+    left = math.floor(x0 * s) - spread
+    right = math.ceil(x1 * s) + spread
+    top = math.floor(-y1 * s) - spread
+    bottom = math.ceil(-y0 * s) + spread
+    m = text_matrix(font, size, -left, -top)
+    return (left, top, right - left, bottom - top, m)
+
+
+def bake_sdf(font, name, size, spread):
+    """A baked glyph: one field over the box, clamped to +/- spread."""
+    left, top, width, height, m = bake_box(font, name, size, spread)
+    quads = [transform_curve(c, m) for contour in glyph_outline(font, name) for c in contour]
+    gp = glyph_path(font, name, m, 0.01)
+
+    def fn(p):
+        if quads:
+            d = min(distance_to_quadratic(p, c) for c in quads)
+        else:
+            d = spread
+        if winding_at(gp, p.x, p.y) != 0:
+            d = -d
+        return max(-spread, min(spread, d))
+
+    f = field(width, height, fn)
+    return Baked([f], left, top, width, height)
+
+
+def sample_field(f, sx, sy):
+    """Chapter 11's bilinear sample, in texel-center space."""
+    gx = sx - 0.5
+    gy = sy - 0.5
+    x0 = math.floor(gx)
+    y0 = math.floor(gy)
+    fx = gx - x0
+    fy = gy - y0
+
+    def texel(ix, iy):
+        ix = max(0, min(f.width - 1, ix))
+        iy = max(0, min(f.height - 1, iy))
+        return field_at(f, ix, iy)
+
+    v00, v10 = texel(x0, y0), texel(x0 + 1, y0)
+    v01, v11 = texel(x0, y0 + 1), texel(x0 + 1, y0 + 1)
+    top = v00 + (v10 - v00) * fx
+    bot = v01 + (v11 - v01) * fx
+    return top + (bot - top) * fy
+
+
+def median3(a, b, c):
+    return max(min(a, b), min(max(a, b), c))
+
+
+def draw_baked(c, baked, scale, x, y, col):
+    """Draw a baked glyph with its origin at (x, y), scale pixels per
+    texel."""
+    left, top, w, h = baked.left, baked.top, baked.width, baked.height
+    px0 = math.floor(x + left * scale)
+    py0 = math.floor(y + top * scale)
+    px1 = math.ceil(x + (left + w) * scale)
+    py1 = math.ceil(y + (top + h) * scale)
+    single = len(baked.channels) == 1
+    for py in range(max(0, py0), min(c.height, py1)):
+        for px in range(max(0, px0), min(c.width, px1)):
+            u = (px + 0.5 - x) / scale - left
+            v = (py + 0.5 - y) / scale - top
+            if single:
+                dist = sample_field(baked.channels[0], u, v)
+            else:
+                r = sample_field(baked.channels[0], u, v)
+                g = sample_field(baked.channels[1], u, v)
+                b = sample_field(baked.channels[2], u, v)
+                dist = median3(r, g, b)
+            t = max(0.0, min(1.0, 0.5 - scale * dist))
+            if t > 0:
+                write_pixel(c, px, py, mix(pixel_at(c, px, py), col, t))
+
+
+def draw_effect(c, baked, scale, x, y, col, use_true_channel, k_of):
+    """draw_baked, but with the distance turned into a mix by k_of
+    instead of clamp(0.5 - d, 0, 1), and reading either the true (fourth)
+    channel or the median of the first three."""
+    left, top, w, h = baked.left, baked.top, baked.width, baked.height
+    px0 = math.floor(x + left * scale)
+    py0 = math.floor(y + top * scale)
+    px1 = math.ceil(x + (left + w) * scale)
+    py1 = math.ceil(y + (top + h) * scale)
+    for py in range(max(0, py0), min(c.height, py1)):
+        for px in range(max(0, px0), min(c.width, px1)):
+            u = (px + 0.5 - x) / scale - left
+            v = (py + 0.5 - y) / scale - top
+            if use_true_channel:
+                d_texels = sample_field(baked.channels[3], u, v)
+            else:
+                r = sample_field(baked.channels[0], u, v)
+                g = sample_field(baked.channels[1], u, v)
+                b = sample_field(baked.channels[2], u, v)
+                d_texels = median3(r, g, b)
+            d_pixels = scale * d_texels
+            t = max(0.0, min(1.0, k_of(d_pixels)))
+            if t > 0:
+                write_pixel(c, px, py, mix(pixel_at(c, px, py), col, t))
+
+
+EDGE_RED = 1
+EDGE_GREEN = 2
+EDGE_BLUE = 4
+EDGE_YELLOW = 3
+EDGE_MAGENTA = 5
+EDGE_CYAN = 6
+EDGE_WHITE = 7
+
+
+def is_corner(a, b):
+    """Whether two unit directions make a corner: pointing back or more
+    than about eight degrees apart."""
+    if dot(a, b) <= 0:
+        return True
+    return abs(cross(a, b)) > math.sin(3)
+
+
+def _curve_dir0(c):
+    d = derivative(c, 0.0)
+    if magnitude(d) < 1e-9:
+        d = c.points[-1] - c.points[0]
+    return normalize(d)
+
+
+def _curve_dir1(c):
+    d = derivative(c, 1.0)
+    if magnitude(d) < 1e-9:
+        d = c.points[-1] - c.points[0]
+    return normalize(d)
+
+
+def line_curve(a, b):
+    """A straight edge as chapter 16 makes one: a quadratic with its
+    control point at the chord's midpoint."""
+    return quadratic(a, (a + b) * 0.5, b)
+
+
+def circle_curves(cx, cy, r):
+    """Eight quadratics approximating a circle."""
+    curves = []
+    n = 8
+    cr = r / math.cos(math.pi / n)
+    for i in range(n):
+        a0 = 2 * math.pi * i / n
+        a1 = 2 * math.pi * (i + 1) / n
+        am = (a0 + a1) / 2
+        p0 = point(cx + r * math.cos(a0), cy + r * math.sin(a0))
+        p1 = point(cx + r * math.cos(a1), cy + r * math.sin(a1))
+        ctrl = point(cx + cr * math.cos(am), cy + cr * math.sin(am))
+        curves.append(quadratic(p0, ctrl, p1))
+    return curves
+
+
+def color_edges(contour):
+    """Colour a closed contour's curves for a multi-channel field: (curves,
+    masks)."""
+    n = len(contour)
+    starts = [_curve_dir0(c) for c in contour]
+    ends = [_curve_dir1(c) for c in contour]
+    corner_idxs = [j for j in range(n) if is_corner(ends[(j - 1) % n], starts[j])]
+
+    if not corner_idxs:
+        return (list(contour), [EDGE_WHITE] * n)
+
+    first = corner_idxs[0]
+    rotated = contour[first:] + contour[:first]
+    rel = sorted(((ci - first) % n) for ci in corner_idxs)
+
+    if len(rel) == 1:
+        curves = list(rotated)
+        while len(curves) < 3:
+            new_curves = []
+            for c in curves:
+                a, b = split_at(c, 0.5)
+                new_curves.append(a)
+                new_curves.append(b)
+            curves = new_curves
+        m = len(curves)
+        masks = []
+        for j in range(m):
+            bucket = (3 * j) // m
+            masks.append(EDGE_CYAN if bucket == 0 else (EDGE_WHITE if bucket == 1 else EDGE_MAGENTA))
+        return (curves, masks)
+
+    m = len(rotated)
+    num_runs = len(rel)
+    colors = []
+    for ri in range(num_runs):
+        if ri == num_runs - 1 and num_runs % 2 == 1 and num_runs > 1:
+            colors.append(EDGE_YELLOW)
+        else:
+            colors.append(EDGE_CYAN if ri % 2 == 0 else EDGE_MAGENTA)
+    masks = [EDGE_WHITE] * m
+    for ri in range(num_runs):
+        s = rel[ri]
+        e = rel[ri + 1] if ri + 1 < num_runs else m
+        for j in range(s, e):
+            masks[j] = colors[ri]
+    return (rotated, masks)
+
+
+def pseudo_distance(p, c, t, d):
+    """The signed pseudo-distance at the nearest t of curve c: past an
+    end, the distance to the tangent line there."""
+    start_dir = _curve_dir0(c)
+    end_dir = _curve_dir1(c)
+    if t == 0 and dot(p - c.points[0], start_dir) < 0:
+        side = cross(start_dir, p - c.points[0])
+        return -abs(side) if side > 0 else abs(side)
+    if t == 1 and dot(p - c.points[-1], end_dir) > 0:
+        side = cross(end_dir, p - c.points[-1])
+        return -abs(side) if side > 0 else abs(side)
+    side = cross(derivative(c, t), p - point_at(c, t))
+    return -d if side > 0 else d
+
+
+def bake_msdf(font, name, size, spread):
+    """A three-channel multi-channel signed distance field."""
+    left, top, width, height, m = bake_box(font, name, size, spread)
+    edges_list = []
+    for contour in glyph_outline(font, name):
+        if not contour:
+            continue
+        transformed = [transform_curve(c, m) for c in contour]
+        curves, masks = color_edges(transformed)
+        edges_list.extend(zip(curves, masks))
+
+    def make_fn(bit):
+        def fn(p):
+            best = None  # (curve, t, d, o)
+            for c, mask in edges_list:
+                if not (mask & bit):
+                    continue
+                t, d = _quad_nearest_t(p, c)
+                o = 0.0
+                if t == 0.0 or t == 1.0:
+                    end_pt = c.points[0] if t == 0.0 else c.points[-1]
+                    dirv = _curve_dir0(c) if t == 0.0 else _curve_dir1(c)
+                    diff = p - end_pt
+                    mag = magnitude(diff)
+                    o = abs(dot(dirv, diff) / mag) if mag > 1e-12 else 0.0
+                if (best is None or d < best[2] - 1e-12 or
+                        (abs(d - best[2]) <= 1e-12 and o < best[3])):
+                    best = (c, t, d, o)
+            if best is None:
+                return spread
+            c_best, t_best, d_best, _ = best
+            pd = pseudo_distance(p, c_best, t_best, d_best)
+            return max(-spread, min(spread, pd))
+        return fn
+
+    fields = [field(width, height, make_fn(bit)) for bit in (EDGE_RED, EDGE_GREEN, EDGE_BLUE)]
+    return Baked(fields, left, top, width, height)
+
+
+def bake_mtsdf(font, name, size, spread):
+    """bake_msdf plus bake_sdf's field as a fourth (true-distance)
+    channel."""
+    msdf = bake_msdf(font, name, size, spread)
+    sdf = bake_sdf(font, name, size, spread)
+    return Baked(msdf.channels + sdf.channels, msdf.left, msdf.top, msdf.width, msdf.height)
+
+
+def roboto_font():
+    return roboto()
+
+
+# --- Chapter 23: fields compose approximately ---
+
+def peanut():
+    """Two overlapping circles."""
+    return (circle_path(60, 80, 40, 96), circle_path(110, 80, 40, 96))
+
+
+def min_of(a, b):
+    return min(a, b)
+
+
+# --- Chapter 23 renders ---
+
+def band_color(d):
+    """The tint for a banded field render."""
+    tint = INKS[0] if d > 0 else _GLYPH_CYAN
+    band_idx = math.floor(abs(d) / 6)
+    t0 = 0.12 if band_idx % 2 == 0 else 0.3
+    col = mix(PAPER, tint, t0)
+    if abs(d) < 1:
+        col = mix(col, PALE, 1 - abs(d))
+    return col
+
+
+def band_canvas(f):
+    """A canvas of band_color at every pixel."""
+    c = canvas(f.width, f.height)
+    for y in range(f.height):
+        for x in range(f.width):
+            write_pixel(c, x, y, band_color(field_at(f, x, y)))
+    return c
+
+
+def _stack_vertical(a, b):
+    """Two canvases, a above b, of the same width."""
+    if a.width != b.width:
+        raise ValueError("Canvases must have the same width")
+    result = canvas(a.width, a.height + b.height)
+    for y in range(a.height):
+        for x in range(a.width):
+            write_pixel(result, x, y, pixel_at(a, x, y))
+    for y in range(b.height):
+        for x in range(b.width):
+            write_pixel(result, x, a.height + y, pixel_at(b, x, y))
+    return result
+
+
+def _row_of(panels):
+    out = panels[0]
+    for p in panels[1:]:
+        out = side_by_side(out, p)
+    return out
+
+
+def primitive_fields():
+    """Four 160x160 fields, banded: circle, box, rounded box, star."""
+    f1 = field(160, 160, lambda p: sd_circle(p, point(80, 80), 50))
+    f2 = field(160, 160, lambda p: sd_box(p, point(80, 80), 55, 35))
+    f3 = field(160, 160, lambda p: sd_rounded_box(p, point(80, 80), 55, 35, 20))
+    f4 = polygon_field(star(), "evenodd", 160, 160)
+    return _row_of([band_canvas(f) for f in (f1, f2, f3, f4)])
+
+
+def _error_panel(err):
+    c = canvas(160, 160)
+    for y in range(160):
+        for x in range(160):
+            e = coverage_at(err, x, y)
+            t = min(1.0, 4 * e)
+            write_pixel(c, x, y, mix(PAPER, _STROKE_MAG, t))
+    return c
+
+
+def error_map():
+    """The star's field against chapter 7's exact fill, raw and
+    simplified."""
+    f_raw = polygon_field(star(), "nonzero", 160, 160)
+    p1 = canvas(160, 160)
+    fill(p1, PAPER)
+    paint_field(p1, f_raw, INKS[0])
+
+    exact = fill_path(star(), "nonzero", 160, 160)
+    err_raw = coverage_error(field_coverage(f_raw), exact)
+    p2 = _error_panel(err_raw)
+
+    simp = simplify(star(), "nonzero")
+    f_clean = polygon_field(simp, "nonzero", 160, 160)
+    err_clean = coverage_error(field_coverage(f_clean), exact)
+    p3 = _error_panel(err_clean)
+
+    return _row_of([p1, p2, p3])
+
+
+def fields_vs_paths():
+    """Chapters 13, 14 and 22's work, by path (top) and by field
+    (bottom)."""
+    sp = transform_path(star(), translation(19.5, 19.5))
+
+    p1 = canvas(200, 200)
+    fill(p1, PAPER)
+    cov1 = fill_path(stroke_to_path(sp, 10, "round", "round", 4), "nonzero", 200, 200)
+    paint_through(p1, cov1, INKS[0])
+
+    p2 = canvas(200, 200)
+    fill(p2, PAPER)
+    cov2 = fill_path(stroke_curve_to_path(s_curve(), 20, "round", 0.05), "nonzero", 200, 200)
+    paint_through(p2, cov2, INKS[0])
+
+    p3 = canvas(200, 200)
+    fill(p3, PAPER)
+    r = combine(plate_glyph(), "nonzero", plate_star(), "evenodd", "xor")
+    cov3 = fill_path(r, "nonzero", 200, 200)
+    paint_through(p3, cov3, INKS[0])
+
+    top = _row_of([p1, p2, p3])
+
+    p4 = canvas(200, 200)
+    fill(p4, PAPER)
+    f1 = polygon_field(sp, "nonzero", 200, 200)
+    paint_field(p4, field_stroke(f1, 10), INKS[0])
+
+    p5 = canvas(200, 200)
+    fill(p5, PAPER)
+    f2 = cubic_field(s_curve(), 200, 200)
+    paint_field(p5, field_stroke(f2, 20), INKS[0])
+
+    p6 = canvas(200, 200)
+    fill(p6, PAPER)
+    fx = field_xor(plate_glyph_field(), polygon_field(plate_star(), "evenodd", 200, 200))
+    paint_field(p6, fx, INKS[0])
+
+    bottom = _row_of([p4, p5, p6])
+
+    return _stack_vertical(top, bottom)
+
+
+def _fillet_panel(k):
+    c = canvas(160, 160)
+    fill(c, PAPER)
+    f = fillet_field(k)
+    paint_field(c, f, INKS[0])
+    paint_field(c, field_stroke(f, 1.5), PALE)
+    return c
+
+
+def fillets():
+    return _row_of([_fillet_panel(k) for k in (0, 8, 16, 32)])
+
+
+def transform_demo():
+    """The g's bitmap, its field, and that field offset three ways."""
+    cov = transform_bitmap()
+    p1 = canvas(64, 64)
+    fill(p1, PAPER)
+    paint_through(p1, cov, INKS[0])
+    p1 = magnify(p1, 3)
+
+    f = field_from_coverage(cov)
+    p2 = magnify(band_canvas(f), 3)
+
+    p3 = canvas(64, 64)
+    fill(p3, PAPER)
+    for offset_r, col in ((6, _STROKE_MAG), (3, _GLYPH_CYAN), (0, INKS[0])):
+        paint_field(p3, field_stroke(field_offset(f, offset_r), 1.5), col)
+    p3 = magnify(p3, 3)
+
+    return _row_of([p1, p2, p3])
+
+
+def _atlas_panel(baked, scale):
+    c = canvas(300, 400)
+    fill(c, PAPER)
+    x = 10 - baked.left * scale
+    y = 10 - baked.top * scale
+    draw_baked(c, baked, scale, x, y, INKS[0])
+    return c
+
+
+def atlas_corners():
+    """One baked glyph in orange, four ways."""
+    font = roboto()
+    e_name = glyph_name(font, ord('E'))
+    k_name = glyph_name(font, ord('k'))
+    panels = [
+        _atlas_panel(bake_sdf(font, e_name, 16, 3), 20),
+        _atlas_panel(bake_msdf(font, e_name, 16, 3), 20),
+        _atlas_panel(bake_msdf(font, k_name, 16, 3), 20),
+        _atlas_panel(bake_msdf(font, k_name, 32, 3), 10),
+    ]
+    return _row_of(panels)
+
+
+def trap_shrink():
+    """The peanut's union, by min and by the true field, each shrunk by
+    20."""
+    a, b = peanut()
+    fa = polygon_field(a, "nonzero", 170, 160)
+    fb = polygon_field(b, "nonzero", 170, 160)
+    f_min = field_union(fa, fb)
+    u = combine(a, "nonzero", b, "nonzero", "union")
+    f_true = polygon_field(u, "nonzero", 170, 160)
+
+    def panel(f):
+        c = canvas(170, 160)
+        fill(c, PAPER)
+        paint_field(c, field_offset(f, -20), INKS[0])
+        paint_field(c, field_stroke(f, 1.5), _GLYPH_DIM)
+        return c
+
+    return _row_of([panel(f_min), panel(f_true)])
+
+
+def plate_field():
+    """Roboto's ampersand as a 200x200 field."""
+    font = roboto()
+    m = text_matrix(font, 170, 38, 164)
+    name = glyph_name(font, ord('&'))
+    quads = [transform_curve(c, m) for contour in glyph_outline(font, name) for c in contour]
+    gp = glyph_path(font, name, m, 0.01)
+
+    def fn(p):
+        d = min(distance_to_quadratic(p, c) for c in quads)
+        if winding_at(gp, p.x, p.y) != 0:
+            d = -d
+        return d
+
+    return field(200, 200, fn)
+
+
+def plate_23():
+    """One field, drawn four ways: bands, fill, outline, glow."""
+    f = plate_field()
+    p1 = band_canvas(f)
+
+    p2 = canvas(200, 200)
+    fill(p2, PAPER)
+    paint_field(p2, f, INKS[0])
+
+    p3 = canvas(200, 200)
+    fill(p3, PAPER)
+    paint_field(p3, field_stroke(f, 4), _GLYPH_CYAN)
+
+    p4 = canvas(200, 200)
+    fill(p4, PAPER)
+    for y in range(200):
+        for x in range(200):
+            d = field_at(f, x, y)
+            if d > 0:
+                t = 0.8 * math.exp(-d / 10)
+                write_pixel(p4, x, y, mix(PAPER, _STROKE_MAG, t))
+    paint_field(p4, f, INKS[0])
+
+    return _row_of([p1, p2, p3, p4])
+
+
+def title():
+    """DISTANCE, set from four baked-glyph effects: shadow, glow, fill,
+    outline."""
+    font = roboto()
+    text = "DISTANCE"
+    size = 160
+    placements = layout_run(font, text, size, 78, 172, True)
+    c = canvas(900, 220)
+    fill(c, PAPER)
+    baked_cache = {}
+
+    def get_baked(name):
+        if name not in baked_cache:
+            baked_cache[name] = bake_mtsdf(font, name, 32, 4)
+        return baked_cache[name]
+
+    black = color(0, 0, 0)
+    scale = 5
+    effects = [
+        (8, 8, black, True, lambda d: 0.6 * max(0.0, min(1.0, (10 - d) / 20))),
+        (0, 0, _STROKE_MAG, True, lambda d: 0.8 * (1 - max(0.0, min(1.0, d / 20))) ** 2),
+        (0, 0, INKS[0], False, lambda d: max(0.0, min(1.0, 0.5 - d))),
+        (0, 0, PALE, False, lambda d: max(0.0, min(1.0, 0.5 - (abs(d) - 1.5)))),
+    ]
+    for dx, dy, col, use_true, k_of in effects:
+        for pl in placements:
+            baked = get_baked(pl.name)
+            draw_effect(c, baked, scale, pl.x + dx, pl.y + dy, col, use_true, k_of)
+    return c

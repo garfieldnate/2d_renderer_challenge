@@ -1,5 +1,6 @@
 Feature: Glyph atlases
-  bake_box(font, name, size, spread) is chapter 17's bitmap box at the
+  roboto() is chapter 16's font, load_font of
+  reference/chapter-16/roboto.json. bake_box(font, name, size, spread) is chapter 17's bitmap box at the
   quarter 0 grown by spread texels on every side: with s = size /
   units_per_em and glyph_bounds (x0, y0, x1, y1), left = floor(x0 s) -
   spread, right = ceil(x1 s) + spread, top = floor(-y1 s) - spread,
