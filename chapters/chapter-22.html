@@ -1,0 +1,1281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 22 · Boolean Path Operations — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 22 of 24</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-21.html">← 21</a> · <a href="#plate">Plate&nbsp;22</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Twenty-Two</p>
+    <h1>Boolean Path Operations</h1>
+    <p class="hook">You've been able to draw a donut since chapter 5: two circles in one path, and
+      the fill rule punches the hole. Now somebody wants the donut itself. They want its outline as
+      a path, to stroke it, save it, or cut a keyhole out of it. They want to take a letter
+      <em>g</em>, lay a star over it, and keep only the parts where exactly one of them is. No
+      earlier chapter can do that, because every earlier chapter answered its questions one pixel at
+      a time, and this question's answer is a new path, with vertices nobody wrote down. This
+      chapter finds them. It's the hardest code in the book, for a reason that has nothing to do
+      with geometry.</p>
+  </header>
+
+  <p>The idea fits in a paragraph. Take every edge of both paths. Wherever two edges cross, cut both
+    of them there, and keep cutting until no two edges cross anywhere. Now every piece has the same
+    thing on each of its sides all the way along, so ask of each piece, once, whether it's inside
+    each path on its left and on its right. Chapter 5's winding number answers that in one line,
+    which is the reward for having chosen it. Keep the pieces where the result is inside on one
+    side and outside on the other. Link the kept pieces end to end, and you have the outline.</p>
+
+  <p>The difficulty is that the paragraph assumes you can tell whether two edges cross, whether a
+    point is on a line, and whether two points are the same point. With floating point you can't,
+    not reliably, and a boolean operation asks those questions tens of thousands of times near
+    exactly the configurations where the answer is borderline: shared vertices, edges that run
+    along each other, a corner resting on an edge. Get one of them wrong and the result isn't a
+    little off. It's a path that crosses itself, a sliver a billionth of a pixel wide, or a
+    contour that never closes. So this chapter starts by making every one of those questions
+    exact, and pays for it with a grid.</p>
+
+  <h2><span class="sec">§ 22.1</span> A grid</h2>
+
+  <p>Snap every coordinate to a grid of 1/256 of a pixel and store it as a whole number of grid
+    units: <code>grid(v)</code> is <code>floor(v × 256 + 0.5)</code>, halves up, like every
+    rounding in this book. A point 3.14159 pixels from the origin is 804 units from it. Nobody can
+    see a 256th of a pixel, and chapter 21 already told you that production rasterizers snap to
+    exactly this grid for their own reasons.</p>
+
+  <p>What the grid buys is <code>orient(a, b, c)</code>, chapter 4's cross product of
+    <code>b − a</code> and <code>c − a</code>, computed without error. It's positive when
+    <code>c</code> is clockwise of the line from <code>a</code> to <code>b</code> on screen,
+    negative when it's counterclockwise and 0 when the three are collinear, and on whole numbers
+    that 0 is a real 0. Keep every coordinate within 1024 pixels of the origin, 262,144 units, and
+    every difference is below 2<sup>19</sup> and every product below 2<sup>40</sup>, which a double
+    holds exactly with thirteen bits to spare. So this works even in a language whose only number
+    is a double. At the far corners of the grid, <code>orient</code> can tell you that a point is
+    one unit off a line half a million units long, and be right.</p>
+
+  <p>The last thing the section needs is an order. The sweeps later in the chapter walk down the
+    canvas, and they need to know which of two points comes first even when they're on the same
+    row. <code>lex_less(p, q)</code> puts them top to bottom and then left to right. It's the
+    same idea as chapter 5's half-open rule, taken one step further: chapter 5 broke ties between
+    a row and an edge's endpoint by treating the top end as in and the bottom end as out; this
+    breaks ties between two points on the same row by x.</p>
+
+  <div class="test" data-feature="chapter22-grid.feature">
+    <p class="label">features/chapter22-grid.feature</p>
+<pre><code><span class="kw">Feature</span>: A grid
+  Every coordinate is snapped to a grid of 1/256 of a pixel and held as a
+  whole number of grid units: grid(v) is floor(v × 256 + 0.5), which
+  rounds halves up, toward +∞, and snap_point(p) is point(grid(p.x),
+  grid(p.y)). Coordinates must lie within 1024 pixels of the origin
+  either way, 262144 units. orient(a, b, c) is chapter 4's
+  cross(b - a, c - a) on grid points: positive when c is clockwise of the
+  line from a to b on screen, negative when it's counterclockwise, 0 when
+  the three are collinear. On whole numbers of that size every product
+  and difference is below 2^53, so orient is exact even in a language
+  whose only number is a double. lex_less(p, q) is the sweep's order, top
+  to bottom and then left to right: p.y &lt; q.y, or p.y = q.y and p.x &lt; q.x.
+
+  <span class="kw">Scenario</span>: A coordinate becomes a whole number of grid units, halves up
+    <span class="kw">Then</span>  grid(1) = 256
+    <span class="kw">And</span>   grid(0.5) = 128
+    <span class="kw">And</span>   grid(3.14159) = 804
+    <span class="kw">And</span>   grid(0.001953125) = 1
+    <span class="kw">And</span>   grid(-0.001953125) = 0
+    <span class="kw">And</span>   grid(0.0019) = 0
+    <span class="kw">And</span>   grid(-0.003) = -1
+    <span class="kw">And</span>   snap_point(point(2.5, -0.25)) = point(640, -64)
+
+  <span class="kw">Scenario</span>: A square moved a millionth of a pixel snaps back onto itself
+    <span class="kw">Given</span> a ← polygon(point(10, 10), point(30, 10), point(30, 30), point(10, 30))
+    <span class="kw">And</span>   b ← polygon(point(10.000001, 10), point(30, 10.000001), point(30.000001, 30), point(10, 30.000001))
+    <span class="kw">Then</span>  point_lists(combine(a, "nonzero", b, "nonzero", "xor")) = []
+    <span class="kw">And</span>   point_lists(combine(a, "nonzero", b, "nonzero", "union")) = [[point(10, 10), point(30, 10), point(30, 30), point(10, 30)]]
+
+  <span class="kw">Scenario</span>: orient says which way three points turn
+    <span class="kw">Then</span>  orient(point(0, 0), point(256, 0), point(0, 256)) = 65536
+    <span class="kw">And</span>   orient(point(0, 0), point(256, 0), point(0, -256)) = -65536
+    <span class="kw">And</span>   orient(point(0, 0), point(256, 0), point(512, 0)) = 0
+
+  <span class="kw">Scenario</span>: orient is exact at the far corners of the grid
+    <span class="kw">Given</span> a ← point(-262144, -262144)
+    <span class="kw">And</span>   b ← point(262144, 262143)
+    <span class="kw">And</span>   c ← point(262143, 262142)
+    <span class="kw">Then</span>  orient(a, b, c) = -1
+    <span class="kw">And</span>   orient(a, b, point(0, 0)) = 262144
+    <span class="kw">And</span>   orient(a, point(262144, 262144), point(0, 0)) = 0
+
+  <span class="kw">Scenario</span>: The sweep's order is top to bottom, then left to right
+    <span class="kw">Then</span>  lex_less(point(5, 1), point(0, 2)) = true
+    <span class="kw">And</span>   lex_less(point(0, 2), point(5, 1)) = false
+    <span class="kw">And</span>   lex_less(point(1, 3), point(2, 3)) = true
+    <span class="kw">And</span>   lex_less(point(2, 3), point(2, 3)) = false</code></pre>
+  </div>
+
+  <p>The scenario with the square moved by a millionth of a pixel is the whole chapter in
+    miniature. In floating point those two squares overlap everywhere except along four slivers a
+    millionth of a pixel wide, and an exclusive-or of them is those four slivers, each with its own
+    little crossings at the corners. On the grid they're the same square, and their exclusive-or is
+    nothing at all.</p>
+
+  <h2><span class="sec">§ 22.2</span> Where two segments meet</h2>
+
+  <p>From here on a path is a list of segments. A <code>seg</code> has two grid points, stored in
+    the sweep's order, <code>lo</code> first. It also has two small integers, <code>wa</code> and
+    <code>wb</code>: how much it adds to the winding number of path A and of path B. An edge of A
+    that ran from <code>lo</code> to <code>hi</code> is <code>+1</code> for A, one that ran the
+    other way is <code>−1</code>, and either is 0 for B. That's the edge's direction, which
+    chapter 5 needed to count windings, kept as a number because storing the ends in order threw
+    the direction away. <code>path_segments</code> makes one of these for every edge of a path, and
+    drops any edge whose ends snap to the same point.</p>
+
+  <p><code>meet(s, t)</code> says how two segments meet and where each has to be cut. There are
+    four ways, drawn in Figure 22.1, and every test that tells them apart is an <code>orient</code>.
+    They <em>cross</em> when each one's ends are strictly on opposite sides of the other's line.
+    One <em>touches</em> the other when an end of it lies strictly inside the other, which has to
+    be cut there. They <em>overlap</em> when they're collinear and share more than a point, and then
+    each is cut at the other's ends that lie inside it. And they meet at an <em>end</em> when they
+    share an endpoint and nothing else, which needs no cutting at all.</p>
+
+  <figure>
+    <canvas id="fig221" role="img" aria-label="Four small panels, each with two segments, one pale and one cyan. Cross: two segments crossing in an X, with a magenta dot where they cross. Touch: a segment whose end rests on the middle of another, which has a magenta dot there. Overlap: two collinear segments offset along a line, with magenta dots at the two places each must be cut. End: two segments meeting at a shared endpoint, with no dot"></canvas>
+    <figcaption><span class="fig">Figure 22.1</span> Four ways to meet. The magenta dots are where <code>meet</code> says to cut; two segments that share only an end need nothing.</figcaption>
+  </figure>
+
+  <p>A crossing is the one case that makes a new point, and the new point isn't on the grid. The
+    exact crossing of segments from <code>a</code> to <code>b</code> and from <code>c</code> to
+    <code>d</code> is <code>a + (b − a) × α / β</code>, with <code>β = cross(b − a, d − c)</code> and
+    <code>α = cross(c − a, d − c)</code>. Round each coordinate of that to the nearest grid point,
+    halves up. Do it in whole numbers too: each coordinate is <code>N / β</code> for a whole number
+    <code>N</code>, and rounding a fraction is <code>(2N + β) div 2β</code>, with <code>div</code>
+    rounding down toward −∞. <code>N</code> gets as big as 2<sup>59</sup>, which is the one place
+    in the chapter that needs 64-bit integers. When the rounded point lands on an end of one of the
+    segments, that segment isn't cut, and the other one is cut at its end.</p>
+
+  <div class="test" data-feature="chapter22-meet.feature">
+    <p class="label">features/chapter22-meet.feature</p>
+<pre><code><span class="kw">Feature</span>: Segments, and where two of them meet
+  These scenarios work in grid units: every point is already a whole
+  number of units. seg(a, b, wa, wb) is a segment between two grid points
+  that carries how much it adds to the winding number of path A (wa) and
+  of path B (wb). Its ends are stored in the sweep's order, lo before hi
+  by lex_less; if a comes after b they are swapped and wa and wb change
+  sign, so seg(a, b, 1, 0) and seg(b, a, -1, 0) are the same segment: an
+  edge that ran from lo to hi adds +1, one that ran from hi to lo adds -1.
+  Two segments are equal when their ends and both windings are.
+  path_segments(p, operand) snaps both ends of every one of chapter 5's
+  edges(p) and makes each a seg with winding (1, 0) for operand "a" and
+  (0, 1) for "b", in the order edges lists them, dropping an edge whose
+  ends snap to the same point.
+
+  meet(s, t) says how s and t meet, as a kind and two lists: on_s, the
+  points s has to be split at, and on_t, the points t has to be split
+  at. Every test is exact, with orient. "none": no common point. "end":
+  they share an endpoint and nothing else. "cross": each one's endpoints
+  are strictly on opposite sides of the other's line; both are split at
+  crossing_point(s, t), except that a segment isn't split at one of its
+  own ends. "touch": not collinear, but an endpoint of one lies strictly
+  inside the other, which is split there. "overlap": collinear and
+  sharing more than one point; each is split at the other's endpoints
+  that lie strictly inside it (none, when they're the same segment). A
+  point is strictly inside a segment when it's on its line and lex_less
+  puts it strictly between lo and hi. Split points are listed in the
+  sweep's order.
+
+  crossing_point(s, t) is the exact crossing rounded to the nearest grid
+  point, halves up. With a = s.lo, b = s.hi, c = t.lo, d = t.hi, let
+  β = cross(b - a, d - c) and α = cross(c - a, d - c), and if β &lt; 0
+  change the sign of both. The crossing is a + (b - a) × α / β, and each
+  coordinate is (2N + β) div 2β, where N is a.x × β + (b.x - a.x) × α (or
+  the same in y) and div is division rounded down, toward -∞. N reaches
+  about 2^59, so this is the one place that needs 64-bit integers.
+
+  <span class="kw">Scenario</span>: A segment keeps its ends in the sweep's order
+    <span class="kw">Given</span> s ← seg(point(10, 0), point(0, 0), 1, 0)
+    <span class="kw">Then</span>  s.lo = point(0, 0)
+    <span class="kw">And</span>   s.hi = point(10, 0)
+    <span class="kw">And</span>   s.wa = -1
+    <span class="kw">And</span>   s.wb = 0
+    <span class="kw">And</span>   s = seg(point(0, 0), point(10, 0), -1, 0)
+    <span class="kw">And</span>   seg(point(0, 5), point(10, 5), 0, 1) ≠ seg(point(10, 5), point(0, 5), 0, 1)
+    <span class="kw">And</span>   seg(point(4, 9), point(6, 2), 0, 1).lo = point(6, 2)
+
+  <span class="kw">Scenario</span>: A path's segments are its edges on the grid
+    <span class="kw">When</span>  segs ← path_segments(polygon(point(1, 1), point(2, 1), point(2, 2), point(1, 2)), "a")
+    <span class="kw">Then</span>  segs = [seg(point(256, 256), point(512, 256), 1, 0), seg(point(512, 256), point(512, 512), 1, 0), seg(point(256, 512), point(512, 512), -1, 0), seg(point(256, 256), point(256, 512), -1, 0)]
+    <span class="kw">And</span>   path_segments(polygon(point(1, 1), point(2, 1), point(2.001, 1), point(2, 2)), "b") = [seg(point(256, 256), point(512, 256), 0, 1), seg(point(512, 256), point(512, 512), 0, 1), seg(point(256, 256), point(512, 512), 0, -1)]
+
+  <span class="kw">Scenario</span>: Two segments crossing are both split where they cross
+    <span class="kw">Given</span> m ← meet(seg(point(0, 0), point(10, 10), 1, 0), seg(point(0, 10), point(10, 0), 1, 0))
+    <span class="kw">Then</span>  m.kind = "cross"
+    <span class="kw">And</span>   m.on_s = [point(5, 5)]
+    <span class="kw">And</span>   m.on_t = [point(5, 5)]
+
+  <span class="kw">Scenario</span>: A crossing between grid points rounds to one, halves up
+    <span class="kw">Given</span> s ← seg(point(0, 0), point(3, 1), 1, 0)
+    <span class="kw">And</span>   t ← seg(point(0, 1), point(3, 0), 0, 1)
+    <span class="kw">Then</span>  crossing_point(s, t) = point(2, 1)
+    <span class="kw">And</span>   crossing_point(seg(point(-3, 0), point(0, 1), 1, 0), seg(point(-3, 1), point(0, 0), 0, 1)) = point(-1, 1)
+    <span class="kw">And</span>   crossing_point(seg(point(2, 0), point(10, 12), 1, 0), seg(point(9, 0), point(6, 7), 1, 0)) = point(6, 6)
+    <span class="kw">And</span>   crossing_point(seg(point(2, 0), point(10, 12), 1, 0), seg(point(7, 4), point(3, 7), 1, 0)) = point(5, 5)
+
+  <span class="kw">Scenario</span>: A crossing that rounds onto an end splits only the other segment
+    <span class="kw">Given</span> m ← meet(seg(point(0, 0), point(100, 1), 1, 0), seg(point(0, 1), point(1, -1), 1, 0))
+    <span class="kw">Then</span>  m.kind = "cross"
+    <span class="kw">And</span>   m.on_s = []
+    <span class="kw">And</span>   m.on_t = [point(0, 0)]
+
+  <span class="kw">Scenario</span>: An end touching the middle of another segment splits it
+    <span class="kw">Given</span> m ← meet(seg(point(0, 0), point(10, 0), 1, 0), seg(point(5, 0), point(5, 10), 1, 0))
+    <span class="kw">Then</span>  m.kind = "touch"
+    <span class="kw">And</span>   m.on_s = [point(5, 0)]
+    <span class="kw">And</span>   m.on_t = []
+
+  <span class="kw">Scenario</span>: Collinear segments that overlap split each other at their ends
+    <span class="kw">Given</span> m ← meet(seg(point(0, 0), point(10, 0), 1, 0), seg(point(4, 0), point(14, 0), 1, 0))
+    <span class="kw">And</span>   n ← meet(seg(point(0, 0), point(10, 0), 1, 0), seg(point(2, 0), point(6, 0), 1, 0))
+    <span class="kw">And</span>   same ← meet(seg(point(0, 0), point(10, 0), 1, 0), seg(point(10, 0), point(0, 0), 1, 0))
+    <span class="kw">Then</span>  m.kind = "overlap"
+    <span class="kw">And</span>   m.on_s = [point(4, 0)]
+    <span class="kw">And</span>   m.on_t = [point(10, 0)]
+    <span class="kw">And</span>   n.kind = "overlap"
+    <span class="kw">And</span>   n.on_s = [point(2, 0), point(6, 0)]
+    <span class="kw">And</span>   n.on_t = []
+    <span class="kw">And</span>   same.kind = "overlap"
+    <span class="kw">And</span>   same.on_s = []
+    <span class="kw">And</span>   same.on_t = []
+
+  <span class="kw">Scenario</span>: Segments that share only an end, or nothing, aren't split
+    <span class="kw">Then</span>  meet(seg(point(0, 0), point(10, 0), 1, 0), seg(point(10, 0), point(10, 10), 1, 0)).kind = "end"
+    <span class="kw">And</span>   meet(seg(point(0, 0), point(10, 0), 1, 0), seg(point(10, 0), point(20, 0), 1, 0)).kind = "end"
+    <span class="kw">And</span>   meet(seg(point(0, 0), point(10, 0), 1, 0), seg(point(0, 1), point(10, 1), 1, 0)).kind = "none"
+    <span class="kw">And</span>   meet(seg(point(0, 0), point(10, 0), 1, 0), seg(point(11, 0), point(20, 0), 1, 0)).kind = "none"
+    <span class="kw">And</span>   meet(seg(point(0, 0), point(10, 0), 1, 0), seg(point(12, -5), point(12, 5), 1, 0)).kind = "none"
+    <span class="kw">And</span>   meet(seg(point(0, 0), point(4, 4), 1, 0), seg(point(3, 0), point(9, 2), 1, 0)).kind = "none"</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 22.3</span> Splitting until nothing crosses</h2>
+
+  <p>To split a list of segments, meet every pair, collect every segment's cut points, and cut.
+    Order the cut points along the segment by how far they are along it,
+    <code>dot(q − lo, hi − lo)</code>, and a segment with two cut points becomes three pieces, each
+    keeping its parent's windings. That's <code>find_splits</code> with the method
+    <code>"brute"</code>. It meets <code>n(n − 1)/2</code> pairs, which is fine for two squares
+    and will stop being fine in §&nbsp;22.6.</p>
+
+  <p>Two things can go wrong, and both are fixed by the same loop. First, cutting can make two
+    identical segments, from two paths that shared an edge or a path that doubled back on itself.
+    <code>merge_segments</code> makes them one and adds their windings up, and a segment whose
+    windings add to nothing is dropped, because it no longer changes anybody's winding number: a
+    spike that goes out and comes back vanishes here. Second, rounding a crossing moves it, by up
+    to half a grid unit in each direction, and a cut segment isn't straight any more. It turns,
+    very slightly, at the rounded point. A segment that turns can hit something it missed.</p>
+
+  <figure>
+    <canvas id="fig222" role="img" aria-label="Two panels on a grid of dots. Left: three segments, a long diagonal crossed by two shorter ones; hollow rings mark the exact crossings between grid points and magenta dots the grid points they round to. Right: the same segments cut at the rounded points; one of the cut pieces, bent slightly by the rounding, now passes exactly through the end of the third segment, marked with a cyan ring"></canvas>
+    <figcaption><span class="fig">Figure 22.2</span> The three segments of the last scenario below. Left, the first pass: the exact crossings (rings) round to grid points (dots). Right, after cutting: the piece from (9, 0) to (6, 6) turned when its crossing rounded, and now runs straight through (7, 4), the end of another segment. The second pass cuts it there; the third finds nothing.</figcaption>
+  </figure>
+
+  <p>So <code>split_segments</code> goes round: merge, find, and if anything needs cutting, cut
+    and go again, until a pass finds nothing. Most inputs take two passes, one that cuts and one
+    that proves there's nothing left. The one in Figure 22.2 takes three. There's a theory, called
+    snap rounding, that routes every segment through the grid cells it passes near and so never
+    needs a second pass; the loop is simpler to write, and every drawing in this chapter settles in
+    two passes; it took a search to find three segments that need a third.</p>
+
+  <div class="test" data-feature="chapter22-split.feature">
+    <p class="label">features/chapter22-split.feature</p>
+<pre><code><span class="kw">Feature</span>: Splitting until nothing crosses
+  sweep_stats() is a record of work: tests, the pairs of segments handed
+  to meet or to a crossing test; events, which Bentley-Ottmann counts in
+  its own section; and passes, all three starting at 0.
+  find_splits(segs, "brute", st) calls meet on every pair i &lt; j of the
+  list, adding 1 to st.tests for each, and answers one list per segment:
+  the points it has to be split at, without duplicates and without its
+  own ends, in order along it from lo to hi, by dot(q - lo, hi - lo)
+  (then by lex_less, for two points with the same dot).
+  merge_segments(segs) makes segments with the same lo and hi into one,
+  adding up their windings, drops any segment whose windings are both 0,
+  and sorts what's left by lo and then by hi, in the sweep's order.
+  split_segments(segs, method, st) merges; then, as a pass, adds 1 to
+  st.passes and finds the splits with the method; if no segment has one
+  it answers the segments; otherwise it cuts every segment into pieces
+  at its split points, in order (each piece keeps its parent's windings
+  as they were from lo to hi, which seg re-signs if the piece ends up
+  running the other way), merges, and makes another pass. The pass that
+  finds nothing is counted.
+
+  <span class="kw">Scenario</span>: Split points come in order along the segment
+    <span class="kw">Given</span> st ← sweep_stats()
+    <span class="kw">When</span>  splits ← find_splits([seg(point(10, 0), point(0, 5), 1, 0), seg(point(2, -1), point(3, 9), 1, 0), seg(point(7, -1), point(8, 9), 1, 0)], "brute", st)
+    <span class="kw">Then</span>  splits[0] = [point(7, 1), point(2, 4)]
+    <span class="kw">And</span>   splits[1] = [point(2, 4)]
+    <span class="kw">And</span>   splits[2] = [point(7, 1)]
+    <span class="kw">And</span>   st.tests = 3
+
+  <span class="kw">Scenario</span>: Rounded points go in order along the segment, not in the sweep's order
+    <span class="kw">Given</span> segs ← [seg(point(6, 0), point(5, 100), 1, 0), seg(point(15, 42), point(-5, 59), 0, 1), seg(point(12, 43), point(-3, 59), 0, 1)]
+    <span class="kw">When</span>  splits ← find_splits(segs, "brute", sweep_stats())
+    <span class="kw">Then</span>  splits[0] = [point(6, 50), point(5, 50)]
+    <span class="kw">And</span>   lex_less(point(5, 50), point(6, 50)) = true
+
+  <span class="kw">Scenario</span>: Merging adds windings, and a segment that adds nothing goes
+    <span class="kw">When</span>  m ← merge_segments([seg(point(0, 0), point(4, 0), 1, 0), seg(point(4, 0), point(0, 0), 1, 0), seg(point(1, 1), point(2, 2), 1, 0), seg(point(0, 0), point(0, 4), 0, 1), seg(point(0, 4), point(0, 0), 0, -1)])
+    <span class="kw">Then</span>  m = [seg(point(0, 0), point(0, 4), 0, 2), seg(point(1, 1), point(2, 2), 1, 0)]
+
+  <span class="kw">Scenario</span>: Two overlapping squares split into twelve segments in two passes
+    <span class="kw">Given</span> a ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">And</span>   b ← polygon(point(5, 5), point(15, 5), point(15, 15), point(5, 15))
+    <span class="kw">And</span>   st ← sweep_stats()
+    <span class="kw">When</span>  segs ← split_segments(path_segments(a, "a") + path_segments(b, "b"), "brute", st)
+    <span class="kw">Then</span>  length(segs) = 12
+    <span class="kw">And</span>   segs[2] = seg(point(2560, 0), point(2560, 1280), 1, 0)
+    <span class="kw">And</span>   segs[3] = seg(point(1280, 1280), point(2560, 1280), 0, 1)
+    <span class="kw">And</span>   segs[4] = seg(point(1280, 1280), point(1280, 2560), 0, -1)
+    <span class="kw">And</span>   st.passes = 2
+    <span class="kw">And</span>   st.tests = 94
+
+  <span class="kw">Scenario</span>: Rounding a crossing can make a new meeting, so the loop goes round again
+    <span class="kw">Given</span> segs ← [seg(point(2, 0), point(10, 12), 1, 0), seg(point(9, 0), point(6, 7), 1, 0), seg(point(7, 4), point(3, 7), 1, 0)]
+    <span class="kw">And</span>   st ← sweep_stats()
+    <span class="kw">When</span>  first ← find_splits(merge_segments(segs), "brute", sweep_stats())
+    <span class="kw">And</span>   out ← split_segments(segs, "brute", st)
+    <span class="kw">Then</span>  first[0] = [point(5, 5), point(6, 6)]
+    <span class="kw">And</span>   first[1] = [point(6, 6)]
+    <span class="kw">And</span>   first[2] = [point(5, 5)]
+    <span class="kw">And</span>   st.passes = 3
+    <span class="kw">And</span>   out = [seg(point(2, 0), point(5, 5), 1, 0), seg(point(9, 0), point(7, 4), 1, 0), seg(point(7, 4), point(5, 5), 1, 0), seg(point(7, 4), point(6, 6), 1, 0), seg(point(5, 5), point(6, 6), 1, 0), seg(point(5, 5), point(3, 7), 1, 0), seg(point(6, 6), point(6, 7), 1, 0), seg(point(6, 6), point(10, 12), 1, 0)]</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 22.4</span> Which side is inside</h2>
+
+  <p>Now nothing crosses. Every segment has one region on its left and one on its right all the way
+    along, and the winding number of each path is constant across each region. So ask once per
+    segment, at its midpoint. And chapter 5 already wrote the question: a ray from the point toward
+    <code>+x</code>, adding up the edges it crosses, each with its direction.</p>
+
+  <p>Two small changes turn <code>winding_at</code> into <code>winding_beside</code>. The half-open
+    rule compares points with <code>lex_less</code> instead of heights alone, so that segment
+    <code>f</code> counts for the midpoint <code>m</code> when <code>f.lo</code> is at or before
+    <code>m</code> and <code>m</code> is before <code>f.hi</code>. That settles which of two
+    segments meeting at <code>m</code>'s height counts without an epsilon, as the tie-breaking
+    scenario shows. And chapter 5's two cases, down-going edges with the point on their left and
+    up-going edges with the point on their right, become one: with every segment stored top to
+    bottom, <code>f</code> counts when <code>orient(f.lo, f.hi, m) &gt; 0</code>, and what it adds
+    is its own windings, positive for an edge that ran downward and negative for one that ran up.
+    Sum that over every segment but the one you're asking about, and you have the winding numbers of
+    A and B on one side of it, the side where it doesn't count. Add the segment's own windings and
+    you have the other side, its left, or below it when it's horizontal.</p>
+
+  <p>Then classification really is a lookup. <code>inside_rule</code> turns each winding number into
+    in or out under that path's own fill rule, <code>op_inside</code> combines the two answers, and
+    a segment is on the boundary of the result exactly when the answer differs between its sides.
+    Keep it, and point it so that the inside is on your right as you travel along it:
+    <code>lo</code> to <code>hi</code> when the inside is on the side where it counts,
+    <code>hi</code> to <code>lo</code> when it isn't. Right-hand inside is clockwise on screen, the
+    same direction chapter 5 called positive, so the result will have winding 1 inside and 0
+    outside.</p>
+
+  <figure>
+    <canvas id="fig223" role="img" aria-label="Two overlapping squares, A at the top left and B at the bottom right, drawn as twelve segments after splitting. The segments that bound A minus B are drawn in magenta with arrowheads running clockwise; the others are dim. One of B's edges, inside A, is highlighted with a dot at its midpoint and a dashed ray running from the dot to the right edge of the figure. Labels above and below that edge give the winding numbers of A and B on each side"></canvas>
+    <figcaption><span class="fig">Figure 22.3</span> A minus B. The ray from the midpoint of B's top edge crosses A's right edge and nothing else: above the edge the windings are (1, 0), below it (1, 1). Inside A and not B above, inside both below, so the edge bounds the difference, and it's kept running right to left, with the inside above it on its right.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter22-inside.feature">
+    <p class="label">features/chapter22-inside.feature</p>
+<pre><code><span class="kw">Feature</span>: Which side is inside
+  Once no two segments cross, a segment has the same two winding numbers
+  all along each of its sides, so it's enough to ask at its midpoint m.
+  winding_beside(segs, i) is chapter 5's winding_at at m, for path A and
+  path B together, with two changes. The half-open rule compares in the
+  sweep's order: segment f spans m when f.lo is before m or equal to it
+  and m is before f.hi, by lex_less, not by y alone. And the two cases of
+  chapter 5 are one: f counts when it spans m and orient(f.lo, f.hi, m)
+  is positive, and it adds its own windings, f.wa to A and f.wb to B. The
+  answer is two pairs: first (A, B) summed over every segment but i,
+  which is the side of segment i where it doesn't count; then that plus
+  i's own windings, the side where it does, which is its left, or below
+  it when it's horizontal. No other segment passes through m, because
+  nothing crosses and no endpoint is inside another segment; compute m
+  doubled, as lo + hi, to stay in whole numbers.
+
+  inside_rule(w, rule) is w ≠ 0 for "nonzero" and w odd for "evenodd".
+  op_inside(op, in_a, in_b) is in_a or in_b for "union", in_a and in_b
+  for "intersection", in_a and not in_b for "difference", and in_a ≠ in_b
+  for "xor". keep_edges(segs, rule_a, rule_b, op) keeps segment i, in
+  order, when op_inside differs between its two sides, as the pair (from,
+  to): (lo, hi) when the inside is on the side where it counts, (hi, lo)
+  when it isn't. Either way the inside ends up on the right as you travel
+  from to to, which is clockwise on screen around what's inside.
+
+  <span class="kw">Scenario</span>: The two sides of a square's edges
+    <span class="kw">Given</span> sq ← merge_segments([seg(point(0, 0), point(4, 0), 1, 0), seg(point(4, 0), point(4, 4), 1, 0), seg(point(4, 4), point(0, 4), 1, 0), seg(point(0, 4), point(0, 0), 1, 0)])
+    <span class="kw">Then</span>  sq[0] = seg(point(0, 0), point(4, 0), 1, 0)
+    <span class="kw">And</span>   winding_beside(sq, 0) = ((0, 0), (1, 0))
+    <span class="kw">And</span>   sq[1] = seg(point(0, 0), point(0, 4), -1, 0)
+    <span class="kw">And</span>   winding_beside(sq, 1) = ((1, 0), (0, 0))
+    <span class="kw">And</span>   winding_beside(sq, 2) = ((0, 0), (1, 0))
+    <span class="kw">And</span>   winding_beside(sq, 3) = ((1, 0), (0, 0))
+
+  <span class="kw">Scenario</span>: Where two squares overlap, both paths wind around the middle
+    <span class="kw">Given</span> a ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">And</span>   b ← polygon(point(5, 5), point(15, 5), point(15, 15), point(5, 15))
+    <span class="kw">When</span>  segs ← split_segments(path_segments(a, "a") + path_segments(b, "b"), "brute", sweep_stats())
+    <span class="kw">Then</span>  segs[3] = seg(point(1280, 1280), point(2560, 1280), 0, 1)
+    <span class="kw">And</span>   winding_beside(segs, 3) = ((1, 0), (1, 1))
+    <span class="kw">And</span>   segs[6] = seg(point(2560, 1280), point(2560, 2560), 1, 0)
+    <span class="kw">And</span>   winding_beside(segs, 6) = ((0, 1), (1, 1))
+
+  <span class="kw">Scenario</span>: The ray breaks a tie in y by x, as the sweep does
+    <span class="kw">Given</span> segs ← [seg(point(0, 0), point(0, 10), 1, 0), seg(point(4, 0), point(4, 5), 0, 1), seg(point(4, 5), point(4, 20), 0, -1)]
+    <span class="kw">And</span>   flat ← [seg(point(0, 0), point(10, 0), 1, 0), seg(point(12, -5), point(12, 0), 0, 1), seg(point(12, 0), point(12, 5), 0, -1)]
+    <span class="kw">Then</span>  winding_beside(segs, 0) = ((0, 1), (1, 1))
+    <span class="kw">And</span>   winding_beside(flat, 0) = ((0, 1), (1, 1))
+
+  <span class="kw">Scenario Outline</span>: What each operation calls inside
+    <span class="kw">Then</span>  op_inside(&lt;op&gt;, true, true) = &lt;both&gt;
+    <span class="kw">And</span>   op_inside(&lt;op&gt;, true, false) = &lt;a_only&gt;
+    <span class="kw">And</span>   op_inside(&lt;op&gt;, false, true) = &lt;b_only&gt;
+    <span class="kw">And</span>   op_inside(&lt;op&gt;, false, false) = false
+
+    <span class="kw">Examples</span>:
+      | op             | both  | a_only | b_only |
+      | "union"        | true  | true   | true   |
+      | "intersection" | true  | false  | false  |
+      | "difference"   | false | true   | false  |
+      | "xor"          | false | true   | true   |
+
+  <span class="kw">Scenario</span>: A winding of 2 is inside under nonzero and outside under even-odd
+    <span class="kw">Then</span>  inside_rule(2, "nonzero") = true
+    <span class="kw">And</span>   inside_rule(2, "evenodd") = false
+    <span class="kw">And</span>   inside_rule(-1, "evenodd") = true
+    <span class="kw">And</span>   inside_rule(-2, "nonzero") = true
+    <span class="kw">And</span>   inside_rule(0, "nonzero") = false
+
+  <span class="kw">Scenario</span>: The kept edges run with the inside on their right
+    <span class="kw">Given</span> a ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">And</span>   b ← polygon(point(5, 5), point(15, 5), point(15, 15), point(5, 15))
+    <span class="kw">When</span>  segs ← split_segments(path_segments(a, "a") + path_segments(b, "b"), "brute", sweep_stats())
+    <span class="kw">Then</span>  keep_edges(segs, "nonzero", "nonzero", "intersection") = [(point(1280, 1280), point(2560, 1280)), (point(1280, 2560), point(1280, 1280)), (point(2560, 1280), point(2560, 2560)), (point(2560, 2560), point(1280, 2560))]
+    <span class="kw">And</span>   keep_edges(segs, "nonzero", "nonzero", "difference") = [(point(0, 0), point(2560, 0)), (point(0, 2560), point(0, 0)), (point(2560, 0), point(2560, 1280)), (point(2560, 1280), point(1280, 1280)), (point(1280, 1280), point(1280, 2560)), (point(1280, 2560), point(0, 2560))]
+    <span class="kw">And</span>   length(keep_edges(segs, "nonzero", "nonzero", "union")) = 8
+    <span class="kw">And</span>   length(keep_edges(segs, "nonzero", "nonzero", "xor")) = 12</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 22.5</span> Stitching</h2>
+
+  <p>The kept segments are a pile of arrows, and every vertex has as many arrows leaving it as
+    arriving. <code>stitch</code> links them into loops: start with the first unused arrow in the
+    sweep's order, follow it, and at each vertex take an unused arrow leaving it until you're back
+    where you started. Most vertices have one way out. The ones with two are where the result
+    touches itself at a point, two squares meeting at a corner or a star's arm resting on the rim
+    of a circle, and there you take the arrow that turns furthest right. With the inside on your
+    right, the sharpest right turn follows the edge of the region you're walking around instead of
+    stepping into the next one, and two squares that touch at a corner stay two squares.</p>
+
+  <p>"Furthest right" is exact too. Face back the way you came; the arrow you want is the first one
+    you meet turning counterclockwise from there. Two cross products and a dot product put any two
+    directions in that order: which half-turn each is in, then which comes first within a
+    half-turn.</p>
+
+  <p>Then tidy each loop so that equal results are equal paths. Splitting left vertices where the
+    outline runs straight on, so drop every vertex that's collinear with its two neighbours. Start
+    each contour at its topmost vertex, the leftmost if two tie, and sort the contours. Now a
+    result can be compared point for point, which is what makes the scenarios below possible: a
+    shape united with itself is exactly the shape, and a shape minus itself is exactly nothing.</p>
+
+  <p><code>combine</code> is the whole pipeline, and <code>simplify</code> is <code>combine</code>
+    with an empty second path. That's more useful than it sounds: it takes one path's fill rule and
+    its self-crossings and turns them into a plain outline, which is how chapter 5's star becomes a
+    ten-sided polygon and how a glyph with overlapping contours becomes one you can offset.</p>
+
+  <div class="test" data-feature="chapter22-combine.feature">
+    <p class="label">features/chapter22-combine.feature</p>
+<pre><code><span class="kw">Feature</span>: Stitching, and the four operations
+  stitch(kept) links the kept (from, to) pairs into closed contours of
+  grid points. Take the unused pair that comes first in the sweep's order
+  of from, then of to; walk it, and at the vertex you reach take, among
+  the unused pairs leaving it, the one that turns furthest right: the
+  first you meet sweeping counterclockwise on screen from the way you
+  came back. Stop when you're back at the vertex you started from. Then
+  drop every vertex whose two neighbours are collinear with it
+  (orient = 0), again until none is left; start the contour at its
+  topmost vertex, the leftmost of those if there's a tie; and when every
+  pair is used, sort the contours by their points in the sweep's order.
+  combine(a, rule_a, b, rule_b, op) runs the whole thing: path_segments
+  of a as "a" and b as "b", split_segments, keep_edges, stitch, and a path
+  with one closed subpath per contour, every coordinate divided by 256.
+  The finder doesn't change the answer; use any. simplify(p, rule) is
+  combine(p, rule, path(), "nonzero", "union"). point_lists(p) is the
+  list of each subpath's points. Every contour winds clockwise on screen
+  around what's inside it and counterclockwise around a hole, so the
+  result has winding 1 inside and 0 outside and fills the same under
+  either rule.
+
+  <span class="kw">Scenario</span>: Stitching follows the pairs and drops the straight vertex
+    <span class="kw">When</span>  c ← stitch([(point(4, 4), point(0, 4)), (point(0, 0), point(2, 0)), (point(0, 4), point(0, 0)), (point(4, 0), point(4, 4)), (point(2, 0), point(4, 0))])
+    <span class="kw">Then</span>  c = [[point(0, 0), point(4, 0), point(4, 4), point(0, 4)]]
+
+  <span class="kw">Scenario</span>: Turning furthest right keeps two squares that touch at a corner apart
+    <span class="kw">When</span>  c ← stitch([(point(0, 0), point(4, 0)), (point(4, 0), point(4, 4)), (point(4, 4), point(0, 4)), (point(0, 4), point(0, 0)), (point(4, 4), point(8, 4)), (point(8, 4), point(8, 8)), (point(8, 8), point(4, 8)), (point(4, 8), point(4, 4))])
+    <span class="kw">Then</span>  c = [[point(0, 0), point(4, 0), point(4, 4), point(0, 4)], [point(4, 4), point(8, 4), point(8, 8), point(4, 8)]]
+
+  <span class="kw">Scenario</span>: Two squares, four ways
+    <span class="kw">Given</span> a ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">And</span>   b ← polygon(point(5, 5), point(15, 5), point(15, 15), point(5, 15))
+    <span class="kw">Then</span>  point_lists(combine(a, "nonzero", b, "nonzero", "union")) = [[point(0, 0), point(10, 0), point(10, 5), point(15, 5), point(15, 15), point(5, 15), point(5, 10), point(0, 10)]]
+    <span class="kw">And</span>   point_lists(combine(a, "nonzero", b, "nonzero", "intersection")) = [[point(5, 5), point(10, 5), point(10, 10), point(5, 10)]]
+    <span class="kw">And</span>   point_lists(combine(a, "nonzero", b, "nonzero", "difference")) = [[point(0, 0), point(10, 0), point(10, 5), point(5, 5), point(5, 10), point(0, 10)]]
+    <span class="kw">And</span>   point_lists(combine(a, "nonzero", b, "nonzero", "xor")) = [[point(0, 0), point(10, 0), point(10, 5), point(5, 5), point(5, 10), point(0, 10)], [point(10, 5), point(15, 5), point(15, 15), point(5, 15), point(5, 10), point(10, 10)]]
+
+  <span class="kw">Scenario</span>: The result winds clockwise, whichever way the input wound
+    <span class="kw">Given</span> ccw ← polygon(point(0, 0), point(0, 10), point(10, 10), point(10, 0))
+    <span class="kw">Then</span>  polygon_area(ccw) = -100
+    <span class="kw">And</span>   point_lists(simplify(ccw, "nonzero")) = [[point(0, 0), point(10, 0), point(10, 10), point(0, 10)]]
+    <span class="kw">And</span>   polygon_area(simplify(ccw, "nonzero")) = 100
+
+  <span class="kw">Scenario</span>: A hole winds the other way
+    <span class="kw">Given</span> outer ← polygon(point(0, 0), point(12, 0), point(12, 12), point(0, 12))
+    <span class="kw">And</span>   inner ← polygon(point(4, 4), point(8, 4), point(8, 8), point(4, 8))
+    <span class="kw">When</span>  r ← combine(outer, "nonzero", inner, "nonzero", "difference")
+    <span class="kw">Then</span>  point_lists(r) = [[point(0, 0), point(12, 0), point(12, 12), point(0, 12)], [point(4, 4), point(4, 8), point(8, 8), point(8, 4)]]
+    <span class="kw">And</span>   polygon_area(r) = 128
+
+  <span class="kw">Scenario</span>: One path's own overlaps are resolved by its fill rule
+    <span class="kw">Given</span> p ← path()
+    <span class="kw">When</span>  move_to(p, point(0, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 0))
+    <span class="kw">And</span>   line_to(p, point(10, 10))
+    <span class="kw">And</span>   line_to(p, point(0, 10))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">And</span>   move_to(p, point(5, 5))
+    <span class="kw">And</span>   line_to(p, point(15, 5))
+    <span class="kw">And</span>   line_to(p, point(15, 15))
+    <span class="kw">And</span>   line_to(p, point(5, 15))
+    <span class="kw">And</span>   close(p)
+    <span class="kw">Then</span>  point_lists(simplify(p, "nonzero")) = [[point(0, 0), point(10, 0), point(10, 5), point(15, 5), point(15, 15), point(5, 15), point(5, 10), point(0, 10)]]
+    <span class="kw">And</span>   length(point_lists(simplify(p, "evenodd"))) = 2
+    <span class="kw">And</span>   polygon_area(simplify(p, "evenodd")) = 150
+
+  <span class="kw">Scenario</span>: The star's crossings become corners
+    <span class="kw">Then</span>  point_lists(simplify(star(), "nonzero")) = [[point(80.5, 10.5), point(96.21484375, 58.8671875), point(147.07421875, 58.8671875), point(105.9296875, 88.76171875), point(121.64453125, 137.1328125), point(80.5, 107.23828125), point(39.35546875, 137.1328125), point(55.0703125, 88.76171875), point(13.92578125, 58.8671875), point(64.78515625, 58.8671875)]]
+    <span class="kw">And</span>   length(point_lists(simplify(star(), "evenodd"))) = 5
+    <span class="kw">And</span>   polygon_area(simplify(star(), "nonzero")) = 5500.767746 ± 0.000001
+    <span class="kw">And</span>   polygon_area(simplify(star(), "evenodd")) = 3800.918060 ± 0.000001
+
+  <span class="kw">Scenario</span>: A shape with itself
+    <span class="kw">Given</span> a ← plate_glyph()
+    <span class="kw">Then</span>  point_lists(combine(a, "nonzero", a, "nonzero", "union")) = point_lists(simplify(a, "nonzero"))
+    <span class="kw">And</span>   point_lists(combine(a, "nonzero", a, "nonzero", "intersection")) = point_lists(simplify(a, "nonzero"))
+    <span class="kw">And</span>   point_lists(combine(a, "nonzero", a, "nonzero", "difference")) = []
+    <span class="kw">And</span>   point_lists(combine(a, "nonzero", a, "nonzero", "xor")) = []
+
+  <span class="kw">Scenario</span>: The areas add up
+    <span class="kw">Given</span> a ← plate_glyph()
+    <span class="kw">And</span>   b ← plate_star()
+    <span class="kw">When</span>  union ← polygon_area(combine(a, "nonzero", b, "evenodd", "union"))
+    <span class="kw">And</span>   both ← polygon_area(combine(a, "nonzero", b, "evenodd", "intersection"))
+    <span class="kw">And</span>   a_only ← polygon_area(combine(a, "nonzero", b, "evenodd", "difference"))
+    <span class="kw">And</span>   b_only ← polygon_area(combine(b, "evenodd", a, "nonzero", "difference"))
+    <span class="kw">And</span>   either ← polygon_area(combine(a, "nonzero", b, "evenodd", "xor"))
+    <span class="kw">Then</span>  union = either + both ± 0.000001
+    <span class="kw">And</span>   union = a_only + b_only + both ± 0.000001
+    <span class="kw">And</span>   union + both = polygon_area(simplify(a, "nonzero")) + polygon_area(simplify(b, "evenodd")) ± 0.05
+
+  <span class="kw">Scenario</span>: Either fill rule fills the result the same
+    <span class="kw">Given</span> r ← combine(plate_glyph(), "nonzero", plate_star(), "evenodd", "xor")
+    <span class="kw">Then</span>  max_coverage_difference(fill_path(r, "nonzero", 200, 200), fill_path(r, "evenodd", 200, 200)) ≤ 0.000001</code></pre>
+  </div>
+
+  <p>The last two lines of the areas scenario are both true and both worth a look. The first two
+    identities are exact, because the union, the intersection and both differences are made of the
+    same faces of the same split segments. The third compares with the areas of A and B simplified
+    on their own, and it's off by 0.03 square pixels: simplified alone, each path's crossings with
+    itself round the same way, but its crossings with the other path aren't there to round at all.
+    That's the grid's price, stated exactly. Every crossing moves by at most half a unit, 1/512 of a
+    pixel, in each direction.</p>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>Figma's boolean menu is <em>Union</em>, <em>Subtract</em>, <em>Intersect</em> and
+      <em>Exclude</em>; Illustrator's Pathfinder panel says <em>Unite</em>, <em>Minus Front</em>,
+      <em>Intersect</em> and <em>Exclude</em>. Those are this chapter's four operations. Figma keeps
+      the result live and runs <code>combine</code> again whenever you drag a vertex; Illustrator's
+      <em>Expand</em> bakes it into one path.</p>
+  </aside>
+
+  <h2><span class="sec">§ 22.6</span> A faster way to find crossings</h2>
+
+  <p>Everything so far is correct, and nearly all of the time goes into meeting pairs of segments
+    that are nowhere near each other. The chapter's benchmark is <code>struck_line(1)</code>: the
+    word <em>Pathfinder</em> in Roboto at 120 pixels, 787 segments once it's flattened and snapped,
+    struck through by fourteen slanting bars. Its first pass meets 309,291 pairs, and 184 of them
+    need cutting.</p>
+
+  <p>Two segments can only meet if they share a row. So sort them by their tops and sweep down the
+    canvas with an <em>active list</em>, chapter 6's idea again: when a segment's top arrives, drop
+    every active segment that has already ended, meet the new one against what's left, and add it.
+    This is a simplified Bentley–Ottmann: the sweep, without the order that makes the real one
+    fast. It finds exactly the same cuts, because two segments that meet
+    are both active when the second of them arrives, and on the benchmark it meets 34,326 pairs, a
+    ninth as many.</p>
+
+  <div class="test" data-feature="chapter22-sweep.feature">
+    <p class="label">features/chapter22-sweep.feature</p>
+<pre><code><span class="kw">Feature</span>: A faster way to find where segments meet
+  find_splits(segs, "sweep", st) finds exactly what "brute" finds, testing
+  fewer pairs. Sort the segments by lo and then by hi, in the sweep's
+  order, and keep an active list, empty at first. For each segment s in
+  turn: take out of the active list every segment whose hi isn't after
+  s.lo in the sweep's order (it ended above s, or where s starts, and can
+  only share that point); call meet on s and each segment still active,
+  adding 1 to st.tests for each; then add s to the list. Two segments
+  that meet anywhere are active together when the later one arrives, so
+  nothing is missed. struck_line(n) is the chapter's benchmark, a pair of
+  paths (text, bars): the word Pathfinder n times with a space between,
+  set by chapter 18's layout_run with kerning at 120 / n pixels to the em
+  from (20, 160), every glyph flattened to 0.1 pixel; and 14n
+  parallelograms, bar k with corners (x, 100), (x + 22 / n, 100),
+  (x - 40 / n, 200) and (x - 62 / n, 200), where x = -40 + 48k / n.
+  struck_segments(n) is merge_segments of path_segments(text, "a") and
+  path_segments(bars, "b").
+
+  <span class="kw">Scenario</span>: The sweep finds what every pair finds
+    <span class="kw">Given</span> segs ← struck_segments(1)
+    <span class="kw">And</span>   brute ← sweep_stats()
+    <span class="kw">And</span>   sweep ← sweep_stats()
+    <span class="kw">When</span>  a ← find_splits(segs, "brute", brute)
+    <span class="kw">And</span>   b ← find_splits(segs, "sweep", sweep)
+    <span class="kw">Then</span>  length(segs) = 787
+    <span class="kw">And</span>   a = b
+    <span class="kw">And</span>   brute.tests = 309291
+    <span class="kw">And</span>   sweep.tests = 34326
+
+  <span class="kw">Scenario</span>: Only pairs whose rows overlap are tested
+    <span class="kw">Given</span> segs ← [seg(point(0, 0), point(10, 10), 1, 0), seg(point(0, 20), point(10, 30), 1, 0), seg(point(10, 0), point(0, 10), 0, 1), seg(point(5, 10), point(5, 20), 0, 1)]
+    <span class="kw">And</span>   st ← sweep_stats()
+    <span class="kw">And</span>   brute ← sweep_stats()
+    <span class="kw">When</span>  splits ← find_splits(segs, "sweep", st)
+    <span class="kw">Then</span>  splits = find_splits(segs, "brute", brute)
+    <span class="kw">And</span>   st.tests = 3
+    <span class="kw">And</span>   brute.tests = 6
+    <span class="kw">And</span>   splits[0] = [point(5, 5)]
+    <span class="kw">And</span>   splits[2] = [point(5, 5)]
+    <span class="kw">And</span>   splits[3] = []
+
+  <span class="kw">Scenario</span>: A segment that ends where another starts is out of the list
+    <span class="kw">Given</span> st ← sweep_stats()
+    <span class="kw">When</span>  splits ← find_splits([seg(point(0, 0), point(0, 10), 1, 0), seg(point(0, 10), point(0, 20), 1, 0)], "sweep", st)
+    <span class="kw">Then</span>  st.tests = 0</code></pre>
+  </div>
+
+  <p>A ninth is good. The table in the next section shows what it doesn't fix. The active list is
+    everything in the current row, and a line of text is the worst case there is: every glyph of the
+    line is in every row of it. Set the word twice at half the size and the line has 1.6 times the
+    segments and 3.6 times the tests. The sweep only shortens the list of candidates. What's still
+    wrong is that it meets the new segment against every candidate, when a new segment can only
+    cross its neighbours.</p>
+
+  <h2><span class="sec">§ 22.7</span> Bentley–Ottmann</h2>
+
+  <p>Keep the active list in order, left to right along the sweep line, and call it the
+    <em>status</em>. A little above the point where two segments cross, nothing lies between them, so
+    at some moment before they cross they're next to each other in the status, and that's the
+    moment to test them. So a new
+    segment is tested against its two neighbours only. When one leaves, its two neighbours become
+    neighbours and are tested. And when two cross, they swap places, which gives each of them a new
+    neighbour to test. The crossings can't be known in advance, so they go into the same queue as the
+    segment ends, as <em>events</em>, handled in the sweep's order. That's Bentley and Ottmann's
+    algorithm, from 1979, and the textbook version handles every degenerate case in one step: at
+    each event, find every segment passing through the point at once.</p>
+
+<pre><code>handle(P):                                  <span class="cm">// every lo and hi is an event at the start</span>
+  st.events ← st.events + 1
+  block ← the status segments with orient(lo, hi, P) = 0      <span class="cm">// binary search</span>
+  L ← those of block whose hi is P;  C ← the rest of block
+  <span class="kw">for</span> each s of C: split s at P rounded to the grid
+  new ← U(P) and C, left to right as they leave P
+  replace block by new in the status
+  <span class="kw">if</span> new is empty: test(left of the gap, right of the gap)
+  <span class="kw">else</span>: test(left of new, first of new);  test(last of new, right of new)
+
+test(s, t):                                  <span class="cm">// only when both exist</span>
+  st.tests ← st.tests + 1
+  <span class="kw">if</span> s and t cross, and the exact crossing X comes after P:
+    add X to the events, <span class="kw">unless</span> it's already there</code></pre>
+
+  <p>Two details decide whether it works. The first is the order in which the new block leaves
+    <code>P</code>: segment <code>s</code> is left of <code>t</code> below <code>P</code> when
+    <code>cross(t.hi − t.lo, s.hi − s.lo) &gt; 0</code>, exact, and a horizontal segment, which the
+    sweep's order makes run from left to right, comes last. The second is that the events must be
+    exact. A crossing isn't a grid point, it's a fraction, <code>(X/D, Y/D)</code>, and if you store it
+    as two doubles the status will sooner or later be out of order by a rounding error, and a
+    Bentley–Ottmann with a misordered status doesn't find a slightly wrong answer. It stops looking
+    at the pairs that cross. Keep the numerators and the denominator as whole numbers: testing a
+    segment against an event is <code>dx × (Y − D × lo.y) − dy × (X − D × lo.x)</code>, about 80
+    bits, and putting two events in order compares <code>Y<sub>1</sub> × D<sub>2</sub></code> with
+    <code>Y<sub>2</sub> × D<sub>1</sub></code>, about 100. Python's integers don't mind. Java has
+    <code>BigInteger</code>, Rust and C# have 128-bit integers, and JavaScript has
+    <code>BigInt</code>. The grid's rounded point is only used for the cut, never for the order.</p>
+
+  <p>Which gives the measurements. Every row splits the same segments into the same pieces all
+    three ways; the times are the Python reference's, for the splitting alone.</p>
+
+  <div class="tablewrap">
+    <table class="props">
+      <tr><th><code>n</code></th><th>segments</th><th>brute</th><th>sweep</th><th>Bentley–Ottmann</th><th>events</th></tr>
+      <tr><td>1</td><td>787</td><td>780,226 · 0.31 s</td><td>78,332 · 0.04 s</td><td>3,318 · 0.03 s</td><td>1,758</td></tr>
+      <tr><td>2</td><td>1,264</td><td>2,012,677 · 0.81 s</td><td>278,841 · 0.14 s</td><td>5,224 · 0.05 s</td><td>2,823</td></tr>
+      <tr><td>4</td><td>1,844</td><td>4,539,782 · 1.8 s</td><td>820,929 · 0.40 s</td><td>7,614 · 0.08 s</td><td>4,228</td></tr>
+      <tr><td>8</td><td>3,064</td><td>12,790,816 · 5.1 s</td><td>2,699,300 · 1.3 s</td><td>12,497 · 0.15 s</td><td>7,089</td></tr>
+      <tr><td>16</td><td>4,816</td><td>not run</td><td>13,561,453 · 6.5 s</td><td>29,379 · 0.39 s</td><td>17,210</td></tr>
+    </table>
+  </div>
+
+  <p>The tests are both passes of <code>split_segments</code> together. Read the columns as they
+    grow. Brute force grows as the square of the segments, and so does the active list, because the
+    line is the same few rows however much text is in it. Bentley–Ottmann's tests grow with the
+    segments plus the crossings, a few tests per event, and it's the only column whose time looks like
+    it'll survive a paragraph. It isn't free: every event does a binary search and exact arithmetic
+    on big integers, and on one short word the plain active list is already about as fast. That's the
+    honest summary. The sweep of §&nbsp;22.6 is ten lines and good enough for drawings; the ordered
+    status is a page and necessary for text, maps, and anything else where many segments
+    share their rows, which is most of what anyone ever wants to cut up.</p>
+
+  <figure>
+    <canvas id="fig224" role="img" aria-label="The benchmark, the word Pathfinder crossed by slanting bars, drawn as thin outlines. A horizontal sweep line crosses it; every segment the line crosses is drawn in cyan. On the line, a magenta tick marks a point between two neighbouring segments, which are drawn in magenta"></canvas>
+    <figcaption><span class="fig">Figure 22.4</span> One row of the benchmark. Everything cyan is on the active list, and §&nbsp;22.6 meets a newcomer against all of it. Bentley–Ottmann keeps the same segments in order along the line, and a newcomer arriving at the magenta tick is met against the two magenta segments either side of it.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter22-bentley.feature">
+    <p class="label">features/chapter22-bentley.feature</p>
+<pre><code><span class="kw">Feature</span>: Bentley-Ottmann
+  find_splits(segs, "bentley-ottmann", st) finds exactly what "brute"
+  finds, testing only segments that are next to each other. Events are
+  points, handled once each in the sweep's order; to begin with, every
+  lo and hi is an event, and a lo remembers the segments that start
+  there, U. The status is a list of segments in order left to right
+  along the sweep, empty at first. To handle the event P, add 1 to
+  st.events, then:
+    1. Find the block of the status that passes through P, the segments
+       with orient(lo, hi, P) = 0; those with orient &lt; 0 are all before
+       it and those with orient &gt; 0 all after, so a binary search finds
+       it. L is the block's segments whose hi is P; C is the rest, the
+       ones with P strictly inside.
+    2. Split each segment of C at P rounded to the nearest grid point,
+       halves up, which is P itself when P is a grid point.
+    3. Replace the block by U and C together, in the order they leave P
+       left to right: s before t when cross(t.hi - t.lo, s.hi - s.lo) &gt;
+       0, and when that's 0, the one earlier in segs first.
+    4. If nothing was put back, test the two segments now either side of
+       the gap. Otherwise test the segment left of what was put back
+       against the first of it, and the last of it against the segment
+       to its right. Only test pairs that exist. A test adds 1 to
+       st.tests, and if the two segments cross as meet's "cross" means
+       at a point after P in the sweep's order, that exact point is an
+       event, unless it already is one.
+  A crossing's exact point is (X / D, Y / D), with D = β and X and Y the
+  N of crossing_point. Keep it exact: orient against it is dx × (Y -
+  D × lo.y) - dy × (X - D × lo.x), which needs about 80 bits, and
+  putting two events in order compares Y1 × D2 with Y2 × D1, about 100.
+
+  <span class="kw">Scenario</span>: Three segments through one point are split in one event
+    <span class="kw">Given</span> st ← sweep_stats()
+    <span class="kw">When</span>  splits ← find_splits([seg(point(0, 0), point(12, 12), 1, 0), seg(point(12, 0), point(0, 12), 1, 0), seg(point(6, 0), point(6, 12), 1, 0)], "bentley-ottmann", st)
+    <span class="kw">Then</span>  splits = [[point(6, 6)], [point(6, 6)], [point(6, 6)]]
+    <span class="kw">And</span>   st.events = 7
+    <span class="kw">And</span>   st.tests = 2
+
+  <span class="kw">Scenario</span>: A crossing between grid points is an exact event, split rounded
+    <span class="kw">Given</span> st ← sweep_stats()
+    <span class="kw">When</span>  splits ← find_splits([seg(point(0, 0), point(3, 1), 1, 0), seg(point(0, 1), point(3, 0), 0, 1)], "bentley-ottmann", st)
+    <span class="kw">Then</span>  splits = [[point(2, 1)], [point(2, 1)]]
+    <span class="kw">And</span>   st.events = 5
+    <span class="kw">And</span>   st.tests = 1
+
+  <span class="kw">Scenario</span>: A horizontal segment is last among those leaving a point
+    <span class="kw">Given</span> st ← sweep_stats()
+    <span class="kw">When</span>  splits ← find_splits([seg(point(0, 5), point(10, 5), 1, 0), seg(point(5, 0), point(5, 10), 1, 0), seg(point(2, 0), point(8, 10), 1, 0)], "bentley-ottmann", st)
+    <span class="kw">Then</span>  splits = [[point(5, 5)], [point(5, 5)], [point(5, 5)]]
+    <span class="kw">And</span>   st.events = 7
+    <span class="kw">And</span>   st.tests = 2
+
+  <span class="kw">Scenario</span>: Neighbours that part and meet again find their crossing twice, and it's one event
+    <span class="kw">Given</span> st ← sweep_stats()
+    <span class="kw">When</span>  splits ← find_splits([seg(point(0, 0), point(10, 10), 1, 0), seg(point(10, 0), point(0, 10), 1, 0), seg(point(5, 1), point(5, 3), 1, 0)], "bentley-ottmann", st)
+    <span class="kw">Then</span>  splits = [[point(5, 5)], [point(5, 5)], []]
+    <span class="kw">And</span>   st.events = 7
+    <span class="kw">And</span>   st.tests = 4
+
+  <span class="kw">Scenario</span>: Bentley-Ottmann finds what every pair finds, testing neighbours only
+    <span class="kw">Given</span> segs ← struck_segments(1)
+    <span class="kw">And</span>   st ← sweep_stats()
+    <span class="kw">When</span>  splits ← find_splits(segs, "bentley-ottmann", st)
+    <span class="kw">Then</span>  splits = find_splits(segs, "brute", sweep_stats())
+    <span class="kw">And</span>   st.tests = 1659
+    <span class="kw">And</span>   st.events = 879
+
+  <span class="kw">Scenario</span>: The whole split, three ways, one answer
+    <span class="kw">Given</span> segs ← struck_segments(2)
+    <span class="kw">And</span>   brute ← sweep_stats()
+    <span class="kw">And</span>   sweep ← sweep_stats()
+    <span class="kw">And</span>   bo ← sweep_stats()
+    <span class="kw">When</span>  a ← split_segments(segs, "brute", brute)
+    <span class="kw">And</span>   b ← split_segments(segs, "sweep", sweep)
+    <span class="kw">And</span>   c ← split_segments(segs, "bentley-ottmann", bo)
+    <span class="kw">Then</span>  a = b
+    <span class="kw">And</span>   a = c
+    <span class="kw">And</span>   length(c) = 1559
+    <span class="kw">And</span>   brute.tests = 2012677
+    <span class="kw">And</span>   sweep.tests = 278841
+    <span class="kw">And</span>   bo.tests = 5224
+    <span class="kw">And</span>   bo.events = 2823
+    <span class="kw">And</span>   bo.passes = 2</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 22.8</span> The hard cases</h2>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>Numerical robustness is the entire difficulty, and floating point fails it on the first
+      case you try. The crossing of the segments from (2.6, 2.3) to (10, 4.7) and from (8.4, 4.8)
+      to (6.4, 1.5), computed in doubles, is a point that lies on neither of them: the cross
+      products are −3.6 × 10<sup>−15</sup> and 3.3 × 10<sup>−15</sup>. So the next test, "is this
+      point on that segment?", says no, and you add an epsilon. Now a point within the epsilon of a
+      segment is on it, and two points within the epsilon of each other are the same point, and
+      that isn't transitive: A is the same as B, B is the same as C, A isn't the same as C. There's
+      always an input that puts three points in a row like that, and then the result has a contour
+      that doesn't close, or a sliver of width 10<sup>−9</sup> with two crossings at each end.
+      Every serious polygon clipper ends up where this chapter started. Clipper, the library a great deal of
+      vector software leans on for this, works in 64-bit integers, rounds its crossings to whole
+      numbers, and multiplies in 128 bits where 64 run out. The grid has its own price, and it's
+      better to know it than to meet it. Every crossing moves by up to 1/512 of a pixel. A shape
+      thinner than the grid disappears. Rounding a crossing can make a new one, which is why
+      <code>split_segments</code> loops. And every coordinate has to fit in the grid's range.</p>
+  </div>
+
+  <p>The scenarios in this section are the cases that break boolean code written without a grid:
+    edges that coincide completely or in part, shapes that touch at one point, a corner resting on
+    an edge, a spike, and a shape thinner than the grid. Each has an exact answer here, and it's the
+    answer you'd draw by hand.</p>
+
+  <div class="test" data-feature="chapter22-robust.feature">
+    <p class="label">features/chapter22-robust.feature</p>
+<pre><code><span class="kw">Feature</span>: The hard cases
+  Every case here is one where boolean operations written in floating
+  point produce slivers, gaps or nonsense, and where the grid gives an
+  exact answer. float_crossing(a, b, c, d) is the trap: the crossing of
+  the line through a and b with the line through c and d, in pixels, in
+  floating point, a + (b - a) × t with t = cross(c - a, d - c) /
+  cross(b - a, d - c). The comparisons with it are written ± 0, exact.
+
+  <span class="kw">Scenario</span>: A crossing computed in floating point is on neither segment
+    <span class="kw">Given</span> a ← point(2.6, 2.3)
+    <span class="kw">And</span>   b ← point(10, 4.7)
+    <span class="kw">And</span>   c ← point(8.4, 4.8)
+    <span class="kw">And</span>   d ← point(6.4, 1.5)
+    <span class="kw">When</span>  p ← float_crossing(a, b, c, d)
+    <span class="kw">Then</span>  cross(b - a, p - a) ≠ 0 ± 0
+    <span class="kw">And</span>   cross(d - c, p - c) ≠ 0 ± 0
+
+  <span class="kw">Scenario</span>: Squares sharing an edge unite into one rectangle
+    <span class="kw">Given</span> a ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">And</span>   b ← polygon(point(10, 0), point(20, 0), point(20, 10), point(10, 10))
+    <span class="kw">Then</span>  point_lists(combine(a, "nonzero", b, "nonzero", "union")) = [[point(0, 0), point(20, 0), point(20, 10), point(0, 10)]]
+    <span class="kw">And</span>   point_lists(combine(a, "nonzero", b, "nonzero", "intersection")) = []
+
+  <span class="kw">Scenario</span>: Squares sharing part of an edge
+    <span class="kw">Given</span> a ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">And</span>   b ← polygon(point(10, 4), point(20, 4), point(20, 14), point(10, 14))
+    <span class="kw">Then</span>  point_lists(combine(a, "nonzero", b, "nonzero", "union")) = [[point(0, 0), point(10, 0), point(10, 4), point(20, 4), point(20, 14), point(10, 14), point(10, 10), point(0, 10)]]
+
+  <span class="kw">Scenario</span>: Squares touching at a corner share a point and nothing else
+    <span class="kw">Given</span> a ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">And</span>   b ← polygon(point(10, 10), point(20, 10), point(20, 20), point(10, 20))
+    <span class="kw">Then</span>  length(point_lists(combine(a, "nonzero", b, "nonzero", "union"))) = 2
+    <span class="kw">And</span>   point_lists(combine(a, "nonzero", b, "nonzero", "intersection")) = []
+
+  <span class="kw">Scenario</span>: Two triangles that share only their top point stay two contours
+    <span class="kw">Given</span> a ← polygon(point(5, 0), point(10, 8), point(7, 8))
+    <span class="kw">And</span>   b ← polygon(point(5, 0), point(3, 8), point(0, 8))
+    <span class="kw">Then</span>  point_lists(combine(a, "nonzero", b, "nonzero", "union")) = [[point(5, 0), point(3, 8), point(0, 8)], [point(5, 0), point(10, 8), point(7, 8)]]
+
+  <span class="kw">Scenario</span>: A corner resting on an edge
+    <span class="kw">Given</span> a ← polygon(point(0, 0), point(10, 0), point(10, 10), point(0, 10))
+    <span class="kw">And</span>   b ← polygon(point(5, 10), point(8, 15), point(2, 15))
+    <span class="kw">Then</span>  point_lists(combine(a, "nonzero", b, "nonzero", "union")) = [[point(0, 0), point(10, 0), point(10, 10), point(0, 10)], [point(5, 10), point(8, 15), point(2, 15)]]
+
+  <span class="kw">Scenario</span>: A spike that goes out and comes back adds nothing
+    <span class="kw">Then</span>  point_lists(simplify(polygon(point(0, 0), point(10, 0), point(10, 5), point(18, 5), point(10, 5), point(10, 10), point(0, 10)), "nonzero")) = [[point(0, 0), point(10, 0), point(10, 10), point(0, 10)]]
+
+  <span class="kw">Scenario</span>: A sliver thinner than the grid is gone, and one a grid unit thick stays
+    <span class="kw">Then</span>  point_lists(simplify(polygon(point(0, 0), point(10, 0), point(10, 0.001), point(0, 0.001)), "nonzero")) = []
+    <span class="kw">And</span>   point_lists(simplify(polygon(point(0, 0), point(10, 0), point(10, 0.003), point(0, 0.003)), "nonzero")) = [[point(0, 0), point(10, 0), point(10, 0.00390625), point(0, 0.00390625)]]</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 22.9</span> Putting it together</h2>
+
+  <p>The whole of <code>combine</code>, with any of the three finders inside
+    <code>find_splits</code>. It's twenty lines, and every line of it has a scenario.</p>
+
+<pre><code>combine(a, rule_a, b, rule_b, op):
+  segs ← merge_segments(path_segments(a, "a") + path_segments(b, "b"))
+  <span class="kw">loop</span>:
+    splits ← find_splits(segs, method, st)
+    <span class="kw">if</span> every list in splits is empty: <span class="kw">stop</span>
+    segs ← merge_segments(each segment cut at its splits, in order along it)
+  kept ← []
+  <span class="kw">for</span> each segment e of segs:
+    m ← e.lo + e.hi;  (wa, wb) ← (0, 0)                  <span class="cm">// the midpoint, doubled</span>
+    <span class="kw">for</span> each other segment f:
+      <span class="kw">if</span> 2 f.lo ≤ m &lt; 2 f.hi in the sweep's order <span class="kw">and</span> orient(2 f.lo, 2 f.hi, m) &gt; 0:
+        (wa, wb) ← (wa + f.wa, wb + f.wb)
+    out ← op_inside(op, inside_rule(wa, rule_a), inside_rule(wb, rule_b))
+    in  ← op_inside(op, inside_rule(wa + e.wa, rule_a), inside_rule(wb + e.wb, rule_b))
+    <span class="kw">if</span> out ≠ in: kept ← kept + [(e.lo, e.hi) <span class="kw">if</span> in <span class="kw">else</span> (e.hi, e.lo)]
+  <span class="kw">for</span> each contour of stitch(kept):
+    a closed subpath through its points, each coordinate ÷ 256</code></pre>
+
+  <p>The loop over every other segment makes the classification <em>n</em><sup>2</sup> again. The
+    reference does it with a sweep over the midpoints, keeping the segments whose range contains
+    the current one, which is the active list for the third time in this chapter; the answer is the
+    same either way.</p>
+
+  <p>The plate puts it to work on chapter 16's <em>g</em> and chapter 5's star, the star filled
+    even-odd so that its middle is a hole, which is the most awkward thing to hand an operation
+    that has to respect both fill rules. Union, intersection, difference and exclusive-or, left to
+    right. The magenta outline over each fill is the result path itself, and the fill is chapter 7
+    filling that path. Nothing here is a pixel operation. The result is still a path, and you could
+    draw it a thousand times bigger and get a crisp edge.</p>
+
+  <p>And because a boolean operation takes paths and answers a path, it composes. The seal is
+    sixty-one of them, with nothing drawn any other way: forty little circles united with a big one
+    to scallop the rim, a smaller circle cut out of the middle, a band added across it, the word
+    <em>BOOLEAN</em> exclusive-or'ed through the band, the star exclusive-or'ed through the top of the
+    ring, and a rosette of sixteen circles, each exclusive-or'ed into the last, whose checkerboard
+    comes from nothing but overlapping circles and the rule that twice inside is outside.</p>
+
+  <div class="test" data-feature="chapter22-plate.feature">
+    <p class="label">features/chapter22-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 22, and a seal
+  plate_glyph() is path A: Roboto's g, as chapter 16's glyph_path through
+  text_matrix(font, 200, 40, 140), flattened to 0.1 pixel, filled
+  nonzero. plate_star() is path B: chapter 5's star through
+  translation(49.5, 23.5) × translation(80.5, 80.5) × scaling(0.85, 0.85)
+  × translation(-80.5, -80.5), which scales it by 0.85 about its center
+  and moves the center to (130, 104), filled even-odd. op_panel(op) is a
+  200 by 200 canvas of chapter 16's paper with combine(A, "nonzero", B,
+  "evenodd", op) filled nonzero by chapter 7 and painted through in
+  chapter 7's orange ink; then hairlines, each chapter 13's
+  stroke_to_path(p, 1, "butt", "round", 4) filled nonzero and painted
+  through: A in chapter 16's dim, B in dim, and the result in magenta.
+  plate_22() is the four panels side by side, left to right "union",
+  "intersection", "difference", "xor", 800 by 200.
+
+  text_path(font, text, size, x, y) is one path holding, in order, the
+  subpaths of glyph_path(font, name, text_matrix(font, size, px, py), 0.1)
+  for every placement (name, px, py) of layout_run(font, text, size, x, y,
+  true). rosette(cx, cy, n, r, d) starts from an empty path and, for k
+  from 0 to n - 1, combines it by "xor" (both "nonzero") with
+  circle_path(cx + d cos(2πk / n), cy + d sin(2πk / n), r, 72). seal() is
+  480 by 480, and every step is a combine with both rules "nonzero"
+  unless one is named, in this order:
+    rim   ← circle_path(240, 240, 200, 120), then "union" with, for k
+            from 0 to 39, circle_path(240 + 200 cos(2πk / 40), 240 +
+            200 sin(2πk / 40), 16, 24), one at a time
+    ring  ← rim "difference" circle_path(240, 240, 168, 120)
+    s     ← ring "union" polygon((20, 196), (460, 196), (460, 284),
+            (20, 284))
+    s     ← s "xor" text_path(Roboto, "BOOLEAN", 84, 52, 270)
+    s     ← s "xor" chapter 5's star moved by translation(159.5, 23.5),
+            the star's rule "evenodd"
+    s     ← s "xor" rosette(240, 352, 16, 44, 36)
+  and the canvas is paper, s filled nonzero and painted through in
+  orange, then s's hairline 0.75 wide in magenta, made as above.
+
+  <span class="kw">Scenario</span>: Plate 22
+    <span class="kw">Given</span> c ← plate_22()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-22/plate-22.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 800
+    <span class="kw">And</span>   c.height = 200
+    <span class="kw">And</span>   ppm_pixel(p6, 129, 75) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 129, 114) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 156, 96) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 329, 75) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 329, 114) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 356, 96) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 529, 75) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 529, 114) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 556, 96) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 729, 75) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 729, 114) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 756, 96) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 5, 5) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+  <span class="kw">Scenario</span>: The seal
+    <span class="kw">Given</span> c ← seal()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-22/seal.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 480
+    <span class="kw">And</span>   c.height = 480
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 452) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 40) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 200) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 76, 215) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 430, 240) = (243, 196, 89) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 240, 352) = (39, 39, 44) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure>
+    <canvas id="fig225" role="img" aria-label="A round seal on dark paper, drawn in orange with thin magenta outlines: a scalloped rim, the word BOOLEAN knocked out of a band across the middle, a five-pointed star at the top whose points cut through the ring, and at the bottom a rosette of overlapping circles in a checkerboard of orange and dark"></canvas>
+    <figcaption><span class="fig">Figure 22.5</span> The seal: sixty-one calls to <code>combine</code> and one fill.</figcaption>
+  </figure>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate22" role="img" aria-label="Four panels side by side on dark paper, each showing a large lowercase g and a five-pointed star drawn as dim outlines, with the result of a boolean operation filled in orange and outlined in magenta. From left: union, the g and the star with the star's center pentagon also filled where the g covers it; intersection, only the parts of the star's points that overlap the g; difference, the g with the star's points cut out of it; exclusive or, everything in exactly one of the two"></canvas>
+    <figcaption><span class="fig">Plate 22</span> Union, intersection, difference, exclusion, as path operations and not pixel operations, so every result is still a path. The star is filled even-odd: its middle is a hole, and each operation knows it.</figcaption>
+  </figure>
+
+  <p>Every result on the plate is exact on its grid, and every one of them cost a sweep, a
+    classification and a stitch. The next chapter does all four operations again in one line each,
+    with no crossings to find at all, by giving up on paths.</p>
+
+  <nav class="endnav">
+    <a href="chapter-21.html">← 21 · Making It Fast</a>
+    <span>Chapter 22 · Boolean Path Operations</span>
+    <a href="chapter-23.html">Next: 23 · Distance Fields →</a>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+/* the figures draw from this subset of reference/chapter-16/roboto.json */
+
+function toByte(light){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255+0.5);}
+function lerp3(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+var GLYPHS={"units_per_em":2048,"ascender":1900,"descender":-500,"line_gap":0,"cmap":{"32":"space","65":"A","66":"B","69":"E","76":"L","78":"N","79":"O","80":"P","97":"a","100":"d","101":"e","102":"f","103":"g","104":"h","105":"i","110":"n","114":"r","116":"t"},"glyphs":{".notdef":{"advance":908,"contours":[[[808,0,true],[100,0,true],[100,1456,true],[808,1456,true]],[[754,84,true],[754,1371,true],[480,728,true]],[[154,1359,true],[154,96,true],[422,728,true]],[[194,54,true],[709,54,true],[451,660,true]],[[451,796,true],[709,1402,true],[194,1402,true]]],"components":[]},"A":{"advance":1336,"contours":[[[973,380,true],[363,380,true],[226,0,true],[28,0,true],[584,1456,true],[752,1456,true],[1309,0,true],[1112,0,true]],[[421,538,true],[916,538,true],[668,1219,true]]],"components":[]},"B":{"advance":1275,"contours":[[[169,0,true],[169,1456,true],[645,1456,true],[882,1456,false],[1121,1260,false],[1121,1068,true],[1121,966,false],[1005,809,false],[905,766,true],[1023,733,false],[1160,548,false],[1160,420,true],[1160,224,false],[906,0,false],[674,0,true]],[[361,681,true],[361,157,true],[678,157,true],[812,157,false],[967,296,false],[967,418,true],[967,681,false],[681,681,true]],[[361,835,true],[651,835,true],[777,835,false],[928,961,false],[928,1069,true],[928,1189,false],[788,1298,false],[645,1298,true],[361,1298,true]]],"components":[]},"E":{"advance":1164,"contours":[[[992,673,true],[361,673,true],[361,157,true],[1094,157,true],[1094,0,true],[169,0,true],[169,1456,true],[1084,1456,true],[1084,1298,true],[361,1298,true],[361,830,true],[992,830,true]]],"components":[]},"L":{"advance":1102,"contours":[[[362,157,true],[1052,157,true],[1052,0,true],[169,0,true],[169,1456,true],[362,1456,true]]],"components":[]},"N":{"advance":1460,"contours":[[[1288,0,true],[1095,0,true],[362,1122,true],[362,0,true],[169,0,true],[169,1456,true],[362,1456,true],[1097,329,true],[1097,1456,true],[1288,1456,true]]],"components":[]},"O":{"advance":1408,"contours":[[[1289,681,true],[1289,467,false],[1145,148,false],[881,-20,false],[705,-20,true],[533,-20,false],[267,149,false],[120,462,false],[118,668,true],[118,773,true],[118,983,false],[264,1305,false],[531,1476,false],[703,1476,true],[878,1476,false],[1145,1307,false],[1289,986,false],[1289,773,true]],[[1098,775,true],[1098,1034,false],[890,1311,false],[703,1311,true],[521,1311,false],[312,1034,false],[309,788,true],[309,681,true],[309,430,false],[520,143,false],[705,143,true],[891,143,false],[1095,414,false],[1098,667,true]]],"components":[]},"P":{"advance":1292,"contours":[[[361,570,true],[361,0,true],[169,0,true],[169,1456,true],[706,1456,true],[945,1456,false],[1216,1212,false],[1216,1011,true],[1216,799,false],[951,570,false],[704,570,true]],[[361,727,true],[706,727,true],[860,727,false],[1024,872,false],[1024,1009,true],[1024,1139,false],[860,1295,false],[717,1298,true],[361,1298,true]]],"components":[]},"a":{"advance":1114,"contours":[[[808,0,true],[792,32,false],[782,114,true],[653,-20,false],[474,-20,true],[314,-20,false],[109,161,false],[109,300,true],[109,469,false],[366,656,false],[599,656,true],[779,656,true],[779,741,true],[779,838,false],[663,953,false],[550,953,true],[451,953,false],[317,853,false],[317,782,true],[131,782,true],[131,863,false],[246,1014,false],[443,1102,false],[561,1102,true],[748,1102,false],[960,915,false],[964,751,true],[964,253,true],[964,104,false],[1002,16,true],[1002,0,true]],[[501,141,true],[588,141,false],[744,231,false],[779,303,true],[779,525,true],[634,525,true],[294,525,false],[294,326,true],[294,239,false],[410,141,false]]],"components":[]},"d":{"advance":1155,"contours":[[[95,550,true],[95,799,false],[331,1102,false],[522,1102,true],[712,1102,false],[823,972,true],[823,1536,true],[1008,1536,true],[1008,0,true],[838,0,true],[829,116,true],[718,-20,false],[520,-20,true],[332,-20,false],[95,288,false],[95,536,true]],[[280,529,true],[280,345,false],[432,137,false],[566,137,true],[742,137,false],[823,295,true],[823,792,true],[740,945,false],[568,945,true],[432,945,false],[280,735,false]]],"components":[]},"e":{"advance":1085,"contours":[[[589,-20,true],[369,-20,false],[93,269,false],[93,511,true],[93,545,true],[93,706,false],[216,959,false],[437,1102,false],[566,1102,true],[777,1102,false],[1011,824,false],[1011,565,true],[1011,488,true],[278,488,true],[282,328,false],[461,131,false],[599,131,true],[697,131,false],[833,211,false],[884,277,true],[997,189,true],[861,-20,false]],[[566,950,true],[454,950,false],[302,787,false],[284,640,true],[826,640,true],[826,654,true],[818,795,false],[682,950,false]]],"components":[]},"f":{"advance":711,"contours":[[[231,0,true],[231,939,true],[60,939,true],[60,1082,true],[231,1082,true],[231,1193,true],[231,1367,false],[417,1557,false],[587,1557,true],[651,1557,false],[714,1540,true],[704,1390,true],[657,1399,false],[604,1399,true],[514,1399,false],[416,1294,false],[416,1196,true],[416,1082,true],[647,1082,true],[647,939,true],[416,939,true],[416,0,true]]],"components":[]},"g":{"advance":1149,"contours":[[[96,550,true],[96,803,false],[330,1102,false],[523,1102,true],[721,1102,false],[832,962,true],[841,1082,true],[1010,1082,true],[1010,26,true],[1010,-184,false],[761,-426,false],[551,-426,true],[434,-426,false],[210,-326,false],[151,-239,true],[247,-128,true],[366,-275,false],[538,-275,true],[673,-275,false],[824,-123,false],[824,15,true],[824,108,true],[713,-20,false],[521,-20,true],[331,-20,false],[96,286,false]],[[282,529,true],[282,346,false],[432,137,false],[567,137,true],[742,137,false],[824,296,true],[824,790,true],[739,945,false],[569,945,true],[434,945,false],[282,735,false]]],"components":[]},"h":{"advance":1128,"contours":[[[325,951,true],[448,1102,false],[645,1102,true],[988,1102,false],[991,715,true],[991,0,true],[806,0,true],[806,716,true],[805,833,false],[700,945,false],[589,945,true],[499,945,false],[363,849,false],[325,771,true],[325,0,true],[140,0,true],[140,1536,true],[325,1536,true]]],"components":[]},"i":{"advance":497,"contours":[[[341,0,true],[156,0,true],[156,1082,true],[341,1082,true]],[[141,1369,true],[141,1414,false],[196,1476,false],[304,1476,false],[360,1414,false],[360,1324,false],[304,1264,false],[196,1264,false],[141,1324,false]]],"components":[]},"n":{"advance":1130,"contours":[[[315,1082,true],[321,946,true],[445,1102,false],[645,1102,true],[988,1102,false],[991,715,true],[991,0,true],[806,0,true],[806,716,true],[805,833,false],[700,945,false],[589,945,true],[499,945,false],[363,849,false],[325,771,true],[325,0,true],[140,0,true],[140,1082,true]]],"components":[]},"r":{"advance":693,"contours":[[[663,916,true],[621,923,false],[572,923,true],[390,923,false],[325,768,true],[325,0,true],[140,0,true],[140,1082,true],[320,1082,true],[323,957,true],[414,1102,false],[581,1102,true],[635,1102,false],[663,1088,true]]],"components":[]},"space":{"advance":507,"contours":[],"components":[]},"t":{"advance":669,"contours":[[[391,1344,true],[391,1082,true],[593,1082,true],[593,939,true],[391,939,true],[391,268,true],[391,203,false],[445,138,false],[510,138,true],[542,138,false],[598,150,true],[598,0,true],[525,-20,false],[456,-20,true],[332,-20,false],[206,130,false],[206,268,true],[206,939,true],[9,939,true],[9,1082,true],[206,1082,true],[206,1344,true]]],"components":[]}},"kern":[["A","O",-11],["A","t",-17],["E","d",-19],["E","e",-19],["E","f",-18],["E","g",-19],["L","A",19],["L","O",-65],["N","A",18],["O","A",-21],["P","A",-138],["P","a",-11],["P","d",-13],["P","e",-13],["P","g",-13],["P","t",14],["f","d",-24],["f","e",-24],["f","g",-24],["r","a",-40],["r","d",-19],["r","e",-19],["r","f",15],["r","g",-19],["r","t",50]]};
+function blit(ctx,pixels,pw,ph,scale,ox,oy){var img=ctx.createImageData(pw,ph);for(var i=0;i<pw*ph;i++){img.data[i*4]=pixels[i][0];img.data[i*4+1]=pixels[i][1];img.data[i*4+2]=pixels[i][2];img.data[i*4+3]=255;}var off=Plate.offcan(pw,ph);off.getContext('2d').putImageData(img,0,0);ctx.imageSmoothingEnabled=false;ctx.drawImage(off,ox,oy,pw*scale,ph*scale);}
+
+/* vectors and matrices (chapters 4 and 13) */
+function sub(a,b){return [a[0]-b[0],a[1]-b[1]];}
+function mag(v){return Math.sqrt(v[0]*v[0]+v[1]*v[1]);}
+function unit(a,b){var d=sub(b,a),m=mag(d);return [d[0]/m,d[1]/m];}
+function perp(v){return [-v[1],v[0]];}
+function crss(a,b){return a[0]*b[1]-a[1]*b[0];}
+function add(p,v,s){return [p[0]+v[0]*s,p[1]+v[1]*s];}
+function intersect(p1,d1,p2,d2){var den=crss(d1,d2);if(Math.abs(den)<1e-12)return null;var t=crss(sub(p2,p1),d2)/den;return add(p1,d1,t);}
+function arc(pts,c,a0,a1,r,steps){for(var k=0;k<=steps;k++){var a=a0+(a1-a0)*k/steps;pts.push([c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)]);}}
+function arcSteps(a0,a1){return Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/16)-1e-9));}
+function angBetween(a,b){var d=((b-a)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);return d>Math.PI?d-2*Math.PI:d;}
+function mat(a,b,c,d,e,f,g,h,i){return [a,b,c,d,e,f,g,h,i];}
+function mmul(m,n){var o=[];for(var r=0;r<3;r++)for(var c=0;c<3;c++){var s=0;for(var k=0;k<3;k++)s+=m[r*3+k]*n[k*3+c];o.push(s);}return o;}
+function apply(m,p){return [m[0]*p[0]+m[1]*p[1]+m[2],m[3]*p[0]+m[4]*p[1]+m[5]];}
+function translation(x,y){return mat(1,0,x,0,1,y,0,0,1);}
+function scaling(x,y){return mat(x,0,0,0,y,0,0,0,1);}
+
+/* curves (chapter 8) */
+function lerpP(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];}
+function decasteljau(pts,t){var left=[pts[0]],right=[pts[pts.length-1]],p=pts.slice();while(p.length>1){var q=[];for(var i=0;i<p.length-1;i++)q.push(lerpP(p[i],p[i+1],t));p=q;left.push(p[0]);right.push(p[p.length-1]);}return {at:p[0],left:left,right:right.reverse()};}
+function pointAt(c,t){return decasteljau(c,t).at;}
+function flatness(c){var a=c[0],b=c[c.length-1],dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy),w=0;for(var i=1;i<c.length-1;i++){var p=c[i],d=L===0?Math.hypot(p[0]-a[0],p[1]-a[1]):Math.abs((p[0]-a[0])*dy-(p[1]-a[1])*dx)/L;w=Math.max(w,d);}return w;}
+function flattenInto(c,tol,out){if(flatness(c)<=tol)out.push(c[c.length-1]);else{var d=decasteljau(c,0.5);flattenInto(d.left,tol,out);flattenInto(d.right,tol,out);}}
+function flatten(c,tol){var out=[c[0]];flattenInto(c,tol,out);return out;}
+function flattenIntoPath(pts,c,tol){var f=flatten(c,tol);if(pts.length&&pts[pts.length-1][0]===f[0][0]&&pts[pts.length-1][1]===f[0][1])f=f.slice(1);return pts.concat(f);}
+function transformCurve(c,m){return c.map(function(p){return apply(m,p);});}
+function quadBounds(c){var xs=[c[0][0],c[2][0]],ys=[c[0][1],c[2][1]];[0,1].forEach(function(k){var den=c[0][k]-2*c[1][k]+c[2][k];if(Math.abs(den)>1e-12){var t=(c[0][k]-c[1][k])/den;if(t>0&&t<1){var q=pointAt(c,t);(k?ys:xs).push(q[k]);}}});return [Math.min.apply(null,xs),Math.min.apply(null,ys),Math.max.apply(null,xs),Math.max.apply(null,ys)];}
+
+/* chapter 16: glyphs */
+function impliedPoints(contour){var out=[],n=contour.length;for(var i=0;i<n;i++){var cur=contour[i],nxt=contour[(i+1)%n];out.push(cur);if(!cur[2]&&!nxt[2])out.push([(cur[0]+nxt[0])/2,(cur[1]+nxt[1])/2,1]);}for(var k=0;k<out.length;k++)if(out[k][2])return out.slice(k).concat(out.slice(0,k));return out;}
+function contourCurves(contour){var pts=impliedPoints(contour),curves=[],n=pts.length,i=0;while(i<n){var a=pts[i],b=pts[(i+1)%n];if(b[2]){curves.push([[a[0],a[1]],[(a[0]+b[0])/2,(a[1]+b[1])/2],[b[0],b[1]]]);i+=1;}else{var c=pts[(i+2)%n];curves.push([[a[0],a[1]],[b[0],b[1]],[c[0],c[1]]]);i+=2;}}return curves;}
+function componentMatrix(t){return mat(t[0],t[2],t[4],t[1],t[3],t[5],0,0,1);}
+function glyphOutline(font,name){var g=font.glyphs[name],out=g.contours.map(contourCurves);g.components.forEach(function(comp){var m=componentMatrix(comp.transform);glyphOutline(font,comp.glyph).forEach(function(contour){out.push(contour.map(function(c){return transformCurve(c,m);}));});});return out;}
+function glyphBounds(font,name){var boxes=[];glyphOutline(font,name).forEach(function(contour){contour.forEach(function(c){boxes.push(quadBounds(c));});});if(!boxes.length)return [0,0,0,0];return [Math.min.apply(null,boxes.map(function(b){return b[0];})),Math.min.apply(null,boxes.map(function(b){return b[1];})),Math.max.apply(null,boxes.map(function(b){return b[2];})),Math.max.apply(null,boxes.map(function(b){return b[3];}))];}
+function textMatrix(font,size,x,y){var s=size/font.units_per_em;return mmul(translation(x,y),scaling(s,-s));}
+function glyphPath(font,name,m,tol){return glyphOutline(font,name).map(function(contour){var pts=[];contour.forEach(function(c){pts=flattenIntoPath(pts,transformCurve(c,m),tol);});return pts;});}
+function glyphNameOf(font,ch){return font.cmap[String(ch.charCodeAt(0))]||'.notdef';}
+/* the stroker (chapter 13), for emboldening */
+function segRect(a,b,h){var d=unit(a,b),n=perp(d);return [add(a,n,h),add(b,n,h),add(b,n,-h),add(a,n,-h)];}
+function joinShape(v,din,dout,h,join,ml){var turn=crss(din,dout);if(Math.abs(turn)<1e-12)return null;var s=turn>0?-1:1,nin=perp(din).map(function(x){return x*s;}),nout=perp(dout).map(function(x){return x*s;}),a=add(v,nin,h),b=add(v,nout,h);
+  if(join==='bevel')return [v,a,b];
+  if(join==='round'){var a0=Math.atan2(a[1]-v[1],a[0]-v[0]),a1=a0+angBetween(a0,Math.atan2(b[1]-v[1],b[0]-v[0]));var p=[v];arc(p,v,a0,a1,h,arcSteps(a0,a1));return p;}
+  var m=intersect(a,din,b,dout);if(m&&mag(sub(m,v))<=ml*h)return [v,a,m,b];return [v,a,b];}
+function capShape(p,dout,h,cap){var n=perp(dout);if(cap==='butt')return null;
+  if(cap==='square'){var l=add(p,n,h),r=add(p,n,-h);return [l,add(l,dout,h),add(r,dout,h),r];}
+  var a0=Math.atan2(n[1],n[0]),d=angBetween(a0,Math.atan2(dout[1],dout[0]));var a1=a0+(d>0?Math.PI:-Math.PI),pts=[];arc(pts,p,a0,a1,h,arcSteps(a0,a1));return pts;}
+function dedupe(pts){var o=[pts[0]];for(var i=1;i<pts.length;i++)if(mag(sub(pts[i],o[o.length-1]))>1e-9)o.push(pts[i]);return o;}
+function area(sp){var s=0;for(var i=0;i<sp.length;i++){var a=sp[i],b=sp[(i+1)%sp.length];s+=a[0]*b[1]-b[0]*a[1];}return s/2;}
+function strokeToPath(pts,closed,width,cap,join,ml){var h=width/2,subs=[];pts=dedupe(pts);if(closed&&pts.length>1&&mag(sub(pts[pts.length-1],pts[0]))<=1e-9)pts.pop();
+  function emit(sp){if(!sp)return;if(area(sp)>0)sp.reverse();subs.push(sp);}
+  if(pts.length<2){if(cap==='round'){var d=[];arc(d,pts[0],0,2*Math.PI,h,48);emit(d);}else if(cap==='square'){var c=pts[0];emit([[c[0]-h,c[1]-h],[c[0]+h,c[1]-h],[c[0]+h,c[1]+h],[c[0]-h,c[1]+h]]);}return subs;}
+  var segs=[];for(var i=0;i<pts.length-1;i++)segs.push([pts[i],pts[i+1]]);if(closed)segs.push([pts[pts.length-1],pts[0]]);
+  segs.forEach(function(s){emit(segRect(s[0],s[1],h));});
+  var dirs=segs.map(function(s){return unit(s[0],s[1]);}),nj=closed?segs.length:segs.length-1;
+  for(var k=0;k<nj;k++){var v=segs[(k+1)%segs.length][0];emit(joinShape(v,dirs[k],dirs[(k+1)%segs.length],h,join,ml));}
+  if(!closed){emit(capShape(pts[0],dirs[0].map(function(x){return -x;}),h,cap));emit(capShape(pts[pts.length-1],dirs[dirs.length-1],h,cap));}
+  return subs;}
+
+/* fill a list of closed subpaths (chapter 7, nonzero) */
+function edgesOf(subs){var out=[];subs.forEach(function(sp){var n=sp.length;for(var i=0;i<n;i++)out.push([sp[i],sp[(i+1)%n]]);});return out;}
+function fillSubs(subs,w,h){var acc={area:new Array(w*h).fill(0),cover:new Array(w*h).fill(0)};edgesOf(subs).forEach(function(e){var a=e[0],b=e[1];if(a[1]===b[1])return;var sign=a[1]>b[1]?1:-1,top=a[1]>b[1]?b:a,bot=a[1]>b[1]?a:b,slope=(bot[0]-top[0])/(bot[1]-top[1]);var first=Math.max(Math.floor(top[1]),0),last=Math.min(Math.ceil(bot[1])-1,h-1);for(var row=first;row<=last;row++){var y0=Math.max(top[1],row),y1=Math.min(bot[1],row+1),x0=top[0]+(y0-top[1])*slope,x1=top[0]+(y1-top[1])*slope,xa=Math.min(x0,x1),xb=Math.max(x0,x1),ca=Math.floor(xa),cb=Math.floor(xb);function ad(x,ar,co){if(x<0){x=0;ar=co;}if(x>=w)return;var idx=row*w+x;acc.area[idx]+=ar;acc.cover[idx]+=co;}var hg=sign*(y1-y0);if(ca===cb){var xm=(xa+xb)/2-ca;ad(ca,hg*(1-xm),hg);}else{var dx=xb-xa;for(var c=ca;c<=cb;c++){var lo=Math.max(xa,c),hi=Math.min(xb,c+1),sh=hg*(hi-lo)/dx,mm=(lo+hi)/2-c;ad(c,sh*(1-mm),sh);}}}});var cov=new Array(w*h).fill(0);for(var row=0;row<h;row++){var run=0;for(var x=0;x<w;x++){var idx=row*w+x;cov[idx]=Math.min(1,Math.abs(run+acc.area[idx]));run+=acc.cover[idx];}}return cov;}
+function kernOf(font,a,b){if(!font.kernMap){font.kernMap={};font.kern.forEach(function(k){font.kernMap[k[0]+'\u0001'+k[1]]=k[2];});}return font.kernMap[a+'\u0001'+b]||0;}
+function layoutRun(font,text,size,x,y,kerning){var s=size/font.units_per_em,out=[],pen=x,prev=null;for(var i=0;i<text.length;i++){var name=glyphNameOf(font,text[i]);if(kerning&&prev!==null)pen+=kernOf(font,prev,name)*s;out.push({name:name,x:pen,y:y});pen+=font.glyphs[name].advance*s;prev=name;}return out;}
+/* chapter 22: the grid, segments, splitting, classifying, stitching */
+var GRID=256;
+function grid(v){return Math.floor(v*GRID+0.5);}
+function lt(p,q){return p[1]<q[1]||(p[1]===q[1]&&p[0]<q[0]);}
+function orient(a,b,c){return (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);}
+function seg(a,b,wa,wb){return lt(b,a)?{l:b,h:a,wa:-wa,wb:-wb}:{l:a,h:b,wa:wa,wb:wb};}
+function pathSegments(p,wa,wb){var out=[];edgesOf(p).forEach(function(e){var l=[grid(e[0][0]),grid(e[0][1])],h=[grid(e[1][0]),grid(e[1][1])];if(l[0]!==h[0]||l[1]!==h[1])out.push(seg(l,h,wa,wb));});return out;}
+function roundDiv(n,d){var q=(2n*n+d)/(2n*d),r=(2n*n+d)%(2n*d);if(r<0n)q-=1n;return Number(q);}
+function crossing(s,t){var a=s.l,b=s.h,c=t.l,d=t.h,beta=BigInt(orient([0,0],[b[0]-a[0],b[1]-a[1]],[d[0]-c[0],d[1]-c[1]])),alpha=BigInt((c[0]-a[0])*(d[1]-c[1])-(c[1]-a[1])*(d[0]-c[0]));if(beta<0n){alpha=-alpha;beta=-beta;}
+  return [roundDiv(BigInt(a[0])*beta+BigInt(b[0]-a[0])*alpha,beta),roundDiv(BigInt(a[1])*beta+BigInt(b[1]-a[1])*alpha,beta)];}
+function same(p,q){return p[0]===q[0]&&p[1]===q[1];}
+function between(p,a,b){return lt(a,p)&&lt(p,b);}
+function meet(s,t){var a=s.l,b=s.h,c=t.l,d=t.h;
+  if(Math.max(a[0],b[0])<Math.min(c[0],d[0])||Math.max(c[0],d[0])<Math.min(a[0],b[0])||b[1]<c[1]||d[1]<a[1])return [[],[]];
+  var o1=orient(a,b,c),o2=orient(a,b,d),o3=orient(c,d,a),o4=orient(c,d,b),os=[],ot=[];
+  if(o1===0&&o2===0){[c,d].forEach(function(q){if(between(q,a,b))os.push(q);});[a,b].forEach(function(q){if(between(q,c,d))ot.push(q);});return [os,ot];}
+  if(o1*o2<0&&o3*o4<0){var p=crossing(s,t);return [same(p,a)||same(p,b)?[]:[p],same(p,c)||same(p,d)?[]:[p]];}
+  if(o1===0&&between(c,a,b))os.push(c);if(o2===0&&between(d,a,b))os.push(d);if(o3===0&&between(a,c,d))ot.push(a);if(o4===0&&between(b,c,d))ot.push(b);
+  return [os,ot];}
+function findSplits(segs){/* the active-list sweep; brute force finds the same */
+  var order=segs.map(function(s,i){return i;}).sort(function(i,j){var s=segs[i],t=segs[j];return s.l[1]-t.l[1]||s.l[0]-t.l[0]||s.h[1]-t.h[1]||s.h[0]-t.h[0];});
+  var splits={},active=[];function put(i,pts){pts.forEach(function(q){if(!same(q,segs[i].l)&&!same(q,segs[i].h))(splits[i]=splits[i]||[]).push(q);});}
+  order.forEach(function(i){var s=segs[i];active=active.filter(function(j){return lt(s.l,segs[j].h);});active.forEach(function(j){var m=meet(s,segs[j]);put(i,m[0]);put(j,m[1]);});active.push(i);});
+  return splits;}
+function along(s,pts){var l=s.l,h=s.h,seen={},u=[];pts.forEach(function(q){var k=q[0]+','+q[1];if(!seen[k]){seen[k]=1;u.push(q);}});
+  function dt(q){return (q[0]-l[0])*(h[0]-l[0])+(q[1]-l[1])*(h[1]-l[1]);}return u.sort(function(p,q){return dt(p)-dt(q)||p[1]-q[1]||p[0]-q[0];});}
+function merge(segs){var acc={},keys=[];segs.forEach(function(s){var k=s.l[1]+','+s.l[0]+','+s.h[1]+','+s.h[0];if(acc[k]){acc[k].wa+=s.wa;acc[k].wb+=s.wb;}else{acc[k]={l:s.l,h:s.h,wa:s.wa,wb:s.wb};keys.push(acc[k]);}});
+  return keys.filter(function(s){return s.wa!==0||s.wb!==0;}).sort(function(s,t){return s.l[1]-t.l[1]||s.l[0]-t.l[0]||s.h[1]-t.h[1]||s.h[0]-t.h[0];});}
+function splitSegments(segs){segs=merge(segs);for(;;){var sp=findSplits(segs),any=false,out=[];
+  segs.forEach(function(s,i){if(!sp[i]){out.push(s);return;}any=true;var ch=[s.l].concat(along(s,sp[i])).concat([s.h]);for(var k=0;k+1<ch.length;k++)if(!same(ch[k],ch[k+1]))out.push(seg(ch[k],ch[k+1],s.wa,s.wb));});
+  if(!any)return segs;segs=merge(out);}}
+function insideRule(w,rule){return rule==='nonzero'?w!==0:((w%2)+2)%2===1;}
+function opInside(op,a,b){return op==='union'?a||b:op==='intersection'?a&&b:op==='difference'?a&&!b:a!==b;}
+function windingBeside(segs,i){var e=segs[i],mx=e.l[0]+e.h[0],my=e.l[1]+e.h[1],wa=0,wb=0;
+  for(var j=0;j<segs.length;j++){if(j===i)continue;var f=segs[j],lx=2*f.l[0],ly=2*f.l[1],hx=2*f.h[0],hy=2*f.h[1];
+    if((ly<my||(ly===my&&lx<=mx))&&(my<hy||(my===hy&&mx<hx))&&orient([lx,ly],[hx,hy],[mx,my])>0){wa+=f.wa;wb+=f.wb;}}
+  return [[wa,wb],[wa+e.wa,wb+e.wb]];}
+function keepEdges(segs,ra,rb,op){var kept=[];segs.forEach(function(e,i){var w=windingBeside(segs,i),out=opInside(op,insideRule(w[0][0],ra),insideRule(w[0][1],rb)),inn=opInside(op,insideRule(w[1][0],ra),insideRule(w[1][1],rb));if(out!==inn)kept.push(inn?[e.l,e.h]:[e.h,e.l]);});return kept;}
+function halfOf(r,v){var cr=r[0]*v[1]-r[1]*v[0],dt=r[0]*v[0]+r[1]*v[1];return (cr<0||(cr===0&&dt>0))?0:1;}
+function stitch(kept){var order=kept.map(function(k,i){return i;}).sort(function(i,j){var a=kept[i],b=kept[j];return a[0][1]-b[0][1]||a[0][0]-b[0][0]||a[1][1]-b[1][1]||a[1][0]-b[1][0];});
+  var from={},used=[],dirs=kept.map(function(k){return [k[1][0]-k[0][0],k[1][1]-k[0][1]];}),out=[];order.forEach(function(k){var key=kept[k][0].join(',');(from[key]=from[key]||[]).push(k);});
+  order.forEach(function(k0){if(used[k0])return;var start=kept[k0][0],pts=[],k=k0;for(;;){used[k]=true;pts.push(kept[k][0]);var v=kept[k][1];if(same(v,start))break;
+      var d=dirs[k],r=[-d[0],-d[1]],best=null;(from[v.join(',')]||[]).forEach(function(j){if(used[j])return;if(best===null){best=j;return;}var hv=halfOf(r,dirs[j]),hb=halfOf(r,dirs[best]),b=dirs[best],w=dirs[j];if(hv<hb||(hv===hb&&b[0]*w[1]-b[1]*w[0]>0))best=j;});k=best;}
+    for(var changed=true;changed&&pts.length>=3;){changed=false;for(var q=0;q<pts.length;q++){var u=pts[(q-1+pts.length)%pts.length],c=pts[q],w=pts[(q+1)%pts.length];if((c[0]-u[0])*(w[1]-c[1])-(c[1]-u[1])*(w[0]-c[0])===0){pts.splice(q,1);changed=true;break;}}}
+    var f=0;for(var q=1;q<pts.length;q++)if(lt(pts[q],pts[f]))f=q;out.push(pts.slice(f).concat(pts.slice(0,f)));});
+  out.sort(function(a,b){for(var i=0;i<Math.min(a.length,b.length);i++){if(a[i][1]!==b[i][1])return a[i][1]-b[i][1];if(a[i][0]!==b[i][0])return a[i][0]-b[i][0];}return a.length-b.length;});
+  return out;}
+function combine(a,ra,b,rb,op){var segs=splitSegments(pathSegments(a,1,0).concat(pathSegments(b,0,1)));
+  return stitch(keepEdges(segs,ra,rb,op)).map(function(c){return c.map(function(q){return [q[0]/GRID,q[1]/GRID];});});}
+
+/* the renders */
+var PAPER=[0.02,0.02,0.025],INK=[0.9,0.55,0.1],DIM=[0.3,0.3,0.34],MAGENTA=[0.85,0.2,0.55];
+function Buf(w,h,paper){this.w=w;this.h=h;this.p=[];for(var i=0;i<w*h;i++)this.p.push(paper.slice());}
+Buf.prototype.paint=function(cov,col){for(var i=0;i<this.w*this.h;i++){var k=cov[i];if(k>0)this.p[i]=lerp3(this.p[i],col,k);}};
+Buf.prototype.bytes=function(){return this.p.map(function(c){return c.map(toByte);});};
+function hairline(b,p,col,width){var subs=[];p.forEach(function(sp){subs=subs.concat(strokeToPath(sp,true,width,'butt','round',4));});b.paint(fillSubs(subs,b.w,b.h),col);}
+function star(){var p=[];for(var k=0;k<5;k++){var a=(-90+144*k)*(Math.PI/180);p.push([80.5+70*Math.cos(a),80.5+70*Math.sin(a)]);}return [p];}
+function circlePath(cx,cy,r,n){var p=[];for(var k=0;k<n;k++){var a=2*Math.PI*k/n;p.push([cx+r*Math.cos(a),cy+r*Math.sin(a)]);}return [p];}
+function transformPath(p,m){return p.map(function(sp){return sp.map(function(q){return apply(m,q);});});}
+function polygon(pts){return [pts];}
+function textPath(font,text,size,x,y){var out=[];layoutRun(font,text,size,x,y,true).forEach(function(pl){out=out.concat(glyphPath(font,pl.name,textMatrix(font,size,pl.x,pl.y),0.1));});return out;}
+function plateGlyph(){return glyphPath(GLYPHS,glyphNameOf(GLYPHS,'g'),textMatrix(GLYPHS,200,40,140),0.1);}
+function plateStar(){return transformPath(star(),mmul(mmul(mmul(translation(130-80.5,104-80.5),translation(80.5,80.5)),scaling(0.85,0.85)),translation(-80.5,-80.5)));}
+var OPS=['union','intersection','difference','xor'];
+function opPanel(op){var b=new Buf(200,200,PAPER),a=plateGlyph(),s=plateStar(),r=combine(a,'nonzero',s,'evenodd',op);b.paint(fillSubs(r,200,200),INK);hairline(b,a,DIM,1);hairline(b,s,DIM,1);hairline(b,r,MAGENTA,1);return b;}
+function plate22(){var W=800,H=200,out=[];for(var i=0;i<W*H;i++)out.push(null);OPS.forEach(function(op,k){var g=opPanel(op).bytes();for(var y=0;y<H;y++)for(var x=0;x<200;x++)out[y*W+200*k+x]=g[y*200+x];});return {bytes:out,w:W,h:H};}
+function unionAll(ps){var out=ps[0];for(var i=1;i<ps.length;i++)out=combine(out,'nonzero',ps[i],'nonzero','union');return out;}
+function rosette(cx,cy,n,r,d){var out=[];for(var k=0;k<n;k++){var a=2*Math.PI*k/n;out=combine(out,'nonzero',circlePath(cx+d*Math.cos(a),cy+d*Math.sin(a),r,72),'nonzero','xor');}return out;}
+function sealPath(){var cs=[circlePath(240,240,200,120)];for(var k=0;k<40;k++){var a=2*Math.PI*k/40;cs.push(circlePath(240+200*Math.cos(a),240+200*Math.sin(a),16,24));}
+  var ring=combine(unionAll(cs),'nonzero',circlePath(240,240,168,120),'nonzero','difference');
+  var s=combine(ring,'nonzero',polygon([[20,196],[460,196],[460,284],[20,284]]),'nonzero','union');
+  s=combine(s,'nonzero',textPath(GLYPHS,'BOOLEAN',84,52,270),'nonzero','xor');
+  s=combine(s,'nonzero',transformPath(star(),translation(240-80.5,104-80.5)),'evenodd','xor');
+  return combine(s,'nonzero',rosette(240,352,16,44,36),'nonzero','xor');}
+function seal(){var b=new Buf(480,480,PAPER),s=sealPath();b.paint(fillSubs(s,480,480),INK);hairline(b,s,MAGENTA,0.75);return {bytes:b.bytes(),w:480,h:480};}
+
+/* the benchmark of §22.6 */
+function struckLine(n){var words=[];for(var i=0;i<n;i++)words.push('Pathfinder');var text=textPath(GLYPHS,words.join(' '),120/n,20,160),bars=[];
+  for(var k=0;k<14*n;k++){var x=-40+48*k/n;bars.push([[x,100],[x+22/n,100],[x-40/n,200],[x-62/n,200]]);}return [text,bars];}
+
+function fit(ctx,g,w,h){var sc=Math.max(1,Math.floor(Math.min(w/g.w,h/g.h)));if(g.w*sc>w)sc=w/g.w;blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,(h-g.h*sc)/2);}
+function segLine(ctx,a,b,tr){ctx.beginPath();ctx.moveTo(tr(a)[0],tr(a)[1]);ctx.lineTo(tr(b)[0],tr(b)[1]);ctx.stroke();}
+function dot(ctx,q,r,col,ring){ctx.beginPath();ctx.arc(q[0],q[1],r,0,2*Math.PI);if(ring){ctx.strokeStyle=col;ctx.lineWidth=1.4;ctx.stroke();}else{ctx.fillStyle=col;ctx.fill();}}
+function arrow(ctx,a,b,col){var d=unit(a,b),m=lerpP(a,b,0.58),n=perp(d);ctx.fillStyle=col;ctx.beginPath();ctx.moveTo(m[0]+d[0]*5,m[1]+d[1]*5);ctx.lineTo(m[0]-d[0]*3+n[0]*3.5,m[1]-d[1]*3+n[1]*3.5);ctx.lineTo(m[0]-d[0]*3-n[0]*3.5,m[1]-d[1]*3-n[1]*3.5);ctx.closePath();ctx.fill();}
+
+/* ---------- Figure 22.1: four ways to meet ---------- */
+Plate.add('fig221', 0.24, function (ctx, w, h, p) {
+  var cases=[['CROSS',[1,1],[9,5],[1,5],[9,1],0],['TOUCH',[1,4],[9,4],[7,0],[5,4],0],['OVERLAP',[1,3],[6,3],[4,3],[9,3],0.35],['END',[1,5],[5,1],[5,1],[9,5],0]];
+  var pw=w/4,s=Math.min(pw/10,(h-24)/6);
+  cases.forEach(function(c,k){var ox=k*pw+(pw-10*s)/2,oy=4;function tr(q){return [ox+q[0]*s,oy+q[1]*s];}function trT(q){return [ox+q[0]*s,oy+(q[1]+c[5])*s];}
+    var S=seg(c[1],c[2],1,0),T=seg(c[3],c[4],0,1),m=meet(S,T);
+    ctx.lineWidth=2;ctx.strokeStyle=p.ink2;segLine(ctx,c[1],c[2],tr);ctx.strokeStyle=p.cyan;segLine(ctx,c[3],c[4],trT);
+    m[0].forEach(function(q){dot(ctx,tr(q),4,p.magenta);});m[1].forEach(function(q){dot(ctx,trT(q),4,p.magenta);});
+    Plate.label(ctx,c[0],ox+5*s,h-6,p.ink3,9.5,'center');});
+});
+
+/* ---------- Figure 22.2: rounding can make a new meeting ---------- */
+Plate.add('fig222', 0.5, function (ctx, w, h, p) {
+  var segs=merge([seg([2,0],[10,12],1,0),seg([9,0],[6,7],1,0),seg([7,4],[3,7],1,0)]),sp=findSplits(segs),cut=[];
+  segs.forEach(function(s,i){var ch=[s.l].concat(sp[i]?along(s,sp[i]):[]).concat([s.h]);for(var k=0;k+1<ch.length;k++)cut.push(seg(ch[k],ch[k+1],1,0));});
+  var pw=w/2,s=Math.min((pw-20)/12,(h-26)/12);
+  [0,1].forEach(function(k){var ox=k*pw+(pw-12*s)/2,oy=6;function tr(q){return [ox+q[0]*s,oy+q[1]*s];}
+    for(var gy=0;gy<=12;gy++)for(var gx=0;gx<=12;gx++)dot(ctx,tr([gx,gy]),1,p.rule);
+    ctx.lineWidth=1.6;(k?cut:segs).forEach(function(q){ctx.strokeStyle=(k&&q.l[0]===9&&q.h[0]===6)?p.cyan:p.ink2;segLine(ctx,q.l,q.h,tr);});
+    if(!k){[[144/23,147/23],[49/9,31/6]].forEach(function(q){dot(ctx,tr(q),4,p.ink,true);});[[6,6],[5,5]].forEach(function(q){dot(ctx,tr(q),3,p.magenta);});}
+    else{dot(ctx,tr([7,4]),5,p.cyan,true);}
+    Plate.label(ctx,k?'AFTER THE FIRST PASS':'THE FIRST PASS',ox+6*s,h-6,p.ink3,9.5,'center');});
+});
+
+/* ---------- Figure 22.3: the windings beside an edge ---------- */
+Plate.add('fig223', 0.62, function (ctx, w, h, p) {
+  var A=[[[0,0],[10,0],[10,10],[0,10]]],B=[[[5,5],[15,5],[15,15],[5,15]]],segs=splitSegments(pathSegments(A,1,0).concat(pathSegments(B,0,1))),kept=keepEdges(segs,'nonzero','nonzero','difference');
+  var s=Math.min((w-120)/15,(h-20)/15)/GRID,ox=(w-15*GRID*s)/2-30,oy=10;function tr(q){return [ox+q[0]*s,oy+q[1]*s];}
+  ctx.lineWidth=1.2;ctx.strokeStyle=p.ink3;segs.forEach(function(q){segLine(ctx,q.l,q.h,tr);});
+  ctx.lineWidth=2.4;ctx.strokeStyle=p.magenta;kept.forEach(function(k){segLine(ctx,k[0],k[1],tr);arrow(ctx,tr(k[0]),tr(k[1]),p.magenta);});
+  var i=-1;segs.forEach(function(q,j){if(q.l[0]===1280&&q.l[1]===1280&&q.h[0]===2560&&q.h[1]===1280)i=j;}),e=segs[i],wb=windingBeside(segs,i),m=tr([(e.l[0]+e.h[0])/2,e.l[1]]);
+  ctx.setLineDash([4,3]);ctx.lineWidth=1.2;ctx.strokeStyle=p.cyan;ctx.beginPath();ctx.moveTo(m[0],m[1]);ctx.lineTo(m[0]+12,m[1]-3);ctx.lineTo(w-8,m[1]-3);ctx.stroke();ctx.setLineDash([]);dot(ctx,m,4,p.cyan);
+  Plate.label(ctx,'A '+wb[0][0]+' · B '+wb[0][1],m[0]-4,m[1]-8,p.ink,10,'right');Plate.label(ctx,'A '+wb[1][0]+' · B '+wb[1][1],m[0]-4,m[1]+16,p.ink,10,'right');
+  Plate.label(ctx,'A',tr([600,700])[0],tr([600,700])[1],p.ink3,11);Plate.label(ctx,'B',tr([3500,3700])[0],tr([3500,3700])[1],p.ink3,11);
+});
+
+/* ---------- Figure 22.4: one row of the benchmark ---------- */
+Plate.add('fig224', 0.3, function (ctx, w, h, p) {
+  var sl=struckLine(1),segs=merge(pathSegments(sl[0],1,0).concat(pathSegments(sl[1],0,1))),Y=128*GRID,s=Math.min((w-8)/715,(h-22)/140)/GRID,ox=(w-715*GRID*s)/2+105*GRID*s,oy=4-66*GRID*s;
+  function tr(q){return [ox+q[0]*s,oy+q[1]*s];}
+  var act=segs.filter(function(q){return q.l[1]<=Y&&Y<q.h[1];}),xAt=function(q){return q.l[0]+(Y-q.l[1])*(q.h[0]-q.l[0])/(q.h[1]-q.l[1]);};act.sort(function(a,b){return xAt(a)-xAt(b);});
+  ctx.lineWidth=1;ctx.strokeStyle=p.ink3;segs.forEach(function(q){if(act.indexOf(q)<0)segLine(ctx,q.l,q.h,tr);});
+  ctx.lineWidth=1.8;ctx.strokeStyle=p.cyan;act.forEach(function(q){segLine(ctx,q.l,q.h,tr);});
+  var y0=tr([0,Y])[1];ctx.strokeStyle=p.ink2;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(4,y0);ctx.lineTo(w-4,y0);ctx.stroke();
+  var k=Math.floor(act.length/4)+1;for(var j=k;j<Math.floor(3*act.length/4);j++)if(xAt(act[j])-xAt(act[j-1])>xAt(act[k])-xAt(act[k-1]))k=j;ctx.strokeStyle=p.magenta;ctx.lineWidth=2.4;[k-1,k].forEach(function(j){segLine(ctx,act[j].l,act[j].h,tr);});
+  var nx=tr([(xAt(act[k-1])+xAt(act[k]))/2,Y])[0];ctx.beginPath();ctx.moveTo(nx,y0-8);ctx.lineTo(nx,y0+8);ctx.stroke();
+  Plate.label(ctx,'ACTIVE: '+act.length,6,h-6,p.cyan,9.5);Plate.label(ctx,'NEIGHBOURS: 2',w-6,h-6,p.magenta,9.5,'right');
+});
+
+/* ---------- Figure 22.5: the seal ---------- */
+Plate.add('fig225', 1, function (ctx, w, h, p) { fit(ctx,seal(),w,h); });
+
+/* ---------- Plate 22 ---------- */
+Plate.add('plate22', 0.25, function (ctx, w, h, p) { fit(ctx,plate22(),w,h); });
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [toByte, lerp3, blit, sub, mag, unit, perp, crss, add, intersect, arc, arcSteps, angBetween, mat, mmul, apply, translation, scaling, lerpP, decasteljau, pointAt, flatness, flattenInto, flatten, flattenIntoPath, transformCurve, impliedPoints, contourCurves, componentMatrix, glyphOutline, textMatrix, glyphPath, glyphNameOf, segRect, joinShape, capShape, dedupe, area, strokeToPath, edgesOf, fillSubs, kernOf, layoutRun,
+   grid, lt, orient, seg, pathSegments, roundDiv, crossing, same, between, meet, findSplits, along, merge, splitSegments, insideRule, opInside, windingBeside, keepEdges, halfOf, stitch, combine,
+   Buf, hairline, star, circlePath, transformPath, polygon, textPath, plateGlyph, plateStar, opPanel, plate22, unionAll, rosette, sealPath, seal, struckLine, fit].map(function (f) { return f.toString(); }).join('\n\n'));
+</script>
+</body>
+</html>
