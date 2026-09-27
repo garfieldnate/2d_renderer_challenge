@@ -8402,6 +8402,10 @@ pub fn paint_server(root: &Element, reference: &str, bbox: (f64, f64, f64, f64),
     if stops.is_empty() {
         return None;
     }
+    let last = stops[stops.len() - 1].color;
+    if stops.len() == 1 {
+        return Some(solid(last));
+    }
     let mut m = ctm;
     if attribute(el, "gradientUnits") != Some("userSpaceOnUse") {
         let (x0, y0, x1, y1) = bbox;
@@ -8411,10 +8415,6 @@ pub fn paint_server(root: &Element, reference: &str, bbox: (f64, f64, f64, f64),
         m = m * translation(x0, y0) * scaling(x1 - x0, y1 - y0);
     }
     m = m * parse_transform(attribute(el, "gradientTransform"));
-    let last = stops[stops.len() - 1].color;
-    if stops.len() == 1 {
-        return Some(solid(last));
-    }
     let ext = match attribute(el, "spreadMethod") {
         Some("reflect") => "reflect",
         Some("repeat") => "repeat",

@@ -32,6 +32,21 @@ fn the_copies_draw_exactly_what_blending_would_have() {
 }
 
 #[test]
+fn a_solid_tile_cut_short_by_the_canvas_copies_only_the_pixels_on_the_canvas() {
+    let t = fill_path_tiled(
+        &polygon(&[point(-10.0, -10.0), point(50.0, -10.0), point(50.0, 50.0), point(-10.0, 50.0)]),
+        "nonzero",
+        40,
+        40,
+        &mut stats(),
+    );
+    let mut st = stats();
+    draw_tiled(&mut layer(40, 40), &t, &solid(color(1.0, 0.0, 0.0)), 1.0, &mut st);
+    assert_eq!(st.copies, 960);
+    assert_eq!(st.blends, 640);
+}
+
+#[test]
 fn at_half_alpha_nothing_is_copied() {
     let t = fill_path_tiled(&sq(4.0, 60.0), "nonzero", 64, 64, &mut stats());
     let mut st = stats();

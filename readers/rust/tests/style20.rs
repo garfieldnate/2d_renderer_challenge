@@ -101,3 +101,16 @@ fn dash_arrays_rules_caps_and_joins() {
     assert!(approx_eq(s.stroke_dashoffset, 1.5));
     assert_eq!(s.fill, SvgPaint::None);
 }
+
+#[test]
+fn opacities_are_clamped_a_miter_limit_below_1_is_ignored_and_so_is_anything_that_doesnt_parse() {
+    let root = parse_xml("<g stroke-width='3' fill-rule='evenodd' stroke-miterlimit='6'><rect opacity='2' fill-opacity='-1' stroke-opacity='0.5' stroke-miterlimit='0.5' stroke-width='wide' fill-rule='odd'/></g>");
+    let gs = computed_style(&root, &initial_style());
+    let rs = computed_style(&children(&root)[0], &gs);
+    assert!(approx_eq(rs.opacity, 1.0));
+    assert!(approx_eq(rs.fill_opacity, 0.0));
+    assert!(approx_eq(rs.stroke_opacity, 0.5));
+    assert!(approx_eq(rs.stroke_miterlimit, 6.0));
+    assert!(approx_eq(rs.stroke_width, 3.0));
+    assert_eq!(rs.fill_rule, "evenodd");
+}

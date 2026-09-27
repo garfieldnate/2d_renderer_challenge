@@ -89,6 +89,22 @@ fn curves_are_flattened_after_the_transform_so_a_bigger_curve_gets_more_points()
         subpaths(&build_path(&path_commands("M0 0 Q10 0 10 10"), scaling(10.0, 10.0), 0.1))[0].points.len(),
         33
     );
+    assert_eq!(
+        subpaths(&build_path(&path_commands("M0 0 C10 0 10 10 0 10"), identity(), 0.1))[0].points.len(),
+        17
+    );
+    assert_eq!(
+        subpaths(&build_path(&path_commands("M0 0 C10 0 10 10 0 10"), scaling(10.0, 10.0), 0.1))[0]
+            .points
+            .len(),
+        33
+    );
+    assert_eq!(
+        subpaths(&build_path(&path_commands("M0 0 A5 5 0 0 1 10 0"), scaling(10.0, 10.0), 0.1))[0]
+            .points
+            .len(),
+        33
+    );
 }
 
 #[test]
@@ -96,6 +112,10 @@ fn an_arc_in_a_path_ends_exactly_at_its_end_point() {
     let p = build_path(&path_commands("M0 0 A5 5 0 0 1 10 0"), identity(), 0.1);
     assert_eq!(subpaths(&p)[0].points.len(), 17);
     assert!(tuples_eq(subpaths(&p)[0].points[16], point(10.0, 0.0)));
+    assert!(tuples_eq(
+        arc_cubics(8.3, 1.1, 3.3, 3.3, 0.0, false, true, 5.0, 4.4)[0].points[3],
+        point(5.0, 4.4)
+    ));
     assert!(tuples_eq(subpaths(&p)[0].points[8], point(5.0, -5.0)));
 }
 

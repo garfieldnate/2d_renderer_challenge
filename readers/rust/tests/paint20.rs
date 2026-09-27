@@ -107,4 +107,8 @@ fn when_theres_nothing_to_paint_with_and_when_theres_one_colour() {
     assert!(paint_server(&root, "url(#k)", BOX, identity()).is_none());
     assert!(paint_server(&root, "url(#missing)", BOX, identity()).is_none());
     assert!(paint_server(&root, "url(#a)", (0.0, 0.0, 10.0, 0.0), identity()).is_none());
+    assert_color(
+        paint_at(&paint_server(&root, "url(#one)", (0.0, 0.0, 10.0, 0.0), identity()).unwrap(), 0.0, 0.0),
+        color(1.0, 0.0, 0.0),
+    );
 }

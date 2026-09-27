@@ -68,6 +68,13 @@ fn each_clip_shape_has_its_own_clip_rule() {
 }
 
 #[test]
+fn a_clips_shapes_take_their_style_from_the_clippath() {
+    let c = render_svg("<svg viewBox='0 0 10 10'><clipPath id='c' clip-rule='evenodd'><path d='M0 0H10V10H0Z M2 2H8V8H2Z'/></clipPath><rect width='10' height='10' fill='red' clip-path='url(#c)'/></svg>", 10, 10);
+    assert_px(&c, 0, 0, color(1.0, 0.0, 0.0));
+    assert_px(&c, 5, 5, color(1.0, 1.0, 1.0));
+}
+
+#[test]
 fn a_clip_lives_in_the_user_space_of_the_element_that_uses_it() {
     let u = render_svg("<svg viewBox='0 0 8 4'><clipPath id='c'><rect width='2' height='4'/></clipPath><rect width='4' height='4' fill='red' clip-path='url(#c)' transform='translate(4 0)'/></svg>", 8, 4);
     let t = render_svg("<svg viewBox='0 0 4 4'><clipPath id='c' transform='translate(2 0)'><rect width='2' height='4'/></clipPath><rect width='4' height='4' fill='red' clip-path='url(#c)'/></svg>", 4, 4);

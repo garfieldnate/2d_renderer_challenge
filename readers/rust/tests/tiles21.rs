@@ -33,6 +33,9 @@ fn a_horizontal_edge_makes_a_tile_partial_and_an_edge_off_the_canvas_deposits_no
     assert_eq!(t[0], ["partial", "solid", "solid", "solid"]);
     assert_eq!(t[2], ["partial", "partial", "partial", "partial"]);
     assert_eq!(t[3], ["empty", "empty", "empty", "empty"]);
+    let s = sq(0.0, 0.0, 64.0, 40.0);
+    assert_eq!(coverage_in(&fill_path_tiled(&s, "nonzero", 64, 64, &mut stats()), 50, 20), 1.0);
+    assert_eq!(coverage_in(&fill_path_tiled(&s, "nonzero", 64, 64, &mut stats()), 20, 50), 0.0);
 }
 
 #[test]

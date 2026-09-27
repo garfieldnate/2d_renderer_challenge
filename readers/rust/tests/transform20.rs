@@ -51,4 +51,5 @@ fn nothing_or_anything_broken_is_the_identity() {
     assert!(matrices_eq(&t("rotate(30 1)"), &identity()));
     assert!(matrices_eq(&t("translate(1 2) bogus(3)"), &identity()));
     assert!(matrices_eq(&t("scale(2"), &identity()));
+    assert!(matrices_eq(&t("translate(1 2 x)"), &identity()));
 }

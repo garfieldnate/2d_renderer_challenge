@@ -45,6 +45,10 @@ fn slice_fills_the_viewport_and_spills() {
 fn none_stretches_each_axis_on_its_own() {
     let m = view_box_matrix(Some("0 0 60 80"), Some("none"), 120, 90);
     assert!(matrices_eq(&m, &scaling(2.0, 1.125)));
+    assert!(tuples_eq(
+        view_box_matrix(Some("10 20 60 80"), Some("none"), 120, 90) * point(10.0, 20.0),
+        point(0.0, 0.0)
+    ));
 }
 
 #[test]

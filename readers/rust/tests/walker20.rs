@@ -45,6 +45,17 @@ fn dashes_are_measured_in_user_space_too() {
 }
 
 #[test]
+fn the_dash_offset_moves_the_pattern_along_the_path() {
+    let c = render_svg("<svg viewBox='0 0 10 2'><line x1='0' y1='1' x2='10' y2='1' stroke='black' stroke-width='2' stroke-dasharray='2 3' stroke-dashoffset='1'/></svg>", 10, 2);
+    assert_px(&c, 0, 1, color(0.0, 0.0, 0.0));
+    assert_px(&c, 1, 1, color(1.0, 1.0, 1.0));
+    assert_px(&c, 3, 1, color(1.0, 1.0, 1.0));
+    assert_px(&c, 4, 1, color(0.0, 0.0, 0.0));
+    assert_px(&c, 5, 1, color(0.0, 0.0, 0.0));
+    assert_px(&c, 6, 1, color(1.0, 1.0, 1.0));
+}
+
+#[test]
 fn caps_and_fill_rules_reach_the_fill_and_the_stroker() {
     let c = render_svg("<svg viewBox='0 0 10 4'><line x1='2' y1='2' x2='8' y2='2' stroke='black' stroke-width='2' stroke-linecap='square'/></svg>", 10, 4);
     let e = render_svg("<svg viewBox='0 0 10 10'><path fill-rule='evenodd' d='M0 0H10V10H0Z M2 2H8V8H2Z'/></svg>", 10, 10);
