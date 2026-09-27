@@ -214,3 +214,11 @@ details.src pre code{font-size:11px;line-height:1.55;color:var(--ink-2)}
 @media (prefers-reduced-motion:reduce){
   *{animation-duration:.001ms !important;transition-duration:.001ms !important}
 }
+
+/* ---- reference tables (chapter 20's properties and colours) --------- */
+.tablewrap{overflow-x:auto;margin:18px 0 26px}
+table.props{border-collapse:collapse;font-size:15px;width:100%}
+table.props th,table.props td{text-align:left;padding:5px 10px;border-bottom:1px solid var(--rule-2);vertical-align:top}
+table.props th{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:normal;border-bottom:1px solid var(--rule)}
+table.props code{font-size:13.5px}
+@media (max-width:640px){table.props{font-size:14px} table.props th,table.props td{padding:4px 6px}}

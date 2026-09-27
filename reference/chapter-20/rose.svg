@@ -1,0 +1,190 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <defs>
+    <radialGradient id="stone" gradientUnits="userSpaceOnUse" cx="200" cy="200" r="200" fx="150" fy="140">
+      <stop offset="0" stop-color="#8d8577"/>
+      <stop offset="0.8" stop-color="#4a443c"/>
+      <stop offset="1" stop-color="#2a2622"/>
+    </radialGradient>
+    <radialGradient id="heart" cx="0.5" cy="0.5" r="0.5" fx="0.4" fy="0.35">
+      <stop offset="0" stop-color="#fff2b0"/>
+      <stop offset="0.6" stop-color="#f0a818"/>
+      <stop offset="1" stop-color="#9a4a08"/>
+    </radialGradient>
+    <radialGradient id="blue" cx="0.5" cy="0.9" r="0.9">
+      <stop offset="0" stop-color="#7fc8ff"/>
+      <stop offset="0.5" stop-color="#1f5fbf"/>
+      <stop offset="1" stop-color="#0a1f5c"/>
+    </radialGradient>
+    <radialGradient id="ruby" cx="0.5" cy="0.2" r="0.8">
+      <stop offset="0" stop-color="#ff9aa8"/>
+      <stop offset="0.55" stop-color="#c4122e"/>
+      <stop offset="1" stop-color="#4a0414"/>
+    </radialGradient>
+    <linearGradient id="emerald" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b6f5a0"/>
+      <stop offset="0.5" stop-color="#1e9a4a"/>
+      <stop offset="1" stop-color="#06401e"/>
+    </linearGradient>
+    <radialGradient id="rings" gradientUnits="userSpaceOnUse" cx="200" cy="200" r="14" spreadMethod="reflect">
+      <stop offset="0" stop-color="#5a2a8a"/>
+      <stop offset="1" stop-color="#b070e0"/>
+    </radialGradient>
+    <clipPath id="window">
+      <circle cx="200" cy="200" r="176"/>
+    </clipPath>
+  </defs>
+  <rect width="400" height="400" fill="url(#stone)"/>
+  <g clip-path="url(#window)" stroke="#141210" stroke-linejoin="round">
+    <circle cx="200" cy="200" r="176" fill="url(#rings)" stroke="none"/>
+    <g transform="translate(200 200)">
+      <g transform="rotate(0)">
+        <path d="M0-60 C22-80 30-120 26-150 A40 40 0 0 0 0-176 A40 40 0 0 0-26-150 C-30-120-22-80 0-60Z" fill="url(#blue)" stroke-width="4"/>
+        <path d="M0-78 C12-94 16-118 14-138 A22 22 0 0 0 0-156 A22 22 0 0 0-14-138 C-16-118-12-94 0-78Z" fill="url(#emerald)" stroke-width="2.5" opacity="0.85"/>
+        <circle cy="-104" r="6" fill="url(#heart)" stroke-width="2"/>
+        <g transform="rotate(15)">
+          <circle cy="-150" r="13" fill="#f0a818" stroke-width="3"/>
+          <circle cy="-150" r="5" fill="#fff2b0" stroke-width="1.5"/>
+        </g>
+      </g>
+      <g transform="rotate(30)">
+        <path d="M0-60 C22-80 30-120 26-150 A40 40 0 0 0 0-176 A40 40 0 0 0-26-150 C-30-120-22-80 0-60Z" fill="url(#ruby)" stroke-width="4"/>
+        <path d="M0-78 C12-94 16-118 14-138 A22 22 0 0 0 0-156 A22 22 0 0 0-14-138 C-16-118-12-94 0-78Z" fill="url(#emerald)" stroke-width="2.5" opacity="0.85"/>
+        <circle cy="-104" r="6" fill="url(#heart)" stroke-width="2"/>
+        <g transform="rotate(15)">
+          <circle cy="-150" r="13" fill="#f0a818" stroke-width="3"/>
+          <circle cy="-150" r="5" fill="#fff2b0" stroke-width="1.5"/>
+        </g>
+      </g>
+      <g transform="rotate(60)">
+        <path d="M0-60 C22-80 30-120 26-150 A40 40 0 0 0 0-176 A40 40 0 0 0-26-150 C-30-120-22-80 0-60Z" fill="url(#blue)" stroke-width="4"/>
+        <path d="M0-78 C12-94 16-118 14-138 A22 22 0 0 0 0-156 A22 22 0 0 0-14-138 C-16-118-12-94 0-78Z" fill="url(#emerald)" stroke-width="2.5" opacity="0.85"/>
+        <circle cy="-104" r="6" fill="url(#heart)" stroke-width="2"/>
+        <g transform="rotate(15)">
+          <circle cy="-150" r="13" fill="#f0a818" stroke-width="3"/>
+          <circle cy="-150" r="5" fill="#fff2b0" stroke-width="1.5"/>
+        </g>
+      </g>
+      <g transform="rotate(90)">
+        <path d="M0-60 C22-80 30-120 26-150 A40 40 0 0 0 0-176 A40 40 0 0 0-26-150 C-30-120-22-80 0-60Z" fill="url(#ruby)" stroke-width="4"/>
+        <path d="M0-78 C12-94 16-118 14-138 A22 22 0 0 0 0-156 A22 22 0 0 0-14-138 C-16-118-12-94 0-78Z" fill="url(#emerald)" stroke-width="2.5" opacity="0.85"/>
+        <circle cy="-104" r="6" fill="url(#heart)" stroke-width="2"/>
+        <g transform="rotate(15)">
+          <circle cy="-150" r="13" fill="#f0a818" stroke-width="3"/>
+          <circle cy="-150" r="5" fill="#fff2b0" stroke-width="1.5"/>
+        </g>
+      </g>
+      <g transform="rotate(120)">
+        <path d="M0-60 C22-80 30-120 26-150 A40 40 0 0 0 0-176 A40 40 0 0 0-26-150 C-30-120-22-80 0-60Z" fill="url(#blue)" stroke-width="4"/>
+        <path d="M0-78 C12-94 16-118 14-138 A22 22 0 0 0 0-156 A22 22 0 0 0-14-138 C-16-118-12-94 0-78Z" fill="url(#emerald)" stroke-width="2.5" opacity="0.85"/>
+        <circle cy="-104" r="6" fill="url(#heart)" stroke-width="2"/>
+        <g transform="rotate(15)">
+          <circle cy="-150" r="13" fill="#f0a818" stroke-width="3"/>
+          <circle cy="-150" r="5" fill="#fff2b0" stroke-width="1.5"/>
+        </g>
+      </g>
+      <g transform="rotate(150)">
+        <path d="M0-60 C22-80 30-120 26-150 A40 40 0 0 0 0-176 A40 40 0 0 0-26-150 C-30-120-22-80 0-60Z" fill="url(#ruby)" stroke-width="4"/>
+        <path d="M0-78 C12-94 16-118 14-138 A22 22 0 0 0 0-156 A22 22 0 0 0-14-138 C-16-118-12-94 0-78Z" fill="url(#emerald)" stroke-width="2.5" opacity="0.85"/>
+        <circle cy="-104" r="6" fill="url(#heart)" stroke-width="2"/>
+        <g transform="rotate(15)">
+          <circle cy="-150" r="13" fill="#f0a818" stroke-width="3"/>
+          <circle cy="-150" r="5" fill="#fff2b0" stroke-width="1.5"/>
+        </g>
+      </g>
+      <g transform="rotate(180)">
+        <path d="M0-60 C22-80 30-120 26-150 A40 40 0 0 0 0-176 A40 40 0 0 0-26-150 C-30-120-22-80 0-60Z" fill="url(#blue)" stroke-width="4"/>
+        <path d="M0-78 C12-94 16-118 14-138 A22 22 0 0 0 0-156 A22 22 0 0 0-14-138 C-16-118-12-94 0-78Z" fill="url(#emerald)" stroke-width="2.5" opacity="0.85"/>
+        <circle cy="-104" r="6" fill="url(#heart)" stroke-width="2"/>
+        <g transform="rotate(15)">
+          <circle cy="-150" r="13" fill="#f0a818" stroke-width="3"/>
+          <circle cy="-150" r="5" fill="#fff2b0" stroke-width="1.5"/>
+        </g>
+      </g>
+      <g transform="rotate(210)">
+        <path d="M0-60 C22-80 30-120 26-150 A40 40 0 0 0 0-176 A40 40 0 0 0-26-150 C-30-120-22-80 0-60Z" fill="url(#ruby)" stroke-width="4"/>
+        <path d="M0-78 C12-94 16-118 14-138 A22 22 0 0 0 0-156 A22 22 0 0 0-14-138 C-16-118-12-94 0-78Z" fill="url(#emerald)" stroke-width="2.5" opacity="0.85"/>
+        <circle cy="-104" r="6" fill="url(#heart)" stroke-width="2"/>
+        <g transform="rotate(15)">
+          <circle cy="-150" r="13" fill="#f0a818" stroke-width="3"/>
+          <circle cy="-150" r="5" fill="#fff2b0" stroke-width="1.5"/>
+        </g>
+      </g>
+      <g transform="rotate(240)">
+        <path d="M0-60 C22-80 30-120 26-150 A40 40 0 0 0 0-176 A40 40 0 0 0-26-150 C-30-120-22-80 0-60Z" fill="url(#blue)" stroke-width="4"/>
+        <path d="M0-78 C12-94 16-118 14-138 A22 22 0 0 0 0-156 A22 22 0 0 0-14-138 C-16-118-12-94 0-78Z" fill="url(#emerald)" stroke-width="2.5" opacity="0.85"/>
+        <circle cy="-104" r="6" fill="url(#heart)" stroke-width="2"/>
+        <g transform="rotate(15)">
+          <circle cy="-150" r="13" fill="#f0a818" stroke-width="3"/>
+          <circle cy="-150" r="5" fill="#fff2b0" stroke-width="1.5"/>
+        </g>
+      </g>
+      <g transform="rotate(270)">
+        <path d="M0-60 C22-80 30-120 26-150 A40 40 0 0 0 0-176 A40 40 0 0 0-26-150 C-30-120-22-80 0-60Z" fill="url(#ruby)" stroke-width="4"/>
+        <path d="M0-78 C12-94 16-118 14-138 A22 22 0 0 0 0-156 A22 22 0 0 0-14-138 C-16-118-12-94 0-78Z" fill="url(#emerald)" stroke-width="2.5" opacity="0.85"/>
+        <circle cy="-104" r="6" fill="url(#heart)" stroke-width="2"/>
+        <g transform="rotate(15)">
+          <circle cy="-150" r="13" fill="#f0a818" stroke-width="3"/>
+          <circle cy="-150" r="5" fill="#fff2b0" stroke-width="1.5"/>
+        </g>
+      </g>
+      <g transform="rotate(300)">
+        <path d="M0-60 C22-80 30-120 26-150 A40 40 0 0 0 0-176 A40 40 0 0 0-26-150 C-30-120-22-80 0-60Z" fill="url(#blue)" stroke-width="4"/>
+        <path d="M0-78 C12-94 16-118 14-138 A22 22 0 0 0 0-156 A22 22 0 0 0-14-138 C-16-118-12-94 0-78Z" fill="url(#emerald)" stroke-width="2.5" opacity="0.85"/>
+        <circle cy="-104" r="6" fill="url(#heart)" stroke-width="2"/>
+        <g transform="rotate(15)">
+          <circle cy="-150" r="13" fill="#f0a818" stroke-width="3"/>
+          <circle cy="-150" r="5" fill="#fff2b0" stroke-width="1.5"/>
+        </g>
+      </g>
+      <g transform="rotate(330)">
+        <path d="M0-60 C22-80 30-120 26-150 A40 40 0 0 0 0-176 A40 40 0 0 0-26-150 C-30-120-22-80 0-60Z" fill="url(#ruby)" stroke-width="4"/>
+        <path d="M0-78 C12-94 16-118 14-138 A22 22 0 0 0 0-156 A22 22 0 0 0-14-138 C-16-118-12-94 0-78Z" fill="url(#emerald)" stroke-width="2.5" opacity="0.85"/>
+        <circle cy="-104" r="6" fill="url(#heart)" stroke-width="2"/>
+        <g transform="rotate(15)">
+          <circle cy="-150" r="13" fill="#f0a818" stroke-width="3"/>
+          <circle cy="-150" r="5" fill="#fff2b0" stroke-width="1.5"/>
+        </g>
+      </g>
+      <ellipse rx="11" ry="30" cy="-34" fill="url(#ruby)" stroke-width="2.5" transform="rotate(15)"/>
+      <ellipse rx="11" ry="30" cy="-34" fill="url(#blue)" stroke-width="2.5" transform="rotate(45)"/>
+      <ellipse rx="11" ry="30" cy="-34" fill="url(#ruby)" stroke-width="2.5" transform="rotate(75)"/>
+      <ellipse rx="11" ry="30" cy="-34" fill="url(#blue)" stroke-width="2.5" transform="rotate(105)"/>
+      <ellipse rx="11" ry="30" cy="-34" fill="url(#ruby)" stroke-width="2.5" transform="rotate(135)"/>
+      <ellipse rx="11" ry="30" cy="-34" fill="url(#blue)" stroke-width="2.5" transform="rotate(165)"/>
+      <ellipse rx="11" ry="30" cy="-34" fill="url(#ruby)" stroke-width="2.5" transform="rotate(195)"/>
+      <ellipse rx="11" ry="30" cy="-34" fill="url(#blue)" stroke-width="2.5" transform="rotate(225)"/>
+      <ellipse rx="11" ry="30" cy="-34" fill="url(#ruby)" stroke-width="2.5" transform="rotate(255)"/>
+      <ellipse rx="11" ry="30" cy="-34" fill="url(#blue)" stroke-width="2.5" transform="rotate(285)"/>
+      <ellipse rx="11" ry="30" cy="-34" fill="url(#ruby)" stroke-width="2.5" transform="rotate(315)"/>
+      <ellipse rx="11" ry="30" cy="-34" fill="url(#blue)" stroke-width="2.5" transform="rotate(345)"/>
+      <circle r="22" fill="url(#heart)" stroke-width="3"/>
+      <path d="M0-12L3.5-3.5 12 0 3.5 3.5 0 12-3.5 3.5-12 0-3.5-3.5z" fill="#fff8d8" stroke-width="1.5"/>
+    </g>
+  </g>
+  <g fill="none" stroke="#141210">
+    <circle cx="200" cy="200" r="176" stroke-width="7"/>
+    <circle cx="200" cy="200" r="64" stroke-width="4"/>
+    <circle cx="200" cy="200" r="186" stroke="#2a2622" stroke-width="10" stroke-dasharray="9.74 4" />
+  </g>
+  <path fill="#6d665a" fill-rule="evenodd" d="M200 8a192 192 0 1 1 0 384a192 192 0 1 1 0-384zM200 18a182 182 0 1 0 0 364a182 182 0 1 0 0-364z"/>
+  <g transform="matrix(1 0 0 1 0 0)" fill="#3a352e" stroke="#8d8577" stroke-width="1.2">
+    <path d="M0 0H44A44 44 0 0 1 0 44Z"/>
+    <path d="M6 6H30A24 24 0 0 1 6 30Z" fill="#5a2a8a" style="stroke-dasharray: 2 2"/>
+    <circle cx="14" cy="14" r="4" fill="#f0a818" stroke="none"/>
+  </g>
+  <g transform="matrix(-1 0 0 1 400 0)" fill="#3a352e" stroke="#8d8577" stroke-width="1.2">
+    <path d="M0 0H44A44 44 0 0 1 0 44Z"/>
+    <path d="M6 6H30A24 24 0 0 1 6 30Z" fill="#5a2a8a" style="stroke-dasharray: 2 2"/>
+    <circle cx="14" cy="14" r="4" fill="#f0a818" stroke="none"/>
+  </g>
+  <g transform="matrix(1 0 0 -1 0 400)" fill="#3a352e" stroke="#8d8577" stroke-width="1.2">
+    <path d="M0 0H44A44 44 0 0 1 0 44Z"/>
+    <path d="M6 6H30A24 24 0 0 1 6 30Z" fill="#5a2a8a" style="stroke-dasharray: 2 2"/>
+    <circle cx="14" cy="14" r="4" fill="#f0a818" stroke="none"/>
+  </g>
+  <g transform="matrix(-1 0 0 -1 400 400)" fill="#3a352e" stroke="#8d8577" stroke-width="1.2">
+    <path d="M0 0H44A44 44 0 0 1 0 44Z"/>
+    <path d="M6 6H30A24 24 0 0 1 6 30Z" fill="#5a2a8a" style="stroke-dasharray: 2 2"/>
+    <circle cx="14" cy="14" r="4" fill="#f0a818" stroke="none"/>
+  </g>
+</svg>
