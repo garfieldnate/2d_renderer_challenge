@@ -10,3 +10,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "render_all"
 path = "src/bin/render_all.rs"
+
+[dependencies]
+roxmltree = "0.20"
