@@ -1,7 +1,7 @@
 # The 2D Renderer Challenge — working notes for Claude
 
-A test-driven book that builds a 2D vector renderer from nothing, modeled on *The Ray Tracer
-Challenge*. Read `plan.html` (the outline and writing guide) and `README.md` before touching
+A test-driven book that builds a 2D vector renderer from nothing, modeled on _The Ray Tracer
+Challenge_. Read `plan.html` (the outline and writing guide) and `README.md` before touching
 a chapter. This file holds the rules that aren't derivable from the code.
 
 ## The iron rule: every step is pinned by Gherkin
@@ -17,13 +17,13 @@ The first draft of chapter 1 failed because it left things to the reader. Never 
   function. Each render is a named function that returns a canvas (`gray_match()`,
   `plate_01()`), so scenarios can call it, and each has a reference PPM under
   `reference/chapter-NN/` that a scenario diffs against with an explicit budget.
-- **Chapter-end programs are printed** as short pseudo-code (30 lines or fewer) *and* pinned by
+- **Chapter-end programs are printed** as short pseudo-code (30 lines or fewer) _and_ pinned by
   a scenario. Pseudo-code ranges are inclusive at both ends, and the chapter says so.
 - **No exercises section.** Anything that would have been an exercise becomes a numbered
   section with its own scenario and figure, or it is cut.
 - **Nothing is left implicit that a reader in a different language could get wrong.** Rounding
   mode, clamping order, line-wrapping rule, default state of any global switch, what happens
-  out of bounds: all stated in prose *and* pinned by a scenario.
+  out of bounds: all stated in prose _and_ pinned by a scenario.
 
 ## How scenarios are written
 
@@ -90,8 +90,8 @@ The first draft of chapter 1 failed because it left things to the reader. Never 
 
 ## Voice (see `plan.html` → The rhythm of a chapter, which is authoritative)
 
-Casual, funny, second person, contractions. Never *simply*, *just*, *obviously*, *trivially*,
-*of course*, *clearly*, never *we* meaning *you*, no exclamation marks. Open on a concrete
+Casual, funny, second person, contractions. Never _simply_, _just_, _obviously_, _trivially_,
+_of course_, _clearly_, never _we_ meaning _you_, no exclamation marks. Open on a concrete
 problem. Admit when something is horrible. Jokes come out of the material. Check with:
 `sed -e 's/<[^>]*>//g' chapters/chapter-NN.html | grep -n -iwE 'simply|just|obviously|trivially|of course|clearly|we'`
 
@@ -104,7 +104,7 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   defaults on. Off means encode, lerp, decode, which is what browsers do.
 - Writes outside the canvas are silently ignored.
 - Readers are presumed able to read Gherkin. No plain-table duplicates of scenarios.
-- Chapter 4 follows *The Ray Tracer Challenge*'s names: `point(x, y)` has `w = 1`, `vector(x, y)`
+- Chapter 4 follows _The Ray Tracer Challenge_'s names: `point(x, y)` has `w = 1`, `vector(x, y)`
   has `w = 0`, `matrix3` takes nine numbers row by row, `M[r, c]` is row then column,
   `translation/scaling/rotation/shearing`, `inverse`, `m * p`. Angles are radians. A positive
   rotation turns x toward y, which the book says out loud is clockwise on the y-down canvas.
@@ -161,12 +161,12 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   not 1.0, a seam every renderer has.
 - Chapter 10 paint: a `Paint` answers `paint_at(paint, x, y)`. `solid(c)` ignores the point; the
   gradients turn it into a parameter and read `sample_stops(stops, t)` (a `stop` is `(offset,
-  color)`, binary search, interpolate in linear light). `extend(t, mode)` is pad/repeat/reflect.
+color)`, binary search, interpolate in linear light). `extend(t, mode)` is pad/repeat/reflect.
   `linear_t` projects onto the axis; `radial_t` solves the two-circle quadratic and returns the
   LARGEST t whose interpolated radius is non-negative (not the first root by discriminant sign — that
   passes whenever only one root is valid, which every simple scenario is; a reader round caught it),
   and `none` for points no circle reaches (a focal gradient's cone); `conic_t` is the angle. `paint_fill(c,
-  cov, paint)` samples per pixel center and is byte-identical to `paint_through` for a solid.
+cov, paint)` samples per pixel center and is byte-identical to `paint_through` for a solid.
   Ordered dither: `BAYER4`, `dither_threshold`, `to_byte_dithered`, `canvas_to_p6_dithered` — a
   flat value splits across the two bytes around it. Trap: a focal point outside the end circle makes
   `radial_t` return `none`, and `paint_at` returns the last stop there (not black). NOTE: the plan's
@@ -264,7 +264,7 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   itself for letters and digits, `uniXXXX` otherwise, ligatures `f_i`). ONE schema for chapters
   16-19 with optional sections (plan question 03): `units_per_em`, `ascender`, `descender`,
   `line_gap`, `cmap` (string codepoint → name), `glyphs` (name → `{advance, contours: [[x, y,
-  on]...], components: [{glyph, transform: [a, b, c, d, dx, dy]}]}`), optional `kern`
+on]...], components: [{glyph, transform: [a, b, c, d, dx, dy]}]}`), optional `kern`
   (`[left, right, value]`, 2171 pairs, chapter 18) and `ligatures` (`[[parts], result]`, chapter
   19). The figure JS of chapters 16+ inlines a small subset (`var GLYPHS=...`, the glyphs the
   figures draw) because file:// pages can't fetch the JSON; regenerate it when a figure needs a
@@ -278,7 +278,7 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   (TrueType's x' = a x + c y + dx). `glyph_outline` is font units, y up, components recursively
   through their matrices; `glyph_bounds` is the union of chapter 8's tight `curve_bounds`, (0, 0,
   0, 0) for an empty glyph. THE FLIP LIVES IN ONE PLACE: `text_matrix(font, size, x, y) =
-  translation(x, y) * scaling(s, -s)`; `glyph_path(font, name, m, tol)` transforms then flattens
+translation(x, y) * scaling(s, -s)`; `glyph_path(font, name, m, tol)` transforms then flattens
   each quadratic (chapter 8's rule) and closes each contour; `contour_path` does one. Fill nonzero.
   After the flip TrueType's outer contours have positive `polygon_area` and counters negative;
   `ink` of the filled o equals outer minus inner exactly. Plate: the a with its control polygon.
@@ -289,7 +289,7 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   1's `mix` with the linear flag (the first named fudge: text stacks blend in encoded space);
   `glyph_cache`/`cached_bitmap` (same object on a hit)/`cache_size`; `atlas`/`atlas_add` is shelf
   packing (new shelf under the tallest so far; `none` when it doesn't fit); `embolden(font, name,
-  size, amount)` = fill + chapter 13 stroke of the outline, added and clamped, bitmap grown one
+size, amount)` = fill + chapter 13 stroke of the outline, added and clamped, bitmap grown one
   pixel all round (the second named fudge, stem darkening); LCD: `LCD_TAPS = (1/3, 1/3, 1/3)`,
   `lcd_filter` (zero padding, so a row's ink is preserved), `lcd_coverage` rasterizes through
   `scaling(3, 1) * text_matrix` into a 3w buffer and filters every row (its ink is exactly 3x the
@@ -298,7 +298,7 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   assumes the physical stripe order. Hinting is deliberately absent. Runner learned
   `paint_bitmap`/`paint_lcd` mutation steps.
 - Chapter 18 layout: a `Placement` is `(name, x, y)` in fractional pixels; `layout_run(font, text,
-  size, x, y, kerning)` places EVERY character (spaces, `.notdef`), the pen moving by the kern pair
+size, x, y, kerning)` places EVERY character (spaces, `.notdef`), the pen moving by the kern pair
   BEFORE each glyph after the first; `run_advance` is the total. `kern(font, l, r)` is font units, 0
   when absent, order matters. `ascent`/`descent` (positive)/`line_height` = (asc − desc + gap)·s.
   `break_lines` is greedy on spaces: a candidate fits when `run_advance ≤ measure` (pinned exactly
@@ -313,7 +313,7 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   px over one 11 px line of i's and l's. Plate: THROUGH_LINE four ways. Runner learned `draw_run`.
 - Chapter 19 shaping: font data for Arabic is DejaVu Sans (Bitstream Vera licence, redistributable,
   `reference/fonts/DejaVuSans.ttf` + `DejaVu-LICENSE.txt`), converted by `tools/ttf_to_json.py
-  --arabic` into `reference/chapter-19/dejavu-arabic.json` (170 glyphs: letters, tatweel, 8 harakat,
+--arabic` into `reference/chapter-19/dejavu-arabic.json` (170 glyphs: letters, tatweel, 8 harakat,
   space, Arabic and ASCII punctuation, every init/medi/fina form, lam-alef ligatures). Chosen over
   Noto/Amiri because its init/medi/fina are plain GSUB single substitutions and its mark attachment
   is one above and one below anchor class; the Noto fonts decompose letters into skeleton + dots
@@ -323,7 +323,7 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   `marks` (mark → [class, x, y]) and `anchors` (base → {class: [x, y]}). Glyph names are `beh`,
   `beh.init`, `lam_alef.fina`, `kasra`; component skeletons keep `gNNNN`. Pipeline per run:
   `glyph_buffer` (one `Shaped(glyph, cluster, dx, dy)` per character) → `apply_forms(font, text,
-  buffer)` (form_of: joins backward when dual/right and the nearest non-transparent before is dual;
+buffer)` (form_of: joins backward when dual/right and the nearest non-transparent before is dual;
   forward when dual and the nearest non-transparent after is dual/right) → `apply_ligatures`
   (greedy left to right, longest rule first, result takes the FIRST part's cluster, never fed back)
   → `attach_marks` (base = nearest non-mark before; offset = base anchor − mark anchor; mark takes
@@ -349,7 +349,7 @@ problem. Admit when something is horrible. Jokes come out of the material. Check
   `build_path(cmds, m, 0.1)` transforms then flattens, drops a lone-moveto subpath. `commands_bounds`
   tight (curve_bounds). `parse_transform` degrees, left-to-right product, broken → identity.
   `parse_color` decodes sRGB bytes to linear, 17 names (HTML 4 + orange). `computed_style(el,
-  parent)`: 15 properties (table in §20.6), style attr beats presentation attrs, `inherit`, invalid
+parent)`: 15 properties (table in §20.6), style attr beats presentation attrs, `inherit`, invalid
   ignored, url(#id) kept as text. `shape_commands` per the spec's equivalent paths (circle from the
   right point, four sweep-1 arcs). `view_box_matrix(vb, aspect, w, h)`. `transformed_paint(p, m)`
   registered in PAINT_KINDS samples at inverse(m); `paint_server` = ctm × bbox (objectBoundingBox
@@ -399,17 +399,17 @@ Before declaring a chapter done, have subagents implement it cold, as readers:
    and one consulted `reference/impl/`; their feedback for that round is compromised. After a
    round, run `git status` before committing anything and treat any change under `readers/` that
    you didn't collect yourself as contamination.
-1b. Collect with `./tools/readers.py collect <lang> <N> <dir>`: code comes back to
+   1b. Collect with `./tools/readers.py collect <lang> <N> <dir>`: code comes back to
    `readers/<lang>/`, `FEEDBACK.md` goes to `readers/feedback/chapterNN-<lang>.md`, renders and
    copies of the book do not come back. Every reader's README must run its tests from its own
    directory, which the staging layout satisfies.
-1c. The prompt is `tools/reader_prompt.md`; fill in the placeholders rather than improvising.
+   1c. The prompt is `tools/reader_prompt.md`; fill in the placeholders rather than improvising.
    Ten agents at once can hit the org's monthly spend limit mid-round (the chapter-4 round lost
    seven of ten that way, four of them after their code was complete). Check the limit before a
    round, launch in two waves, and collect each reader the moment it finishes. A reader cut off
    after its tests pass can still be collected: run its suite yourself, revert any mutation it
    left in place, and leave a note in its feedback file saying the feedback is the author's.
-2. Spread agents across model tiers (haiku, sonnet, opus) and language families (dynamic, managed,
+2. Spread agents across model tiers (haiku, sonnet, opus 4) and language families (dynamic, managed,
    systems). Tell them to translate every scenario, write the renders to `out/` with the
    reference filenames, and write a candid `FEEDBACK.md` (ambiguities, hard-to-translate steps,
    failures with actual vs expected, prose problems, concrete changes).
@@ -418,13 +418,13 @@ Before declaring a chapter done, have subagents implement it cold, as readers:
 4. Every ambiguity two or more agents report is a chapter bug. Fix the prose or the scenario,
    re-sync, re-run the reference runner, and re-test.
 5. Run a second round in languages no first-round agent used, so the fixes are tested cold.
-5b. **Catch-up pass.** Fixes from a round add scenarios that the already-collected readers never
+   5b. **Catch-up pass.** Fixes from a round add scenarios that the already-collected readers never
    saw. Before the next chapter, stage every reader again at the current chapter and run a small
    "bring the tests up to date with features/, fix what fails, say what failed" agent per
    language. A new scenario that fails previously-green reader code is the strongest evidence a
    scenario earns its place (the zero-length `thick_line` was a division by zero in every
    implementation). Opus agents are capped by the org's monthly limit; use sonnet for catch-ups.
-5c. If the session's scratch directory disappears, agents' unfinished work is lost with it.
+   5c. If the session's scratch directory disappears, agents' unfinished work is lost with it.
    Collect finished readers promptly, and stage new runs under `${TMPDIR}2d-readers/`.
 6. Ask agents to try to break the suite ("find a wrong implementation that still passes"). The
    most valuable round-1 finding came from an agent doing that unprompted.
