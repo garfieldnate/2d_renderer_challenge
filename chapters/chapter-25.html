@@ -1,0 +1,796 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 25 · The Raster Editor Detour — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Bonus B · Chapter 25</span>
+    <span><a href="../plan.html">Outline</a> · <a href="chapter-24.html">← 24</a> · <a href="#plate">Plate&nbsp;25</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Twenty-Five</p>
+    <h1>The Raster Editor Detour</h1>
+    <p class="hook">Everything so far compiled geometry into pixels: somebody wrote down a path, and
+      the renderer worked out which pixels it covered. A paint program runs the other way. There's no
+      path, only pixels and a hand on a mouse, and the mouse reports where it was sixty times a
+      second whether the hand moved a millimetre or a foot. Drag a brush fast in a program that
+      trusts those reports and you get a string of beads. Pour a bucket into a circle you drew with
+      antialiasing and you get a grey ring around the paint, the halo, that no tolerance setting
+      quite removes. Those two bugs have shipped in more paint programs than anyone would admit, and
+      this chapter builds both, then fixes them, with the coverage machinery from chapter 2.</p>
+  </header>
+
+  <p>This is a detour, and it can be read any time after chapter 3. It has four parts, each short:
+    brushes, the bucket, indexed colour, and the pair of features that make an editor an editor,
+    selection and undo. The idea under all four is the book's usual one. A raster editor's tools are
+    the same coverage machinery with the geometry supplied by a hand instead of a path.</p>
+
+  <h2><span class="sec">§ 25.1</span> Brushes</h2>
+
+  <p>A brush is a coverage kernel, a <em>dab</em>, stamped along the pointer's path. The dab here is
+    round, fully covered inside <code>hardness × radius</code> and falling in a straight ramp to
+    nothing at the radius, so a hardness of 1 is a hard disc and a hardness of 0 is a soft cone.
+    Stamping a dab doesn't paint it straight onto the canvas; it adds it to the stroke's own mask,
+    <code>1 − (1 − m)(1 − flow × k)</code>, the same union chapter 12 used for clips, so
+    overlapping dabs build up toward full coverage. <em>Flow</em> is how much each dab adds. The
+    finished mask is scaled by the stroke's <em>opacity</em> and painted through once, which is why
+    a stroke at 50% opacity never gets darker than 50% however many times it crosses itself.</p>
+
+  <p>Where do the dabs go? The obvious answer is at every event the pointer sends, and it's wrong.
+    Events come at a steady rate in time, and a hand moves at a very unsteady rate in space: slow at
+    the start of a stroke and quick in the middle. <code>wobbly_events()</code> is 25 events bunched
+    where the hand was slow. One dab per event paints a clot at the start and a row of beads across
+    the rest, with bare paper between them. Instead, walk along the polyline through the events and
+    drop a dab every <code>spacing × diameter</code> of distance, carrying what's left of the step
+    from one segment into the next the way chapter 15 carried dashes. Now the dabs are evenly spaced
+    wherever the hand went. The same 25 events make 99 dabs, and the weakest point along the stroke is
+    70% covered where the one-per-event stroke had bare paper.</p>
+
+  <figure>
+    <canvas id="fig251" role="img" aria-label="Two grey brush strokes on pale paper following the same wavy path. The upper one is a row of separate dots, crowded at the left end and spaced further apart toward the right. The lower one is a continuous smooth line"></canvas>
+    <figcaption><span class="fig">Figure 25.1</span> The same 25 pointer events. Above, a dab per event: beads. Below, a dab every quarter of a diameter along the path.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter25-brush.feature">
+    <p class="label">features/chapter25-brush.feature</p>
+<pre><code><span class="kw">Feature</span>: Brushes
+  brush(radius, hardness, spacing, flow, opacity) is a round brush.
+  dab_coverage(b, d), at distance d from a dab's center, is 1 when d ≤
+  hardness × radius, 0 when d ≥ radius, and (radius - d) / (radius -
+  hardness × radius) between. stamp_positions(events, b) spaces dabs by
+  distance, not by event: the first event is a dab, and then there is one
+  every step = spacing × 2 × radius of arc length along the polyline
+  through the events, the distance still needed carried from segment to
+  segment. stroke_mask(width, height, centers, b) is one stroke's coverage:
+  for every center in order, at every pixel of the box floor(x - radius)
+  to ceil(x + radius) (and the same in y, cut to the canvas) with k =
+  dab_coverage(b, distance from the pixel's center) above 0, m ← 1 - (1 -
+  m)(1 - flow × k), so overlapping dabs build up. paint_stroke(c, events,
+  b, col, by_distance) makes the mask from stamp_positions when
+  by_distance is true and from the events themselves when it's false,
+  multiplies it by opacity, and paints it through with chapter 2's
+  paint_through; it answers the mask it painted. wobbly_events() is 25
+  pointer events, event i at (20 + 360u², 60 + 30 sin(2πu)) with u = i /
+  24, bunched at the start where the hand was slow. min_along(m, events,
+  n) is the least mask value at the pixels under n evenly spaced points
+  (t = k / n, k from 0 to n - 1) of every segment of the events, the
+  pixel being floor of each coordinate.
+
+  <span class="kw">Scenario</span>: A dab's profile
+    <span class="kw">Given</span> b ← brush(10, 0.5, 0.25, 0.6, 1)
+    <span class="kw">Then</span>  dab_coverage(b, 0) = 1
+    <span class="kw">And</span>   dab_coverage(b, 5) = 1
+    <span class="kw">And</span>   dab_coverage(b, 7.5) = 0.5
+    <span class="kw">And</span>   dab_coverage(b, 10) = 0
+    <span class="kw">And</span>   dab_coverage(b, 12) = 0
+
+  <span class="kw">Scenario</span>: Dabs are spaced by distance along the path, carried across events
+    <span class="kw">Then</span>  stamp_positions([point(0, 0), point(3, 0), point(10, 0)], brush(10, 0.5, 0.25, 0.6, 1)) = [point(0, 0), point(5, 0), point(10, 0)]
+    <span class="kw">And</span>   stamp_positions([point(0, 0), point(12, 0)], brush(2, 1, 0.5, 1, 1)) = [point(0, 0), point(2, 0), point(4, 0), point(6, 0), point(8, 0), point(10, 0), point(12, 0)]
+    <span class="kw">And</span>   length(stamp_positions(wobbly_events(), brush(8, 0.5, 0.25, 0.6, 1))) = 99
+
+  <span class="kw">Scenario</span>: Flow builds up where dabs overlap
+    <span class="kw">Given</span> one ← stroke_mask(20, 20, [point(10, 10)], brush(4, 0.5, 1, 0.6, 1))
+    <span class="kw">And</span>   two ← stroke_mask(20, 20, [point(10, 10), point(10, 10)], brush(4, 0.5, 1, 0.6, 1))
+    <span class="kw">Then</span>  coverage_at(one, 10, 10) = 0.6
+    <span class="kw">And</span>   coverage_at(one, 12, 10) = 0.435147
+    <span class="kw">And</span>   coverage_at(two, 10, 10) = 0.84
+
+  <span class="kw">Scenario</span>: One dab per event leaves beads; spacing by distance doesn't
+    <span class="kw">Given</span> ev ← wobbly_events()
+    <span class="kw">And</span>   b ← brush(8, 0.5, 0.25, 0.6, 1)
+    <span class="kw">When</span>  by_distance ← stroke_mask(400, 120, stamp_positions(ev, b), b)
+    <span class="kw">And</span>   by_event ← stroke_mask(400, 120, ev, b)
+    <span class="kw">Then</span>  min_along(by_event, ev, 50) = 0
+    <span class="kw">And</span>   min_along(by_distance, ev, 50) = 0.704456</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 25.2</span> Flood fill</h2>
+
+  <p>The bucket fills the region around a pixel: every pixel you can reach from it, stepping to a
+    neighbour, without leaving the pixels that match it. "Match" means every channel's byte within
+    the <em>tolerance</em> of the seed's. "Neighbour" means the four pixels that share an edge, or
+    the eight that share an edge or a corner; with eight, the fill leaks through any diagonal gap in a
+    one-pixel line, which is why four is the default.</p>
+
+  <div class="trap">
+    <h4>The trap</h4>
+    <p>The flood fill everyone writes first is four lines long and calls itself on its four
+      neighbours. It works on small regions and then blows the stack on a big one, because the
+      recursion goes as deep as the region is large: filling an empty 200 by 200 canvas from a corner
+      puts 40,000 calls in flight at once, and Python stops at a thousand, a C program at whatever its
+      stack allows. The scanline fill does the same job with a stack of <em>seeds</em>: take one,
+      run left and right along its row while the pixels match, mark the whole run, and push one seed
+      for every matching run in the rows above and below. On that empty canvas it pushes 200 seeds
+      and never holds more than one at a time. It's faster too, because a run is marked in one sweep.
+      It's the only version worth teaching.</p>
+  </div>
+
+  <p>Now pour a bucket into the ring. The ring was drawn with chapter 13's stroke and chapter 7's
+    exact coverage, so its edge isn't a line between paper and ink; it's a pixel or two of every grey
+    in between. At tolerance 0 the fill stops at the first pixel that isn't pure paper, and those
+    greys are left standing between the paint and the ring: the halo. Raise the tolerance and the
+    fill eats into the greys, but it can only take them whole or leave them, and the paint's edge is
+    now as jagged as its tolerance. By 254 it's leaked right out of the ring. The <em>Anti-alias</em>
+    box is the other half of the fight: it gives every pixel bordering the fill from outside half the paint,
+    which softens the edge and fills the halo halfway. Every bucket in every editor has a tolerance
+    slider and an anti-alias checkbox, and they fight each other, because neither knows the one thing
+    that would solve the problem, which is how much of each grey pixel was ink. The picture no longer
+    says. A path fill knows exactly, which is the case for keeping the path.</p>
+
+  <figure>
+    <canvas id="fig252" role="img" aria-label="Four copies of a dark ring on pale paper, each filled cyan inside by the bucket tool. At the left a faint grey ring shows between the cyan and the dark ring; the second is similar; the third has a softer blend at that boundary; the fourth fills right up to the dark ring with a slightly ragged edge"></canvas>
+    <figcaption><span class="fig">Figure 25.2</span> The bucket at tolerance 0, 32, 32 with anti-alias, and 160. The grey halo inside the ring is the antialiased edge the fill wouldn't take.</figcaption>
+  </figure>
+
+  <div class="test" data-feature="chapter25-flood.feature">
+    <p class="label">features/chapter25-flood.feature</p>
+<pre><code><span class="kw">Feature</span>: Flood fill
+  bytes_at(c, x, y) is the pixel's three file bytes by chapter 1's
+  to_byte. A pixel matches the seed at a tolerance when every channel's
+  byte is within tolerance of the seed pixel's. flood_mask(c, x, y,
+  tolerance, connectivity, fs) is the scanline flood fill, as a coverage
+  mask of 1s: a stack of seeds, the first (x, y); pop one, skip it if it's
+  in the mask or doesn't match, grow left and right from it along the
+  row while the pixels match and aren't in the mask, put the run in the
+  mask, and for the rows above and below, over the run's columns (one
+  further at each end for connectivity 8), push the first pixel of every
+  run of pixels that match and aren't in the mask. Each push adds 1 to
+  fs.pushes and fs.deepest is the most seeds the stack ever held.
+  select_color(c, x, y, tolerance) is the bucket with Contiguous off:
+  every pixel of the canvas that matches. anti_alias_mask(m) is the
+  bucket's Anti-alias box: every pixel outside the mask with a 4-neighbour
+  in it gets 0.5. bucket(c, x, y, col, tolerance, contiguous, anti_alias,
+  connectivity) paints the mask through in col and answers it.
+  ring_canvas() is 160 by 160 of pale paper (0.92, 0.9, 0.82), and on it
+  chapter 13's stroke_to_path of circle_path(80, 80, 60, 96), 4 wide, butt
+  caps, round joins, limit 4, filled by chapter 7 and painted through in
+  ink (0.05, 0.05, 0.08). naive_depth(w, h) is how deep the recursive
+  four-way fill goes filling an empty w by h canvas from (0, 0), each call
+  trying right, left, down, up: the deepest chain of calls in flight.
+
+  <span class="kw">Scenario</span>: The ring's pixels
+    <span class="kw">Given</span> c ← ring_canvas()
+    <span class="kw">Then</span>  bytes_at(c, 80, 80) = (246, 243, 234)
+    <span class="kw">And</span>   bytes_at(c, 80, 20) = (63, 63, 80)
+    <span class="kw">And</span>   bytes_at(c, 142, 80) = (246, 243, 234)
+
+  <span class="kw">Scenario</span>: Tolerance decides how much of the antialiased edge the bucket takes
+    <span class="kw">Given</span> c ← ring_canvas()
+    <span class="kw">Then</span>  ink(flood_mask(c, 80, 80, 0, 4, fill_stats())) = 10324
+    <span class="kw">And</span>   ink(flood_mask(c, 80, 80, 32, 4, fill_stats())) = 10484
+    <span class="kw">And</span>   ink(flood_mask(c, 80, 80, 160, 4, fill_stats())) = 10700
+    <span class="kw">And</span>   ink(flood_mask(c, 80, 80, 254, 4, fill_stats())) = 25600
+    <span class="kw">And</span>   ink(anti_alias_mask(flood_mask(c, 80, 80, 32, 4, fill_stats()))) = 10648
+    <span class="kw">And</span>   ink(select_color(c, 80, 80, 0)) = 23636
+
+  <span class="kw">Scenario</span>: Eight-way connectivity leaks through a diagonal
+    <span class="kw">Given</span> c ← canvas(3, 3)
+    <span class="kw">When</span>  fill(c, color(1, 1, 1))
+    <span class="kw">And</span>   write_pixel(c, 1, 0, color(0, 0, 0))
+    <span class="kw">And</span>   write_pixel(c, 0, 1, color(0, 0, 0))
+    <span class="kw">Then</span>  ink(flood_mask(c, 0, 0, 0, 4, fill_stats())) = 1
+    <span class="kw">And</span>   ink(flood_mask(c, 0, 0, 0, 8, fill_stats())) = 7
+
+  <span class="kw">Scenario</span>: Recursion goes as deep as the region is big; the scanline stack doesn't
+    <span class="kw">Given</span> fs ← fill_stats()
+    <span class="kw">When</span>  m ← flood_mask(canvas(200, 200), 0, 0, 0, 4, fs)
+    <span class="kw">Then</span>  ink(m) = 40000
+    <span class="kw">And</span>   fs.pushes = 200
+    <span class="kw">And</span>   fs.deepest = 1
+    <span class="kw">And</span>   naive_depth(4, 3) = 12
+    <span class="kw">And</span>   naive_depth(200, 200) = 40000</code></pre>
+  </div>
+
+  <aside class="gui">
+    <h4>In the GUI</h4>
+    <p>Brush <em>Spacing</em>, <em>Hardness</em> and <em>Flow</em>; the Paint Bucket's
+      <em>Tolerance</em>, <em>Contiguous</em> and <em>Anti-alias</em>; <em>Image → Mode → Indexed
+      Color</em> with its <em>Dither</em> dropdown. The Magic Wand is the bucket with the paint left
+      out: <code>flood_mask</code>, kept as a selection.</p>
+  </aside>
+
+  <h2><span class="sec">§ 25.3</span> Quantization</h2>
+
+  <p>An indexed-colour image stores a palette of at most 256 colours and one byte per pixel naming
+    one of them. Making one is two problems: choosing the palette, and deciding what to do with every
+    pixel that isn't in it.</p>
+
+  <p>Heckbert's <em>median cut</em> chooses the palette. Put every colour the image uses in one box.
+    Find the box that's widest in some channel, sort it along that channel, and cut it where half its
+    pixels are on each side, so the palette spends its entries where the pixels are. Repeat until
+    there are as many boxes as you want colours, and each box's average is a palette entry. The
+    scenario's eight pixels show it: two boxes put one entry on the three dark greys and blues and
+    one on the reds; four boxes separate the blues from the greys and the two reds from each other.</p>
+
+  <p>Then each pixel goes to its nearest entry, and the difference is error. Throwing the error
+    away is <em>threshold</em>, and a ramp from black to white thresholded to two inks is a black
+    half and a white half. Chapter 10's ordered dither compares each pixel with a Bayer threshold
+    instead of 0.5, which spreads the error into a regular crosshatch. Floyd and Steinberg's
+    <em>error diffusion</em> hands the error on: seven sixteenths to the pixel to the right and the
+    rest to three pixels below, so a pixel that came out too dark makes its neighbours more likely to
+    come out light. It keeps the image's light where it matters. On the ramp the error-diffused
+    image averages 0.5007 in light against the ramp's 0.5; the ordered dither averages 0.5303. Do it
+    in linear light, as this book does everything, and the average is right; most programs diffuse in
+    encoded values, the chapter 1 mistake again, and their dithered mid-greys come out too light.</p>
+
+  <figure>
+    <canvas id="fig253" role="img" aria-label="Three horizontal strips of a black to white ramp in pure black and white pixels. Top: a hard split, black on the left half and white on the right. Middle: a regular crosshatch pattern that lightens across. Bottom: an irregular grain of dots that lightens smoothly across"></canvas>
+    <figcaption><span class="fig">Figure 25.3</span> A ramp in two inks: threshold, ordered dither, error diffusion.</figcaption>
+  </figure>
+
+  <p>Writing the result needs a format that holds a palette, and PPM doesn't. The simplest one
+    everything can open is the 8-bit BMP: a 14-byte file header, a 40-byte info header, 256 palette
+    entries of four bytes each, blue first, and then one byte per pixel, the rows from the
+    <em>bottom</em> up, each padded with zeros to a multiple of four bytes. There's no compression to
+    write. The bottom-up rows and the padding are the two things to get wrong, and the byte-by-byte
+    scenario checks both on a 5 by 2 image, whose rows are padded from five bytes to eight.</p>
+
+  <div class="test" data-feature="chapter25-quantize.feature">
+    <p class="label">features/chapter25-quantize.feature</p>
+<pre><code><span class="kw">Feature</span>: Quantization
+  median_cut(colors, n) makes a palette of at most n byte colours from a
+  list of (r, g, b) bytes. Count every distinct colour and put them all,
+  sorted, in one box. While there are fewer than n boxes: of the boxes
+  with at least two colours, take the one whose widest channel (greatest
+  max - min) is widest, the earliest on a tie; sort its colours stably by
+  that channel (red before green before blue when widths tie); cut it
+  after the first colour at which the running count of pixels reaches
+  half the box's pixels (2 × running ≥ total), but never after its last
+  colour; stop when no box has two colours. Each box's palette entry is
+  its colours' mean weighted by count, each channel rounded halves up.
+  canvas_bytes(c) is bytes_at of every pixel, row by row.
+  nearest_index(palette, col) is the entry with the least squared
+  distance in bytes, the lowest index on a tie; remap(c, palette) is that
+  for every pixel. The dithers work in linear light: an entry's light is
+  chapter 1's decode of each byte / 255. threshold(c, palette) is the
+  nearest entry in light, by squared distance. ordered_dither(c, palette),
+  for a two-entry palette, takes the second entry where the pixel's green
+  light is above lo + (hi - lo) × chapter 10's dither_threshold(x, y),
+  lo and hi the entries' green light, and the first otherwise.
+  error_diffuse(c, palette) is Floyd and Steinberg in light: rows top to
+  bottom, each left to right; the pixel's light plus the error handed to
+  it goes to the nearest entry in light, and the difference goes 7/16 to
+  the right, 3/16 below left, 5/16 below and 1/16 below right, what falls
+  off the canvas dropped. indexed_canvas(indices, palette, w, h) is the
+  canvas of each index's light. ramp_canvas(w, h) has light x / (w - 1)
+  in every channel. mean_light(c) is the mean green light.
+  canvas_to_bmp8(indices, palette, w, h) writes an 8-bit indexed BMP,
+  every number little-endian: "BM", the file size, two 16-bit zeros and
+  the offset of the pixels (1078); then a 40-byte header: 40, the width,
+  the height (positive: rows bottom to top), 1 plane, 8 bits, 0 for no
+  compression, the pixel bytes' size, 2835 and 2835 pixels a metre, the
+  palette's length and 0; then 256 entries of blue, green, red, 0, black
+  past the palette's end; then the rows from the bottom one up, each
+  padded with zeros to a multiple of 4 bytes. read_bmp8(data) answers
+  (width, height, palette, indices), the palette as long as the file's
+  count says.
+
+  <span class="kw">Scenario</span>: Median cut
+    <span class="kw">Given</span> cols ← [(10, 10, 10), (10, 10, 10), (10, 10, 10), (200, 0, 0), (250, 0, 0), (0, 0, 90), (0, 0, 100), (0, 0, 110)]
+    <span class="kw">Then</span>  median_cut(cols, 1) = [(60, 4, 41)]
+    <span class="kw">And</span>   median_cut(cols, 2) = [(5, 5, 55), (225, 0, 0)]
+    <span class="kw">And</span>   median_cut(cols, 4) = [(10, 10, 10), (0, 0, 100), (200, 0, 0), (250, 0, 0)]
+    <span class="kw">And</span>   median_cut(cols, 20) = [(10, 10, 10), (0, 0, 90), (0, 0, 100), (0, 0, 110), (200, 0, 0), (250, 0, 0)]
+    <span class="kw">And</span>   median_cut(canvas_bytes(ring_canvas()), 4) = [(63, 63, 80), (128, 127, 130), (226, 223, 215), (246, 243, 234)]
+
+  <span class="kw">Scenario</span>: The nearest entry
+    <span class="kw">Given</span> pal ← [(0, 0, 0), (255, 255, 255), (255, 0, 0)]
+    <span class="kw">Then</span>  nearest_index(pal, (120, 120, 120)) = 0
+    <span class="kw">And</span>   nearest_index(pal, (128, 128, 128)) = 1
+    <span class="kw">And</span>   nearest_index(pal, (200, 40, 30)) = 2
+    <span class="kw">And</span>   nearest_index([(0, 0, 0), (0, 0, 0)], (1, 1, 1)) = 0
+
+  <span class="kw">Scenario</span>: Two inks three ways: error diffusion keeps the light
+    <span class="kw">Given</span> r ← ramp_canvas(256, 32)
+    <span class="kw">And</span>   bw ← [(0, 0, 0), (255, 255, 255)]
+    <span class="kw">Then</span>  error_diffuse(ramp_canvas(4, 1), bw) = [0, 0, 1, 1]
+    <span class="kw">And</span>   mean_light(r) = 0.5
+    <span class="kw">And</span>   mean_light(indexed_canvas(threshold(r, bw), bw, 256, 32)) = 0.5
+    <span class="kw">And</span>   mean_light(indexed_canvas(ordered_dither(r, bw), bw, 256, 32)) = 0.530273
+    <span class="kw">And</span>   mean_light(indexed_canvas(error_diffuse(r, bw), bw, 256, 32)) = 0.500732
+
+  <span class="kw">Scenario</span>: An 8-bit BMP, byte by byte
+    <span class="kw">Given</span> bm ← canvas_to_bmp8([0, 1, 2, 1, 0, 2, 1, 1, 1, 0], [(10, 20, 30), (200, 100, 50), (0, 0, 255)], 5, 2)
+    <span class="kw">Then</span>  length(bm) = 1094
+    <span class="kw">And</span>   bytes_of(bm, 0, 14) = [66, 77, 70, 4, 0, 0, 0, 0, 0, 0, 54, 4, 0, 0]
+    <span class="kw">And</span>   bytes_of(bm, 14, 54) = [40, 0, 0, 0, 5, 0, 0, 0, 2, 0, 0, 0, 1, 0, 8, 0, 0, 0, 0, 0, 16, 0, 0, 0, 19, 11, 0, 0, 19, 11, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0]
+    <span class="kw">And</span>   bytes_of(bm, 54, 66) = [30, 20, 10, 0, 50, 100, 200, 0, 255, 0, 0, 0]
+    <span class="kw">And</span>   bytes_of(bm, 1078, 1094) = [2, 1, 1, 1, 0, 0, 0, 0, 0, 1, 2, 1, 0, 0, 0, 0]
+    <span class="kw">And</span>   read_bmp8(bm) = (5, 2, [(10, 20, 30), (200, 100, 50), (0, 0, 255)], [0, 1, 2, 1, 0, 2, 1, 1, 1, 0])</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 25.4</span> Selection and undo</h2>
+
+  <p>A selection is a coverage mask, chapter 12's clip under another name, and the selection
+    tools are what chapter 12 already built. The rectangular marquee is <code>clip_rect</code>.
+    Adding to a selection is the union of two masks, subtracting is <code>a × (1 − b)</code>,
+    intersecting is the product. The magic wand is the flood fill's mask. <em>Feather</em> blurs the
+    mask, here with a box blur along the rows and then down the columns, which softens the edge
+    without changing how much is selected: the feathered 4 by 4 square still adds up to 16.</p>
+
+  <p>Moving the selected pixels makes a <em>floating</em> selection: lift them out through the mask
+    into a chapter 9 layer, premultiplied by the mask, fill the hole they leave with the background
+    colour through the same mask, move the layer, and composite it back when it's dropped. Until
+    then the float is a group, and you could fade it or blend it as chapter 12 would.</p>
+
+  <p>Undo is the feature that turned paint programs from toys into tools, and it's a stack. Before
+    an edit runs, save the pixels of the rectangle it will change; undo puts them back, keeping what
+    it replaced so that redo can put that back in turn; and any new edit after an undo throws the redo
+    stack away, because the future it held no longer follows from the present. Saving only the
+    rectangle is what makes it affordable: a brush dab touches a few hundred pixels, not the whole
+    canvas. Real editors go one step further and save only the 64 by 64 tiles that changed, chapter
+    21's idea applied to memory, and share the unchanged ones between states.</p>
+
+  <div class="test" data-feature="chapter25-select.feature">
+    <p class="label">features/chapter25-select.feature</p>
+<pre><code><span class="kw">Feature</span>: Selection and undo
+  A selection is a coverage mask. marquee(x0, y0, x1, y1, w, h) is
+  chapter 12's clip_rect. add_selection(a, b) is 1 - (1 - a)(1 - b),
+  subtract_selection(a, b) is a × (1 - b), intersect_selection(a, b) is
+  chapter 12's multiply_coverage. feather(m, r) is a box blur of radius r,
+  along the rows and then down the columns, each value the mean of the 2r
+  + 1 centred on it with those off the buffer counted as 0.
+  float_selection(c, sel, backfill) lifts the selection's pixels into a
+  chapter 9 layer, each premultiplied by the selection's coverage k, and
+  mixes the canvas under them toward backfill by k; move_floating(f, dx,
+  dy) moves it; drop_floating(c, f) composites every pixel of it with
+  alpha above 0, moved, source-over the canvas, dropping those that land
+  off the canvas. A history(c) is a command stack: history_fill(h, x0, y0,
+  x1, y1, col) is an edit that first saves the canvas pixels of its
+  rectangle (end exclusive, cut to the canvas) and then sets them to col;
+  undo(h) puts the saved pixels back, keeps the ones it replaced for redo,
+  and answers true (false with nothing to undo); redo(h) does the
+  reverse; a new edit throws the redo stack away. stored_pixels(h) is how
+  many pixels both stacks hold.
+
+  <span class="kw">Scenario</span>: Selections combine like coverage
+    <span class="kw">Given</span> a ← marquee(2, 2, 6, 6, 8, 8)
+    <span class="kw">And</span>   b ← marquee(4, 4, 8, 8, 8, 8)
+    <span class="kw">Then</span>  ink(add_selection(a, b)) = 28
+    <span class="kw">And</span>   ink(subtract_selection(a, b)) = 12
+    <span class="kw">And</span>   ink(intersect_selection(a, b)) = 4
+
+  <span class="kw">Scenario</span>: Feathering keeps the selection's size and softens its edge
+    <span class="kw">Given</span> f ← feather(marquee(2, 2, 6, 6, 8, 8), 1)
+    <span class="kw">Then</span>  coverage_at(f, 3, 3) = 1
+    <span class="kw">And</span>   coverage_at(f, 2, 2) = 0.444444
+    <span class="kw">And</span>   coverage_at(f, 1, 1) = 0.111111
+    <span class="kw">And</span>   ink(f) = 16
+
+  <span class="kw">Scenario</span>: A floating selection moves and drops
+    <span class="kw">Given</span> c ← canvas(8, 8)
+    <span class="kw">When</span>  fill(c, color(0, 0, 1))
+    <span class="kw">And</span>   write_pixel(c, 2, 2, color(1, 0, 0))
+    <span class="kw">And</span>   write_pixel(c, 3, 2, color(1, 0, 0))
+    <span class="kw">And</span>   write_pixel(c, 2, 3, color(1, 0, 0))
+    <span class="kw">And</span>   write_pixel(c, 3, 3, color(1, 0, 0))
+    <span class="kw">And</span>   f ← float_selection(c, marquee(2, 2, 4, 4, 8, 8), color(0, 0, 1))
+    <span class="kw">And</span>   move_floating(f, 3, 1)
+    <span class="kw">And</span>   drop_floating(c, f)
+    <span class="kw">Then</span>  pixel_at(c, 2, 2) = color(0, 0, 1)
+    <span class="kw">And</span>   pixel_at(c, 5, 3) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_at(c, 6, 4) = color(1, 0, 0)
+    <span class="kw">And</span>   pixel_at(c, 4, 2) = color(0, 0, 1)
+
+  <span class="kw">Scenario</span>: Undo, redo, and a new edit ends redo
+    <span class="kw">Given</span> c ← canvas(8, 8)
+    <span class="kw">And</span>   h ← history(c)
+    <span class="kw">When</span>  history_fill(h, 0, 0, 4, 4, color(1, 1, 1))
+    <span class="kw">And</span>   history_fill(h, 2, 2, 6, 6, color(1, 0, 0))
+    <span class="kw">Then</span>  pixel_at(c, 3, 3) = color(1, 0, 0)
+    <span class="kw">And</span>   stored_pixels(h) = 32
+    <span class="kw">And</span>   undo(h) = true
+    <span class="kw">And</span>   pixel_at(c, 3, 3) = color(1, 1, 1)
+    <span class="kw">And</span>   pixel_at(c, 5, 5) = color(0, 0, 0)
+    <span class="kw">And</span>   redo(h) = true
+    <span class="kw">And</span>   pixel_at(c, 3, 3) = color(1, 0, 0)
+    <span class="kw">And</span>   undo(h) = true
+    <span class="kw">And</span>   undo(h) = true
+    <span class="kw">And</span>   undo(h) = false
+    <span class="kw">And</span>   pixel_at(c, 1, 1) = color(0, 0, 0)
+    <span class="kw">And</span>   redo(h) = true
+    <span class="kw">And</span>   pixel_at(c, 1, 1) = color(1, 1, 1)
+
+  <span class="kw">Scenario</span>: An edit after an undo throws redo away
+    <span class="kw">Given</span> c ← canvas(8, 8)
+    <span class="kw">And</span>   h ← history(c)
+    <span class="kw">When</span>  history_fill(h, 0, 0, 4, 4, color(1, 1, 1))
+    <span class="kw">And</span>   history_fill(h, 2, 2, 6, 6, color(1, 0, 0))
+    <span class="kw">And</span>   undo(h)
+    <span class="kw">And</span>   history_fill(h, 0, 0, 1, 1, color(0, 1, 0))
+    <span class="kw">Then</span>  redo(h) = false
+    <span class="kw">And</span>   stored_pixels(h) = 17
+    <span class="kw">And</span>   pixel_at(c, 0, 0) = color(0, 1, 0)</code></pre>
+  </div>
+
+  <h2><span class="sec">§ 25.5</span> Putting it together</h2>
+
+  <p>The scanline flood fill is the chapter's one algorithm that's easy to get subtly wrong, so it's
+    the one to print.</p>
+
+<pre><code>flood_mask(c, x, y, tolerance, connectivity):
+  seed ← bytes_at(c, x, y);  stack ← [(x, y)];  m ← all 0
+  reach ← 1 <span class="kw">if</span> connectivity = 8 <span class="kw">else</span> 0
+  <span class="kw">while</span> stack isn't empty:
+    (px, py) ← pop the stack
+    <span class="kw">if</span> m[px, py] = 1 <span class="kw">or</span> (px, py) doesn't match seed: <span class="kw">continue</span>
+    lx ← px;  <span class="kw">while</span> lx &gt; 0 <span class="kw">and</span> (lx − 1, py) is unmarked and matches: lx ← lx − 1
+    rx ← px;  <span class="kw">while</span> rx &lt; width − 1 <span class="kw">and</span> (rx + 1, py) is unmarked and matches: rx ← rx + 1
+    m[lx .. rx, py] ← 1
+    <span class="kw">for</span> ny <span class="kw">in</span> py − 1, py + 1 inside the canvas:
+      inrun ← false
+      <span class="kw">for</span> k from max(0, lx − reach) to min(width − 1, rx + reach):
+        ok ← (k, ny) is unmarked and matches
+        <span class="kw">if</span> ok <span class="kw">and not</span> inrun: push (k, ny)            <span class="cm">// one seed per run</span>
+        inrun ← ok
+  <span class="kw">answer</span> m</code></pre>
+
+  <p>The plate is the chapter's two lessons about pixels that don't know where they came from. On
+    the left, the bucket at tolerance 32 meeting chapter 7's antialiased ring, magnified: the ring of
+    greys between the cyan and the ink is the halo. On the right, a smooth ramp in nothing but black
+    and white, by error diffusion. The extra demo is a dusk scene made with nothing but this
+    chapter's tools, a gradient through a marquee, a soft brush for the sun and the hills, thin
+    strokes for the waves, a boat moved by a floating selection, and one stroke undone, then reduced
+    to sixteen colours by median cut and error diffusion, written as an 8-bit BMP and read back.</p>
+
+  <div class="test" data-feature="chapter25-plate.feature">
+    <p class="label">features/chapter25-plate.feature</p>
+<pre><code><span class="kw">Feature</span>: Plate 25, and the chapter's renders
+  Inks: pale paper (0.92, 0.9, 0.82), ink (0.05, 0.05, 0.08), cyan (0.2,
+  0.75, 0.9), magenta (0.85, 0.2, 0.55); chapter 16's paper (0.02, 0.02,
+  0.025); black and white [(0, 0, 0), (255, 255, 255)] as a palette.
+  magnify is chapter 2's; panels sit side by side left to right.
+
+    plate_25         ring_canvas() bucketed cyan from (80, 80) at tolerance
+                     32, contiguous, no anti-alias, four-way; its pixels
+                     x 100 to 159, y 50 to 109, magnified 4 times; beside
+                     it ramp_canvas(240, 240) error-diffused to black and
+                     white; 480 by 240
+    dither_strip     ramp_canvas(256, 32) to black and white by threshold,
+                     ordered_dither and error_diffuse, stacked top to
+                     bottom; 256 by 96
+    halo_demo        ring_canvas() bucketed cyan from (80, 80), four-way,
+                     contiguous, four times: tolerance 0; 32; 32 with
+                     anti-alias; 160; 640 by 160
+    brush_demo       400 by 240 pale paper; wobbly_events() painted in ink
+                     with brush(8, 0.5, 0.25, 0.6, 1), one dab per event;
+                     then the same events moved down 110, spaced by
+                     distance
+    paint_by_script  480 by 320, starting black, every step an edit
+                     through a history, in this order: the sky, chapter
+                     10's paint_fill of marquee(0, 0, 480, 210) with the
+                     linear gradient from (0, 0) to (0, 210) with stops
+                     (0.05, 0.12, 0.35) at 0 and (0.95, 0.45, 0.2) at 1;
+                     the sea, marquee(0, 210, 480, 320) painted through
+                     in (0.02, 0.1, 0.2); the sun, one event at (370, 110)
+                     with brush(46, 0.55, 0.25, 1, 1) in (1, 0.8, 0.3);
+                     the hills, events i from 0 to 20 at (-20 + 26i, 205 -
+                     30 sin(i / 3.1) - 12 sin(1.7i)) with brush(34, 0.7,
+                     0.2, 0.8, 1) in (0.04, 0.12, 0.06); a magenta stroke
+                     from (40, 40) to (460, 300) with brush(30, 0.5, 0.2,
+                     1, 1), then undone; six waves, for k from 0 to 5,
+                     events j from 0 to 11 at (60 + 60k + 8j, 232 + 14k +
+                     2 sin j) with brush(1.6, 0.2, 0.3, 0.7, 0.8) in the
+                     sun's colour; the boat, marquee(150, 262, 210, 272)
+                     painted through in ink. Then the boat's marquee is
+                     floated with the sea's colour as backfill, moved by
+                     (40, -6) and dropped. Finally the canvas goes to
+                     median_cut(canvas_bytes(c), 16), error_diffuse,
+                     canvas_to_bmp8, read_bmp8, and indexed_canvas of what
+                     came back
+  Every stroke above is paint_stroke with by_distance true.
+
+  <span class="kw">Scenario Outline</span>: Each render matches its reference
+    <span class="kw">Given</span> c ← &lt;render&gt;()
+    <span class="kw">And</span>   ref ← read_file(&lt;file&gt;)
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = &lt;w&gt;
+    <span class="kw">And</span>   c.height = &lt;h&gt;
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
+
+    <span class="kw">Examples</span>:
+      | render          | file                                        | w   | h   |
+      | dither_strip    | "reference/chapter-25/dither-strip.ppm"     | 256 | 96  |
+      | halo_demo       | "reference/chapter-25/halo-demo.ppm"        | 640 | 160 |
+      | brush_demo      | "reference/chapter-25/brush-demo.ppm"       | 400 | 240 |
+      | paint_by_script | "reference/chapter-25/paint-by-script.ppm"  | 480 | 320 |
+
+  <span class="kw">Scenario</span>: The halo, and the two controls that fight over it
+    <span class="kw">Given</span> p6 ← canvas_to_p6(halo_demo())
+    <span class="kw">Then</span>  ppm_pixel(p6, 72, 22) = (177, 175, 172) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 232, 22) = (177, 175, 172) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 392, 22) = (153, 202, 212) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 552, 22) = (124, 225, 243) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 80, 80) = (124, 225, 243) ± 1
+
+  <span class="kw">Scenario</span>: The painting
+    <span class="kw">Given</span> p6 ← canvas_to_p6(paint_by_script())
+    <span class="kw">Then</span>  ppm_pixel(p6, 10, 300) = (39, 89, 124) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 370, 110) = (247, 217, 145) ± 1
+
+  <span class="kw">Scenario</span>: Plate 25
+    <span class="kw">Given</span> c ← plate_25()
+    <span class="kw">And</span>   ref ← read_file("reference/chapter-25/plate-25.ppm")
+    <span class="kw">When</span>  p6 ← canvas_to_p6(c)
+    <span class="kw">Then</span>  c.width = 480
+    <span class="kw">And</span>   c.height = 240
+    <span class="kw">And</span>   ppm_pixel(p6, 150, 120) = (124, 225, 243) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 236, 120) = (246, 243, 234) ± 1
+    <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
+  </div>
+
+  <figure>
+    <canvas id="fig254" role="img" aria-label="A dusk seascape in sixteen colours with a visible dither grain: a sky shading from dusky blue at the top to orange at the horizon, a pale yellow sun, dark green hills, a dark blue sea with thin golden wave lines and a small dark boat"></canvas>
+    <figcaption><span class="fig">Figure 25.4</span> A scene painted by a script of tool events, then sixteen colours of median cut and error diffusion, through an 8-bit BMP and back.</figcaption>
+  </figure>
+
+  <figure class="plate wide" id="plate">
+    <canvas id="plate25" role="img" aria-label="Two panels. Left: a magnified piece of a cyan fill meeting a dark antialiased ring on pale paper, with a thin band of grey pixels between the cyan and the ring. Right: a square of black and white dots whose density rises smoothly from all black at the left to all white at the right"></canvas>
+    <figcaption><span class="fig">Plate 25</span> Left: the bucket tool meets an antialiased edge, and leaves a halo. Right: a smooth ramp reduced to two ink levels by error diffusion.</figcaption>
+  </figure>
+
+  <p>That's the detour. Every tool in it was coverage again, from a hand this time instead of a
+    path, and every one of its famous bugs comes from the same place: a pixel doesn't remember what
+    made it.</p>
+
+  <nav class="endnav">
+    <a href="chapter-24.html">← 24 · Doing It the GPU's Way</a>
+    <span>Chapter 25 · The Raster Editor Detour</span>
+    <span></span>
+  </nav>
+
+</div>
+
+<script src="../assets/book.js"></script>
+<script>
+/* the figures draw from this subset of reference/chapter-16/roboto.json */
+
+function toByte(light){var v=light<0?0:light>1?1:light; return Math.floor(Plate.l2s(v)*255+0.5);}
+function lerp3(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}
+var GLYPHS={"units_per_em":2048,"ascender":1900,"descender":-500,"line_gap":0,"cmap":{"32":"space","65":"A","66":"B","69":"E","76":"L","78":"N","79":"O","80":"P","97":"a","100":"d","101":"e","102":"f","103":"g","104":"h","105":"i","110":"n","114":"r","116":"t"},"glyphs":{".notdef":{"advance":908,"contours":[[[808,0,true],[100,0,true],[100,1456,true],[808,1456,true]],[[754,84,true],[754,1371,true],[480,728,true]],[[154,1359,true],[154,96,true],[422,728,true]],[[194,54,true],[709,54,true],[451,660,true]],[[451,796,true],[709,1402,true],[194,1402,true]]],"components":[]},"A":{"advance":1336,"contours":[[[973,380,true],[363,380,true],[226,0,true],[28,0,true],[584,1456,true],[752,1456,true],[1309,0,true],[1112,0,true]],[[421,538,true],[916,538,true],[668,1219,true]]],"components":[]},"B":{"advance":1275,"contours":[[[169,0,true],[169,1456,true],[645,1456,true],[882,1456,false],[1121,1260,false],[1121,1068,true],[1121,966,false],[1005,809,false],[905,766,true],[1023,733,false],[1160,548,false],[1160,420,true],[1160,224,false],[906,0,false],[674,0,true]],[[361,681,true],[361,157,true],[678,157,true],[812,157,false],[967,296,false],[967,418,true],[967,681,false],[681,681,true]],[[361,835,true],[651,835,true],[777,835,false],[928,961,false],[928,1069,true],[928,1189,false],[788,1298,false],[645,1298,true],[361,1298,true]]],"components":[]},"E":{"advance":1164,"contours":[[[992,673,true],[361,673,true],[361,157,true],[1094,157,true],[1094,0,true],[169,0,true],[169,1456,true],[1084,1456,true],[1084,1298,true],[361,1298,true],[361,830,true],[992,830,true]]],"components":[]},"L":{"advance":1102,"contours":[[[362,157,true],[1052,157,true],[1052,0,true],[169,0,true],[169,1456,true],[362,1456,true]]],"components":[]},"N":{"advance":1460,"contours":[[[1288,0,true],[1095,0,true],[362,1122,true],[362,0,true],[169,0,true],[169,1456,true],[362,1456,true],[1097,329,true],[1097,1456,true],[1288,1456,true]]],"components":[]},"O":{"advance":1408,"contours":[[[1289,681,true],[1289,467,false],[1145,148,false],[881,-20,false],[705,-20,true],[533,-20,false],[267,149,false],[120,462,false],[118,668,true],[118,773,true],[118,983,false],[264,1305,false],[531,1476,false],[703,1476,true],[878,1476,false],[1145,1307,false],[1289,986,false],[1289,773,true]],[[1098,775,true],[1098,1034,false],[890,1311,false],[703,1311,true],[521,1311,false],[312,1034,false],[309,788,true],[309,681,true],[309,430,false],[520,143,false],[705,143,true],[891,143,false],[1095,414,false],[1098,667,true]]],"components":[]},"P":{"advance":1292,"contours":[[[361,570,true],[361,0,true],[169,0,true],[169,1456,true],[706,1456,true],[945,1456,false],[1216,1212,false],[1216,1011,true],[1216,799,false],[951,570,false],[704,570,true]],[[361,727,true],[706,727,true],[860,727,false],[1024,872,false],[1024,1009,true],[1024,1139,false],[860,1295,false],[717,1298,true],[361,1298,true]]],"components":[]},"a":{"advance":1114,"contours":[[[808,0,true],[792,32,false],[782,114,true],[653,-20,false],[474,-20,true],[314,-20,false],[109,161,false],[109,300,true],[109,469,false],[366,656,false],[599,656,true],[779,656,true],[779,741,true],[779,838,false],[663,953,false],[550,953,true],[451,953,false],[317,853,false],[317,782,true],[131,782,true],[131,863,false],[246,1014,false],[443,1102,false],[561,1102,true],[748,1102,false],[960,915,false],[964,751,true],[964,253,true],[964,104,false],[1002,16,true],[1002,0,true]],[[501,141,true],[588,141,false],[744,231,false],[779,303,true],[779,525,true],[634,525,true],[294,525,false],[294,326,true],[294,239,false],[410,141,false]]],"components":[]},"d":{"advance":1155,"contours":[[[95,550,true],[95,799,false],[331,1102,false],[522,1102,true],[712,1102,false],[823,972,true],[823,1536,true],[1008,1536,true],[1008,0,true],[838,0,true],[829,116,true],[718,-20,false],[520,-20,true],[332,-20,false],[95,288,false],[95,536,true]],[[280,529,true],[280,345,false],[432,137,false],[566,137,true],[742,137,false],[823,295,true],[823,792,true],[740,945,false],[568,945,true],[432,945,false],[280,735,false]]],"components":[]},"e":{"advance":1085,"contours":[[[589,-20,true],[369,-20,false],[93,269,false],[93,511,true],[93,545,true],[93,706,false],[216,959,false],[437,1102,false],[566,1102,true],[777,1102,false],[1011,824,false],[1011,565,true],[1011,488,true],[278,488,true],[282,328,false],[461,131,false],[599,131,true],[697,131,false],[833,211,false],[884,277,true],[997,189,true],[861,-20,false]],[[566,950,true],[454,950,false],[302,787,false],[284,640,true],[826,640,true],[826,654,true],[818,795,false],[682,950,false]]],"components":[]},"f":{"advance":711,"contours":[[[231,0,true],[231,939,true],[60,939,true],[60,1082,true],[231,1082,true],[231,1193,true],[231,1367,false],[417,1557,false],[587,1557,true],[651,1557,false],[714,1540,true],[704,1390,true],[657,1399,false],[604,1399,true],[514,1399,false],[416,1294,false],[416,1196,true],[416,1082,true],[647,1082,true],[647,939,true],[416,939,true],[416,0,true]]],"components":[]},"g":{"advance":1149,"contours":[[[96,550,true],[96,803,false],[330,1102,false],[523,1102,true],[721,1102,false],[832,962,true],[841,1082,true],[1010,1082,true],[1010,26,true],[1010,-184,false],[761,-426,false],[551,-426,true],[434,-426,false],[210,-326,false],[151,-239,true],[247,-128,true],[366,-275,false],[538,-275,true],[673,-275,false],[824,-123,false],[824,15,true],[824,108,true],[713,-20,false],[521,-20,true],[331,-20,false],[96,286,false]],[[282,529,true],[282,346,false],[432,137,false],[567,137,true],[742,137,false],[824,296,true],[824,790,true],[739,945,false],[569,945,true],[434,945,false],[282,735,false]]],"components":[]},"h":{"advance":1128,"contours":[[[325,951,true],[448,1102,false],[645,1102,true],[988,1102,false],[991,715,true],[991,0,true],[806,0,true],[806,716,true],[805,833,false],[700,945,false],[589,945,true],[499,945,false],[363,849,false],[325,771,true],[325,0,true],[140,0,true],[140,1536,true],[325,1536,true]]],"components":[]},"i":{"advance":497,"contours":[[[341,0,true],[156,0,true],[156,1082,true],[341,1082,true]],[[141,1369,true],[141,1414,false],[196,1476,false],[304,1476,false],[360,1414,false],[360,1324,false],[304,1264,false],[196,1264,false],[141,1324,false]]],"components":[]},"n":{"advance":1130,"contours":[[[315,1082,true],[321,946,true],[445,1102,false],[645,1102,true],[988,1102,false],[991,715,true],[991,0,true],[806,0,true],[806,716,true],[805,833,false],[700,945,false],[589,945,true],[499,945,false],[363,849,false],[325,771,true],[325,0,true],[140,0,true],[140,1082,true]]],"components":[]},"r":{"advance":693,"contours":[[[663,916,true],[621,923,false],[572,923,true],[390,923,false],[325,768,true],[325,0,true],[140,0,true],[140,1082,true],[320,1082,true],[323,957,true],[414,1102,false],[581,1102,true],[635,1102,false],[663,1088,true]]],"components":[]},"space":{"advance":507,"contours":[],"components":[]},"t":{"advance":669,"contours":[[[391,1344,true],[391,1082,true],[593,1082,true],[593,939,true],[391,939,true],[391,268,true],[391,203,false],[445,138,false],[510,138,true],[542,138,false],[598,150,true],[598,0,true],[525,-20,false],[456,-20,true],[332,-20,false],[206,130,false],[206,268,true],[206,939,true],[9,939,true],[9,1082,true],[206,1082,true],[206,1344,true]]],"components":[]}},"kern":[["A","O",-11],["A","t",-17],["E","d",-19],["E","e",-19],["E","f",-18],["E","g",-19],["L","A",19],["L","O",-65],["N","A",18],["O","A",-21],["P","A",-138],["P","a",-11],["P","d",-13],["P","e",-13],["P","g",-13],["P","t",14],["f","d",-24],["f","e",-24],["f","g",-24],["r","a",-40],["r","d",-19],["r","e",-19],["r","f",15],["r","g",-19],["r","t",50]]};
+function blit(ctx,pixels,pw,ph,scale,ox,oy){var img=ctx.createImageData(pw,ph);for(var i=0;i<pw*ph;i++){img.data[i*4]=pixels[i][0];img.data[i*4+1]=pixels[i][1];img.data[i*4+2]=pixels[i][2];img.data[i*4+3]=255;}var off=Plate.offcan(pw,ph);off.getContext('2d').putImageData(img,0,0);ctx.imageSmoothingEnabled=false;ctx.drawImage(off,ox,oy,pw*scale,ph*scale);}
+
+/* vectors and matrices (chapters 4 and 13) */
+function sub(a,b){return [a[0]-b[0],a[1]-b[1]];}
+function mag(v){return Math.sqrt(v[0]*v[0]+v[1]*v[1]);}
+function unit(a,b){var d=sub(b,a),m=mag(d);return [d[0]/m,d[1]/m];}
+function perp(v){return [-v[1],v[0]];}
+function crss(a,b){return a[0]*b[1]-a[1]*b[0];}
+function add(p,v,s){return [p[0]+v[0]*s,p[1]+v[1]*s];}
+function intersect(p1,d1,p2,d2){var den=crss(d1,d2);if(Math.abs(den)<1e-12)return null;var t=crss(sub(p2,p1),d2)/den;return add(p1,d1,t);}
+function arc(pts,c,a0,a1,r,steps){for(var k=0;k<=steps;k++){var a=a0+(a1-a0)*k/steps;pts.push([c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)]);}}
+function arcSteps(a0,a1){return Math.max(2,Math.ceil(Math.abs(a1-a0)/(Math.PI/16)-1e-9));}
+function angBetween(a,b){var d=((b-a)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);return d>Math.PI?d-2*Math.PI:d;}
+function mat(a,b,c,d,e,f,g,h,i){return [a,b,c,d,e,f,g,h,i];}
+function mmul(m,n){var o=[];for(var r=0;r<3;r++)for(var c=0;c<3;c++){var s=0;for(var k=0;k<3;k++)s+=m[r*3+k]*n[k*3+c];o.push(s);}return o;}
+function apply(m,p){return [m[0]*p[0]+m[1]*p[1]+m[2],m[3]*p[0]+m[4]*p[1]+m[5]];}
+function translation(x,y){return mat(1,0,x,0,1,y,0,0,1);}
+function scaling(x,y){return mat(x,0,0,0,y,0,0,0,1);}
+
+/* curves (chapter 8) */
+function lerpP(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];}
+function decasteljau(pts,t){var left=[pts[0]],right=[pts[pts.length-1]],p=pts.slice();while(p.length>1){var q=[];for(var i=0;i<p.length-1;i++)q.push(lerpP(p[i],p[i+1],t));p=q;left.push(p[0]);right.push(p[p.length-1]);}return {at:p[0],left:left,right:right.reverse()};}
+function pointAt(c,t){return decasteljau(c,t).at;}
+function flatness(c){var a=c[0],b=c[c.length-1],dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy),w=0;for(var i=1;i<c.length-1;i++){var p=c[i],d=L===0?Math.hypot(p[0]-a[0],p[1]-a[1]):Math.abs((p[0]-a[0])*dy-(p[1]-a[1])*dx)/L;w=Math.max(w,d);}return w;}
+function flattenInto(c,tol,out){if(flatness(c)<=tol)out.push(c[c.length-1]);else{var d=decasteljau(c,0.5);flattenInto(d.left,tol,out);flattenInto(d.right,tol,out);}}
+function flatten(c,tol){var out=[c[0]];flattenInto(c,tol,out);return out;}
+function flattenIntoPath(pts,c,tol){var f=flatten(c,tol);if(pts.length&&pts[pts.length-1][0]===f[0][0]&&pts[pts.length-1][1]===f[0][1])f=f.slice(1);return pts.concat(f);}
+function transformCurve(c,m){return c.map(function(p){return apply(m,p);});}
+function quadBounds(c){var xs=[c[0][0],c[2][0]],ys=[c[0][1],c[2][1]];[0,1].forEach(function(k){var den=c[0][k]-2*c[1][k]+c[2][k];if(Math.abs(den)>1e-12){var t=(c[0][k]-c[1][k])/den;if(t>0&&t<1){var q=pointAt(c,t);(k?ys:xs).push(q[k]);}}});return [Math.min.apply(null,xs),Math.min.apply(null,ys),Math.max.apply(null,xs),Math.max.apply(null,ys)];}
+
+/* chapter 16: glyphs */
+function impliedPoints(contour){var out=[],n=contour.length;for(var i=0;i<n;i++){var cur=contour[i],nxt=contour[(i+1)%n];out.push(cur);if(!cur[2]&&!nxt[2])out.push([(cur[0]+nxt[0])/2,(cur[1]+nxt[1])/2,1]);}for(var k=0;k<out.length;k++)if(out[k][2])return out.slice(k).concat(out.slice(0,k));return out;}
+function contourCurves(contour){var pts=impliedPoints(contour),curves=[],n=pts.length,i=0;while(i<n){var a=pts[i],b=pts[(i+1)%n];if(b[2]){curves.push([[a[0],a[1]],[(a[0]+b[0])/2,(a[1]+b[1])/2],[b[0],b[1]]]);i+=1;}else{var c=pts[(i+2)%n];curves.push([[a[0],a[1]],[b[0],b[1]],[c[0],c[1]]]);i+=2;}}return curves;}
+function componentMatrix(t){return mat(t[0],t[2],t[4],t[1],t[3],t[5],0,0,1);}
+function glyphOutline(font,name){var g=font.glyphs[name],out=g.contours.map(contourCurves);g.components.forEach(function(comp){var m=componentMatrix(comp.transform);glyphOutline(font,comp.glyph).forEach(function(contour){out.push(contour.map(function(c){return transformCurve(c,m);}));});});return out;}
+function glyphBounds(font,name){var boxes=[];glyphOutline(font,name).forEach(function(contour){contour.forEach(function(c){boxes.push(quadBounds(c));});});if(!boxes.length)return [0,0,0,0];return [Math.min.apply(null,boxes.map(function(b){return b[0];})),Math.min.apply(null,boxes.map(function(b){return b[1];})),Math.max.apply(null,boxes.map(function(b){return b[2];})),Math.max.apply(null,boxes.map(function(b){return b[3];}))];}
+function textMatrix(font,size,x,y){var s=size/font.units_per_em;return mmul(translation(x,y),scaling(s,-s));}
+function glyphPath(font,name,m,tol){return glyphOutline(font,name).map(function(contour){var pts=[];contour.forEach(function(c){pts=flattenIntoPath(pts,transformCurve(c,m),tol);});return pts;});}
+function glyphNameOf(font,ch){return font.cmap[String(ch.charCodeAt(0))]||'.notdef';}
+/* the stroker (chapter 13), for emboldening */
+function segRect(a,b,h){var d=unit(a,b),n=perp(d);return [add(a,n,h),add(b,n,h),add(b,n,-h),add(a,n,-h)];}
+function joinShape(v,din,dout,h,join,ml){var turn=crss(din,dout);if(Math.abs(turn)<1e-12)return null;var s=turn>0?-1:1,nin=perp(din).map(function(x){return x*s;}),nout=perp(dout).map(function(x){return x*s;}),a=add(v,nin,h),b=add(v,nout,h);
+  if(join==='bevel')return [v,a,b];
+  if(join==='round'){var a0=Math.atan2(a[1]-v[1],a[0]-v[0]),a1=a0+angBetween(a0,Math.atan2(b[1]-v[1],b[0]-v[0]));var p=[v];arc(p,v,a0,a1,h,arcSteps(a0,a1));return p;}
+  var m=intersect(a,din,b,dout);if(m&&mag(sub(m,v))<=ml*h)return [v,a,m,b];return [v,a,b];}
+function capShape(p,dout,h,cap){var n=perp(dout);if(cap==='butt')return null;
+  if(cap==='square'){var l=add(p,n,h),r=add(p,n,-h);return [l,add(l,dout,h),add(r,dout,h),r];}
+  var a0=Math.atan2(n[1],n[0]),d=angBetween(a0,Math.atan2(dout[1],dout[0]));var a1=a0+(d>0?Math.PI:-Math.PI),pts=[];arc(pts,p,a0,a1,h,arcSteps(a0,a1));return pts;}
+function dedupe(pts){var o=[pts[0]];for(var i=1;i<pts.length;i++)if(mag(sub(pts[i],o[o.length-1]))>1e-9)o.push(pts[i]);return o;}
+function area(sp){var s=0;for(var i=0;i<sp.length;i++){var a=sp[i],b=sp[(i+1)%sp.length];s+=a[0]*b[1]-b[0]*a[1];}return s/2;}
+function strokeToPath(pts,closed,width,cap,join,ml){var h=width/2,subs=[];pts=dedupe(pts);if(closed&&pts.length>1&&mag(sub(pts[pts.length-1],pts[0]))<=1e-9)pts.pop();
+  function emit(sp){if(!sp)return;if(area(sp)>0)sp.reverse();subs.push(sp);}
+  if(pts.length<2){if(cap==='round'){var d=[];arc(d,pts[0],0,2*Math.PI,h,48);emit(d);}else if(cap==='square'){var c=pts[0];emit([[c[0]-h,c[1]-h],[c[0]+h,c[1]-h],[c[0]+h,c[1]+h],[c[0]-h,c[1]+h]]);}return subs;}
+  var segs=[];for(var i=0;i<pts.length-1;i++)segs.push([pts[i],pts[i+1]]);if(closed)segs.push([pts[pts.length-1],pts[0]]);
+  segs.forEach(function(s){emit(segRect(s[0],s[1],h));});
+  var dirs=segs.map(function(s){return unit(s[0],s[1]);}),nj=closed?segs.length:segs.length-1;
+  for(var k=0;k<nj;k++){var v=segs[(k+1)%segs.length][0];emit(joinShape(v,dirs[k],dirs[(k+1)%segs.length],h,join,ml));}
+  if(!closed){emit(capShape(pts[0],dirs[0].map(function(x){return -x;}),h,cap));emit(capShape(pts[pts.length-1],dirs[dirs.length-1],h,cap));}
+  return subs;}
+
+/* fill a list of closed subpaths (chapter 7, nonzero) */
+function edgesOf(subs){var out=[];subs.forEach(function(sp){var n=sp.length;for(var i=0;i<n;i++)out.push([sp[i],sp[(i+1)%n]]);});return out;}
+function fillSubs(subs,w,h){var acc={area:new Array(w*h).fill(0),cover:new Array(w*h).fill(0)};edgesOf(subs).forEach(function(e){var a=e[0],b=e[1];if(a[1]===b[1])return;var sign=a[1]>b[1]?1:-1,top=a[1]>b[1]?b:a,bot=a[1]>b[1]?a:b,slope=(bot[0]-top[0])/(bot[1]-top[1]);var first=Math.max(Math.floor(top[1]),0),last=Math.min(Math.ceil(bot[1])-1,h-1);for(var row=first;row<=last;row++){var y0=Math.max(top[1],row),y1=Math.min(bot[1],row+1),x0=top[0]+(y0-top[1])*slope,x1=top[0]+(y1-top[1])*slope,xa=Math.min(x0,x1),xb=Math.max(x0,x1),ca=Math.floor(xa),cb=Math.floor(xb);function ad(x,ar,co){if(x<0){x=0;ar=co;}if(x>=w)return;var idx=row*w+x;acc.area[idx]+=ar;acc.cover[idx]+=co;}var hg=sign*(y1-y0);if(ca===cb){var xm=(xa+xb)/2-ca;ad(ca,hg*(1-xm),hg);}else{var dx=xb-xa;for(var c=ca;c<=cb;c++){var lo=Math.max(xa,c),hi=Math.min(xb,c+1),sh=hg*(hi-lo)/dx,mm=(lo+hi)/2-c;ad(c,sh*(1-mm),sh);}}}});var cov=new Array(w*h).fill(0);for(var row=0;row<h;row++){var run=0;for(var x=0;x<w;x++){var idx=row*w+x;cov[idx]=Math.min(1,Math.abs(run+acc.area[idx]));run+=acc.cover[idx];}}return cov;}
+function kernOf(font,a,b){if(!font.kernMap){font.kernMap={};font.kern.forEach(function(k){font.kernMap[k[0]+'\u0001'+k[1]]=k[2];});}return font.kernMap[a+'\u0001'+b]||0;}
+function layoutRun(font,text,size,x,y,kerning){var s=size/font.units_per_em,out=[],pen=x,prev=null;for(var i=0;i<text.length;i++){var name=glyphNameOf(font,text[i]);if(kerning&&prev!==null)pen+=kernOf(font,prev,name)*s;out.push({name:name,x:pen,y:y});pen+=font.glyphs[name].advance*s;prev=name;}return out;}
+/* chapter 22: the grid, segments, splitting, classifying, stitching */
+var GRID=256;
+function grid(v){return Math.floor(v*GRID+0.5);}
+function lt(p,q){return p[1]<q[1]||(p[1]===q[1]&&p[0]<q[0]);}
+function orient(a,b,c){return (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);}
+function seg(a,b,wa,wb){return lt(b,a)?{l:b,h:a,wa:-wa,wb:-wb}:{l:a,h:b,wa:wa,wb:wb};}
+function pathSegments(p,wa,wb){var out=[];edgesOf(p).forEach(function(e){var l=[grid(e[0][0]),grid(e[0][1])],h=[grid(e[1][0]),grid(e[1][1])];if(l[0]!==h[0]||l[1]!==h[1])out.push(seg(l,h,wa,wb));});return out;}
+function roundDiv(n,d){var q=(2n*n+d)/(2n*d),r=(2n*n+d)%(2n*d);if(r<0n)q-=1n;return Number(q);}
+function crossing(s,t){var a=s.l,b=s.h,c=t.l,d=t.h,beta=BigInt(orient([0,0],[b[0]-a[0],b[1]-a[1]],[d[0]-c[0],d[1]-c[1]])),alpha=BigInt((c[0]-a[0])*(d[1]-c[1])-(c[1]-a[1])*(d[0]-c[0]));if(beta<0n){alpha=-alpha;beta=-beta;}
+  return [roundDiv(BigInt(a[0])*beta+BigInt(b[0]-a[0])*alpha,beta),roundDiv(BigInt(a[1])*beta+BigInt(b[1]-a[1])*alpha,beta)];}
+function same(p,q){return p[0]===q[0]&&p[1]===q[1];}
+function between(p,a,b){return lt(a,p)&&lt(p,b);}
+function meet(s,t){var a=s.l,b=s.h,c=t.l,d=t.h;
+  if(Math.max(a[0],b[0])<Math.min(c[0],d[0])||Math.max(c[0],d[0])<Math.min(a[0],b[0])||b[1]<c[1]||d[1]<a[1])return [[],[]];
+  var o1=orient(a,b,c),o2=orient(a,b,d),o3=orient(c,d,a),o4=orient(c,d,b),os=[],ot=[];
+  if(o1===0&&o2===0){[c,d].forEach(function(q){if(between(q,a,b))os.push(q);});[a,b].forEach(function(q){if(between(q,c,d))ot.push(q);});return [os,ot];}
+  if(o1*o2<0&&o3*o4<0){var p=crossing(s,t);return [same(p,a)||same(p,b)?[]:[p],same(p,c)||same(p,d)?[]:[p]];}
+  if(o1===0&&between(c,a,b))os.push(c);if(o2===0&&between(d,a,b))os.push(d);if(o3===0&&between(a,c,d))ot.push(a);if(o4===0&&between(b,c,d))ot.push(b);
+  return [os,ot];}
+function findSplits(segs){/* the active-list sweep; brute force finds the same */
+  var order=segs.map(function(s,i){return i;}).sort(function(i,j){var s=segs[i],t=segs[j];return s.l[1]-t.l[1]||s.l[0]-t.l[0]||s.h[1]-t.h[1]||s.h[0]-t.h[0];});
+  var splits={},active=[];function put(i,pts){pts.forEach(function(q){if(!same(q,segs[i].l)&&!same(q,segs[i].h))(splits[i]=splits[i]||[]).push(q);});}
+  order.forEach(function(i){var s=segs[i];active=active.filter(function(j){return lt(s.l,segs[j].h);});active.forEach(function(j){var m=meet(s,segs[j]);put(i,m[0]);put(j,m[1]);});active.push(i);});
+  return splits;}
+function along(s,pts){var l=s.l,h=s.h,seen={},u=[];pts.forEach(function(q){var k=q[0]+','+q[1];if(!seen[k]){seen[k]=1;u.push(q);}});
+  function dt(q){return (q[0]-l[0])*(h[0]-l[0])+(q[1]-l[1])*(h[1]-l[1]);}return u.sort(function(p,q){return dt(p)-dt(q)||p[1]-q[1]||p[0]-q[0];});}
+function merge(segs){var acc={},keys=[];segs.forEach(function(s){var k=s.l[1]+','+s.l[0]+','+s.h[1]+','+s.h[0];if(acc[k]){acc[k].wa+=s.wa;acc[k].wb+=s.wb;}else{acc[k]={l:s.l,h:s.h,wa:s.wa,wb:s.wb};keys.push(acc[k]);}});
+  return keys.filter(function(s){return s.wa!==0||s.wb!==0;}).sort(function(s,t){return s.l[1]-t.l[1]||s.l[0]-t.l[0]||s.h[1]-t.h[1]||s.h[0]-t.h[0];});}
+function splitSegments(segs){segs=merge(segs);for(;;){var sp=findSplits(segs),any=false,out=[];
+  segs.forEach(function(s,i){if(!sp[i]){out.push(s);return;}any=true;var ch=[s.l].concat(along(s,sp[i])).concat([s.h]);for(var k=0;k+1<ch.length;k++)if(!same(ch[k],ch[k+1]))out.push(seg(ch[k],ch[k+1],s.wa,s.wb));});
+  if(!any)return segs;segs=merge(out);}}
+function insideRule(w,rule){return rule==='nonzero'?w!==0:((w%2)+2)%2===1;}
+function opInside(op,a,b){return op==='union'?a||b:op==='intersection'?a&&b:op==='difference'?a&&!b:a!==b;}
+function windingBeside(segs,i){var e=segs[i],mx=e.l[0]+e.h[0],my=e.l[1]+e.h[1],wa=0,wb=0;
+  for(var j=0;j<segs.length;j++){if(j===i)continue;var f=segs[j],lx=2*f.l[0],ly=2*f.l[1],hx=2*f.h[0],hy=2*f.h[1];
+    if((ly<my||(ly===my&&lx<=mx))&&(my<hy||(my===hy&&mx<hx))&&orient([lx,ly],[hx,hy],[mx,my])>0){wa+=f.wa;wb+=f.wb;}}
+  return [[wa,wb],[wa+e.wa,wb+e.wb]];}
+function keepEdges(segs,ra,rb,op){var kept=[];segs.forEach(function(e,i){var w=windingBeside(segs,i),out=opInside(op,insideRule(w[0][0],ra),insideRule(w[0][1],rb)),inn=opInside(op,insideRule(w[1][0],ra),insideRule(w[1][1],rb));if(out!==inn)kept.push(inn?[e.l,e.h]:[e.h,e.l]);});return kept;}
+function halfOf(r,v){var cr=r[0]*v[1]-r[1]*v[0],dt=r[0]*v[0]+r[1]*v[1];return (cr<0||(cr===0&&dt>0))?0:1;}
+function stitch(kept){var order=kept.map(function(k,i){return i;}).sort(function(i,j){var a=kept[i],b=kept[j];return a[0][1]-b[0][1]||a[0][0]-b[0][0]||a[1][1]-b[1][1]||a[1][0]-b[1][0];});
+  var from={},used=[],dirs=kept.map(function(k){return [k[1][0]-k[0][0],k[1][1]-k[0][1]];}),out=[];order.forEach(function(k){var key=kept[k][0].join(',');(from[key]=from[key]||[]).push(k);});
+  order.forEach(function(k0){if(used[k0])return;var start=kept[k0][0],pts=[],k=k0;for(;;){used[k]=true;pts.push(kept[k][0]);var v=kept[k][1];if(same(v,start))break;
+      var d=dirs[k],r=[-d[0],-d[1]],best=null;(from[v.join(',')]||[]).forEach(function(j){if(used[j])return;if(best===null){best=j;return;}var hv=halfOf(r,dirs[j]),hb=halfOf(r,dirs[best]),b=dirs[best],w=dirs[j];if(hv<hb||(hv===hb&&b[0]*w[1]-b[1]*w[0]>0))best=j;});k=best;}
+    for(var changed=true;changed&&pts.length>=3;){changed=false;for(var q=0;q<pts.length;q++){var u=pts[(q-1+pts.length)%pts.length],c=pts[q],w=pts[(q+1)%pts.length];if((c[0]-u[0])*(w[1]-c[1])-(c[1]-u[1])*(w[0]-c[0])===0){pts.splice(q,1);changed=true;break;}}}
+    var f=0;for(var q=1;q<pts.length;q++)if(lt(pts[q],pts[f]))f=q;out.push(pts.slice(f).concat(pts.slice(0,f)));});
+  out.sort(function(a,b){for(var i=0;i<Math.min(a.length,b.length);i++){if(a[i][1]!==b[i][1])return a[i][1]-b[i][1];if(a[i][0]!==b[i][0])return a[i][0]-b[i][0];}return a.length-b.length;});
+  return out;}
+function combine(a,ra,b,rb,op){var segs=splitSegments(pathSegments(a,1,0).concat(pathSegments(b,0,1)));
+  return stitch(keepEdges(segs,ra,rb,op)).map(function(c){return c.map(function(q){return [q[0]/GRID,q[1]/GRID];});});}
+
+/* the renders */
+var PAPER=[0.02,0.02,0.025],INK=[0.9,0.55,0.1],DIM=[0.3,0.3,0.34],MAGENTA=[0.85,0.2,0.55];
+function Buf(w,h,paper){this.w=w;this.h=h;this.p=[];for(var i=0;i<w*h;i++)this.p.push(paper.slice());}
+Buf.prototype.paint=function(cov,col){for(var i=0;i<this.w*this.h;i++){var k=cov[i];if(k>0)this.p[i]=lerp3(this.p[i],col,k);}};
+Buf.prototype.bytes=function(){return this.p.map(function(c){return c.map(toByte);});};
+function hairline(b,p,col,width){var subs=[];p.forEach(function(sp){subs=subs.concat(strokeToPath(sp,true,width,'butt','round',4));});b.paint(fillSubs(subs,b.w,b.h),col);}
+function star(){var p=[];for(var k=0;k<5;k++){var a=(-90+144*k)*(Math.PI/180);p.push([80.5+70*Math.cos(a),80.5+70*Math.sin(a)]);}return [p];}
+function circlePath(cx,cy,r,n){var p=[];for(var k=0;k<n;k++){var a=2*Math.PI*k/n;p.push([cx+r*Math.cos(a),cy+r*Math.sin(a)]);}return [p];}
+function transformPath(p,m){return p.map(function(sp){return sp.map(function(q){return apply(m,q);});});}
+function polygon(pts){return [pts];}
+function textPath(font,text,size,x,y){var out=[];layoutRun(font,text,size,x,y,true).forEach(function(pl){out=out.concat(glyphPath(font,pl.name,textMatrix(font,size,pl.x,pl.y),0.1));});return out;}
+function plateGlyph(){return glyphPath(GLYPHS,glyphNameOf(GLYPHS,'g'),textMatrix(GLYPHS,200,40,140),0.1);}
+function plateStar(){return transformPath(star(),mmul(mmul(mmul(translation(130-80.5,104-80.5),translation(80.5,80.5)),scaling(0.85,0.85)),translation(-80.5,-80.5)));}
+var OPS=['union','intersection','difference','xor'];
+
+/* chapter 25: brushes */
+function dabCoverage(b,d){var inner=b.hardness*b.radius;if(d<=inner)return 1;if(d>=b.radius)return 0;return (b.radius-d)/(b.radius-inner);}
+function brush(r,h,s,f,o){return {radius:r,hardness:h,spacing:s,flow:f,opacity:o};}
+function stampPositions(ev,b){if(!ev.length)return [];var step=b.spacing*2*b.radius,out=[ev[0]],need=step;
+  for(var i=0;i+1<ev.length;i++){var a=ev[i],c=ev[i+1],sg=mag(sub(c,a)),pos=0;while(sg-pos>=need){pos+=need;var t=pos/sg;out.push([a[0]+(c[0]-a[0])*t,a[1]+(c[1]-a[1])*t]);need=step;}need-=sg-pos;}return out;}
+function strokeMask(W,H,centers,b){var m=new Float64Array(W*H);centers.forEach(function(q){var x0=Math.max(0,Math.floor(q[0]-b.radius)),x1=Math.min(W-1,Math.ceil(q[0]+b.radius)),y0=Math.max(0,Math.floor(q[1]-b.radius)),y1=Math.min(H-1,Math.ceil(q[1]+b.radius));
+    for(var y=y0;y<=y1;y++)for(var x=x0;x<=x1;x++){var dx=x+0.5-q[0],dy=y+0.5-q[1],k=dabCoverage(b,Math.sqrt(dx*dx+dy*dy));if(k>0){var i=y*W+x;m[i]=1-(1-m[i])*(1-b.flow*k);}}});return m;}
+function paintStroke(buf,ev,b,col,byDistance){var m=strokeMask(buf.w,buf.h,byDistance?stampPositions(ev,b):ev,b);for(var i=0;i<m.length;i++)m[i]*=b.opacity;buf.paint(m,col);return m;}
+function wobblyEvents(){var out=[];for(var i=0;i<25;i++){var u=i/24;out.push([20+360*u*u,60+30*Math.sin(2*Math.PI*u)]);}return out;}
+/* flood fill */
+function bytesAt(buf,x,y){return buf.p[y*buf.w+x].map(toByte);}
+function matches(buf,x,y,seed,tol){var b=bytesAt(buf,x,y);return Math.abs(b[0]-seed[0])<=tol&&Math.abs(b[1]-seed[1])<=tol&&Math.abs(b[2]-seed[2])<=tol;}
+function floodMask(buf,x,y,tol,conn){var W=buf.w,H=buf.h,m=new Float64Array(W*H),seed=bytesAt(buf,x,y),stack=[[x,y]],reach=conn===8?1:0;
+  while(stack.length){var s=stack.pop(),px=s[0],py=s[1];if(m[py*W+px]||!matches(buf,px,py,seed,tol))continue;var lx=px,rx=px;
+    while(lx>0&&!m[py*W+lx-1]&&matches(buf,lx-1,py,seed,tol))lx--;while(rx<W-1&&!m[py*W+rx+1]&&matches(buf,rx+1,py,seed,tol))rx++;for(var k=lx;k<=rx;k++)m[py*W+k]=1;
+    [py-1,py+1].forEach(function(ny){if(ny<0||ny>=H)return;var inrun=false;for(var k=Math.max(0,lx-reach);k<=Math.min(W-1,rx+reach);k++){var ok=!m[ny*W+k]&&matches(buf,k,ny,seed,tol);if(ok&&!inrun)stack.push([k,ny]);inrun=ok;}});}
+  return m;}
+function antiAliasMask(m,W,H){var out=Float64Array.from(m);for(var y=0;y<H;y++)for(var x=0;x<W;x++){if(m[y*W+x])continue;if((x>0&&m[y*W+x-1])||(x<W-1&&m[y*W+x+1])||(y>0&&m[(y-1)*W+x])||(y<H-1&&m[(y+1)*W+x]))out[y*W+x]=0.5;}return out;}
+function bucket(buf,x,y,col,tol,aa){var m=floodMask(buf,x,y,tol,4);if(aa)m=antiAliasMask(m,buf.w,buf.h);buf.paint(m,col);return m;}
+var PALE=[0.92,0.9,0.82],INK_DARK=[0.05,0.05,0.08],CYAN=[0.2,0.75,0.9];
+function ringCanvas(){var b=new Buf(160,160,PALE);b.paint(fillSubs(strokeToPath(circlePath(80,80,60,96)[0],true,4,'butt','round',4),160,160),INK_DARK);return b;}
+/* quantization */
+function decodeB(v){return Plate.s2l(v/255);}
+function linPal(pal){return pal.map(function(p){return [decodeB(p[0]),decodeB(p[1]),decodeB(p[2])];});}
+function nearestLinear(lp,v){var best=null,bi=0;lp.forEach(function(p,i){var d=Math.pow(p[0]-v[0],2)+Math.pow(p[1]-v[1],2)+Math.pow(p[2]-v[2],2);if(best===null||d<best){best=d;bi=i;}});return bi;}
+function errorDiffuse(buf,pal){var W=buf.w,H=buf.h,lp=linPal(pal),err=[],out=new Array(W*H);for(var i=0;i<W*H;i++)err.push([0,0,0]);
+  for(var y=0;y<H;y++)for(var x=0;x<W;x++){var p=buf.p[y*W+x],e=err[y*W+x],v=[p[0]+e[0],p[1]+e[1],p[2]+e[2]],i=nearestLinear(lp,v);out[y*W+x]=i;var q=lp[i],d=[v[0]-q[0],v[1]-q[1],v[2]-q[2]];
+    [[1,0,7],[-1,1,3],[0,1,5],[1,1,1]].forEach(function(s){var nx=x+s[0],ny=y+s[1];if(nx>=0&&nx<W&&ny<H){var t=err[ny*W+nx];for(var k=0;k<3;k++)t[k]+=d[k]*s[2]/16;}});}
+  return out;}
+var BAYER4=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];
+function orderedDither(buf,pal){var lp=linPal(pal),lo=lp[0][1],hi=lp[1][1],out=[];for(var y=0;y<buf.h;y++)for(var x=0;x<buf.w;x++){var v=buf.p[y*buf.w+x][1],t=lo+(hi-lo)*(BAYER4[y%4][x%4]/16);out.push(v>t?1:0);}return out;}
+function thresholdQ(buf,pal){var lp=linPal(pal);return buf.p.map(function(p){return nearestLinear(lp,p);});}
+function indexedBuf(idx,pal,W,H){var b=new Buf(W,H,[0,0,0]),lp=linPal(pal);for(var i=0;i<W*H;i++)b.p[i]=lp[idx[i]].slice();return b;}
+function rampBuf(W,H){var b=new Buf(W,H,[0,0,0]);for(var y=0;y<H;y++)for(var x=0;x<W;x++){var g=x/(W-1);b.p[y*W+x]=[g,g,g];}return b;}
+function medianCut(cols,n){var counts=new Map();cols.forEach(function(c){var k=c.join(',');counts.set(k,(counts.get(k)||0)+1);});
+  var keys=Array.from(counts.keys()).map(function(k){return k.split(',').map(Number);});keys.sort(function(a,b){return a[0]-b[0]||a[1]-b[1]||a[2]-b[2];});
+  function cnt(c){return counts.get(c.join(','));}function rng(box,k){var lo=Infinity,hi=-Infinity;box.forEach(function(c){lo=Math.min(lo,c[k]);hi=Math.max(hi,c[k]);});return hi-lo;}
+  var boxes=[keys];while(boxes.length<n){var bi=-1,bw=-1;boxes.forEach(function(b,i){if(b.length<2)return;var w=Math.max(rng(b,0),rng(b,1),rng(b,2));if(w>bw){bw=w;bi=i;}});if(bi<0)break;
+    var box=boxes[bi],ws=[rng(box,0),rng(box,1),rng(box,2)],ch=0;for(var k=1;k<3;k++)if(ws[k]>ws[ch])ch=k;
+    var sorted=box.map(function(c,i){return [c,i];}).sort(function(a,b){return a[0][ch]-b[0][ch]||a[1]-b[1];}).map(function(ci){return ci[0];}),total=0;sorted.forEach(function(c){total+=cnt(c);});
+    var run=0,cut=1;for(var j=0;j<sorted.length;j++){run+=cnt(sorted[j]);if(2*run>=total){cut=j+1;break;}}cut=Math.min(Math.max(cut,1),sorted.length-1);
+    boxes.splice(bi,1,sorted.slice(0,cut),sorted.slice(cut));}
+  return boxes.map(function(b){var t=0,s=[0,0,0];b.forEach(function(c){var w=cnt(c);t+=w;for(var k=0;k<3;k++)s[k]+=c[k]*w;});return s.map(function(v){return Math.floor(v/t+0.5);});});}
+function bmp8(idx,pal,W,H){var stride=Math.ceil(W/4)*4,off=14+40+1024,size=off+stride*H,b=new Uint8Array(size),dv=new DataView(b.buffer);b[0]=66;b[1]=77;dv.setUint32(2,size,true);dv.setUint32(10,off,true);
+  dv.setUint32(14,40,true);dv.setInt32(18,W,true);dv.setInt32(22,H,true);dv.setUint16(26,1,true);dv.setUint16(28,8,true);dv.setUint32(34,stride*H,true);dv.setInt32(38,2835,true);dv.setInt32(42,2835,true);dv.setUint32(46,pal.length,true);
+  for(var i=0;i<pal.length;i++){b[54+4*i]=pal[i][2];b[55+4*i]=pal[i][1];b[56+4*i]=pal[i][0];}for(var y=H-1,row=0;y>=0;y--,row++)for(var x=0;x<W;x++)b[off+row*stride+x]=idx[y*W+x];return b;}
+function readBmp8(b){var dv=new DataView(b.buffer),off=dv.getUint32(10,true),W=dv.getInt32(18,true),H=dv.getInt32(22,true),used=dv.getUint32(46,true)||256,pal=[],stride=Math.ceil(W/4)*4,idx=new Array(W*H);
+  for(var i=0;i<used;i++)pal.push([b[56+4*i],b[55+4*i],b[54+4*i]]);for(var row=0;row<H;row++)for(var x=0;x<W;x++)idx[(H-1-row)*W+x]=b[off+row*stride+x];return {w:W,h:H,pal:pal,idx:idx};}
+/* selection */
+function marquee(x0,y0,x1,y1,W,H){return fillSubs([[[x0,y0],[x1,y0],[x1,y1],[x0,y1]]],W,H);}
+function floatSelection(buf,sel,backfill){var l=new Float64Array(buf.w*buf.h*4);for(var i=0;i<sel.length;i++){var k=sel[i];if(k>0){var p=buf.p[i];l[i*4]=p[0]*k;l[i*4+1]=p[1]*k;l[i*4+2]=p[2]*k;l[i*4+3]=k;buf.p[i]=lerp3(p,backfill,k);}}return {l:l,dx:0,dy:0};}
+function dropFloating(buf,f){var W=buf.w,H=buf.h;for(var y=0;y<H;y++)for(var x=0;x<W;x++){var o=(y*W+x)*4;if(f.l[o+3]<=0)continue;var nx=x+f.dx,ny=y+f.dy;if(nx>=0&&nx<W&&ny>=0&&ny<H){var d=buf.p[ny*W+nx],t=1-f.l[o+3];buf.p[ny*W+nx]=[f.l[o]+t*d[0],f.l[o+1]+t*d[1],f.l[o+2]+t*d[2]];}}}
+function snapshot(buf){return buf.p.map(function(p){return p.slice();});}
+/* the renders */
+function out25(b){return {bytes:b.bytes(),w:b.w,h:b.h};}
+function rowBufs(bs){var W=0;bs.forEach(function(b){W+=b.w;});var o=new Buf(W,bs[0].h,[0,0,0]),x0=0;bs.forEach(function(b){for(var y=0;y<b.h;y++)for(var x=0;x<b.w;x++)o.p[y*W+x0+x]=b.p[y*b.w+x];x0+=b.w;});return o;}
+function magnifyBuf(c,k){var o=new Buf(c.w*k,c.h*k,[0,0,0]);for(var y=0;y<c.h*k;y++)for(var x=0;x<c.w*k;x++)o.p[y*c.w*k+x]=c.p[Math.floor(y/k)*c.w+Math.floor(x/k)];return o;}
+var BW=[[0,0,0],[255,255,255]];
+function plate25(){var c=ringCanvas();bucket(c,80,80,CYAN,32,false);var crop=new Buf(60,60,[0,0,0]);for(var y=0;y<60;y++)for(var x=0;x<60;x++)crop.p[y*60+x]=c.p[(50+y)*160+100+x];
+  var r=rampBuf(240,240);return out25(rowBufs([magnifyBuf(crop,4),indexedBuf(errorDiffuse(r,BW),BW,240,240)]));}
+function ditherStrip(){var r=rampBuf(256,32),o=new Buf(256,96,[0,0,0]);[thresholdQ,orderedDither,errorDiffuse].forEach(function(f,k){var c=indexedBuf(f(r,BW),BW,256,32);for(var i=0;i<256*32;i++)o.p[k*256*32+i]=c.p[i];});return out25(o);}
+function haloDemo(){return out25(rowBufs([[0,false],[32,false],[32,true],[160,false]].map(function(t){var c=ringCanvas();bucket(c,80,80,CYAN,t[0],t[1]);return c;})));}
+function brushDemo(){var c=new Buf(400,240,PALE),ev=wobblyEvents();paintStroke(c,ev,brush(8,0.5,0.25,0.6,1),INK_DARK,false);paintStroke(c,ev.map(function(q){return [q[0],q[1]+110];}),brush(8,0.5,0.25,0.6,1),INK_DARK,true);return out25(c);}
+function paintByScript(){var W=480,H=320,c=new Buf(W,H,[0,0,0]),sky=marquee(0,0,W,210,W,H),g=[[0,[0.05,0.12,0.35]],[1,[0.95,0.45,0.2]]];
+  for(var y=0;y<H;y++)for(var x=0;x<W;x++){var k=sky[y*W+x];if(k>0){var t=((x+0.5-0)*0+(y+0.5-0)*210)/(0*0+210*210);t=t<0?0:t>1?1:t;c.p[y*W+x]=lerp3(c.p[y*W+x],sampleStops(g,t),k);}}
+  c.paint(marquee(0,210,W,H,W,H),[0.02,0.1,0.2]);paintStroke(c,[[370,110]],brush(46,0.55,0.25,1,1),[1,0.8,0.3],true);
+  var hills=[];for(var i=0;i<21;i++)hills.push([-20+26*i,205-30*Math.sin(i/3.1)-12*Math.sin(i*1.7)]);paintStroke(c,hills,brush(34,0.7,0.2,0.8,1),[0.04,0.12,0.06],true);
+  var saved=snapshot(c);paintStroke(c,[[40,40],[460,300]],brush(30,0.5,0.2,1,1),MAGENTA,true);c.p=saved;
+  for(var k=0;k<6;k++){var wave=[];for(var j=0;j<12;j++)wave.push([60+60*k+8*j,232+14*k+2*Math.sin(j)]);paintStroke(c,wave,brush(1.6,0.2,0.3,0.7,0.8),[1,0.8,0.3],true);}
+  var boat=marquee(150,262,210,272,W,H);c.paint(boat,INK_DARK);var f=floatSelection(c,boat,[0.02,0.1,0.2]);f.dx=40;f.dy=-6;dropFloating(c,f);
+  var cols=c.p.map(function(p){return p.map(toByte);}),pal=medianCut(cols,16),bm=readBmp8(bmp8(errorDiffuse(c,pal),pal,W,H));return out25(indexedBuf(bm.idx,bm.pal,bm.w,bm.h));}
+function sampleStops(stops,t){if(t<=stops[0][0])return stops[0][1];if(t>=stops[stops.length-1][0])return stops[stops.length-1][1];var lo=0,hi=stops.length-1;while(hi-lo>1){var mid=(lo+hi)>>1;if(stops[mid][0]<=t)lo=mid;else hi=mid;}return lerp3(stops[lo][1],stops[hi][1],(t-stops[lo][0])/(stops[hi][0]-stops[lo][0]));}
+function fit25(ctx,g,w,h){var sc=Math.min(w/g.w,h/g.h);if(sc>1)sc=Math.max(1,Math.floor(sc));blit(ctx,g.bytes,g.w,g.h,sc,(w-g.w*sc)/2,(h-g.h*sc)/2);}
+Plate.add('fig251', 0.6, function (ctx, w, h, p) { fit25(ctx,brushDemo(),w,h); });
+Plate.add('fig252', 0.25, function (ctx, w, h, p) { fit25(ctx,haloDemo(),w,h); });
+Plate.add('fig253', 0.375, function (ctx, w, h, p) { fit25(ctx,ditherStrip(),w,h); });
+Plate.add('fig254', 0.6667, function (ctx, w, h, p) { fit25(ctx,paintByScript(),w,h); });
+Plate.add('plate25', 0.5, function (ctx, w, h, p) { fit25(ctx,plate25(),w,h); });
+
+Plate.source(document.querySelector('#plate'), 'shared helpers',
+  [dabCoverage, brush, stampPositions, strokeMask, paintStroke, wobblyEvents, bytesAt, matches, floodMask, antiAliasMask, bucket, ringCanvas, decodeB, linPal, nearestLinear, errorDiffuse, orderedDither, thresholdQ, indexedBuf, rampBuf, medianCut, bmp8, readBmp8, marquee, floatSelection, dropFloating, snapshot,
+   out25, rowBufs, magnifyBuf, plate25, ditherStrip, haloDemo, brushDemo, paintByScript, sampleStops, fit25].map(function (f) { return f.toString(); }).join('\n\n'));
+
+</script>
+</body>
+</html>

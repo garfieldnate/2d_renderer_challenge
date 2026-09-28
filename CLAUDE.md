@@ -415,6 +415,29 @@ parent)`: 15 properties (table in §20.6), style attr beats presentation attrs, 
   the MTSDF true channel (the median makes far-field false edges). Trap: min is not the union's field
   inside (the peanut shrunk by 20 splits in two). Renders are slow in Python (~2 min for the plate
   feature); every figure script redraws all nine byte for byte.
+- Chapter 24 GPU: `stencil_buffer(p, w, h, ox, oy)` adds `triangle_winding(anchor, a, b)` (chapter 5's
+  half-open rule per triangle) over each triangle's bbox; spokes cancel so it EQUALS winding_at at every
+  pixel (pinned: 0 mismatches). Loop–Blinn: (u, v) = (s/2 + t, t) from barycentrics, inside_curve is
+  s > 0 and u^2 - v < 0, glyph = chord fan + signed curve slivers; equals the 0.001-flattened glyph at
+  every pixel. MSAA patterns 1 / 4 (D3D rotated) / 16 (rooks, y = (5k + 3) mod 16) / 64 (ch2 grid);
+  on the sliver 64 regular == 16 rotated (0.0375). Pipeline: `encode_svg` = chapter 20 walker emitting
+  Fill/Push/Pop (clip parts as (device path, rule)); stages flatten/bin (deposits in segment order,
+  filed by tile)/coarse (chapter 21 classification + arriving sums read from bins to the left;
+  `cull_groups` drops empty push/pop per tile)/fine (per-tile block stack). Byte-identical to chapter
+  20 for tiger/harbor/rose, and under `lcg_shuffle` (Fisher–Yates, x <- (1103515245x + 12345) mod
+  2^31: needs 64-bit, JS needs BigInt). Unhappy path: STACK_DEPTH = 2 blocks incl. the tile's own;
+  rose spills 200. Paint is already a shader (`shade_tile`). Demo: tiger assembled in shuffled order.
+- Chapter 25 raster editor (bonus B, one chapter): brush dab profile (hard inside hardness*r, linear to
+  r), `stamp_positions` spaced by arc length (spacing*2r, leftover carried), stroke mask builds up
+  1-(1-m)(1-flow k), opacity caps; `flood_mask` scanline stack (8-conn reaches one further),
+  tolerance per channel in bytes, `select_color`, `anti_alias_mask` (outside 4-neighbours get 0.5),
+  `naive_depth` shows recursion = area. `median_cut` over DISTINCT colours weighted by count (cut
+  where 2*running >= total, never after the last), palette = weighted mean rounded halves up; dithers
+  in LINEAR light (threshold, ordered via ch10 Bayer on green, Floyd–Steinberg 7/3/5/1). 8-bit BMP:
+  offset 1078, bottom-up rows padded to 4, palette BGR0, colours-used = palette length. Selections are
+  coverage (union/subtract/intersect, box-blur feather); floating layer premultiplied; `History`
+  saves rectangles, redo cleared by a new edit. Dab distance uses sqrt(dx*dx+dy*dy), not hypot.
+  Runner learned move_floating/drop_floating/history_fill/undo/redo.
 - Runner learned `≥`. Figure JS `mag` must be `sqrt(x*x+y*y)` to mirror chapter 4's `magnitude`
   (Math.hypot differs in the last bit and flipped one byte of the spiral).
 - Gherkin data tables are allowed for matrices only: `Given the following matrix M:` and
