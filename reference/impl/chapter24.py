@@ -660,7 +660,7 @@ def stencil_canvas(s):
     return c
 
 
-def plate_star():
+def centred_star():
     """chapter 5's star moved by (19.5, 19.5) to the middle of 200 by 200"""
     return transform_path(star(), translation(19.5, 19.5))
 
@@ -686,7 +686,7 @@ def plate_24():
     cyan mixed into paper by 0.55 where the curve terms add, magenta where
     they subtract, and then, where the winding is nonzero, orange mixed in
     by 0.6"""
-    left = stencil_canvas(stencil_buffer(plate_star(), 200, 200))
+    left = stencil_canvas(stencil_buffer(centred_star(), 200, 200))
     f = roboto()
     m = text_matrix(f, 700, -120, 420)
     curves = glyph_curves(f, glyph_name(f, ord("g")), m)

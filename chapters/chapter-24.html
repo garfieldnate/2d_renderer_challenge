@@ -501,12 +501,12 @@
   0.75, 0.9) and magenta (0.85, 0.2, 0.55); mixes are chapter 1's, in
   linear light. winding_color(w) is paper for 0, cyan mixed into paper by
   0.6 for any negative w, and orange mixed in by 0.45 for 1 and by 0.9 for
-  2 or more. plate_star() is chapter 5's star moved by (19.5, 19.5).
+  2 or more. centred_star() is chapter 5's star moved by (19.5, 19.5).
   curve_terms(curves, width, height) is loop_blinn_stencil's second half
   alone: every curve's sign added where inside_curve holds.
 
     plate_24        400 by 200: on the left the winding_color of every
-                    pixel of stencil_buffer(plate_star(), 200, 200); on
+                    pixel of stencil_buffer(centred_star(), 200, 200); on
                     the right Roboto's g through text_matrix(font, 700,
                     -120, 420), its bowl filling the panel: every pixel
                     starts as paper, is mixed toward cyan by 0.55 where
