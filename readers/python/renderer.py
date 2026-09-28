@@ -10768,8 +10768,10 @@ def render_svg_gpu(text, width, height, seed):
 
 # --- 24.7 Putting it together (the plate) ---
 
-def _ch24_plate_star():
-    """Chapter 5's star moved by (19.5, 19.5)."""
+def centred_star():
+    """Chapter 5's star moved by (19.5, 19.5). Named centred_star, not
+    plate_star, since chapter 22 already has a plate_star in this flat
+    namespace."""
     return transform_path(star(), translation(19.5, 19.5))
 
 
@@ -10790,11 +10792,11 @@ def winding_color(w):
 
 def plate_24():
     """400 by 200: on the left the winding_color of every pixel of
-    stencil_buffer(plate_star(), 200, 200); on the right Roboto's g
+    stencil_buffer(centred_star(), 200, 200); on the right Roboto's g
     through text_matrix(font, 700, -120, 420), its bowl filling the
     panel."""
     left = canvas(200, 200)
-    s = stencil_buffer(_ch24_plate_star(), 200, 200)
+    s = stencil_buffer(centred_star(), 200, 200)
     for y in range(200):
         for x in range(200):
             write_pixel(left, x, y, winding_color(s.grid[y][x]))
