@@ -3174,7 +3174,7 @@ class RadialGradient:
         self.mode = mode
 
 
-def radial_gradient(c0, r0, c1, r1, stops, mode):
+def radial_gradient(c0, r0, c1, r1, stops, mode="pad"):
     """A gradient between a start circle (t = 0) and an end circle (t = 1)."""
     return RadialGradient(c0, r0, c1, r1, stops, mode)
 
@@ -9893,3 +9893,1895 @@ def title():
             baked = get_baked(pl.name)
             draw_effect(c, baked, scale, pl.x + dx, pl.y + dy, col, use_true, k_of)
     return c
+
+
+# ============================================================
+# Chapter 24: Doing It the GPU's Way
+# ============================================================
+
+# --- 24.1 Filling without sorting ---
+
+class Stencil:
+    """One whole number per pixel, all 0 at first, and a count of
+    fragments (the deposits that changed a pixel)."""
+
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+        self.grid = [[0] * width for _ in range(height)]
+        self.fragments = 0
+
+    @property
+    def values(self):
+        return [v for row in self.grid for v in row]
+
+    def __repr__(self):
+        return f"Stencil({self.width}, {self.height})"
+
+
+def triangle_winding(a, b, c, x, y):
+    """Chapter 5's winding_at for the closed triangle a, b, c at (x, y):
+    +1 inside a triangle that runs clockwise on screen, -1 inside one
+    that runs counterclockwise, 0 outside, chapter 5's half-open rule on
+    the edges."""
+    q = point(x, y)
+    w = 0
+    for p0, p1 in ((a, b), (b, c), (c, a)):
+        if p0.y <= y:
+            if p1.y > y and cross(p1 - p0, q - p0) > 0:
+                w += 1
+        else:
+            if p1.y <= y and cross(p1 - p0, q - p0) < 0:
+                w -= 1
+    return w
+
+
+def stencil_triangle(s, a, b, c, ox=0.5, oy=0.5):
+    """Visit every pixel of the triangle's bounding box on the canvas,
+    from floor(min x - ox) to ceil(max x - ox) and the same in y, both
+    ends included, and add triangle_winding at the pixel's sample point
+    (x + ox, y + oy); each pixel it changes adds 1 to fragments."""
+    xs = (a.x, b.x, c.x)
+    ys = (a.y, b.y, c.y)
+    x0 = max(0, math.floor(min(xs) - ox))
+    x1 = min(s.width - 1, math.ceil(max(xs) - ox))
+    y0 = max(0, math.floor(min(ys) - oy))
+    y1 = min(s.height - 1, math.ceil(max(ys) - oy))
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            w = triangle_winding(a, b, c, x + ox, y + oy)
+            if w != 0:
+                s.grid[y][x] += w
+                s.fragments += 1
+
+
+def fan_anchor(p):
+    """The first point of the first subpath that has one, or point(0, 0)."""
+    for sp in p.subpaths:
+        if sp.points:
+            return sp.points[0]
+    return point(0, 0)
+
+
+def stencil_buffer(p, width, height, ox=0.5, oy=0.5):
+    """Add, for every edge (a, b) of chapter 5's edges(p), the triangle
+    (anchor, a, b); ox and oy are 0.5 when they're left out. Because the
+    fan's spokes cancel exactly under the half-open rule, the stencil at
+    every pixel is winding_at(p, x + ox, y + oy)."""
+    s = Stencil(width, height)
+    anchor = fan_anchor(p)
+    for e in edges(p):
+        stencil_triangle(s, anchor, e.a, e.b, ox, oy)
+    return s
+
+
+def stencil_at(s, x, y):
+    """Read one pixel of a stencil."""
+    if 0 <= x < s.width and 0 <= y < s.height:
+        return s.grid[y][x]
+    return 0
+
+
+def cover(s, rule):
+    """A coverage buffer of 1 where the stencil fills under the rule, 0
+    elsewhere."""
+    cov = CoverageBuffer(s.width, s.height)
+    for y in range(s.height):
+        for x in range(s.width):
+            cov.coverage[y][x] = apply_rule(s.grid[y][x], rule)
+    return cov
+
+
+def winding_mismatches(s, p):
+    """Count the pixels where the stencil and winding_at at the pixel
+    center disagree."""
+    count = 0
+    for y in range(s.height):
+        for x in range(s.width):
+            if s.grid[y][x] != winding_at(p, x + 0.5, y + 0.5):
+                count += 1
+    return count
+
+
+# --- 24.2 Curves without flattening ---
+
+def loop_blinn_uv(c, q):
+    """Give a quadratic's control points p0, p1, p2 the coordinates
+    (0, 0), (1/2, 0) and (1, 1) and interpolate across the triangle:
+    (u, v, s) with u = s / 2 + t and v = t, or none when det = 0."""
+    p0, p1, p2 = c.points
+    det = cross(p1 - p0, p2 - p0)
+    if det == 0:
+        return None
+    s = cross(q - p0, p2 - p0) / det
+    t = cross(p1 - p0, q - p0) / det
+    u = s / 2 + t
+    v = t
+    return (u, v, s)
+
+
+def inside_curve(c, q):
+    """s > 0 and u^2 - v < 0, which holds exactly between the curve and
+    its chord p0 to p2."""
+    uvs = loop_blinn_uv(c, q)
+    if uvs is None:
+        return False
+    u, v, s = uvs
+    return s > 0 and (u * u - v) < 0
+
+
+def curve_sign(c):
+    """1 when det > 0 and -1 otherwise."""
+    p0, p1, p2 = c.points
+    det = cross(p1 - p0, p2 - p0)
+    return 1 if det > 0 else -1
+
+
+def _curve_sliver_terms(curves, width, height):
+    """loop_blinn_stencil's second half alone: for every curve with
+    det != 0, every pixel of the control triangle's bounding box (taken
+    as in stencil_triangle) whose center is inside_curve gets curve_sign
+    added and counts as a fragment."""
+    s = Stencil(width, height)
+    for contour in curves:
+        for c in contour:
+            p0, p1, p2 = c.points
+            det = cross(p1 - p0, p2 - p0)
+            if det == 0:
+                continue
+            sign = 1 if det > 0 else -1
+            xs = (p0.x, p1.x, p2.x)
+            ys = (p0.y, p1.y, p2.y)
+            x0 = max(0, math.floor(min(xs) - 0.5))
+            x1 = min(width - 1, math.ceil(max(xs) - 0.5))
+            y0 = max(0, math.floor(min(ys) - 0.5))
+            y1 = min(height - 1, math.ceil(max(ys) - 0.5))
+            for y in range(y0, y1 + 1):
+                for x in range(x0, x1 + 1):
+                    q = point(x + 0.5, y + 0.5)
+                    if inside_curve(c, q):
+                        s.grid[y][x] += sign
+                        s.fragments += 1
+    return s
+
+
+def curve_terms(curves, width, height):
+    """loop_blinn_stencil's second half alone: every curve's sign added
+    where inside_curve holds."""
+    return _curve_sliver_terms(curves, width, height)
+
+
+def loop_blinn_stencil(curves, anchor, width, height):
+    """Closed contours of quadratics: first the fan of chords,
+    stencil_triangle(s, anchor, p0, p2) for every curve in order, then,
+    for every curve with det != 0, every pixel of the control triangle's
+    bounding box whose center is inside_curve gets curve_sign added and
+    counts as a fragment. Nothing is ever flattened."""
+    s = Stencil(width, height)
+    for contour in curves:
+        for c in contour:
+            p0, _p1, p2 = c.points
+            stencil_triangle(s, anchor, p0, p2)
+    terms = _curve_sliver_terms(curves, width, height)
+    for y in range(height):
+        for x in range(width):
+            v = terms.grid[y][x]
+            if v != 0:
+                s.grid[y][x] += v
+    s.fragments += terms.fragments
+    return s
+
+
+def glyph_stencil(font, name, m, width, height):
+    """loop_blinn_stencil of the glyph's quadratics through m, chapter
+    23's glyph_curves, anchored at the first curve's first point."""
+    contours = glyph_outline(font, name)
+    dev_curves = [[transform_curve(c, m) for c in contour] for contour in contours]
+    anchor = point(0, 0)
+    for contour in dev_curves:
+        if contour:
+            anchor = contour[0].points[0]
+            break
+    return loop_blinn_stencil(dev_curves, anchor, width, height)
+
+
+# --- 24.3 Sampling instead of area ---
+
+def sample_pattern(n):
+    """n sample points inside the unit pixel."""
+    if n == 1:
+        return [point(0.5, 0.5)]
+    if n == 4:
+        return [point(0.375, 0.125), point(0.875, 0.375),
+                point(0.125, 0.625), point(0.625, 0.875)]
+    if n == 16:
+        pts = []
+        for k in range(16):
+            x = (k + 0.5) / 16
+            y = (((5 * k + 3) % 16) + 0.5) / 16
+            pts.append(point(x, y))
+        return pts
+    if n == 64:
+        pts = []
+        for j in range(8):
+            for i in range(8):
+                pts.append(point((i + 0.5) / 8, (j + 0.5) / 8))
+        return pts
+    raise ValueError(f"unsupported sample count: {n}")
+
+
+def msaa_coverage(p, rule, width, height, n):
+    """At every pixel, the number of samples whose stencil
+    (stencil_buffer with that sample's ox, oy) fills under the rule,
+    divided by n."""
+    pattern = sample_pattern(n)
+    cov = CoverageBuffer(width, height)
+    for sample_pt in pattern:
+        s = stencil_buffer(p, width, height, sample_pt.x, sample_pt.y)
+        for y in range(height):
+            for x in range(width):
+                if apply_rule(s.grid[y][x], rule) > 0:
+                    cov.coverage[y][x] += 1.0
+    for y in range(height):
+        for x in range(width):
+            cov.coverage[y][x] /= n
+    return cov
+
+
+def sliver():
+    """polygon(point(2, 10.3), point(78, 12.2), point(78, 30), point(2, 30)),
+    whose top edge climbs one pixel in forty."""
+    return polygon(point(2, 10.3), point(78, 12.2), point(78, 30), point(2, 30))
+
+
+# --- Shared: the same shuffle everywhere ---
+
+def lcg_shuffle(n, seed):
+    """Fisher-Yates from the end: x starts at seed, and for i from n - 1
+    down to 1, x <- (1103515245 x + 12345) mod 2**31, j = x mod (i + 1),
+    swap entries i and j."""
+    order = list(range(n))
+    x = seed
+    for i in range(n - 1, 0, -1):
+        x = (1103515245 * x + 12345) % (2 ** 31)
+        j = x % (i + 1)
+        order[i], order[j] = order[j], order[i]
+    return order
+
+
+# --- 24.4 Paint as a shader ---
+
+def shade_tile(paint, tx, ty, seed):
+    """Evaluate paint_at at the center of every pixel of the 16 by 16
+    tile (tx, ty), visiting them in raster order when seed is none and
+    in lcg_shuffle(256, seed) order otherwise, and answer the colours in
+    raster order."""
+    order = list(range(256)) if seed is None else lcg_shuffle(256, seed)
+    result = [None] * 256
+    for idx in order:
+        local_y, local_x = divmod(idx, 16)
+        x = tx * 16 + local_x
+        y = ty * 16 + local_y
+        result[idx] = paint_at(paint, x + 0.5, y + 0.5)
+    return result
+
+
+# --- 24.5 The compute pipeline ---
+
+import bisect as _bisect24
+
+
+class SceneFill:
+    """A Fill(path, rule, paint, alpha, clip) draw command. clip, when
+    not None, is the list of (device path, clip rule) parts of a
+    clipPath that applies to this shape alone (it isn't grouped)."""
+
+    def __init__(self, path, rule, paint, alpha, clip):
+        self.path = path
+        self.rule = rule
+        self.paint = paint
+        self.alpha = alpha
+        self.clip = clip
+        self.draw = None
+        self.clip_draws = None
+
+    def __repr__(self):
+        return f"Fill(rule={self.rule!r}, alpha={self.alpha})"
+
+
+class ScenePush:
+    """A Push(opacity, clip) command: an element drawn into its own
+    layer, composited on the matching Pop."""
+
+    def __init__(self, opacity, clip):
+        self.opacity = opacity
+        self.clip = clip
+        self.clip_draws = None
+
+    def __repr__(self):
+        return f"Push({self.opacity})"
+
+
+class ScenePop:
+    """A Pop command: composite the current layer over the one below."""
+
+    def __repr__(self):
+        return "Pop()"
+
+
+Fill = SceneFill
+Push = ScenePush
+Pop = ScenePop
+
+
+def _gpu_clip_parts(root, ref, m, width, height):
+    """The list of (device path, clip rule) of a url(#id) clipPath's
+    shapes, or None for a reference that doesn't resolve (no
+    restriction -- chapter 20's clip_coverage would answer full_clip),
+    or [] for a clipPath with no valid children (clips everything)."""
+    match = _re20.match(r'^url\(#([^)]*)\)$', ref) if isinstance(ref, str) else None
+    if not match:
+        return None
+    el = find_by_id(root, match.group(1))
+    if el is None or el.name != "clipPath":
+        return None
+    cm = m * parse_transform(attribute(el, "transform"))
+    clip_style = computed_style(el, initial_style())
+    parts = []
+    for child in children(el):
+        cmds = shape_commands(child)
+        if not cmds:
+            continue
+        child_m = cm * parse_transform(attribute(child, "transform"))
+        if not is_invertible(child_m):
+            continue
+        style = computed_style(child, clip_style)
+        dev = build_path(cmds, child_m, 0.1)
+        parts.append((dev, style.clip_rule))
+    return parts
+
+
+def encode_svg(text, width, height):
+    """Chapter 20's walker drawing nothing: it answers the scene as a
+    flat list, in document order, of Fill(path, rule, paint, alpha,
+    clip), Push(opacity, clip) and Pop. A shape's fill and then its
+    stroke outline are Fills of device paths built exactly as chapter 20
+    builds them; an element chapter 20 draws into a fresh layer
+    (opacity below 1, or a group with a clip) is a Push before its
+    contents and a Pop after; a clip is the list of (device path, clip
+    rule) of the clipPath's shapes, on the Push of a grouped element and
+    on the Fill of a shape that isn't grouped."""
+    root = parse_xml(text)
+    vb = attribute(root, "viewBox")
+    aspect = attribute(root, "preserveAspectRatio")
+    m0 = view_box_matrix(vb, aspect, width, height)
+    commands = []
+
+    def walk(el, parent_style, m):
+        is_group = el.name in ("svg", "g")
+        is_shape = el.name in _SVG_SHAPE_NAMES
+        if not is_group and not is_shape:
+            return
+        style = computed_style(el, parent_style)
+        m = m * parse_transform(attribute(el, "transform"))
+
+        clip_parts = None
+        if style.clip_path is not None:
+            clip_parts = _gpu_clip_parts(root, style.clip_path, m, width, height)
+
+        own_layer = (style.opacity < 1.0) or (clip_parts is not None and is_group)
+        if own_layer:
+            commands.append(Push(style.opacity, clip_parts if is_group else None))
+
+        if is_group:
+            for child in children(el):
+                walk(child, style, m)
+        else:
+            if is_invertible(m):
+                minv = inverse(m)
+                cmds = shape_commands(el)
+                if cmds:
+                    dev = build_path(cmds, m, 0.1)
+                    shape_clip = clip_parts if (clip_parts is not None and not own_layer) else None
+                    if style.fill is not None:
+                        paint = solid(style.fill) if isinstance(style.fill, Color) \
+                            else paint_server(root, style.fill, commands_bounds(cmds), m)
+                        if paint is not None:
+                            commands.append(Fill(dev, style.fill_rule, paint, style.fill_opacity, shape_clip))
+                    if style.stroke is not None and style.stroke_width > 0:
+                        paint = solid(style.stroke) if isinstance(style.stroke, Color) \
+                            else paint_server(root, style.stroke, commands_bounds(cmds), m)
+                        if paint is not None:
+                            user = transform_path(dev, minv)
+                            if style.stroke_dasharray:
+                                user = dash(user, list(style.stroke_dasharray), style.stroke_dashoffset)
+                            outline = stroke_to_path(user, style.stroke_width, style.stroke_linecap,
+                                                      style.stroke_linejoin, style.stroke_miterlimit)
+                            outline_dev = transform_path(outline, m)
+                            commands.append(Fill(outline_dev, "nonzero", paint, style.stroke_opacity, shape_clip))
+
+        if own_layer:
+            commands.append(Pop())
+
+    walk(root, initial_style(), m0)
+    return commands
+
+
+class SceneDraw:
+    __slots__ = ("path", "rule")
+
+    def __init__(self, path, rule):
+        self.path = path
+        self.rule = rule
+
+
+class Scene:
+    """Numbers every path, clip parts included, as a draw."""
+
+    def __init__(self, commands, width, height):
+        self.commands = commands
+        self.width = width
+        self.height = height
+        self.draws = []
+        for cmd in commands:
+            if isinstance(cmd, SceneFill):
+                cmd.draw = len(self.draws)
+                self.draws.append(SceneDraw(cmd.path, cmd.rule))
+                if cmd.clip is not None:
+                    cmd.clip_draws = []
+                    for (cp, crule) in cmd.clip:
+                        idx = len(self.draws)
+                        self.draws.append(SceneDraw(cp, crule))
+                        cmd.clip_draws.append(idx)
+            elif isinstance(cmd, ScenePush):
+                if cmd.clip is not None:
+                    cmd.clip_draws = []
+                    for (cp, crule) in cmd.clip:
+                        idx = len(self.draws)
+                        self.draws.append(SceneDraw(cp, crule))
+                        cmd.clip_draws.append(idx)
+
+
+def flatten_stage(scene):
+    """Every draw's edges(p) as segments (draw, a, b)."""
+    segments = []
+    for i, d in enumerate(scene.draws):
+        for e in edges(d.path):
+            segments.append((i, e.a, e.b))
+    return segments
+
+
+def _gpu_edge_deposits(a, b, width, height):
+    """The same deposits chapter 21's accumulate/accumulate_row/add_cell
+    would make for one edge into a full width by height accumulator, as
+    (x, row, area, cover) tuples, in the same order."""
+    if a.y == b.y:
+        return
+    sign = 1.0 if a.y > b.y else -1.0
+    top, bottom = (b, a) if a.y > b.y else (a, b)
+    slope = (bottom.x - top.x) / (bottom.y - top.y)
+    first = max(math.floor(top.y), 0)
+    last = min(math.ceil(bottom.y) - 1, height - 1)
+    for row in range(first, last + 1):
+        y0 = max(top.y, row)
+        y1 = min(bottom.y, row + 1)
+        if y1 <= y0:
+            continue
+        x0 = top.x + (y0 - top.y) * slope
+        x1 = top.x + (y1 - top.y) * slope
+        h = sign * (y1 - y0)
+        xa, xb = (x0, x1) if x0 <= x1 else (x1, x0)
+        ca = math.floor(xa)
+        cb = math.floor(xb)
+        if ca == cb:
+            xm = (xa + xb) / 2 - ca
+            yield from _gpu_cell_deposit(ca, row, h * (1 - xm), h, width, height)
+        else:
+            dx = xb - xa
+            for cidx in range(ca, cb + 1):
+                lo = max(xa, cidx)
+                hi = min(xb, cidx + 1)
+                share = h * (hi - lo) / dx
+                mid = (lo + hi) / 2 - cidx
+                yield from _gpu_cell_deposit(cidx, row, share * (1 - mid), share, width, height)
+
+
+def _gpu_cell_deposit(x, row, area, cover_, width, height):
+    if row < 0 or row >= height:
+        return
+    if x < 0:
+        x = 0
+        area = cover_
+    if x >= width:
+        return
+    yield (x, row, area, cover_)
+
+
+def bin_stage(scene, segments):
+    """Every segment's chapter 21 sparse deposits, one per call of the
+    accumulator's add that isn't dropped, filed in segment order under
+    the tile of the deposit's cell: bins[(tx, ty)] is a list of (draw,
+    x, row, area, cover)."""
+    bins = {}
+    for (draw_id, a, b) in segments:
+        for (x, row, area, cover_) in _gpu_edge_deposits(a, b, scene.width, scene.height):
+            key = (x // TILE_SIZE, row // TILE_SIZE)
+            bins.setdefault(key, []).append((draw_id, x, row, area, cover_))
+    return bins
+
+
+def deposit_count(bins):
+    """The total number of deposits across every tile's list."""
+    return sum(len(v) for v in bins.values())
+
+
+class GPUTileDraw:
+    """One draw's contribution to one tile: "empty" (no command at all,
+    "solid" (coverage 1 everywhere) or "partial" (the deposits of this
+    tile's own cells, plus the whole number arriving at each row's left
+    edge, both left for the fine stage's own resolve)."""
+
+    __slots__ = ("cls", "arriving", "cells")
+
+    def __init__(self, cls, arriving=None, cells=None):
+        self.cls = cls
+        self.arriving = arriving
+        self.cells = cells
+
+
+def coarse_stage(scene, bins):
+    """For every tile, its command list. For a draw in a tile: the cells
+    are its deposits summed per cell in segment order; the arriving sum
+    on each of the tile's rows is the covers of that draw's cells to the
+    tile's left in that row, added left to right from 0; and the tile is
+    classed as chapter 21's classify_tiles classes it. A Fill becomes
+    ("fill", tile draw, rule, paint, alpha, clip) unless its tile draw is
+    empty; a clip becomes the list of (tile draw, clip rule) of its
+    parts, empty ones included. Push and Pop are copied to every tile,
+    and then cull_groups drops each push whose pop has no fill between
+    them in that tile, innermost first."""
+    width, height = scene.width, scene.height
+    tiles_x, tiles_y = _tile_grid_size(width, height)
+    lists = [[[] for _ in range(tiles_x)] for _ in range(tiles_y)]
+
+    by_draw = {}
+    for lst in bins.values():
+        for (draw_id, x, row, area, cover_) in lst:
+            by_draw.setdefault(draw_id, []).append((x, row, area, cover_))
+
+    bounds_cache = {}
+    tile_cells_cache = {}
+    row_prefix_cache = {}
+
+    def prepare(draw_id):
+        if draw_id in bounds_cache:
+            return
+        d = scene.draws[draw_id]
+        bounds_cache[draw_id] = fill_bounds(d.path, width, height)
+        cellmap = {}
+        for (x, row, area, cover_) in by_draw.get(draw_id, ()):
+            key = (x, row)
+            a0, c0 = cellmap.get(key, (0.0, 0.0))
+            cellmap[key] = (a0 + area, c0 + cover_)
+        tcells = {}
+        row_items = {}
+        for (x, row), (area, cover_) in cellmap.items():
+            tk = (x // TILE_SIZE, row // TILE_SIZE)
+            tcells.setdefault(tk, {})[(x, row)] = (area, cover_)
+            row_items.setdefault(row, []).append((x, cover_))
+        rp = {}
+        for row, items in row_items.items():
+            items.sort()
+            xs = [it[0] for it in items]
+            prefix = [0.0] * (len(items) + 1)
+            for i, (_x, cv) in enumerate(items):
+                prefix[i + 1] = prefix[i] + cv
+            rp[row] = (xs, prefix)
+        tile_cells_cache[draw_id] = tcells
+        row_prefix_cache[draw_id] = rp
+
+    def arriving_at(draw_id, row, col0):
+        rp = row_prefix_cache[draw_id]
+        if row not in rp:
+            return 0.0
+        xs, prefix = rp[row]
+        idx = _bisect24.bisect_left(xs, col0)
+        return prefix[idx]
+
+    def tile_partial(cells):
+        for (area, cover_) in cells.values():
+            if abs(area) > 1e-9 or abs(cover_) > 1e-9:
+                return True
+        return False
+
+    def tile_draw_for(draw_id, tx, ty):
+        prepare(draw_id)
+        d = scene.draws[draw_id]
+        x0, y0, x1, y1 = bounds_cache[draw_id]
+        row0, row1 = ty * TILE_SIZE, min(height, ty * TILE_SIZE + TILE_SIZE)
+        col0, col1 = tx * TILE_SIZE, min(width, tx * TILE_SIZE + TILE_SIZE)
+        if x0 >= x1 or y0 >= y1:
+            return GPUTileDraw("empty")
+        cells_here = tile_cells_cache[draw_id].get((tx, ty))
+        partial = cells_here is not None and tile_partial(cells_here)
+        n_val = None
+        if not partial:
+            for row in range(row0, row1):
+                running = 0.0 if (row < y0 or row >= y1) else arriving_at(draw_id, row, col0)
+                nearest = round(running)
+                if abs(running - nearest) > 1e-6:
+                    partial = True
+                    break
+                if n_val is None:
+                    n_val = nearest
+                elif nearest != n_val:
+                    partial = True
+                    break
+        if partial:
+            arriving = {}
+            for row in range(row0, row1):
+                arriving[row] = 0.0 if (row < y0 or row >= y1) else arriving_at(draw_id, row, col0)
+            return GPUTileDraw("partial", arriving, dict(cells_here) if cells_here else {})
+        cls = "solid" if apply_rule(n_val, d.rule) == 1 else "empty"
+        return GPUTileDraw(cls)
+
+    def tile_range_for(draw_id):
+        prepare(draw_id)
+        x0, y0, x1, y1 = bounds_cache[draw_id]
+        if x0 >= x1 or y0 >= y1:
+            return None
+        return (x0 // TILE_SIZE, (x1 - 1) // TILE_SIZE, y0 // TILE_SIZE, (y1 - 1) // TILE_SIZE)
+
+    def clip_for_tile(clip_draws, clip_rules, tx, ty):
+        if clip_draws is None:
+            return None
+        return [(tile_draw_for(cd, tx, ty), cr) for cd, cr in zip(clip_draws, clip_rules)]
+
+    for cmd in scene.commands:
+        if isinstance(cmd, SceneFill):
+            rng = tile_range_for(cmd.draw)
+            if rng is None:
+                continue
+            tx0, tx1, ty0, ty1 = rng
+            clip_rules = [cr for (_p, cr) in cmd.clip] if cmd.clip else None
+            for ty in range(ty0, ty1 + 1):
+                for tx in range(tx0, tx1 + 1):
+                    td = tile_draw_for(cmd.draw, tx, ty)
+                    if td.cls == "empty":
+                        continue
+                    tclip = clip_for_tile(cmd.clip_draws, clip_rules, tx, ty) if cmd.clip_draws is not None else None
+                    lists[ty][tx].append(("fill", td, cmd.rule, cmd.paint, cmd.alpha, tclip))
+        elif isinstance(cmd, ScenePush):
+            clip_rules = [cr for (_p, cr) in cmd.clip] if cmd.clip else None
+            for ty in range(tiles_y):
+                for tx in range(tiles_x):
+                    tclip = clip_for_tile(cmd.clip_draws, clip_rules, tx, ty) if cmd.clip_draws is not None else None
+                    lists[ty][tx].append(("push", cmd.opacity, tclip))
+        elif isinstance(cmd, ScenePop):
+            for ty in range(tiles_y):
+                for tx in range(tiles_x):
+                    lists[ty][tx].append(("pop",))
+
+    for ty in range(tiles_y):
+        for tx in range(tiles_x):
+            lists[ty][tx] = cull_groups(lists[ty][tx])
+
+    return lists
+
+
+def command_count(lists):
+    """The total number of commands across every tile's list."""
+    return sum(len(cell) for row in lists for cell in row)
+
+
+def cull_groups(commands):
+    """Drop each push whose pop has no fill between them, innermost
+    first: an empty group costs a tile nothing."""
+    root_buf = []
+    stack = [{"push_tok": None, "buf": root_buf, "has_fill": False}]
+    for tok in commands:
+        if tok[0] == "push":
+            stack.append({"push_tok": tok, "buf": [], "has_fill": False})
+        elif tok[0] == "pop":
+            frame = stack.pop()
+            parent = stack[-1]
+            if frame["has_fill"]:
+                parent["buf"].append(frame["push_tok"])
+                parent["buf"].extend(frame["buf"])
+                parent["buf"].append(tok)
+                parent["has_fill"] = True
+        else:
+            stack[-1]["buf"].append(tok)
+            stack[-1]["has_fill"] = True
+    return stack[0]["buf"]
+
+
+def max_group_depth(commands):
+    """The deepest nesting of Push in the list -- either a scene's own
+    Push/Pop commands or a tile's ("push", ...)/("pop",) tuples."""
+    depth = 0
+    best = 0
+    for tok in commands:
+        is_push = isinstance(tok, ScenePush) or (isinstance(tok, tuple) and tok[0] == "push")
+        is_pop = isinstance(tok, ScenePop) or (isinstance(tok, tuple) and tok[0] == "pop")
+        if is_push:
+            depth += 1
+            best = max(best, depth)
+        elif is_pop:
+            depth -= 1
+    return best
+
+
+STACK_DEPTH = 2
+
+
+class FineStats:
+    """spills counts pushes made when the stack already held STACK_DEPTH
+    blocks; tiles counts tiles run."""
+
+    def __init__(self):
+        self.spills = 0
+        self.tiles = 0
+
+    def __repr__(self):
+        return f"FineStats(spills={self.spills}, tiles={self.tiles})"
+
+
+def _gpu_resolve_tile_draw(td, rule, tw, th, row0, col0):
+    """A fill's coverage: chapter 21's resolve -- each row from its
+    arriving sum, apply_rule(running + area) and then running + cover
+    along the row; 1 in a solid tile, 0 in an empty one."""
+    cov = [[0.0] * tw for _ in range(th)]
+    if td.cls == "solid":
+        for y in range(th):
+            for x in range(tw):
+                cov[y][x] = 1.0
+        return cov
+    if td.cls == "empty":
+        return cov
+    for ly in range(th):
+        row = row0 + ly
+        running = td.arriving.get(row, 0.0)
+        for lx in range(tw):
+            x = col0 + lx
+            area, cover_ = td.cells.get((x, row), (0.0, 0.0))
+            cov[ly][lx] = apply_rule(running + area, rule)
+            running += cover_
+    return cov
+
+
+def _gpu_clip_values(clip, tw, th, row0, col0):
+    """A clip's values: start at 0 and take 1 - (1 - v)(1 - c) for each
+    part in order."""
+    values = [[0.0] * tw for _ in range(th)]
+    for (part_td, part_rule) in clip:
+        pc = _gpu_resolve_tile_draw(part_td, part_rule, tw, th, row0, col0)
+        for y in range(th):
+            for x in range(tw):
+                v = values[y][x]
+                c = pc[y][x]
+                values[y][x] = 1.0 - (1.0 - v) * (1.0 - c)
+    return values
+
+
+def fine_tile(scene, commands, tx, ty, fs):
+    """One tile, reading only its list, into its own block of
+    transparent pixels, with a stack of blocks for groups."""
+    width, height = scene.width, scene.height
+    row0, row1 = ty * TILE_SIZE, min(height, ty * TILE_SIZE + TILE_SIZE)
+    col0, col1 = tx * TILE_SIZE, min(width, tx * TILE_SIZE + TILE_SIZE)
+    tw, th = col1 - col0, row1 - row0
+    stack = [layer(tw, th)]
+    push_meta = []
+    for cmd in commands:
+        if cmd[0] == "fill":
+            _, td, rule, paint, alpha, clip = cmd
+            top = stack[-1]
+            solid_fast = (td.cls == "solid" and isinstance(paint, SolidPaint)
+                          and alpha == 1 and not clip)
+            if solid_fast:
+                px = Pixel(paint.color.red, paint.color.green, paint.color.blue, 1.0)
+                for y in range(th):
+                    for x in range(tw):
+                        top.pixels[y][x] = px
+            else:
+                cov = _gpu_resolve_tile_draw(td, rule, tw, th, row0, col0)
+                clipvals = _gpu_clip_values(clip, tw, th, row0, col0) if clip else None
+                for y in range(th):
+                    for x in range(tw):
+                        k = cov[y][x]
+                        if clipvals is not None:
+                            k *= clipvals[y][x]
+                        k *= alpha
+                        if k > 0:
+                            colr = paint_at(paint, col0 + x + 0.5, row0 + y + 0.5)
+                            top.pixels[y][x] = over(from_color(colr, k), top.pixels[y][x])
+        elif cmd[0] == "push":
+            _, opacity, clip = cmd
+            if len(stack) >= STACK_DEPTH:
+                fs.spills += 1
+            stack.append(layer(tw, th))
+            clipvals = _gpu_clip_values(clip, tw, th, row0, col0) if clip else None
+            push_meta.append((opacity, clipvals))
+        elif cmd[0] == "pop":
+            g = stack.pop()
+            opacity, clipvals = push_meta.pop()
+            if clipvals is not None:
+                cb = CoverageBuffer(tw, th)
+                cb.coverage = clipvals
+                g = mask_layer(g, cb)
+            base = stack[-1]
+            stack[-1] = pop_group_with_opacity(g, base, opacity)
+    fs.tiles += 1
+    return stack[0]
+
+
+def run_pipeline(scene, seed, fs):
+    """Run all four stages and the fine stage over every tile, in raster
+    order when seed is none and in lcg_shuffle(tile count, seed) order
+    otherwise, and answer the canvas, every tile's block flattened over
+    white."""
+    width, height = scene.width, scene.height
+    tiles_x, tiles_y = _tile_grid_size(width, height)
+    segments = flatten_stage(scene)
+    bins = bin_stage(scene, segments)
+    lists = coarse_stage(scene, bins)
+    total_tiles = tiles_x * tiles_y
+    order = list(range(total_tiles)) if seed is None else lcg_shuffle(total_tiles, seed)
+    result = layer(width, height)
+    for idx in order:
+        ty, tx = divmod(idx, tiles_x)
+        block = fine_tile(scene, lists[ty][tx], tx, ty, fs)
+        row0, col0 = ty * TILE_SIZE, tx * TILE_SIZE
+        for y in range(block.height):
+            for x in range(block.width):
+                result.pixels[row0 + y][col0 + x] = block.pixels[y][x]
+    return flatten_layer(result, color(1, 1, 1))
+
+
+def render_svg_gpu(text, width, height, seed):
+    """Scene(encode_svg(text, width, height), width, height) run through
+    the pipeline."""
+    scene = Scene(encode_svg(text, width, height), width, height)
+    return run_pipeline(scene, seed, FineStats())
+
+
+# --- 24.7 Putting it together (the plate) ---
+
+def _ch24_plate_star():
+    """Chapter 5's star moved by (19.5, 19.5)."""
+    return transform_path(star(), translation(19.5, 19.5))
+
+
+def winding_color(w):
+    """Paper for 0, cyan mixed into paper by 0.6 for any negative w,
+    orange mixed in by 0.45 for 1 and by 0.9 for 2 or more."""
+    paper = color(0.02, 0.02, 0.025)
+    orange = color(0.9, 0.55, 0.1)
+    cyan = color(0.2, 0.75, 0.9)
+    if w == 0:
+        return paper
+    if w < 0:
+        return mix(paper, cyan, 0.6)
+    if w == 1:
+        return mix(paper, orange, 0.45)
+    return mix(paper, orange, 0.9)
+
+
+def plate_24():
+    """400 by 200: on the left the winding_color of every pixel of
+    stencil_buffer(plate_star(), 200, 200); on the right Roboto's g
+    through text_matrix(font, 700, -120, 420), its bowl filling the
+    panel."""
+    left = canvas(200, 200)
+    s = stencil_buffer(_ch24_plate_star(), 200, 200)
+    for y in range(200):
+        for x in range(200):
+            write_pixel(left, x, y, winding_color(s.grid[y][x]))
+
+    font = roboto()
+    m = text_matrix(font, 700, -120, 420)
+    contours = glyph_outline(font, "g")
+    dev_curves = [[transform_curve(c, m) for c in contour] for contour in contours]
+    terms = curve_terms(dev_curves, 200, 200)
+    lb = glyph_stencil(font, "g", m, 200, 200)
+
+    paper = color(0.02, 0.02, 0.025)
+    cyan = color(0.2, 0.75, 0.9)
+    magenta = color(0.85, 0.2, 0.55)
+    orange = color(0.9, 0.55, 0.1)
+    right = canvas(200, 200)
+    for y in range(200):
+        for x in range(200):
+            col = paper
+            v = terms.grid[y][x]
+            if v > 0:
+                col = mix(col, cyan, 0.55)
+            elif v < 0:
+                col = mix(col, magenta, 0.55)
+            if lb.grid[y][x] != 0:
+                col = mix(col, orange, 0.6)
+            write_pixel(right, x, y, col)
+
+    return side_by_side(left, right)
+
+
+def msaa_demo():
+    """Five strips, each the 24 by 12 pixels of the sliver from (30, 4)
+    on its 80 by 40 canvas, paper mixed toward orange by the coverage,
+    magnified 8 times and stacked top to bottom: msaa_coverage with 1,
+    4, 16 and 64 samples, then chapter 7's fill."""
+    paper = color(0.02, 0.02, 0.025)
+    orange = color(0.9, 0.55, 0.1)
+    covs = [msaa_coverage(sliver(), "nonzero", 80, 40, n) for n in (1, 4, 16, 64)]
+    covs.append(fill_path(sliver(), "nonzero", 80, 40))
+    strips = []
+    for cv in covs:
+        c = canvas(24, 12)
+        for y in range(12):
+            for x in range(24):
+                v = coverage_at(cv, 30 + x, 4 + y)
+                write_pixel(c, x, y, mix(paper, orange, v))
+        strips.append(magnify(c, 8))
+    result = strips[0]
+    for s in strips[1:]:
+        result = _stack_vertical(result, s)
+    return result
+
+
+def spill_map():
+    """810 by 400: the rose through run_pipeline on the left, and from
+    x = 410, for every tile that spilled, the tile's 16 pixels inset by
+    one on every side as magenta mixed into paper by 0.2 + 0.8 x its
+    spills / the most spills of any tile; paper everywhere else."""
+    text = read_file("reference/chapter-20/rose.svg")
+    width, height = 400, 400
+    scene = Scene(encode_svg(text, width, height), width, height)
+    tiles_x, tiles_y = _tile_grid_size(width, height)
+    segments = flatten_stage(scene)
+    bins = bin_stage(scene, segments)
+    lists = coarse_stage(scene, bins)
+
+    result = layer(width, height)
+    spills = [[0] * tiles_x for _ in range(tiles_y)]
+    for ty in range(tiles_y):
+        for tx in range(tiles_x):
+            local_fs = FineStats()
+            block = fine_tile(scene, lists[ty][tx], tx, ty, local_fs)
+            spills[ty][tx] = local_fs.spills
+            row0, col0 = ty * TILE_SIZE, tx * TILE_SIZE
+            for y in range(block.height):
+                for x in range(block.width):
+                    result.pixels[row0 + y][col0 + x] = block.pixels[y][x]
+    rose_canvas = flatten_layer(result, color(1, 1, 1))
+
+    max_spill = 0
+    for row in spills:
+        for v in row:
+            if v > max_spill:
+                max_spill = v
+
+    paper = color(0.02, 0.02, 0.025)
+    magenta = color(0.85, 0.2, 0.55)
+    c = canvas(810, 400)
+    fill(c, paper)
+    for y in range(height):
+        for x in range(width):
+            write_pixel(c, x, y, pixel_at(rose_canvas, x, y))
+
+    ox = 410
+    for ty in range(tiles_y):
+        row0 = ty * TILE_SIZE
+        row_lo = row0 + 1
+        row_hi = min(height, row0 + TILE_SIZE - 1)
+        for tx in range(tiles_x):
+            sp = spills[ty][tx]
+            if sp <= 0:
+                continue
+            col0 = tx * TILE_SIZE
+            col_lo = col0 + 1
+            col_hi = min(width, col0 + TILE_SIZE - 1)
+            t = 0.2 + 0.8 * (sp / max_spill)
+            col = mix(paper, magenta, t)
+            for y in range(row_lo, row_hi):
+                for x in range(col_lo, col_hi):
+                    write_pixel(c, ox + x, y, col)
+    return c
+
+
+def tiger_assembly():
+    """900 by 900 paper, four panels 450 square, left to right then top
+    to bottom: the tiger's fine stage run in lcg_shuffle(841, 2024)
+    order and stopped after 210, 420, 630 and 841 tiles."""
+    text = read_file("reference/chapter-20/tiger.svg")
+    width, height = 450, 450
+    scene = Scene(encode_svg(text, width, height), width, height)
+    tiles_x, tiles_y = _tile_grid_size(width, height)
+    total_tiles = tiles_x * tiles_y
+    segments = flatten_stage(scene)
+    bins = bin_stage(scene, segments)
+    lists = coarse_stage(scene, bins)
+    order = lcg_shuffle(total_tiles, 2024)
+
+    paper = color(0.02, 0.02, 0.025)
+    white_pixel = opaque(color(1, 1, 1))
+    result = layer(width, height)
+    finished = [[False] * tiles_x for _ in range(tiles_y)]
+    fs = FineStats()
+
+    checkpoints = {210, 420, 630, 841}
+    panels = []
+    for i, idx in enumerate(order, start=1):
+        ty, tx = divmod(idx, tiles_x)
+        block = fine_tile(scene, lists[ty][tx], tx, ty, fs)
+        row0, col0 = ty * TILE_SIZE, tx * TILE_SIZE
+        for y in range(block.height):
+            for x in range(block.width):
+                result.pixels[row0 + y][col0 + x] = block.pixels[y][x]
+        finished[ty][tx] = True
+        if i in checkpoints:
+            snap = canvas(width, height)
+            fill(snap, paper)
+            for sty in range(tiles_y):
+                for stx in range(tiles_x):
+                    if not finished[sty][stx]:
+                        continue
+                    r0, c0 = sty * TILE_SIZE, stx * TILE_SIZE
+                    r1 = min(height, r0 + TILE_SIZE)
+                    c1 = min(width, c0 + TILE_SIZE)
+                    for y in range(r0, r1):
+                        for x in range(c0, c1):
+                            write_pixel(snap, x, y, pixel_color(over(result.pixels[y][x], white_pixel)))
+            panels.append(snap)
+    top = side_by_side(panels[0], panels[1])
+    bottom = side_by_side(panels[2], panels[3])
+    return _stack_vertical(top, bottom)
+
+
+# ============================================================
+# Chapter 25: The Raster Editor Detour
+# ============================================================
+
+# --- 25.1 Brushes ---
+
+class Brush:
+    """A round coverage kernel: fully covered inside hardness * radius,
+    falling in a straight ramp to nothing at the radius."""
+
+    def __init__(self, radius, hardness, spacing, flow, opacity):
+        self.radius = radius
+        self.hardness = hardness
+        self.spacing = spacing
+        self.flow = flow
+        self.opacity = opacity
+
+    def __repr__(self):
+        return f"Brush({self.radius}, {self.hardness}, {self.spacing}, {self.flow}, {self.opacity})"
+
+
+def brush(radius, hardness, spacing, flow, opacity):
+    """A round brush."""
+    return Brush(radius, hardness, spacing, flow, opacity)
+
+
+def dab_coverage(b, d):
+    """At distance d from a dab's center: 1 when d <= hardness * radius,
+    0 when d >= radius, and a straight ramp between."""
+    inner = b.hardness * b.radius
+    if d <= inner:
+        return 1.0
+    if d >= b.radius:
+        return 0.0
+    return (b.radius - d) / (b.radius - inner)
+
+
+def stamp_positions(events, b):
+    """Space dabs by distance, not by event: the first event is a dab,
+    and then there is one every step = spacing * 2 * radius of arc
+    length along the polyline through the events, the distance still
+    needed carried from segment to segment."""
+    if not events:
+        return []
+    step = b.spacing * 2 * b.radius
+    result = [events[0]]
+    if step <= 0:
+        return result
+    remaining = step
+    for i in range(len(events) - 1):
+        a, c = events[i], events[i + 1]
+        seg_len = magnitude(c - a)
+        if seg_len == 0:
+            continue
+        pos = 0.0
+        while pos + remaining <= seg_len + 1e-9:
+            pos += remaining
+            t = pos / seg_len
+            result.append(point(a.x + (c.x - a.x) * t, a.y + (c.y - a.y) * t))
+            remaining = step
+        remaining -= (seg_len - pos)
+    return result
+
+
+def stroke_mask(width, height, centers, b):
+    """One stroke's coverage: for every center in order, at every pixel
+    of its box with k = dab_coverage above 0, m <- 1 - (1 - m)(1 - flow
+    * k), so overlapping dabs build up."""
+    m = CoverageBuffer(width, height)
+    for center in centers:
+        x0 = max(0, math.floor(center.x - b.radius))
+        x1 = min(width - 1, math.ceil(center.x + b.radius))
+        y0 = max(0, math.floor(center.y - b.radius))
+        y1 = min(height - 1, math.ceil(center.y + b.radius))
+        for y in range(y0, y1 + 1):
+            for x in range(x0, x1 + 1):
+                dx = (x + 0.5) - center.x
+                dy = (y + 0.5) - center.y
+                d = math.sqrt(dx * dx + dy * dy)
+                k = dab_coverage(b, d)
+                if k > 0:
+                    old = m.coverage[y][x]
+                    m.coverage[y][x] = 1.0 - (1.0 - old) * (1.0 - b.flow * k)
+    return m
+
+
+def paint_stroke(c, events, b, col, by_distance):
+    """Make the mask from stamp_positions when by_distance is true and
+    from the events themselves when it's false, multiply it by opacity,
+    and paint it through with chapter 2's paint_through; answer the
+    mask painted."""
+    centers = stamp_positions(events, b) if by_distance else events
+    m = stroke_mask(c.width, c.height, centers, b)
+    for y in range(m.height):
+        for x in range(m.width):
+            m.coverage[y][x] *= b.opacity
+    paint_through(c, m, col)
+    return m
+
+
+def wobbly_events():
+    """25 pointer events, event i at (20 + 360u^2, 60 + 30 sin(2 pi u))
+    with u = i / 24, bunched at the start where the hand was slow."""
+    events = []
+    for i in range(25):
+        u = i / 24
+        x = 20 + 360 * u * u
+        y = 60 + 30 * math.sin(2 * math.pi * u)
+        events.append(point(x, y))
+    return events
+
+
+def min_along(m, events, n):
+    """The least mask value at the pixels under n evenly spaced points
+    (t = k / n, k from 0 to n - 1) of every segment of the events, the
+    pixel being floor of each coordinate."""
+    best = None
+    for i in range(len(events) - 1):
+        a, c = events[i], events[i + 1]
+        for k in range(n):
+            t = k / n
+            x = a.x + (c.x - a.x) * t
+            y = a.y + (c.y - a.y) * t
+            v = coverage_at(m, math.floor(x), math.floor(y))
+            if best is None or v < best:
+                best = v
+    return best if best is not None else 0.0
+
+
+# --- 25.2 Flood fill ---
+
+def bytes_at(c, x, y):
+    """The pixel's three file bytes by chapter 1's to_byte."""
+    col = pixel_at(c, x, y)
+    return (to_byte(col.red), to_byte(col.green), to_byte(col.blue))
+
+
+def _bytes_match(a, b, tolerance):
+    return (abs(a[0] - b[0]) <= tolerance and
+            abs(a[1] - b[1]) <= tolerance and
+            abs(a[2] - b[2]) <= tolerance)
+
+
+class FillStats:
+    """pushes counts every seed pushed (the initial one included);
+    deepest is the most seeds the stack ever held."""
+
+    def __init__(self):
+        self.pushes = 0
+        self.deepest = 0
+
+    def __repr__(self):
+        return f"FillStats(pushes={self.pushes}, deepest={self.deepest})"
+
+
+def fill_stats():
+    """A fresh fill-stats record."""
+    return FillStats()
+
+
+def flood_mask(c, x, y, tolerance, connectivity, fs):
+    """The scanline flood fill, as a coverage mask of 1s."""
+    width, height = c.width, c.height
+    seed = bytes_at(c, x, y)
+    mask = [[False] * width for _ in range(height)]
+    byte_cache = {}
+
+    def bytes_of(px, py):
+        v = byte_cache.get((px, py))
+        if v is None:
+            v = bytes_at(c, px, py)
+            byte_cache[(px, py)] = v
+        return v
+
+    stack = [(x, y)]
+    fs.pushes += 1
+    fs.deepest = max(fs.deepest, len(stack))
+    reach = 1 if connectivity == 8 else 0
+
+    while stack:
+        px, py = stack.pop()
+        if not (0 <= px < width and 0 <= py < height):
+            continue
+        if mask[py][px]:
+            continue
+        if not _bytes_match(bytes_of(px, py), seed, tolerance):
+            continue
+
+        lx = px
+        while lx > 0 and not mask[py][lx - 1] and _bytes_match(bytes_of(lx - 1, py), seed, tolerance):
+            lx -= 1
+        rx = px
+        while rx < width - 1 and not mask[py][rx + 1] and _bytes_match(bytes_of(rx + 1, py), seed, tolerance):
+            rx += 1
+        for xx in range(lx, rx + 1):
+            mask[py][xx] = True
+
+        for ny in (py - 1, py + 1):
+            if 0 <= ny < height:
+                in_run = False
+                k0 = max(0, lx - reach)
+                k1 = min(width - 1, rx + reach)
+                for k in range(k0, k1 + 1):
+                    ok = (not mask[ny][k]) and _bytes_match(bytes_of(k, ny), seed, tolerance)
+                    if ok and not in_run:
+                        stack.append((k, ny))
+                        fs.pushes += 1
+                        if len(stack) > fs.deepest:
+                            fs.deepest = len(stack)
+                    in_run = ok
+
+    cov = CoverageBuffer(width, height)
+    for yy in range(height):
+        for xx in range(width):
+            if mask[yy][xx]:
+                cov.coverage[yy][xx] = 1.0
+    return cov
+
+
+def select_color(c, x, y, tolerance):
+    """The bucket with Contiguous off: every pixel of the canvas that
+    matches."""
+    seed = bytes_at(c, x, y)
+    cov = CoverageBuffer(c.width, c.height)
+    for yy in range(c.height):
+        for xx in range(c.width):
+            if _bytes_match(bytes_at(c, xx, yy), seed, tolerance):
+                cov.coverage[yy][xx] = 1.0
+    return cov
+
+
+def anti_alias_mask(m):
+    """The bucket's Anti-alias box: every pixel outside the mask with a
+    4-neighbor in it gets 0.5."""
+    result = CoverageBuffer(m.width, m.height)
+    for y in range(m.height):
+        for x in range(m.width):
+            if m.coverage[y][x] >= 1.0:
+                result.coverage[y][x] = m.coverage[y][x]
+                continue
+            has_neighbor = False
+            for (nx, ny) in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                if 0 <= nx < m.width and 0 <= ny < m.height and m.coverage[ny][nx] >= 1.0:
+                    has_neighbor = True
+                    break
+            result.coverage[y][x] = 0.5 if has_neighbor else 0.0
+    return result
+
+
+def bucket(c, x, y, col, tolerance, contiguous, anti_alias, connectivity):
+    """Paint the mask through in col and answer it."""
+    if contiguous:
+        m = flood_mask(c, x, y, tolerance, connectivity, fill_stats())
+    else:
+        m = select_color(c, x, y, tolerance)
+    if anti_alias:
+        m = anti_alias_mask(m)
+    paint_through(c, m, col)
+    return m
+
+
+def ring_canvas():
+    """160 by 160 of pale paper, and on it chapter 13's stroke_to_path of
+    circle_path(80, 80, 60, 96), 4 wide, butt caps, round joins, limit 4,
+    filled by chapter 7 and painted through in ink."""
+    c = canvas(160, 160)
+    pale = color(0.92, 0.9, 0.82)
+    ink_col = color(0.05, 0.05, 0.08)
+    fill(c, pale)
+    ring_path = circle_path(80, 80, 60, 96)
+    outline = stroke_to_path(ring_path, 4, "butt", "round", 4)
+    cov = fill_path(outline, "nonzero", 160, 160)
+    paint_through(c, cov, ink_col)
+    return c
+
+
+def naive_depth(w, h):
+    """How deep the recursive four-way fill goes filling an empty w by h
+    canvas from (0, 0), each call trying right, left, down, up: the
+    deepest chain of calls in flight. For a fully-matching canvas, that
+    chain visits the whole rectangle in one continuous boustrophedon
+    path (verified directly for small cases), so the depth is exactly
+    its area."""
+    return w * h
+
+
+# --- 25.3 Quantization ---
+
+def _box_channel_widths(colors):
+    rs = [c[0] for c in colors]
+    gs = [c[1] for c in colors]
+    bs = [c[2] for c in colors]
+    return (max(rs) - min(rs), max(gs) - min(gs), max(bs) - min(bs))
+
+
+def median_cut(colors, n):
+    """Heckbert's median cut: a palette of at most n byte colours."""
+    counts = {}
+    for c in colors:
+        t = tuple(c)
+        counts[t] = counts.get(t, 0) + 1
+    distinct = sorted(counts.keys())
+    boxes = [[(c, counts[c]) for c in distinct]]
+
+    while len(boxes) < n:
+        candidates = [i for i, box in enumerate(boxes) if len(box) >= 2]
+        if not candidates:
+            break
+        best_i, best_width, best_channel = None, -1, None
+        for i in candidates:
+            cols_only = [entry[0] for entry in boxes[i]]
+            wr, wg, wb = _box_channel_widths(cols_only)
+            if wr >= wg and wr >= wb:
+                ch, w = 0, wr
+            elif wg >= wb:
+                ch, w = 1, wg
+            else:
+                ch, w = 2, wb
+            if w > best_width:
+                best_width, best_i, best_channel = w, i, ch
+
+        box_sorted = sorted(boxes[best_i], key=lambda entry: entry[0][best_channel])
+        total = sum(cnt for (_c, cnt) in box_sorted)
+        running = 0
+        cut_index = len(box_sorted) - 1
+        for idx, (_c, cnt) in enumerate(box_sorted):
+            running += cnt
+            if 2 * running >= total:
+                cut_index = idx
+                break
+        if cut_index >= len(box_sorted) - 1:
+            cut_index = len(box_sorted) - 2
+
+        left = box_sorted[:cut_index + 1]
+        right = box_sorted[cut_index + 1:]
+        boxes[best_i:best_i + 1] = [left, right]
+
+    palette = []
+    for box in boxes:
+        total = sum(cnt for (_c, cnt) in box)
+        r = sum(c[0] * cnt for (c, cnt) in box) / total
+        g = sum(c[1] * cnt for (c, cnt) in box) / total
+        b = sum(c[2] * cnt for (c, cnt) in box) / total
+        palette.append((round_half_up(r), round_half_up(g), round_half_up(b)))
+    return palette
+
+
+def canvas_bytes(c):
+    """bytes_at of every pixel, row by row."""
+    result = []
+    for y in range(c.height):
+        for x in range(c.width):
+            result.append(bytes_at(c, x, y))
+    return result
+
+
+def nearest_index(palette, col):
+    """The entry with the least squared distance in bytes, the lowest
+    index on a tie."""
+    best_i, best_d = 0, None
+    for i, p in enumerate(palette):
+        d = (p[0] - col[0]) ** 2 + (p[1] - col[1]) ** 2 + (p[2] - col[2]) ** 2
+        if best_d is None or d < best_d:
+            best_d, best_i = d, i
+    return best_i
+
+
+def remap(c, palette):
+    """nearest_index for every pixel."""
+    return [nearest_index(palette, b) for b in canvas_bytes(c)]
+
+
+def _entry_light(entry):
+    return (decode(entry[0] / 255), decode(entry[1] / 255), decode(entry[2] / 255))
+
+
+def threshold(c, palette):
+    """The nearest entry in light, by squared distance."""
+    lights = [_entry_light(p) for p in palette]
+    result = []
+    for y in range(c.height):
+        for x in range(c.width):
+            col = pixel_at(c, x, y)
+            best_i, best_d = 0, None
+            for i, (lr, lg, lb) in enumerate(lights):
+                d = (col.red - lr) ** 2 + (col.green - lg) ** 2 + (col.blue - lb) ** 2
+                if best_d is None or d < best_d:
+                    best_d, best_i = d, i
+            result.append(best_i)
+    return result
+
+
+def ordered_dither(c, palette):
+    """For a two-entry palette, takes the second entry where the pixel's
+    green light is above lo + (hi - lo) * dither_threshold(x, y), lo and
+    hi the entries' green light, and the first otherwise."""
+    lo = decode(palette[0][1] / 255)
+    hi = decode(palette[1][1] / 255)
+    result = []
+    for y in range(c.height):
+        for x in range(c.width):
+            col = pixel_at(c, x, y)
+            t = lo + (hi - lo) * dither_threshold(x, y)
+            result.append(1 if col.green > t else 0)
+    return result
+
+
+def error_diffuse(c, palette):
+    """Floyd and Steinberg in light: rows top to bottom, each left to
+    right; the pixel's light plus the error handed to it goes to the
+    nearest entry in light, and the difference goes 7/16 to the right,
+    3/16 below left, 5/16 below and 1/16 below right, what falls off the
+    canvas dropped."""
+    w, h = c.width, c.height
+    err_r = [[0.0] * w for _ in range(h)]
+    err_g = [[0.0] * w for _ in range(h)]
+    err_b = [[0.0] * w for _ in range(h)]
+    lights = [_entry_light(p) for p in palette]
+    result = [0] * (w * h)
+    for y in range(h):
+        for x in range(w):
+            col = pixel_at(c, x, y)
+            r = col.red + err_r[y][x]
+            g = col.green + err_g[y][x]
+            b = col.blue + err_b[y][x]
+            best_i, best_d = 0, None
+            for i, (lr, lg, lb) in enumerate(lights):
+                d = (r - lr) ** 2 + (g - lg) ** 2 + (b - lb) ** 2
+                if best_d is None or d < best_d:
+                    best_d, best_i = d, i
+            result[y * w + x] = best_i
+            lr, lg, lb = lights[best_i]
+            dr, dg, db = r - lr, g - lg, b - lb
+            for (dx, dy, frac) in ((1, 0, 7 / 16), (-1, 1, 3 / 16), (0, 1, 5 / 16), (1, 1, 1 / 16)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h:
+                    err_r[ny][nx] += dr * frac
+                    err_g[ny][nx] += dg * frac
+                    err_b[ny][nx] += db * frac
+    return result
+
+
+def indexed_canvas(indices, palette, w, h):
+    """The canvas of each index's light."""
+    c = canvas(w, h)
+    lights = [_entry_light(p) for p in palette]
+    for y in range(h):
+        for x in range(w):
+            lr, lg, lb = lights[indices[y * w + x]]
+            write_pixel(c, x, y, color(lr, lg, lb))
+    return c
+
+
+def ramp_canvas(w, h):
+    """light x / (w - 1) in every channel."""
+    c = canvas(w, h)
+    denom = (w - 1) if w > 1 else 1
+    for y in range(h):
+        for x in range(w):
+            v = x / denom
+            write_pixel(c, x, y, color(v, v, v))
+    return c
+
+
+def mean_light(c):
+    """The mean green light."""
+    total = 0.0
+    for y in range(c.height):
+        for x in range(c.width):
+            total += pixel_at(c, x, y).green
+    return total / (c.width * c.height)
+
+
+def canvas_to_bmp8(indices, palette, w, h):
+    """Write an 8-bit indexed BMP, every number little-endian."""
+    row_padded = ((w + 3) // 4) * 4
+    pixel_size = row_padded * h
+    offset = 14 + 40 + 256 * 4
+    file_size = offset + pixel_size
+    out = bytearray()
+    out += b'BM'
+    out += file_size.to_bytes(4, 'little')
+    out += (0).to_bytes(2, 'little')
+    out += (0).to_bytes(2, 'little')
+    out += offset.to_bytes(4, 'little')
+    out += (40).to_bytes(4, 'little')
+    out += w.to_bytes(4, 'little', signed=True)
+    out += h.to_bytes(4, 'little', signed=True)
+    out += (1).to_bytes(2, 'little')
+    out += (8).to_bytes(2, 'little')
+    out += (0).to_bytes(4, 'little')
+    out += pixel_size.to_bytes(4, 'little')
+    out += (2835).to_bytes(4, 'little', signed=True)
+    out += (2835).to_bytes(4, 'little', signed=True)
+    out += len(palette).to_bytes(4, 'little')
+    out += (0).to_bytes(4, 'little')
+    for i in range(256):
+        if i < len(palette):
+            r, g, b = palette[i]
+        else:
+            r, g, b = 0, 0, 0
+        out += bytes([b, g, r, 0])
+    for row in range(h - 1, -1, -1):
+        row_bytes = bytearray(row_padded)
+        for x in range(w):
+            row_bytes[x] = indices[row * w + x]
+        out += row_bytes
+    return bytes(out)
+
+
+def read_bmp8(data):
+    """(width, height, palette, indices), the palette as long as the
+    file's count says."""
+    w = int.from_bytes(data[18:22], 'little', signed=True)
+    h = int.from_bytes(data[22:26], 'little', signed=True)
+    offset = int.from_bytes(data[10:14], 'little')
+    pal_count = int.from_bytes(data[46:50], 'little')
+    palette = []
+    pal_start = 54
+    for i in range(pal_count):
+        b, g, r, _z = data[pal_start + i * 4: pal_start + i * 4 + 4]
+        palette.append((r, g, b))
+    row_padded = ((w + 3) // 4) * 4
+    indices = [0] * (w * h)
+    for row in range(h):
+        file_row = h - 1 - row
+        base = offset + file_row * row_padded
+        for x in range(w):
+            indices[row * w + x] = data[base + x]
+    return (w, h, palette, indices)
+
+
+# --- 25.4 Selection and undo ---
+
+def marquee(x0, y0, x1, y1, w, h):
+    """The rectangular marquee: chapter 12's clip_rect."""
+    return clip_rect(x0, y0, x1, y1, w, h)
+
+
+def add_selection(a, b):
+    """1 - (1 - a)(1 - b)."""
+    return union_coverage(a, b)
+
+
+def subtract_selection(a, b):
+    """a x (1 - b)."""
+    width = min(a.width, b.width)
+    height = min(a.height, b.height)
+    result = CoverageBuffer(width, height)
+    for y in range(height):
+        for x in range(width):
+            result.coverage[y][x] = coverage_at(a, x, y) * (1 - coverage_at(b, x, y))
+    return result
+
+
+def intersect_selection(a, b):
+    """chapter 12's multiply_coverage."""
+    return multiply_coverage(a, b)
+
+
+def feather(m, r):
+    """A box blur of radius r, along the rows and then down the columns,
+    each value the mean of the 2r + 1 centred on it with those off the
+    buffer counted as 0."""
+    w, h = m.width, m.height
+    k = 2 * r + 1
+    tmp = CoverageBuffer(w, h)
+    for y in range(h):
+        for x in range(w):
+            total = 0.0
+            for dx in range(-r, r + 1):
+                xx = x + dx
+                if 0 <= xx < w:
+                    total += m.coverage[y][xx]
+            tmp.coverage[y][x] = total / k
+    result = CoverageBuffer(w, h)
+    for x in range(w):
+        for y in range(h):
+            total = 0.0
+            for dy in range(-r, r + 1):
+                yy = y + dy
+                if 0 <= yy < h:
+                    total += tmp.coverage[yy][x]
+            result.coverage[y][x] = total / k
+    return result
+
+
+class FloatingSelection:
+    """A lifted layer plus its offset from where it was lifted."""
+
+    def __init__(self, lyr, x, y):
+        self.layer = lyr
+        self.x = x
+        self.y = y
+
+    def __repr__(self):
+        return f"FloatingSelection(x={self.x}, y={self.y})"
+
+
+def float_selection(c, sel, backfill):
+    """Lift the selection's pixels into a chapter 9 layer, each
+    premultiplied by the selection's coverage k, and mix the canvas
+    under them toward backfill by k."""
+    w, h = c.width, c.height
+    lyr = layer(w, h)
+    for y in range(h):
+        for x in range(w):
+            k = coverage_at(sel, x, y)
+            if k > 0:
+                col = pixel_at(c, x, y)
+                lyr.pixels[y][x] = from_color(col, k)
+                write_pixel(c, x, y, mix(col, backfill, k))
+    return FloatingSelection(lyr, 0, 0)
+
+
+def move_floating(f, dx, dy):
+    """Move a floating selection."""
+    f.x += dx
+    f.y += dy
+
+
+def drop_floating(c, f):
+    """Composite every pixel of it with alpha above 0, moved, source-over
+    the canvas, dropping those that land off the canvas."""
+    w, h = c.width, c.height
+    for y in range(f.layer.height):
+        for x in range(f.layer.width):
+            p = f.layer.pixels[y][x]
+            if p.a > 0:
+                nx, ny = x + f.x, y + f.y
+                if 0 <= nx < w and 0 <= ny < h:
+                    dst = opaque(pixel_at(c, nx, ny))
+                    write_pixel(c, nx, ny, pixel_color(over(p, dst)))
+
+
+class History:
+    """A command stack of (rect, saved pixels) entries."""
+
+    def __init__(self, c):
+        self.canvas = c
+        self.undo_stack = []
+        self.redo_stack = []
+
+    def __repr__(self):
+        return f"History(undo={len(self.undo_stack)}, redo={len(self.redo_stack)})"
+
+
+def history(c):
+    """A fresh history over a canvas."""
+    return History(c)
+
+
+def _history_rect_pixels(c, x0, y0, x1, y1):
+    xx0, yy0 = max(0, x0), max(0, y0)
+    xx1, yy1 = min(c.width, x1), min(c.height, y1)
+    pixels = []
+    for y in range(yy0, yy1):
+        pixels.append([pixel_at(c, x, y) for x in range(xx0, xx1)])
+    return (xx0, yy0, xx1, yy1, pixels)
+
+
+def _history_write_rect(c, rect):
+    xx0, yy0, xx1, yy1, pixels = rect
+    for y in range(yy0, yy1):
+        for x in range(xx0, xx1):
+            write_pixel(c, x, y, pixels[y - yy0][x - xx0])
+
+
+def history_fill(h, x0, y0, x1, y1, col):
+    """An edit that first saves the canvas pixels of its rectangle (end
+    exclusive, cut to the canvas) and then sets them to col."""
+    saved = _history_rect_pixels(h.canvas, x0, y0, x1, y1)
+    xx0, yy0, xx1, yy1, _pixels = saved
+    for y in range(yy0, yy1):
+        for x in range(xx0, xx1):
+            write_pixel(h.canvas, x, y, col)
+    h.undo_stack.append(saved)
+    h.redo_stack = []
+
+
+def undo(h):
+    """Put the saved pixels back, keep the ones it replaced for redo, and
+    answer true (false with nothing to undo)."""
+    if not h.undo_stack:
+        return False
+    saved = h.undo_stack.pop()
+    xx0, yy0, xx1, yy1, _pixels = saved
+    replaced = _history_rect_pixels(h.canvas, xx0, yy0, xx1, yy1)
+    _history_write_rect(h.canvas, saved)
+    h.redo_stack.append(replaced)
+    return True
+
+
+def redo(h):
+    """The reverse of undo."""
+    if not h.redo_stack:
+        return False
+    saved = h.redo_stack.pop()
+    xx0, yy0, xx1, yy1, _pixels = saved
+    replaced = _history_rect_pixels(h.canvas, xx0, yy0, xx1, yy1)
+    _history_write_rect(h.canvas, saved)
+    h.undo_stack.append(replaced)
+    return True
+
+
+def stored_pixels(h):
+    """How many pixels both stacks hold."""
+    total = 0
+    for (xx0, yy0, xx1, yy1, _pixels) in h.undo_stack:
+        total += (xx1 - xx0) * (yy1 - yy0)
+    for (xx0, yy0, xx1, yy1, _pixels) in h.redo_stack:
+        total += (xx1 - xx0) * (yy1 - yy0)
+    return total
+
+
+# --- 25.5 Putting it together (the plate and renders) ---
+
+def plate_25():
+    """ring_canvas() bucketed cyan from (80, 80) at tolerance 32,
+    contiguous, no anti-alias, four-way; its pixels x 100 to 159, y 50
+    to 109, magnified 4 times; beside it ramp_canvas(240, 240)
+    error-diffused to black and white; 480 by 240."""
+    c = ring_canvas()
+    cyan = color(0.2, 0.75, 0.9)
+    bucket(c, 80, 80, cyan, 32, True, False, 4)
+    left = canvas(60, 60)
+    for y in range(60):
+        for x in range(60):
+            write_pixel(left, x, y, pixel_at(c, 100 + x, 50 + y))
+    left = magnify(left, 4)
+
+    bw = [(0, 0, 0), (255, 255, 255)]
+    r = ramp_canvas(240, 240)
+    indices = error_diffuse(r, bw)
+    right = indexed_canvas(indices, bw, 240, 240)
+    return side_by_side(left, right)
+
+
+def dither_strip():
+    """ramp_canvas(256, 32) to black and white by threshold,
+    ordered_dither and error_diffuse, stacked top to bottom; 256 by 96."""
+    bw = [(0, 0, 0), (255, 255, 255)]
+    r = ramp_canvas(256, 32)
+    top = indexed_canvas(threshold(r, bw), bw, 256, 32)
+    mid = indexed_canvas(ordered_dither(r, bw), bw, 256, 32)
+    bot = indexed_canvas(error_diffuse(r, bw), bw, 256, 32)
+    return _stack_vertical(_stack_vertical(top, mid), bot)
+
+
+def halo_demo():
+    """ring_canvas() bucketed cyan from (80, 80), four-way, contiguous,
+    four times: tolerance 0; 32; 32 with anti-alias; 160; 640 by 160."""
+    cyan = color(0.2, 0.75, 0.9)
+    panels = []
+    for (tol, aa) in ((0, False), (32, False), (32, True), (160, False)):
+        c = ring_canvas()
+        bucket(c, 80, 80, cyan, tol, True, aa, 4)
+        panels.append(c)
+    out = panels[0]
+    for p in panels[1:]:
+        out = side_by_side(out, p)
+    return out
+
+
+def brush_demo():
+    """400 by 240 pale paper; wobbly_events() painted in ink with
+    brush(8, 0.5, 0.25, 0.6, 1), one dab per event; then the same events
+    moved down 110, spaced by distance."""
+    c = canvas(400, 240)
+    pale = color(0.92, 0.9, 0.82)
+    ink_col = color(0.05, 0.05, 0.08)
+    fill(c, pale)
+    b = brush(8, 0.5, 0.25, 0.6, 1)
+    paint_stroke(c, wobbly_events(), b, ink_col, False)
+    ev2 = [point(p.x, p.y + 110) for p in wobbly_events()]
+    paint_stroke(c, ev2, b, ink_col, True)
+    return c
+
+
+def paint_by_script():
+    """480 by 320, starting black, every step an edit, in order: sky,
+    sea, sun, hills, an undone magenta stroke, six waves, the boat (then
+    floated, moved and dropped), then reduced to 16 colours by median
+    cut and error diffusion through an 8-bit BMP and back."""
+    w, h = 480, 320
+    c = canvas(w, h)
+    fill(c, color(0, 0, 0))
+
+    sky_stops = [stop(0, color(0.05, 0.12, 0.35)), stop(1, color(0.95, 0.45, 0.2))]
+    sky_grad = linear_gradient(point(0, 0), point(0, 210), sky_stops, "pad")
+    sky_mask = marquee(0, 0, 480, 210, w, h)
+    paint_fill(c, sky_mask, sky_grad)
+
+    sea_color = color(0.02, 0.1, 0.2)
+    sea_mask = marquee(0, 210, 480, 320, w, h)
+    paint_through(c, sea_mask, sea_color)
+
+    sun_color = color(1, 0.8, 0.3)
+    paint_stroke(c, [point(370, 110)], brush(46, 0.55, 0.25, 1, 1), sun_color, True)
+
+    hill_color = color(0.04, 0.12, 0.06)
+    hill_events = [point(-20 + 26 * i, 205 - 30 * math.sin(i / 3.1) - 12 * math.sin(1.7 * i))
+                   for i in range(21)]
+    paint_stroke(c, hill_events, brush(34, 0.7, 0.2, 0.8, 1), hill_color, True)
+
+    snapshot = [row[:] for row in c.pixels]
+    magenta = color(0.85, 0.2, 0.55)
+    paint_stroke(c, [point(40, 40), point(460, 300)], brush(30, 0.5, 0.2, 1, 1), magenta, True)
+    c.pixels = snapshot
+
+    for k in range(6):
+        wave_events = [point(60 + 60 * k + 8 * j, 232 + 14 * k + 2 * math.sin(j)) for j in range(12)]
+        paint_stroke(c, wave_events, brush(1.6, 0.2, 0.3, 0.7, 0.8), sun_color, True)
+
+    ink_col = color(0.05, 0.05, 0.08)
+    boat_mask = marquee(150, 262, 210, 272, w, h)
+    paint_through(c, boat_mask, ink_col)
+
+    f = float_selection(c, boat_mask, sea_color)
+    move_floating(f, 40, -6)
+    drop_floating(c, f)
+
+    palette = median_cut(canvas_bytes(c), 16)
+    indices = error_diffuse(c, palette)
+    bmp = canvas_to_bmp8(indices, palette, w, h)
+    _w2, _h2, pal2, idx2 = read_bmp8(bmp)
+    return indexed_canvas(idx2, pal2, w, h)
