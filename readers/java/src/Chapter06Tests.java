@@ -173,6 +173,23 @@ public final class Chapter06Tests {
             assertDoubleEq("t[1].x_top", t.get(1).xTop(), 10);
         });
 
+        scenario("Edges: a nearly horizontal edge is still an edge", () -> {
+            Path p = Paths.polygon(
+                    Tuple.point(0, 2.4995), Tuple.point(10, 2.5005), Tuple.point(10, 6), Tuple.point(0, 6));
+            List<TableEdge> t = EdgeTable.edgeTable(p);
+            assertEquals("length(t)", t.size(), 3);
+            assertSpansEq("spans(p, \"nonzero\", 2)", Spans.spans(p, "nonzero", 2), List.of(new Span(0, 5)));
+            assertSpansEq("spans(p, \"nonzero\", 3)", Spans.spans(p, "nonzero", 3), List.of(new Span(0, 10)));
+            CoverageBuffer cov = Sweep.fillPathAliased(p, "nonzero", 16, 8);
+            assertDoubleEq("coverage_at(cov, 4, 2)", cov.coverageAt(4, 2), 1);
+            assertDoubleEq("coverage_at(cov, 5, 2)", cov.coverageAt(5, 2), 0);
+            assertDoubleEq("ink(cov)", cov.ink(), 35);
+            assertDoubleEq("max_coverage_difference",
+                    CoverageBuffer.maxCoverageDifference(cov,
+                            Rasterizer.rasterizeCenters(Paths.filled(p, "nonzero"), 16, 8)),
+                    0);
+        });
+
         scenario("Edges: an edge knows where it crosses a height", () -> {
             Path p = Paths.polygon(Tuple.point(0, 0), Tuple.point(10, 0), Tuple.point(5, 10));
             List<TableEdge> t = EdgeTable.edgeTable(p);
@@ -430,6 +447,25 @@ public final class Chapter06Tests {
             assertDoubleEq("max_coverage_difference(cov, rasterize_centers(filled(p, \"nonzero\"), 8, 8))",
                     CoverageBuffer.maxCoverageDifference(cov,
                             Rasterizer.rasterizeCenters(Paths.filled(p, "nonzero"), 8, 8)),
+                    0);
+        });
+
+        scenario("Sweep: a bow tie has four crossings on a row, and they must be sorted", () -> {
+            Path p = Paths.polygon(
+                    Tuple.point(1, 1), Tuple.point(15, 6), Tuple.point(15, 1), Tuple.point(1, 6));
+            CoverageBuffer cov = Sweep.fillPathAliased(p, "nonzero", 16, 8);
+            assertSpansEq("spans(p, \"nonzero\", 2)", Spans.spans(p, "nonzero", 2),
+                    List.of(new Span(1, 5.2), new Span(10.8, 15)));
+            assertSpansEq("spans(p, \"evenodd\", 2)", Spans.spans(p, "evenodd", 2),
+                    List.of(new Span(1, 5.2), new Span(10.8, 15)));
+            assertDoubleEq("coverage_at(cov, 4, 2)", cov.coverageAt(4, 2), 1);
+            assertDoubleEq("coverage_at(cov, 5, 2)", cov.coverageAt(5, 2), 0);
+            assertDoubleEq("coverage_at(cov, 10, 2)", cov.coverageAt(10, 2), 0);
+            assertDoubleEq("coverage_at(cov, 11, 2)", cov.coverageAt(11, 2), 1);
+            assertDoubleEq("ink(cov)", cov.ink(), 34);
+            assertDoubleEq("max_coverage_difference",
+                    CoverageBuffer.maxCoverageDifference(cov,
+                            Rasterizer.rasterizeCenters(Paths.filled(p, "nonzero"), 16, 8)),
                     0);
         });
 

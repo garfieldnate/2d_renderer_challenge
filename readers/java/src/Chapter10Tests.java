@@ -169,6 +169,13 @@ public final class Chapter10Tests {
             assertDoubleEq("radial_t(g, 90, 50)", g.radialT(90, 50), 1);
         });
 
+        scenario("Gradients: when both roots are valid the larger one wins", () -> {
+            RadialGradient g = new RadialGradient(Tuple.point(0, 0), 10, Tuple.point(30, 0), 12, List.of(), "pad");
+            assertDoubleEq("radial_t(g, 5, 0)", g.radialT(5, 0), 0.535714, 0.0001);
+            assertDoubleEq("radial_t(g, 15, 0)", g.radialT(15, 0), 0.892857, 0.0001);
+            assertDoubleEq("radial_t(g, 20, 0)", g.radialT(20, 0), 1.071429, 0.0001);
+        });
+
         scenario("Gradients: a focal gradient runs from the focal point to the end circle", () -> {
             RadialGradient g = new RadialGradient(Tuple.point(35, 50), 0, Tuple.point(50, 50), 40, List.of(), "pad");
             assertDoubleEq("radial_t(g, 35, 50)", g.radialT(35, 50), 0);

@@ -356,6 +356,30 @@ public final class Chapter05Tests {
             assertTrue("!inside_evenodd(p, 5, 5)", !Winding.insideEvenodd(p, 5, 5));
         });
 
+        scenario("Rules: even-odd counts negative windings too", () -> {
+            Path p = Paths.polygon(
+                    Tuple.point(0, 0), Tuple.point(0, 10), Tuple.point(10, 10), Tuple.point(10, 0));
+            Path q = new Path();
+            q.moveTo(Tuple.point(5, 0));
+            q.lineTo(Tuple.point(0, 5));
+            q.lineTo(Tuple.point(5, 10));
+            q.lineTo(Tuple.point(10, 5));
+            q.lineTo(Tuple.point(5, 0));
+            q.lineTo(Tuple.point(0, 5));
+            q.lineTo(Tuple.point(5, 10));
+            q.lineTo(Tuple.point(10, 5));
+            q.lineTo(Tuple.point(5, 0));
+            q.lineTo(Tuple.point(0, 5));
+            q.lineTo(Tuple.point(5, 10));
+            q.lineTo(Tuple.point(10, 5));
+            q.close();
+            assertEquals("winding_at(p, 5, 5)", Winding.windingAt(p, 5, 5), -1);
+            assertTrue("inside_evenodd(p, 5, 5)", Winding.insideEvenodd(p, 5, 5));
+            assertEquals("winding_at(q, 5, 5)", Winding.windingAt(q, 5, 5), -3);
+            assertTrue("inside_evenodd(q, 5, 5)", Winding.insideEvenodd(q, 5, 5));
+            assertTrue("inside_nonzero(q, 5, 5)", Winding.insideNonzero(q, 5, 5));
+        });
+
         scenario("Rules: the pentagram's center is inside under nonzero and outside under even-odd", () -> {
             Path p = Figures.star();
             assertTrue("inside_nonzero(p, 80.5, 80.5)", Winding.insideNonzero(p, 80.5, 80.5));

@@ -242,6 +242,13 @@ public final class Chapter09Tests {
                     Blend.blend("luminosity", src, dst).pixelColor(), new Color(0.226, 0.426, 0.826));
         });
 
+        scenario("Blend: a non-separable blend that overflows is clipped back into range", () -> {
+            Pixel src = Pixel.opaque(new Color(0.95, 0.95, 0.95));
+            Pixel dst = Pixel.opaque(new Color(0.2, 0.45, 0.95));
+            assertColorEq("pixel_color(blend(\"luminosity\", src, dst))",
+                    Blend.blend("luminosity", src, dst).pixelColor(), new Color(0.927885, 0.951923, 1.0), 0.0001);
+        });
+
         scenario("Blend: blend_color is the blend function on two straight colours", () -> {
             assertColorEq("blend_color(\"multiply\", ...)",
                     Blend.blendColor("multiply", new Color(0.8, 0.8, 0.8), new Color(0.5, 0.5, 0.5)),

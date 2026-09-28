@@ -57,6 +57,12 @@ public final class Chapter11Tests {
         }
     }
 
+    private static void assertPixelEq(String what, Pixel actual, Pixel expected) {
+        if (!actual.approxEquals(expected)) {
+            throw new AssertionError(what + ": expected " + expected + " but got " + actual);
+        }
+    }
+
     private static void assertTriple(String what, int[] actual, int[] expected, int tolerance) {
         for (int i = 0; i < 3; i++) {
             if (Math.abs(actual[i] - expected[i]) > tolerance) {
@@ -209,6 +215,15 @@ public final class Chapter11Tests {
             assertEquals("d.height", d.height, 1);
             assertColorEq("pixel_color(image_texel(d, 0, 0))",
                     Images.imageTexel(d, 0, 0).pixelColor(), new Color(0.5, 0.5, 0.5));
+        });
+
+        scenario("Mip: downsample averages premultiplied, so a transparent texel adds nothing", () -> {
+            Image img = Images.image(2, 2, List.of(
+                    Pixel.opaque(new Color(1, 0, 0)), Pixel.CLEAR, Pixel.CLEAR, Pixel.CLEAR));
+            Image d = Images.downsample(img);
+            assertPixelEq("image_texel(d, 0, 0)", Images.imageTexel(d, 0, 0), new Pixel(0.25, 0, 0, 0.25));
+            assertColorEq("pixel_color(image_texel(d, 0, 0))",
+                    Images.imageTexel(d, 0, 0).pixelColor(), new Color(1, 0, 0));
         });
 
         scenario("Mip: a mip chain halves down to a single pixel", () -> {

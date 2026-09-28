@@ -1,6 +1,6 @@
 # The 2D Renderer Challenge — Java
 
-Chapters 1-23, hand-rolled test runner, no JUnit, no network. Chapter 16's
+Chapters 1-25, hand-rolled test runner, no JUnit, no network. Chapter 16's
 font file (`reference/chapter-16/roboto.json`) and chapter 19's Arabic font
 (`reference/chapter-19/dejavu-arabic.json`) are read with a small
 hand-written JSON reader (`Json.java`) -- no library, as the chapter asks.
@@ -9,7 +9,11 @@ Chapter 20's "your XML library" is `javax.xml` (a namespace-unaware
 which the chapter explicitly allows. Chapter 22's exact grid arithmetic uses
 `long` throughout except Bentley-Ottmann's own event ordering, which needs
 `java.math.BigInteger` (about 80-100 bits), exactly as the chapter says Java
-should.
+should. Chapter 24's `lcg_shuffle` needs a 62-bit product; a plain Java
+`long` holds it exactly, no `BigInteger` required. Chapter 25's naive
+recursive flood fill runs on a dedicated 256 MB-stack `Thread` so
+`naive_depth(200, 200)`'s 40,000-deep call chain doesn't overflow the JVM's
+default stack.
 
 ## Compile, test, render
 
@@ -40,6 +44,8 @@ java -cp classes Chapter20Tests
 java -cp classes Chapter21Tests
 java -cp classes Chapter22Tests
 java -cp classes Chapter23Tests
+java -cp classes Chapter24Tests
+java -cp classes Chapter25Tests
 ```
 
 Each run prints one `PASS`/`FAIL` line per scenario, a pass/fail total, and
@@ -70,7 +76,10 @@ chapter's own `plate_20()` is `tiger()` and chapter 21's `plate_21()` is
 `out/plate-22.ppm`, `out/seal.ppm`; chapter 23 adds `out/primitive-fields.ppm`,
 `out/error-map.ppm`, `out/fields-vs-paths.ppm`, `out/fillets.ppm`,
 `out/transform-demo.ppm`, `out/atlas-corners.ppm`, `out/trap-shrink.ppm`,
-`out/plate-23.ppm`, `out/title.ppm`.
+`out/plate-23.ppm`, `out/title.ppm`. Chapter 24 adds `out/plate-24.ppm`,
+`out/msaa-demo.ppm`, `out/spill-map.ppm`, `out/tiger-assembly.ppm`; chapter
+25 adds `out/plate-25.ppm`, `out/dither-strip.ppm`, `out/halo-demo.ppm`,
+`out/brush-demo.ppm`, `out/paint-by-script.ppm`.
 
 Chapter 15's dashed spiral render is `spiral-dashes.ppm`, not `spiral.ppm` --
 it used to share that name with chapter 6's spiral figure, which meant running
@@ -1221,3 +1230,214 @@ per-layer formulas exactly). All eight renders (`primitive-fields.ppm`,
 `error-map.ppm`, `fields-vs-paths.ppm`, `fillets.ppm`, `transform-demo.ppm`,
 `atlas-corners.ppm`, `trap-shrink.ppm`, `plate-23.ppm`, `title.ppm`) diff 0
 against the reference bytes, and all 43 chapter 23 scenarios pass.
+
+## Chapter 24
+
+Doing it the GPU's way. `Stencil` (`width`, `height`, `values` an `int[]`,
+`fragments`) is the whole data model; `Stencils.triangleWinding` is chapter
+5's `winding_at` rewritten as three per-edge half-open tests against a
+single point (the same rule, checked one triangle at a time instead of one
+path at a time); `stencilTriangle` visits a triangle's bounding box on the
+canvas and adds the winding at each sample point, counting a fragment only
+where it actually changes something; `fanAnchor`/`stencilBuffer` build the
+fan of triangles from chapter 5's own `edges(p)`, so the fan's spokes
+cancel exactly and the stencil at every pixel equals `winding_at` there,
+pinned by `windingMismatches` over both the star and chapter 22's `g`.
+`cover(s, rule)` is one line on `Fill.applyRule`.
+
+`LoopBlinn` is §24.2: `loopBlinnUv(c, q)` is the u/s/t interpolation across
+a quadratic's control triangle (a `UV(u, v, s)` record, `null` when the
+triangle is degenerate); `insideCurve`/`curveSign` are one line each;
+`loopBlinnStencil(curves, anchor, w, h)` is the fan of chords (stencil
+triangles through each curve's endpoints) plus, per curve, every pixel of
+its control triangle's box whose center is `insideCurve`, signed by
+`curveSign` -- no flattening anywhere. `glyphCurves(font, name, m)` flattens
+chapter 16's `glyphOutline` into one list of transformed quadratics (not
+flattened into line segments -- flattened as in "one flat list", the
+curves themselves are untouched); `glyphStencil` anchors at its first
+curve's first point. Roboto's g and ampersand, stencilled this way, agree
+with chapter 8's own flattener at a thousandth of a pixel everywhere
+(`windingMismatches` against `Glyphs.glyphPath` is 0).
+
+`Msaa` is §24.3: `samplePattern(n)` is the four fixed patterns (1, 4, 16,
+64 samples); `msaaCoverage(p, rule, w, h, n)` builds a fresh `stencilBuffer`
+per sample offset and counts, per pixel, how many of them fill under the
+rule (through `Fill.applyRule`, not a hardcoded nonzero check, so the
+function is honest about the `rule` parameter it takes even though every
+render in the chapter only ever calls it with `"nonzero"`). `sliver()` is
+the chapter's flat-topped test polygon.
+
+`Shader.shadeTile(paint, tx, ty, seed)` (§24.4) evaluates a 16x16 tile's
+pixels in raster order when `seed` is `null` and in `Lcg.lcgShuffle(256,
+seed)` order otherwise, always answering the colours back in raster
+order -- since every `Paint` is already a pure function of position, the
+two orders are bit-identical, which is the whole scenario.
+
+The pipeline (§24.5) is ten small files, each one stage or one piece of
+its data: `EncCmd`/`EncFill`/`EncPush`/`EncPop` is what `Encoder.encodeSvg`
+answers (chapter 20's walker with `drawShape` replaced by pushing a
+command instead of filling); `ClipPart`/`Draw`/`Op`/`FillOp`/`PushOp`/
+`PopOp` are `Scene`'s own vocabulary, every path (fills and clip parts
+alike) numbered as a draw index by its constructor; `Pipeline.depositsOf`
+is chapter 21's per-cell deposit math (`Fill.accumulateRow`'s formulas,
+read literally) rewritten to call a `DepositSink` instead of writing into
+an `Accumulator` -- deliberately less clever than `Fill`'s own version (it
+does not special-case the portion left of the canvas into one lump; it
+walks every cell from `floor(xa)` to `floor(xb)` and lets the caller fold
+or drop each one), because the pipeline's own `deposit_count` scenario
+pins how many individual deposits chapter 21's sparse accumulator would
+have made, not how few a smarter implementation could get away with.
+`flattenStage`/`binStage`/`coarseStage` build, in order, the segments, the
+per-tile deposit bins (`Pipeline.TileKey`), and each tile's own command
+list (`TileDraw`, `TileCommand`/`TileFill`/`TilePush`/`TilePop`,
+`ClipEntry`) -- `CullOp` is a tiny shared interface (`isPush`/`isPop`) so
+`cullGroups` is one generic method serving both the real per-tile command
+lists and the feature's own worked example (translated as a local `Tag`
+record in `Chapter24Tests` implementing the same interface, rather than
+duplicating the algorithm for a toy input shape). `fineTile` runs one
+tile's list into its own block with a small `List<double[]>` stack for
+groups, spilling (`FineStats.spills`) whenever a push arrives with
+`STACK_DEPTH` (2) blocks already open; `Lcg.lcgShuffle` is Fisher-Yates
+from the end in plain `long` arithmetic (the product needs 62 bits, which
+fits a `long` exactly, no `BigInteger` needed here unlike chapter 22's
+grid arithmetic). `runPipeline`/`renderSvgGpu` tie the four stages
+together and answer a `Canvas`; every one of the tiger, the harbor and the
+rose comes out byte-identical whether the tiles run in raster order or
+`lcg_shuffle`d, which is the chapter's whole parallelism argument, and
+`Chapter24Tests` checks both orders against chapter 20's own reference
+bytes for all three documents.
+
+`Chapter24Figures` holds `plate24`, `msaaDemo`, `spillMap` and
+`tigerAssembly`, built from `chapter24-plate.feature`'s own prose exactly
+(`plateStar()` is `Paths.transformPath(Figures.star(), Transforms
+.translation(19.5, 19.5))`, matching chapter 23's own reuse of the star).
+All four renders (`plate-24.ppm`, `msaa-demo.ppm`, `spill-map.ppm`,
+`tiger-assembly.ppm`) diff 0 against the reference bytes, and all 22
+chapter 24 scenarios pass. Three mutations were tried against the
+pipeline and stencil code (the half-open rule's `<=` weakened to `<`, the
+tile classifier's "every row agrees" check narrowed to "row 0 agrees"
+alone -- chapter 21's own historical bug, re-introduced on purpose -- and
+the fine stage's opaque-solid-tile fast path made to ignore an active
+clip) and a fourth against the pipeline's own deposit folding (`x < 0`
+weakened to `x <= 0`); all four were caught, by between one and three
+scenarios each. See `FEEDBACK.md` for the full mutation log alongside a
+chapters 1-23 catch-up (five scenarios existed in
+`features/` but had never been translated into a `Chapter*Tests.java`;
+all five passed immediately once added, so no bug was found, only
+missing coverage).
+
+## Chapter 25
+
+The raster editor detour. `Brush(radius, hardness, spacing, flow,
+opacity)` is a record; `Brushes.dabCoverage` is the hard-disc-to-nothing
+ramp, `stampPositions` walks a polyline and drops a dab every `spacing *
+2 * radius` of arc length, carrying the distance still owed from one
+event's segment into the next exactly the way chapter 15's `dash` carries
+a pattern across vertices; `strokeMask` unions every dab's coverage into
+one mask (`1 - (1 - m)(1 - flow * k)`, chapter 12's union again) and
+`paintStroke` scales that by opacity and paints it through with chapter
+2's `Painter.paintThrough`, answering the mask it painted. `wobblyEvents`
+and `minAlong` are the scenario's own fixtures for showing that one dab
+per event beads (`min_along` hits bare paper, 0) while spacing dabs by
+distance along the path doesn't (0.704456).
+
+`FloodFill` (§25.2) is the scanline flood fill, word for word from the
+chapter's own printed pseudocode: a stack of seed pixels, popped one at a
+time, each run marked left-to-right in one sweep, one seed pushed per
+matching run in the rows above and below (one pixel wider at each end for
+eight-way connectivity, which is what lets the fill leak through a
+diagonal gap the four-way fill can't cross). `FillStats` counts pushes and
+the deepest the stack ever held; on an empty 200x200 canvas that's 200
+pushes and a stack that never holds more than one seed, against
+`naiveDepth`'s naive four-way recursion, which goes exactly as deep as the
+region is big (40,000) -- run on a dedicated `Thread` with a 256 MB stack
+so the JVM's default doesn't overflow before the scenario can measure it.
+`selectColor` is the same match test with no flood spread (Contiguous
+off); `antiAliasMask` gives every unmarked pixel touching the mask 0.5;
+`bucket` composes contiguous/anti-alias/paint into the one call every
+editor's UI makes. `ringCanvas` (used by both this section's and the next
+section's scenarios) is chapter 13's `strokeToPath` of a `circlePath`
+filled by chapter 7 and painted through -- its antialiased edge is the
+halo `flood_mask`'s tolerance can only ever eat into or leave standing,
+never split fractionally, which is the chapter's whole point about the
+bucket and the anti-alias checkbox fighting each other.
+
+`Quantize` is §25.3: `medianCut(colors, n)` is Heckbert's algorithm read
+straight off the chapter's prose -- count distinct colours into one box,
+repeatedly split the box that's widest in some channel (ties keep the
+earliest box and, within a box, the earliest channel, both by using a
+strict `>` in the comparison) at the point where the running pixel count
+first reaches half the box's total, and average each final box weighted
+by count, rounded halves up. `nearestIndex` is least squared distance in
+byte space, lowest index on a tie. The dithers all go through
+`linPal`/`nearestLinear`, which decode a palette to linear light first
+(chapter 1's `Srgb.decode`, not the raw bytes) before comparing, and
+`orderedDither` reuses chapter 10's `Dither.ditherThreshold` directly on
+the green channel for a two-entry palette; `errorDiffuse` is Floyd and
+Steinberg's four-neighbour split (7/16 right, 3/16/5/16/1/16 the row
+below), carried in a per-pixel `double[3]` error buffer, dropped wherever
+it would land off the canvas. `canvasToBmp8`/`readBmp8` write and read an
+8-bit indexed BMP exactly to the byte -- little-endian header fields
+written by hand (no `ByteBuffer`, to keep every offset visible), 256
+palette slots always reserved so entries past the real palette's end stay
+black by construction (a fresh `byte[]` starts zeroed), and the pixel
+rows written bottom-to-top with zero padding to a stride of 4. The
+byte-by-byte scenario (a 5x2 image whose 5-byte rows pad to 8) diffs 0
+against the feature's own pinned bytes.
+
+`Selection` is §25.4: `marquee` is chapter 12's `Clipping.clipRect` under
+this chapter's name for it; `addSelection`/`intersectSelection` reuse
+`Clipping.unionCoverage`/`multiplyCoverage` directly, `subtractSelection`
+is the one new one-liner (`a * (1 - b)`). `feather(m, r)` is a separable
+box blur, rows then columns, each output value the mean of `2r + 1`
+samples with anything off the buffer contributing 0 to the sum but still
+counted in the divisor -- not clamped to the nearest in-buffer value and
+not shrinking the window, which is exactly the distinction the "off the
+buffer counts as unselected" scenario pins (`feather(marquee(0, 0, 4, 4,
+8, 8), 1)`'s corner comes out 0.444444, not the 0.666667 a clamping
+implementation gives; caught by mutation, see below). `floatSelection`
+lifts every selected pixel into a fresh chapter 9 `Layer`, premultiplied
+by its own coverage, and mixes the canvas underneath it toward the
+backfill colour by that same coverage (`Floating` just bundles the layer
+with a movable `dx`/`dy`, both starting 0); `dropFloating` composites
+every pixel of alpha above 0 source-over the canvas at its rounded
+offset, silently dropping whatever lands off-canvas, through chapter 9's
+own `Compositing.over`. `History` is written from the chapter's prose
+alone (there's no reference JS for it): `historyFill` snapshots a
+rectangle (clipped to the canvas, end exclusive) before overwriting it
+and pushes the snapshot; `undo`/`redo` are the same operation in
+opposite directions, each capturing what it's about to overwrite so the
+other stack can put it back, and any new `historyFill` clears the redo
+stack. `storedPixels` sums both stacks' snapshot sizes, which is what
+pins that a discarded redo entry is really gone (17 stored pixels, not
+33, after an edit following an undo).
+
+`Chapter25Figures` holds `ringCanvas`, `plate25`, `ditherStrip`,
+`haloDemo`, `brushDemo` and `paintByScript`, all from
+`chapter25-plate.feature`'s own prose. `paintByScript` is the extra demo:
+a sky painted with chapter 10's real `LinearGradient`/`Painter.paintFill`
+(not a hand-rolled per-pixel projection -- using the actual gradient class
+is both more faithful to the chapter's own claim and confirmed
+bit-identical against the reference), a sea, a sun and hills stroked with
+brushes, a magenta stroke painted and then undone by a plain pixel
+snapshot/restore (not `History`, since `History.historyFill` only ever
+overwrites a solid rectangle and an arbitrary brush stroke doesn't fit
+that shape), six short wave strokes, a boat painted then lifted with
+`floatSelection`/`moveFloating`/`dropFloating`, and finally the whole
+canvas run through `medianCut` (16 colours), `errorDiffuse`,
+`canvasToBmp8`, `readBmp8` and `indexedCanvas` of what came back. All five
+renders (`dither-strip.ppm`, `halo-demo.ppm`, `brush-demo.ppm`,
+`paint-by-script.ppm`, `plate-25.ppm`) diff 0 against the reference bytes,
+and all 25 chapter 25 scenarios pass. Four mutations were tried: `feather`
+clamping to the buffer edge instead of zero-padding off it (caught, by
+the scenario built for exactly this), and `flood_mask` ignoring the
+`connectivity` argument and always growing 4-way (caught, by the
+diagonal-leak scenario) both failed as expected. **Two mutations were not
+caught**: `medianCut`'s two tie-break rules (widening `>` to `>=` when
+picking the widest box, and separately when picking a box's widest
+channel) passed every scenario unchanged -- neither `features/
+chapter25-quantize.feature`'s hand-picked colour list nor the ring
+canvas's own palette ever produces an exact tie in channel or box width,
+so the prose's own stated tie-break rule ("the earliest on a tie") is
+asserted but never actually exercised by any pinned scenario. See
+`FEEDBACK.md` for the trace.

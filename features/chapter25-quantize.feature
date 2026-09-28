@@ -44,6 +44,10 @@ Feature: Quantization
     And   median_cut(cols, 20) = [(10, 10, 10), (0, 0, 90), (0, 0, 100), (0, 0, 110), (200, 0, 0), (250, 0, 0)]
     And   median_cut(canvas_bytes(ring_canvas()), 4) = [(63, 63, 80), (128, 127, 130), (226, 223, 215), (246, 243, 234)]
 
+  Scenario: Median cut's ties
+    Then  median_cut([(0, 10, 0), (10, 0, 0)], 2) = [(0, 10, 0), (10, 0, 0)]
+    And   median_cut([(0, 0, 0), (10, 0, 0), (100, 0, 0), (110, 0, 0)], 3) = [(0, 0, 0), (10, 0, 0), (105, 0, 0)]
+
   Scenario: The nearest entry
     Given pal ← [(0, 0, 0), (255, 255, 255), (255, 0, 0)]
     Then  nearest_index(pal, (120, 120, 120)) = 0
