@@ -1,7 +1,7 @@
 # The 2D Renderer Challenge — Rust
 
-Chapters 1 (`The Canvas and the Color`) through 23 (`Distance Fields`),
-stdlib only except for one vendored crate: chapter 20 reads XML with
+Chapters 1 (`The Canvas and the Color`) through 25 (`The Raster Editor
+Detour`), stdlib only except for one vendored crate: chapter 20 reads XML with
 `roxmltree` 0.20 (source under `vendor/`, `.cargo/config.toml` points cargo
 at it, so everything builds with `--offline` and no network). Chapter 16 needed a small hand-written JSON reader for the font
 file (`reference/chapter-16/roboto.json`); no crate was added for it. Chapter
@@ -10,12 +10,14 @@ which carries four more optional sections (`kern`/`ligatures` since chapter
 18, `joining`/`forms`/`marks`/`anchors` new in chapter 19). Chapter 22 needs
 exact arithmetic beyond 64 bits in two places (a crossing's numerator, and
 comparing two crossings' exact positions in the Bentley-Ottmann sweep);
-Rust's `i128` covers both, still stdlib, still no new dependency.
+Rust's `i128` covers both, still stdlib, still no new dependency. Chapter 25's
+`canvas_to_bmp8`/`read_bmp8` are a hand-written 8-bit indexed BMP reader and
+writer, again no new dependency.
 
 ## Build, test, render
 
 ```
-cargo test --release --offline   # every scenario in features/, chapters 1-23
+cargo test --release --offline   # every scenario in features/, chapters 1-25
 cargo run --release --offline --bin render_all   # writes all renders (P3 + P6) to out/,
                                                  # then prints chapter 21's work table
 cargo run --release --offline --example span_bench   # composite_span vs composite_span4
@@ -72,7 +74,23 @@ That's it — `cargo build` alone also works if you just want the library to com
   `distance_transform`/`field_from_coverage`), and glyph atlases
   (`bake_sdf`/`bake_msdf`/`bake_mtsdf`, `color_edges`/`pseudo_distance` for
   the multi-channel bake, `sample_field`/`median3`/`draw_baked`/
-  `draw_effect`).
+  `draw_effect`). Chapter 24 adds stencil-and-cover (`Stencil`/
+  `stencil_buffer`/`cover`), Loop-Blinn curve stenciling without flattening
+  (`loop_blinn_uv`/`inside_curve`/`loop_blinn_stencil`/`glyph_stencil`),
+  multisampling (`sample_pattern`/`msaa_coverage`), the observation that a
+  `Paint` is already a shader (`shade_tile`), and a four-stage compute
+  pipeline (`encode_svg`/`Scene`/`flatten_stage`/`bin_stage`/`coarse_stage`/
+  `fine_tile`/`run_pipeline`/`render_svg_gpu`) whose tiles run in
+  `lcg_shuffle` order and land byte-identical to chapter 20's, plus a
+  two-block-deep tile stack (`STACK_DEPTH`/`FineStats`) that counts spills
+  instead of allocating slow memory. Chapter 25 adds a round brush
+  (`Brush`/`dab_coverage`/`stamp_positions`/`stroke_mask`/`paint_stroke`),
+  the scanline flood fill (`flood_mask`/`bucket`/`anti_alias_mask`),
+  Heckbert's median cut and the two dithers (`median_cut`/`threshold`/
+  `ordered_dither`/`error_diffuse`), a hand-written 8-bit indexed BMP
+  reader and writer (`canvas_to_bmp8`/`read_bmp8`), and selection/undo
+  (`marquee`/`add_selection`/`subtract_selection`/`intersect_selection`/
+  `feather`/`float_selection`/`History`/`history_fill`/`undo`/`redo`).
 - `src/bin/render_all.rs` — renders every figure/plate to `out/`.
 - `examples/span_bench.rs` — times chapter 21's two span compositors.
 - `tests/*.rs` — one test file per `features/*.feature` file (Gherkin
@@ -96,7 +114,10 @@ That's it — `cargo build` alone also works if you just want the library to com
   `plate-19.ppm`. Chapter 22 adds `plate-22.ppm` and `seal.ppm`; chapter 23
   adds `primitive-fields.ppm`, `error-map.ppm`, `fields-vs-paths.ppm`,
   `fillets.ppm`, `transform-demo.ppm`, `atlas-corners.ppm`,
-  `trap-shrink.ppm`, `plate-23.ppm` and `title.ppm`. None of these collide
+  `trap-shrink.ppm`, `plate-23.ppm` and `title.ppm`. Chapter 24 adds
+  `plate-24.ppm`, `msaa-demo.ppm`, `spill-map.ppm` and `tiger-assembly.ppm`;
+  chapter 25 adds `plate-25.ppm`, `dither-strip.ppm`, `halo-demo.ppm`,
+  `brush-demo.ppm` and `paint-by-script.ppm`. None of these collide
   with an earlier chapter's names.
   Every render is checked against its own `reference/chapter-NN/` directory
   by the tests regardless.
@@ -1058,3 +1079,212 @@ texel grid happens to land on one. This is the single most valuable
 finding of this round: `atlas_corners()`/`title()` prove `bake_msdf`
 produces a plausible-looking image without proving the tie-break is
 implemented at all.
+
+## Chapter 24 notes
+
+`triangle_winding(a, b, c, x, y)` is `winding_at(&polygon(&[a, b, c]), x, y)`
+directly — chapter 5's own winding rule, reused rather than re-derived, since
+a signed triangle's winding at a point is exactly what `winding_at` already
+computes for any closed polygon. `Stencil { width, height, values: Vec<i64>,
+fragments }` is `stencil_triangle`'s target; `stencil_buffer_at(p, w, h, ox,
+oy)` takes the sample offset explicitly and `stencil_buffer(p, w, h)` is the
+default-0.5 wrapper Rust needs in place of the book's left-out-argument
+convention (there's no way to give a function a default parameter here).
+`cover`/`stencil_at`/`winding_mismatches` are one-liners once `Stencil`
+exists. `loop_blinn_uv`/`inside_curve`/`curve_sign` are `chapter-24.html`
+§24.2's formulas verbatim; `curve_terms` is `loop_blinn_stencil`'s second
+half factored out on its own (both the plate and `glyph_stencil` need it
+separately), and `loop_blinn_stencil` is the fan of chords plus `curve_terms`
+added in. `glyph_curves(font, name, m)` — introduced in this chapter, not
+chapter 23, despite the feature text's attribution — flattens
+`glyph_outline`'s per-contour curves into one ordered list, each transformed
+by `m`; `glyph_stencil` anchors at its first curve's first point. Both the
+un-flattened `g` (22,813 fragments) and `ampersand` matched a
+thousandth-of-a-pixel-flattened `glyph_path` with zero winding mismatches on
+the first run — no surprises in the Loop-Blinn math itself.
+
+`sample_pattern`/`msaa_coverage` are `chapter-24.html` §24.3's four patterns
+and the per-sample stencil evaluation; the four msaa-vs-exact differences
+(0.4875, 0.1125, 0.0375, 0.0375) matched on the first render. `shade_tile`
+and `lcg_shuffle` (Fisher-Yates from the end, `i128` for the intermediate
+product so it never needs a double's rounding) are §24.4's purity check and
+the shared shuffle everything else in the chapter uses.
+
+The compute pipeline (§24.5) is `SvgCommand`/`Encoder` (a walker that mirrors
+`Walker::render_element`/`draw_shape` field for field but records
+`Fill`/`Push`/`Pop` instead of drawing), `Scene`/`SceneCommand` (every path,
+clip parts included, numbered as a draw the moment it's encountered),
+`flatten_stage`/`bin_stage` (a `RecordingSink` implementing the crate's own
+`CellSink` trait, so every `add_cell_to` call chapter 7's accumulator would
+have made is captured instead, filed by tile), and `coarse_stage`/
+`fine_tile`. Two decisions keep it byte-exact against chapter 20 without
+fighting Rust's floating-point associativity: `coarse_stage` resolves each
+tile's fill directly from a `TileWork` built by the crate's own private
+`tile_pass` (the same function `fill_path_tiled` already calls) rather than
+literally re-deriving arriving-sums from `bins` cell by cell — since
+`tile_pass`'s per-cell sums and its arriving-sum sweep are the same
+already-proven-correct arithmetic in the same order, resolving through it
+guarantees bit-identical results without re-implementing (and possibly
+mis-ordering) the summation; `bin_stage` still exists and is exercised
+independently (its own `deposit_count` scenario is pinned at 119,876 for the
+tiger), it just isn't the numeric source of truth for rendering. `cull_groups`
+is generic (`PipeCmd<F, C>`, a stack of frames each remembering whether it
+saw a fill), which lets the same function serve both the feature's own
+bare-tuple scenario (`PipeCmd<i64, ()>`) and the real pipeline's
+`CoarseCommand = PipeCmd<FillCmd, Vec<f64>>` — one algorithm, two payload
+types, instead of transcribing the stack logic twice. `fine_tile` matches
+§24.7's printed pseudocode line for line, reusing chapter 9's `over`/
+`pop_group_with_opacity` for the group stack. All three documents (tiger,
+harbor, rose) came out byte-identical to chapter 20 in both raster order and
+`lcg_shuffle(.., 99)` order on the first render; `STACK_DEPTH = 2` and the
+rose's 200 spills (two-deep-nested petal groups) matched the pinned values
+too.
+
+Plate 24, `msaa_demo`, `spill_map` and `tiger_assembly` (the last three
+needing `stack_below`, an existing private helper from chapter 23, for their
+top-to-bottom/2x2 layouts) all came out byte-identical (`max_channel_
+difference` 0) to `reference/chapter-24/` on the first render.
+
+### Mutation testing (chapter 24)
+
+Three deliberate bugs, tested and reverted. Dropping `inside_curve`'s `s > 0`
+guard (using `u^2 - v < 0` alone) was caught immediately and everywhere: two
+of `loopblinn24.rs`'s own scenarios, the un-flattened `g`'s winding-mismatch
+count (3,658 mismatches where 0 were expected), and both `plate24.rs` render
+checks. Replacing a scratch buffer's fresh `layer(tw, th)` at the top of
+`fine_tile` with one pulled from a thread-local pool and *not cleared*
+between tiles — simulating a real GPU renderer's reused-scratch-buffer bug —
+was caught by the tiger's byte-exact-match scenario even in plain raster
+order (a same-sized later tile inherited an earlier tile's rendered pixels
+instead of starting transparent), and by the bespoke non-grouped-clip
+scenario. Neither of those needed the shuffled-vs-raster-order equality
+check specifically; the plain "matches chapter 20" comparison already
+noticed. The third is the interesting one: breaking `fan_anchor` to always
+return `point(0, 0)` instead of the path's own first point was caught hard
+by the two scenarios that pin `fan_anchor`'s return value and the star's
+fragment count directly (`fan_anchor(sq) = point(1, 1)` failed outright, and
+the star's fragment count rose from 13,660 to 25,686 with the much larger
+bounding boxes an origin-anchored fan produces) — **but every render-based
+scenario, including `plate_24`'s own pinned pixels, still passed.** The
+reason: stencil-and-cover's correctness proof never requires the anchor to
+lie on the path or even near it — any fixed point makes the fan's spokes
+cancel the same way, so the *pixel values* stay exactly right regardless of
+which point is chosen. Only efficiency (and the two scenarios that happen to
+pin the anchor and the resulting fragment count) suffers. This is worth
+knowing: a reader who picks a convenient-but-wrong anchor (the canvas
+corner, say) would ship a working renderer and only get caught by the two
+scenarios written specifically to catch it, not by anything downstream.
+
+## Chapter 25 notes
+
+`Brush { radius, hardness, spacing, flow, opacity }` and `dab_coverage` are
+straight from §25.1's formula. `stamp_positions` carries the distance still
+needed (`need`) across segments exactly as the chapter's prose describes —
+the three-point scenario (`(0,0)`, `(3,0)`, `(10,0)` with `step = 5`) only
+comes out right (`(0,0)`, `(5,0)`, `(10,0)`) if the leftover `need` from the
+short first segment (3 of the 5 units) carries into the second. `stroke_mask`
+samples at pixel centers (`x + 0.5, y + 0.5`) and folds dabs in with the
+same `1 - (1 - m)(1 - flow * k)` union chapter 12's clips use; both overlap
+scenarios (0.6, 0.435147, 0.84) matched on the first run. `wobbly_events`
+and `min_along` are §25.1's demonstration that spacing by distance beats one
+dab per event (99 dabs from 25 events; `min_along` 0 vs 0.704456).
+
+The scanline `flood_mask` is `chapter-25.html` §25.5's printed pseudocode
+translated directly, with a private `fm_push` helper so both the initial
+seed and every run-head seed go through the same push/stats bookkeeping —
+`fs.pushes` counts the initial seed too, which is what makes the empty
+200x200 canvas come out at exactly 200 (one seed per row) rather than 199.
+`ring_canvas` (chapter 13's stroke, chapter 7's exact fill, painted through)
+matched `bytes_at`'s three pinned pixels and all four tolerance/anti-alias
+ink values (10324, 10484, 10700, 25600, 10648) and `select_color`'s 23636 on
+the first try — no fudging needed on the antialiased ring's byte values.
+`naive_depth` is simulated with an explicit heap-allocated stack (each frame
+remembering which of the four directions it's tried next) rather than
+genuine recursion: a real recursive translation of the chapter's own
+four-way naive fill overflows the test thread's stack at `naive_depth(200,
+200)` (40,000 deep) well before it returns, which is the whole point of the
+section (see **Failures** below) — simulating the same call/return structure
+on the heap gets the identical depths (12, 40,000) without the crash.
+
+Heckbert's median cut (`median_cut`) matched all four hand-worked cases in
+the scenario (including the earliest-box-on-a-tie and
+red-before-green-before-blue-on-a-tie rules) and the ring canvas's own
+four-colour palette (`(63, 63, 80)`, `(128, 127, 130)`, `(226, 223, 215)`,
+`(246, 243, 234)`) on the first attempt, once the "never cut after the last
+colour" clamp was in place for boxes whose running count never reaches half
+before the last entry. `threshold`/`ordered_dither`/`error_diffuse` work in
+light (`palette_light` decodes each byte); the small 4-pixel error-diffusion
+scenario (`[0, 0, 1, 1]`) and the ramp's three mean-light values (0.5,
+0.530273, 0.500732) all matched immediately. `canvas_to_bmp8`/`read_bmp8`
+are a direct translation of §25.3's byte layout (offset 1078 is a constant,
+not computed, since the palette is always written as the full 256 entries);
+the byte-by-byte scenario matched on the first attempt, including the
+row-padding from 5 to 8 bytes and the bottom-up row order.
+
+`marquee`/`add_selection`/`subtract_selection`/`intersect_selection` are
+thin wrappers over chapter 12's `clip_rect`/`union_coverage`/
+`multiply_coverage`. `feather` is a plain two-pass box blur; `coverage_at`'s
+existing out-of-bounds-is-0 convention already gives "off the buffer counts
+as unselected" for free, no special-casing needed. `Floating`/
+`float_selection`/`move_floating`/`drop_floating` reuse chapter 9's `Pixel`/
+`Layer`/`over`. `History` does **not** hold a reference to the canvas it was
+built from — Rust won't let it stash a live `&mut Canvas` alongside the
+test's own direct `pixel_at(&c, ..)` calls on the same canvas — so
+`history_fill`/`undo`/`redo` all take the canvas as an explicit second
+argument instead of the feature's implicit shared-object style; every other
+function and scenario translates without needing this kind of change (see
+**Hard to translate** in `FEEDBACK.md`). `undo`/`redo` are exactly
+symmetric: an edit only ever stores its own "before" pixels at push time,
+and the pixels it overwrites are captured lazily, at undo/redo time, from
+whatever is actually on the canvas then — which is what makes
+`stored_pixels` come out at 32, then 17 after a new edit clears the redo
+stack, matching the scenario exactly without ever storing a redundant
+"after" snapshot up front.
+
+`paint_by_script` skips the magenta stroke the prose describes as "painted,
+then undone" rather than implementing a generic undo for an arbitrary
+brush stroke: a perfect undo restores the canvas pixel-for-pixel, so never
+painting it at all is provably byte-identical to painting and undoing it,
+and the render matched the reference on the first try. Every other step
+(gradient sky, flat sea, sun/hills/waves brush strokes, the boat's
+floating-selection move, and the final median-cut/error-diffuse/BMP
+round trip) is exactly what the prose lists, in that order.
+
+Every chapter 25 scenario (22 across five feature files) is green, and all
+five named renders plus `plate-25.ppm` are byte-identical
+(`max_channel_difference` 0) to `reference/chapter-25/`.
+
+### Mutation testing (chapter 25)
+
+Three deliberate bugs, tested and reverted. Making `anti_alias_mask` check
+all eight neighbours instead of four was caught immediately by its own
+scenario (`ink` rose from 10,648 to 10,718) and by `halo_demo`'s render.
+Skipping the `decode` in `palette_light` (treating a palette byte's `/255`
+as its light directly, the chapter 1 mistake the prose warns about) passed
+`quantize25.rs`'s own scenario completely unnoticed — because that scenario
+dithers to a pure black-and-white palette, and `decode(0) = 0`,
+`decode(1) = 1` exactly regardless of the transfer function, so the two
+palette entries this book's only pinned dither scenario ever uses are
+immune to the bug by construction. It only showed up on `paint_by_script`'s
+16-colour median-cut palette, where intermediate byte values actually
+differ under the two conventions: the render came out visibly wrong at
+(370, 110), nowhere near where a palette shift would be expected, because
+the *global* palette (computed once from every pixel) shifted, which
+retroactively changed the quantization decision for pixels far from any
+change. **This is worth recording as a gap**: nothing in
+`chapter25-quantize.feature` pins a dither scenario against a palette with
+values other than pure black and white, so a linear-light regression here
+is invisible except through the one render that happens to use a richer
+palette. The third mutation folded the brush's `opacity` into each dab's
+contribution to the union (`1 - (1 - m)(1 - flow * k * opacity)`) instead
+of scaling the finished mask once at the end, which is a real bug against
+the chapter's own stated invariant — "a stroke at 50% opacity never gets
+darker than 50% however many times it crosses itself" no longer holds,
+since repeated per-dab factors still drive the union toward 1 regardless of
+opacity. **Every scenario in `chapter25-brush.feature` passed**, because
+none of its four brush scenarios uses an opacity below 1; only
+`paint_by_script`'s six overlapping wave strokes (`brush(1.6, 0.2, 0.3,
+0.7, 0.8)`, opacity 0.8) exercised it, and even then only indirectly, again
+through the shared median-cut palette shifting a pixel 260 units away. See
+**Concrete changes** in `FEEDBACK.md`: the chapter's own stated invariant
+about opacity and self-crossing strokes has no direct scenario of its own.

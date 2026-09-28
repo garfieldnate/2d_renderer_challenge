@@ -11518,3 +11518,2136 @@ pub fn title() -> Canvas {
     }
     c
 }
+
+// =======================================================================
+// Chapter 24: Doing It the GPU's Way
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// § 24.1 Filling without sorting
+// ---------------------------------------------------------------------
+
+/// Chapter 5's winding number for the closed triangle `a, b, c` at
+/// `(x, y)`: +1 inside a triangle that runs clockwise on screen, -1
+/// inside one that runs counterclockwise, 0 outside, chapter 5's
+/// half-open rule on the edges.
+pub fn triangle_winding(a: Tuple, b: Tuple, c: Tuple, x: f64, y: f64) -> i64 {
+    winding_at(&polygon(&[a, b, c]), x, y)
+}
+
+/// One whole number per pixel, all 0 at first, and a count of fragments:
+/// every pixel a triangle actually changed.
+#[derive(Debug, Clone)]
+pub struct Stencil {
+    pub width: usize,
+    pub height: usize,
+    pub values: Vec<i64>,
+    pub fragments: usize,
+}
+
+fn stencil_new(width: usize, height: usize) -> Stencil {
+    Stencil { width, height, values: vec![0; width * height], fragments: 0 }
+}
+
+fn stencil_bbox(a: Tuple, b: Tuple, c: Tuple, ox: f64, oy: f64) -> (i64, i64, i64, i64) {
+    let min_x = a.x.min(b.x).min(c.x);
+    let max_x = a.x.max(b.x).max(c.x);
+    let min_y = a.y.min(b.y).min(c.y);
+    let max_y = a.y.max(b.y).max(c.y);
+    ((min_x - ox).floor() as i64, (max_x - ox).ceil() as i64, (min_y - oy).floor() as i64, (max_y - oy).ceil() as i64)
+}
+
+/// Every pixel of the triangle's bounding box, sampled at `(x + ox, y +
+/// oy)`; a pixel whose triangle winding isn't 0 gets it added and counts
+/// as a fragment.
+pub fn stencil_triangle(s: &mut Stencil, a: Tuple, b: Tuple, c: Tuple, ox: f64, oy: f64) {
+    let (x0, x1, y0, y1) = stencil_bbox(a, b, c, ox, oy);
+    for y in y0..=y1 {
+        if y < 0 || y as usize >= s.height {
+            continue;
+        }
+        for x in x0..=x1 {
+            if x < 0 || x as usize >= s.width {
+                continue;
+            }
+            let w = triangle_winding(a, b, c, x as f64 + ox, y as f64 + oy);
+            if w != 0 {
+                let idx = y as usize * s.width + x as usize;
+                s.values[idx] += w;
+                s.fragments += 1;
+            }
+        }
+    }
+}
+
+/// The first point of the first subpath that has one, or `(0, 0)`.
+pub fn fan_anchor(p: &Path) -> Tuple {
+    for sp in subpaths(p) {
+        if let Some(pt) = sp.points.first() {
+            return *pt;
+        }
+    }
+    point(0.0, 0.0)
+}
+
+/// Every edge of `p` as a triangle with a shared anchor, added into one
+/// stencil: because the fan's spokes cancel exactly under the half-open
+/// rule, the result at every pixel is `winding_at(p, x + ox, y + oy)`.
+pub fn stencil_buffer_at(p: &Path, width: usize, height: usize, ox: f64, oy: f64) -> Stencil {
+    let mut s = stencil_new(width, height);
+    let anchor = fan_anchor(p);
+    for (a, b) in edges(p) {
+        stencil_triangle(&mut s, anchor, a, b, ox, oy);
+    }
+    s
+}
+
+/// `stencil_buffer_at` at the default half-pixel sample point.
+pub fn stencil_buffer(p: &Path, width: usize, height: usize) -> Stencil {
+    stencil_buffer_at(p, width, height, 0.5, 0.5)
+}
+
+/// A coverage buffer of 1 where the stencil fills under `rule`, 0
+/// elsewhere.
+pub fn cover(s: &Stencil, rule: &str) -> CoverageBuffer {
+    let mut cov = coverage_buffer(s.width, s.height);
+    for y in 0..s.height {
+        for x in 0..s.width {
+            let w = s.values[y * s.width + x];
+            let filled = match parse_rule(rule) {
+                Rule::NonZero => w != 0,
+                Rule::EvenOdd => w.rem_euclid(2) != 0,
+            };
+            if filled {
+                set_coverage(&mut cov, x as i64, y as i64, 1.0);
+            }
+        }
+    }
+    cov
+}
+
+/// One pixel of the stencil, 0 outside it.
+pub fn stencil_at(s: &Stencil, x: i64, y: i64) -> i64 {
+    if x < 0 || y < 0 || x as usize >= s.width || y as usize >= s.height {
+        return 0;
+    }
+    s.values[y as usize * s.width + x as usize]
+}
+
+/// The pixels where the stencil and `winding_at(p, ..)` at the pixel
+/// center disagree.
+pub fn winding_mismatches(s: &Stencil, p: &Path) -> usize {
+    let mut n = 0;
+    for y in 0..s.height {
+        for x in 0..s.width {
+            let w = winding_at(p, x as f64 + 0.5, y as f64 + 0.5);
+            if s.values[y * s.width + x] != w {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+// ---------------------------------------------------------------------
+// § 24.2 Curves without flattening
+// ---------------------------------------------------------------------
+
+fn quad_det(c: &Curve) -> f64 {
+    let (p0, p1, p2) = (c.points[0], c.points[1], c.points[2]);
+    cross(p1 - p0, p2 - p0)
+}
+
+/// The barycentric-style `(u, v, s)` of `q` over the quadratic's control
+/// triangle: `s` is the weight of the control point, and the curve
+/// itself is exactly `u^2 - v = 0`. `None` when the control points are
+/// collinear (`det = 0`).
+pub fn loop_blinn_uv(c: &Curve, q: Tuple) -> Option<(f64, f64, f64)> {
+    let (p0, p1, p2) = (c.points[0], c.points[1], c.points[2]);
+    let det = quad_det(c);
+    if det == 0.0 {
+        return None;
+    }
+    let s = cross(q - p0, p2 - p0) / det;
+    let t = cross(p1 - p0, q - p0) / det;
+    Some((s / 2.0 + t, t, s))
+}
+
+/// `s > 0 && u^2 - v < 0`: the sliver between the curve and its chord.
+pub fn inside_curve(c: &Curve, q: Tuple) -> bool {
+    match loop_blinn_uv(c, q) {
+        Some((u, v, s)) => s > 0.0 && u * u - v < 0.0,
+        None => false,
+    }
+}
+
+/// 1 when the control triangle winds with `det > 0`, -1 otherwise.
+pub fn curve_sign(c: &Curve) -> i64 {
+    if quad_det(c) > 0.0 {
+        1
+    } else {
+        -1
+    }
+}
+
+/// `loop_blinn_stencil`'s second half alone: every curve's sign added
+/// where `inside_curve` holds, over the control triangle's own bounding
+/// box.
+pub fn curve_terms(curves: &[Curve], width: usize, height: usize) -> Stencil {
+    let mut s = stencil_new(width, height);
+    for c in curves {
+        if quad_det(c) == 0.0 {
+            continue;
+        }
+        let sign = curve_sign(c);
+        let (x0, x1, y0, y1) = stencil_bbox(c.points[0], c.points[1], c.points[2], 0.5, 0.5);
+        for y in y0..=y1 {
+            if y < 0 || y as usize >= height {
+                continue;
+            }
+            for x in x0..=x1 {
+                if x < 0 || x as usize >= width {
+                    continue;
+                }
+                let center = point(x as f64 + 0.5, y as f64 + 0.5);
+                if inside_curve(c, center) {
+                    let idx = y as usize * width + x as usize;
+                    s.values[idx] += sign;
+                    s.fragments += 1;
+                }
+            }
+        }
+    }
+    s
+}
+
+/// A fan of chords, one `stencil_triangle` per curve from `anchor`, plus
+/// `curve_terms`: a closed contour of quadratics filled without ever
+/// flattening a curve.
+pub fn loop_blinn_stencil(curves: &[Curve], anchor: Tuple, width: usize, height: usize) -> Stencil {
+    let mut s = stencil_new(width, height);
+    for c in curves {
+        stencil_triangle(&mut s, anchor, c.points[0], c.points[2], 0.5, 0.5);
+    }
+    let terms = curve_terms(curves, width, height);
+    for i in 0..s.values.len() {
+        s.values[i] += terms.values[i];
+    }
+    s.fragments += terms.fragments;
+    s
+}
+
+/// Every contour of a glyph as quadratics, flattened into one ordered
+/// list, through `m` -- chapter 16's `glyph_outline` with components
+/// resolved, transformed but never split.
+pub fn glyph_curves(font: &Font, name: &str, m: Matrix3) -> Vec<Curve> {
+    let mut out = Vec::new();
+    for contour in glyph_outline(font, name) {
+        for c in &contour {
+            out.push(transform_curve(c, m));
+        }
+    }
+    out
+}
+
+/// `loop_blinn_stencil` of a glyph's quadratics through `m`, anchored at
+/// the first curve's first point.
+pub fn glyph_stencil(font: &Font, name: &str, m: Matrix3, width: usize, height: usize) -> Stencil {
+    let curves = glyph_curves(font, name, m);
+    if curves.is_empty() {
+        return stencil_new(width, height);
+    }
+    let anchor = curves[0].points[0];
+    loop_blinn_stencil(&curves, anchor, width, height)
+}
+
+// ---------------------------------------------------------------------
+// § 24.3 Sampling instead of area
+// ---------------------------------------------------------------------
+
+/// `n` sample points inside the unit pixel: 1 at the center, 4 a rotated
+/// grid, 16 sixteen rooks, 64 chapter 2's 8 by 8 grid.
+pub fn sample_pattern(n: usize) -> Vec<Tuple> {
+    match n {
+        1 => vec![point(0.5, 0.5)],
+        4 => vec![point(0.375, 0.125), point(0.875, 0.375), point(0.125, 0.625), point(0.625, 0.875)],
+        16 => (0..16u32)
+            .map(|k| point((k as f64 + 0.5) / 16.0, (((5 * k + 3) % 16) as f64 + 0.5) / 16.0))
+            .collect(),
+        64 => {
+            let mut out = Vec::with_capacity(64);
+            for j in 0..8 {
+                for i in 0..8 {
+                    out.push(point((i as f64 + 0.5) / 8.0, (j as f64 + 0.5) / 8.0));
+                }
+            }
+            out
+        }
+        other => panic!("sample_pattern: unsupported n={other}"),
+    }
+}
+
+/// At every pixel, the fraction of `n` samples whose stencil (at that
+/// sample's own `(ox, oy)`) fills under `rule`.
+pub fn msaa_coverage(p: &Path, rule: &str, width: usize, height: usize, n: usize) -> CoverageBuffer {
+    let samples = sample_pattern(n);
+    let mut counts = vec![0u32; width * height];
+    for s in &samples {
+        let stencil = stencil_buffer_at(p, width, height, s.x, s.y);
+        let cov = cover(&stencil, rule);
+        for i in 0..counts.len() {
+            if coverage_in_flat(&cov, i) > 0.0 {
+                counts[i] += 1;
+            }
+        }
+    }
+    let mut out = coverage_buffer(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            set_coverage(&mut out, x as i64, y as i64, counts[y * width + x] as f64 / n as f64);
+        }
+    }
+    out
+}
+
+fn coverage_in_flat(cov: &CoverageBuffer, i: usize) -> f64 {
+    let x = (i % cov.width) as i64;
+    let y = (i / cov.width) as i64;
+    coverage_at(cov, x, y)
+}
+
+/// A polygon whose top edge climbs one pixel in forty: the worst case for
+/// multisampling near-horizontal edges.
+pub fn sliver() -> Path {
+    polygon(&[point(2.0, 10.3), point(78.0, 12.2), point(78.0, 30.0), point(2.0, 30.0)])
+}
+
+// ---------------------------------------------------------------------
+// § 24.4 Paint as a shader
+// ---------------------------------------------------------------------
+
+/// Fisher-Yates from the end, the same permutation in every language.
+pub fn lcg_shuffle(n: usize, seed: i64) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..n).collect();
+    let mut x: i128 = seed as i128;
+    for i in (1..n).rev() {
+        x = (1103515245i128 * x + 12345i128).rem_euclid(2147483648i128);
+        let j = (x as usize) % (i + 1);
+        order.swap(i, j);
+    }
+    order
+}
+
+/// `paint_at` at the center of every pixel of the 16 by 16 tile `(tx,
+/// ty)`, visited in raster order or in `lcg_shuffle` order, answered in
+/// raster order -- a paint server is a pure function of position, so the
+/// order it's asked in never shows.
+pub fn shade_tile(paint: &Paint, tx: usize, ty: usize, seed: Option<i64>) -> Vec<Color> {
+    let order: Vec<usize> = match seed {
+        None => (0..256).collect(),
+        Some(sd) => lcg_shuffle(256, sd),
+    };
+    let mut out = vec![color(0.0, 0.0, 0.0); 256];
+    for idx in order {
+        let x = idx % 16;
+        let y = idx / 16;
+        let px = (tx * 16 + x) as f64 + 0.5;
+        let py = (ty * 16 + y) as f64 + 0.5;
+        out[idx] = paint_at(paint, px, py);
+    }
+    out
+}
+
+// ---------------------------------------------------------------------
+// § 24.5 The compute pipeline
+// ---------------------------------------------------------------------
+
+/// A device path and the clip rule its shape used, one of a clipPath's
+/// parts.
+type ClipPart = (Path, String);
+
+/// What `encode_svg` answers instead of drawing: a shape's fill or
+/// stroke outline, or the start/end of a transparent layer chapter 20
+/// would have drawn a group or a faded element into.
+#[derive(Clone)]
+pub enum SvgCommand {
+    Fill { path: Path, rule: String, paint: Paint, alpha: f64, clip: Option<Vec<ClipPart>> },
+    Push { opacity: f64, clip: Option<Vec<ClipPart>> },
+    Pop,
+}
+
+/// The coverage of the clipPath a `url(#id)` names, as the raw list of
+/// (device path, clip rule) of its shape children -- `clip_coverage`'s
+/// ingredients, not their union.
+fn clip_parts(root: &Element, reference: &str, m: Matrix3) -> Option<Vec<ClipPart>> {
+    let cp = find_by_id(root, url_id(reference)?)?;
+    if cp.name != "clipPath" {
+        return None;
+    }
+    let cp_style = computed_style(cp, &initial_style());
+    let cm = m * parse_transform(attribute(cp, "transform"));
+    let mut parts = Vec::new();
+    for child in children(cp) {
+        if !is_shape(child) {
+            continue;
+        }
+        let cs = computed_style(child, &cp_style);
+        let km = cm * parse_transform(attribute(child, "transform"));
+        let cmds = shape_commands(child);
+        if cmds.is_empty() || !is_invertible(km) {
+            continue;
+        }
+        let dev = build_path(&cmds, km, 0.1);
+        parts.push((dev, cs.clip_rule.clone()));
+    }
+    Some(parts)
+}
+
+struct Encoder<'a> {
+    root: &'a Element,
+    out: Vec<SvgCommand>,
+}
+
+impl<'a> Encoder<'a> {
+    fn resolve_paint(&self, p: &SvgPaint, cmds: &[Command], m: Matrix3) -> Option<Paint> {
+        match p {
+            SvgPaint::None => None,
+            SvgPaint::Color(c) => Some(solid(*c)),
+            SvgPaint::Url(r) => paint_server(self.root, r, commands_bounds(cmds), m),
+        }
+    }
+
+    fn encode_shape(&mut self, el: &Element, style: &Style, m: Matrix3, clip: Option<&Vec<ClipPart>>) {
+        let cmds = shape_commands(el);
+        if cmds.is_empty() || !is_invertible(m) {
+            return;
+        }
+        let dev = build_path(&cmds, m, 0.1);
+        if let Some(p) = self.resolve_paint(&style.fill, &cmds, m) {
+            self.out.push(SvgCommand::Fill {
+                path: dev.clone(),
+                rule: style.fill_rule.clone(),
+                paint: p,
+                alpha: style.fill_opacity,
+                clip: clip.cloned(),
+            });
+        }
+        if style.stroke_width > 0.0 {
+            if let Some(p) = self.resolve_paint(&style.stroke, &cmds, m) {
+                let mut user = transform_path(&dev, inverse(m));
+                if let Some(pattern) = &style.stroke_dasharray {
+                    user = dash(&user, pattern, style.stroke_dashoffset);
+                }
+                let outline =
+                    stroke_to_path(&user, style.stroke_width, &style.stroke_linecap, &style.stroke_linejoin, style.stroke_miterlimit);
+                let dev_outline = transform_path(&outline, m);
+                self.out.push(SvgCommand::Fill {
+                    path: dev_outline,
+                    rule: "nonzero".to_string(),
+                    paint: p,
+                    alpha: style.stroke_opacity,
+                    clip: clip.cloned(),
+                });
+            }
+        }
+    }
+
+    fn encode_element(&mut self, el: &Element, parent: &Style, m: Matrix3) {
+        let group = el.name == "svg" || el.name == "g";
+        if !group && !is_shape(el) {
+            return;
+        }
+        let style = computed_style(el, parent);
+        let m = m * parse_transform(attribute(el, "transform"));
+        let clip = match &style.clip_path {
+            Some(r) => clip_parts(self.root, r, m),
+            None => None,
+        };
+        let own = style.opacity < 1.0 || (clip.is_some() && group);
+        if own {
+            self.out.push(SvgCommand::Push { opacity: style.opacity, clip: clip.clone() });
+            if group {
+                for child in children(el) {
+                    self.encode_element(child, &style, m);
+                }
+            } else {
+                self.encode_shape(el, &style, m, None);
+            }
+            self.out.push(SvgCommand::Pop);
+        } else if group {
+            for child in children(el) {
+                self.encode_element(child, &style, m);
+            }
+        } else {
+            self.encode_shape(el, &style, m, clip.as_ref());
+        }
+    }
+}
+
+/// Chapter 20's walker, drawing nothing: the scene as a flat list of
+/// fills and the pushes and pops around the groups it would have
+/// composited.
+pub fn encode_svg(text: &str, width: usize, height: usize) -> Vec<SvgCommand> {
+    let root = parse_xml(text);
+    let m = view_box_matrix(attribute(&root, "viewBox"), attribute(&root, "preserveAspectRatio"), width, height);
+    let mut enc = Encoder { root: &root, out: Vec::new() };
+    enc.encode_element(&root, &initial_style(), m);
+    enc.out
+}
+
+/// A pipeline command whose fill payload is `F` and whose clip is `Some`
+/// of `C`: shared by `cull_groups`'s own scenario (bare tags) and the
+/// real coarse-stage commands.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PipeCmd<F, C> {
+    Fill(F),
+    Push(f64, Option<C>),
+    Pop,
+}
+
+/// Drops every push whose pop has no fill between them, innermost first:
+/// an empty group costs a tile nothing.
+pub fn cull_groups<F: Clone, C: Clone>(cmds: Vec<PipeCmd<F, C>>) -> Vec<PipeCmd<F, C>> {
+    struct Frame<F, C> {
+        opacity: f64,
+        clip: Option<C>,
+        has_fill: bool,
+        buf: Vec<PipeCmd<F, C>>,
+    }
+    let mut stack: Vec<Frame<F, C>> = vec![Frame { opacity: 1.0, clip: None, has_fill: false, buf: Vec::new() }];
+    for cmd in cmds {
+        match cmd {
+            PipeCmd::Fill(f) => {
+                let top = stack.last_mut().unwrap();
+                top.has_fill = true;
+                top.buf.push(PipeCmd::Fill(f));
+            }
+            PipeCmd::Push(opacity, clip) => {
+                stack.push(Frame { opacity, clip, has_fill: false, buf: Vec::new() });
+            }
+            PipeCmd::Pop => {
+                let frame = stack.pop().unwrap();
+                if frame.has_fill {
+                    let parent = stack.last_mut().unwrap();
+                    parent.has_fill = true;
+                    parent.buf.push(PipeCmd::Push(frame.opacity, frame.clip));
+                    parent.buf.extend(frame.buf);
+                    parent.buf.push(PipeCmd::Pop);
+                }
+            }
+        }
+    }
+    stack.pop().unwrap().buf
+}
+
+/// One command with a draw index in place of the whole path: `Scene`
+/// numbers every path, clip parts included, as a draw.
+#[derive(Clone)]
+pub enum SceneCommand {
+    Fill { path: usize, rule: String, paint: Paint, alpha: f64, clip: Option<Vec<(usize, String)>> },
+    Push { opacity: f64, clip: Option<Vec<(usize, String)>> },
+    Pop,
+}
+
+pub struct Scene {
+    pub commands: Vec<SceneCommand>,
+    pub draws: Vec<Path>,
+    pub width: usize,
+    pub height: usize,
+}
+
+fn reg_draw(draws: &mut Vec<Path>, p: Path) -> usize {
+    let i = draws.len();
+    draws.push(p);
+    i
+}
+
+/// `encode_svg`'s commands, every path numbered as a draw.
+#[allow(non_snake_case)]
+pub fn Scene(commands: Vec<SvgCommand>, width: usize, height: usize) -> Scene {
+    let mut draws: Vec<Path> = Vec::new();
+    let mut out = Vec::new();
+    for cmd in commands {
+        match cmd {
+            SvgCommand::Fill { path, rule, paint, alpha, clip } => {
+                let pidx = reg_draw(&mut draws, path);
+                let clip_idx = clip.map(|parts| parts.into_iter().map(|(p, r)| (reg_draw(&mut draws, p), r)).collect());
+                out.push(SceneCommand::Fill { path: pidx, rule, paint, alpha, clip: clip_idx });
+            }
+            SvgCommand::Push { opacity, clip } => {
+                let clip_idx = clip.map(|parts| parts.into_iter().map(|(p, r)| (reg_draw(&mut draws, p), r)).collect());
+                out.push(SceneCommand::Push { opacity, clip: clip_idx });
+            }
+            SvgCommand::Pop => out.push(SceneCommand::Pop),
+        }
+    }
+    Scene { commands: out, draws, width, height }
+}
+
+/// Every draw's edges as segments `(draw, a, b)`.
+pub fn flatten_stage(sc: &Scene) -> Vec<(usize, Tuple, Tuple)> {
+    let mut out = Vec::new();
+    for (i, p) in sc.draws.iter().enumerate() {
+        for (a, b) in edges(p) {
+            out.push((i, a, b));
+        }
+    }
+    out
+}
+
+struct RecordingSink {
+    width: usize,
+    height: usize,
+    out: Vec<(usize, usize, f64, f64)>,
+}
+
+impl CellSink for RecordingSink {
+    fn sink_width(&self) -> usize {
+        self.width
+    }
+    fn sink_height(&self) -> usize {
+        self.height
+    }
+    fn put(&mut self, x: usize, row: usize, area: f64, cover: f64) {
+        self.out.push((x, row, area, cover));
+    }
+}
+
+/// Every segment's chapter 7 deposits, one per call of the accumulator's
+/// `add` that isn't dropped, filed under the tile of the deposit's cell.
+pub fn bin_stage(sc: &Scene, segs: &[(usize, Tuple, Tuple)]) -> HashMap<(usize, usize), Vec<(usize, usize, usize, f64, f64)>> {
+    let mut bins: HashMap<(usize, usize), Vec<(usize, usize, usize, f64, f64)>> = HashMap::new();
+    for &(draw, a, b) in segs {
+        let mut sink = RecordingSink { width: sc.width, height: sc.height, out: Vec::new() };
+        accumulate_to(&mut sink, a, b);
+        for (x, row, area, cover) in sink.out {
+            let tile = (x / TILE, row / TILE);
+            bins.entry(tile).or_default().push((draw, x, row, area, cover));
+        }
+    }
+    bins
+}
+
+/// Every deposit the bins hold, over every tile.
+pub fn deposit_count(bins: &HashMap<(usize, usize), Vec<(usize, usize, usize, f64, f64)>>) -> usize {
+    bins.values().map(|v| v.len()).sum()
+}
+
+/// Which class every tile falls in, and (for a partial one) its resolved
+/// coverage block.
+#[derive(Clone)]
+enum TileDrawKind {
+    Empty,
+    Solid,
+    Partial { coverage: Vec<f64> },
+}
+
+fn resolve_tile_draw(work: &TileWork, rule: &str, tx: usize, ty: usize, width: usize, height: usize) -> TileDrawKind {
+    match work.classes[ty][tx] {
+        "empty" => TileDrawKind::Empty,
+        "solid" => TileDrawKind::Solid,
+        _ => {
+            let xa = tx * TILE;
+            let xb = (xa + TILE).min(width);
+            let ya = ty * TILE;
+            let yb = (ya + TILE).min(height);
+            let tw = xb - xa;
+            let th = yb - ya;
+            let mut block = vec![0.0; tw * th];
+            for r in ya..yb {
+                let mut running = work.arriving[r][tx];
+                let cells = &work.rows[r];
+                let mut k = cells.partition_point(|c| c.0 < xa);
+                for x in xa..xb {
+                    let (area, cover) = if k < cells.len() && cells[k].0 == x {
+                        k += 1;
+                        (cells[k - 1].1, cells[k - 1].2)
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    block[(r - ya) * tw + (x - xa)] = apply_rule(running + area, rule);
+                    running += cover;
+                }
+            }
+            TileDrawKind::Partial { coverage: block }
+        }
+    }
+}
+
+fn resolve_clip(parts: &[(usize, String)], works: &[TileWork], tx: usize, ty: usize, width: usize, height: usize) -> Vec<f64> {
+    let xa = tx * TILE;
+    let xb = (xa + TILE).min(width);
+    let ya = ty * TILE;
+    let yb = (ya + TILE).min(height);
+    let tw = xb - xa;
+    let th = yb - ya;
+    let mut acc = vec![0.0; tw * th];
+    for (idx, rule) in parts {
+        match resolve_tile_draw(&works[*idx], rule, tx, ty, width, height) {
+            TileDrawKind::Empty => {}
+            TileDrawKind::Solid => {
+                for v in acc.iter_mut() {
+                    *v = 1.0;
+                }
+            }
+            TileDrawKind::Partial { coverage } => {
+                for i in 0..acc.len() {
+                    acc[i] = 1.0 - (1.0 - acc[i]) * (1.0 - coverage[i]);
+                }
+            }
+        }
+    }
+    acc
+}
+
+/// One fill's coarse-stage payload: everything `fine_tile` needs to
+/// paint it into one particular tile.
+#[derive(Clone)]
+pub struct FillCmd {
+    paint: Paint,
+    alpha: f64,
+    tiledraw: TileDrawKind,
+    clip: Option<Vec<f64>>,
+}
+
+/// One tile's culled command list.
+pub type CoarseCommand = PipeCmd<FillCmd, Vec<f64>>;
+
+fn draw_rules(sc: &Scene) -> Vec<String> {
+    let mut rules = vec![String::new(); sc.draws.len()];
+    for cmd in &sc.commands {
+        match cmd {
+            SceneCommand::Fill { path, rule, clip, .. } => {
+                rules[*path] = rule.clone();
+                if let Some(parts) = clip {
+                    for (idx, r) in parts {
+                        rules[*idx] = r.clone();
+                    }
+                }
+            }
+            SceneCommand::Push { clip, .. } => {
+                if let Some(parts) = clip {
+                    for (idx, r) in parts {
+                        rules[*idx] = r.clone();
+                    }
+                }
+            }
+            SceneCommand::Pop => {}
+        }
+    }
+    rules
+}
+
+/// Every tile's command list: for each fill, its tile draw and class
+/// (unless empty); for each clip, the list of its parts' tile draws;
+/// pushes and pops copied to every tile, then culled.
+pub fn coarse_stage(
+    sc: &Scene,
+    _bins: &HashMap<(usize, usize), Vec<(usize, usize, usize, f64, f64)>>,
+) -> HashMap<(usize, usize), Vec<CoarseCommand>> {
+    let rules = draw_rules(sc);
+    let works: Vec<TileWork> = sc.draws.iter().zip(rules.iter()).map(|(p, r)| tile_pass(p, r, sc.width, sc.height)).collect();
+    let (ntx, nty) = ((sc.width + TILE - 1) / TILE, (sc.height + TILE - 1) / TILE);
+    let mut lists: HashMap<(usize, usize), Vec<CoarseCommand>> = HashMap::new();
+    for ty in 0..nty {
+        for tx in 0..ntx {
+            let mut list = Vec::new();
+            for cmd in &sc.commands {
+                match cmd {
+                    SceneCommand::Fill { path, rule, paint, alpha, clip } => {
+                        let kind = resolve_tile_draw(&works[*path], rule, tx, ty, sc.width, sc.height);
+                        if matches!(kind, TileDrawKind::Empty) {
+                            continue;
+                        }
+                        let clip_resolved = clip.as_ref().map(|parts| resolve_clip(parts, &works, tx, ty, sc.width, sc.height));
+                        list.push(PipeCmd::Fill(FillCmd {
+                            paint: paint.clone(),
+                            alpha: *alpha,
+                            tiledraw: kind,
+                            clip: clip_resolved,
+                        }));
+                    }
+                    SceneCommand::Push { opacity, clip } => {
+                        let clip_resolved = clip.as_ref().map(|parts| resolve_clip(parts, &works, tx, ty, sc.width, sc.height));
+                        list.push(PipeCmd::Push(*opacity, clip_resolved));
+                    }
+                    SceneCommand::Pop => list.push(PipeCmd::Pop),
+                }
+            }
+            lists.insert((tx, ty), cull_groups(list));
+        }
+    }
+    lists
+}
+
+/// Total commands over every tile.
+pub fn command_count(lists: &HashMap<(usize, usize), Vec<CoarseCommand>>) -> usize {
+    lists.values().map(|v| v.len()).sum()
+}
+
+// ---------------------------------------------------------------------
+// § 24.6 The unhappy path
+// ---------------------------------------------------------------------
+
+/// A GPU tile's fast memory holds this many blocks, the tile's own
+/// included.
+pub const STACK_DEPTH: usize = 2;
+
+/// What the fine stage counts as it runs: pushes that found the stack
+/// full (spilled to slow memory) and tiles run.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FineStats {
+    pub spills: u64,
+    pub tiles: u64,
+}
+
+/// A fresh stats record, both counters at 0.
+#[allow(non_snake_case)]
+pub fn FineStats() -> FineStats {
+    FineStats::default()
+}
+
+/// The deepest nesting of `Push` in a command list.
+pub fn max_group_depth(commands: &[SceneCommand]) -> i64 {
+    let mut depth = 0i64;
+    let mut max_d = 0i64;
+    for cmd in commands {
+        match cmd {
+            SceneCommand::Push { .. } => {
+                depth += 1;
+                max_d = max_d.max(depth);
+            }
+            SceneCommand::Pop => depth -= 1,
+            SceneCommand::Fill { .. } => {}
+        }
+    }
+    max_d
+}
+
+// ---------------------------------------------------------------------
+// § 24.7 Putting it together
+// ---------------------------------------------------------------------
+
+fn fine_fill(top: &mut Layer, f: &FillCmd, tx: usize, ty: usize, tw: usize, th: usize) {
+    let solid_fast = matches!(f.tiledraw, TileDrawKind::Solid) && f.alpha == 1.0 && f.clip.is_none();
+    if solid_fast {
+        if let Paint::Solid(c) = f.paint {
+            for i in 0..tw * th {
+                top.pixels[i] = opaque(c);
+            }
+            return;
+        }
+    }
+    for y in 0..th {
+        for x in 0..tw {
+            let cov = match &f.tiledraw {
+                TileDrawKind::Empty => 0.0,
+                TileDrawKind::Solid => 1.0,
+                TileDrawKind::Partial { coverage } => coverage[y * tw + x],
+            };
+            if cov == 0.0 {
+                continue;
+            }
+            let clip_v = match &f.clip {
+                None => 1.0,
+                Some(cv) => cv[y * tw + x],
+            };
+            let k = cov * clip_v * f.alpha;
+            if k > 0.0 {
+                let px = (tx * TILE + x) as f64 + 0.5;
+                let py = (ty * TILE + y) as f64 + 0.5;
+                let c = paint_at(&f.paint, px, py);
+                let idx = y * tw + x;
+                top.pixels[idx] = over(from_color(c, k), top.pixels[idx]);
+            }
+        }
+    }
+}
+
+/// One tile, reading only its own command list, into its own block of
+/// transparent pixels, with a small stack of blocks for groups.
+pub fn fine_tile(commands: &[CoarseCommand], tx: usize, ty: usize, width: usize, height: usize, fs: &mut FineStats) -> Layer {
+    let xa = tx * TILE;
+    let xb = (xa + TILE).min(width);
+    let ya = ty * TILE;
+    let yb = (ya + TILE).min(height);
+    let tw = xb - xa;
+    let th = yb - ya;
+    let mut stack: Vec<Layer> = vec![layer(tw, th)];
+    let mut infos: Vec<(f64, Option<Vec<f64>>)> = Vec::new();
+    for cmd in commands {
+        match cmd {
+            PipeCmd::Fill(f) => {
+                let top = stack.last_mut().unwrap();
+                fine_fill(top, f, tx, ty, tw, th);
+            }
+            PipeCmd::Push(opacity, clip) => {
+                if stack.len() >= STACK_DEPTH {
+                    fs.spills += 1;
+                }
+                stack.push(layer(tw, th));
+                infos.push((*opacity, clip.clone()));
+            }
+            PipeCmd::Pop => {
+                let g = stack.pop().unwrap();
+                let (opacity, clip) = infos.pop().unwrap();
+                let g = match clip {
+                    Some(cv) => mask_layer(&g, &coverage_of(tw, th, &cv)),
+                    None => g,
+                };
+                let base = stack.last().unwrap().clone();
+                *stack.last_mut().unwrap() = pop_group_with_opacity(&g, &base, opacity);
+            }
+        }
+    }
+    fs.tiles += 1;
+    stack.pop().unwrap()
+}
+
+fn tile_grid_of(width: usize, height: usize) -> (usize, usize) {
+    ((width + TILE - 1) / TILE, (height + TILE - 1) / TILE)
+}
+
+/// Runs all four stages, and the fine stage over every tile in raster
+/// order (`seed` none) or `lcg_shuffle` order, answering the canvas.
+pub fn run_pipeline(sc: &Scene, seed: Option<i64>, fs: &mut FineStats) -> Canvas {
+    let segs = flatten_stage(sc);
+    let bins = bin_stage(sc, &segs);
+    let lists = coarse_stage(sc, &bins);
+    let (ntx, nty) = tile_grid_of(sc.width, sc.height);
+    let tile_indices: Vec<(usize, usize)> = (0..nty).flat_map(|ty| (0..ntx).map(move |tx| (tx, ty))).collect();
+    let order: Vec<usize> = match seed {
+        None => (0..tile_indices.len()).collect(),
+        Some(sd) => lcg_shuffle(tile_indices.len(), sd),
+    };
+    let mut canvas_layer = layer(sc.width, sc.height);
+    let empty_list: Vec<CoarseCommand> = Vec::new();
+    for idx in order {
+        let (tx, ty) = tile_indices[idx];
+        let cmds = lists.get(&(tx, ty)).unwrap_or(&empty_list);
+        let block = fine_tile(cmds, tx, ty, sc.width, sc.height, fs);
+        let xa = tx * TILE;
+        let ya = ty * TILE;
+        for y in 0..block.height {
+            for x in 0..block.width {
+                canvas_layer.pixels[(ya + y) * sc.width + (xa + x)] = block.pixels[y * block.width + x];
+            }
+        }
+    }
+    flatten_layer(&canvas_layer, color(1.0, 1.0, 1.0))
+}
+
+/// `Scene(encode_svg(text, width, height), ..)` run through the
+/// pipeline, in raster order (`seed` none) or shuffled.
+pub fn render_svg_gpu(text: &str, width: usize, height: usize, seed: Option<i64>) -> Canvas {
+    let sc = Scene(encode_svg(text, width, height), width, height);
+    let mut fs = FineStats();
+    run_pipeline(&sc, seed, &mut fs)
+}
+
+/// Every tile's spill count, computed independently of any one run's
+/// order (each tile's own command list is fixed by the coarse stage).
+fn spill_grid(sc: &Scene) -> Vec<Vec<u64>> {
+    let segs = flatten_stage(sc);
+    let bins = bin_stage(sc, &segs);
+    let lists = coarse_stage(sc, &bins);
+    let (ntx, nty) = tile_grid_of(sc.width, sc.height);
+    let empty_list: Vec<CoarseCommand> = Vec::new();
+    let mut grid = vec![vec![0u64; ntx]; nty];
+    for ty in 0..nty {
+        for tx in 0..ntx {
+            let cmds = lists.get(&(tx, ty)).unwrap_or(&empty_list);
+            let mut fs = FineStats();
+            fine_tile(cmds, tx, ty, sc.width, sc.height, &mut fs);
+            grid[ty][tx] = fs.spills;
+        }
+    }
+    grid
+}
+
+// ---------------------------------------------------------------------
+// Plate 24, and the chapter's renders
+// ---------------------------------------------------------------------
+
+const CH24_PAPER: Color = CH16_PAPER;
+const CH24_ORANGE: Color = Color { red: 0.9, green: 0.55, blue: 0.1 };
+const CH24_CYAN: Color = Color { red: 0.2, green: 0.75, blue: 0.9 };
+const CH24_MAGENTA: Color = Color { red: 0.85, green: 0.2, blue: 0.55 };
+
+/// Paper for a winding of 0, cyan mixed in by 0.6 for any negative
+/// winding, orange mixed in by 0.45 for 1 and by 0.9 for 2 or more.
+pub fn winding_color(w: i64) -> Color {
+    if w == 0 {
+        CH24_PAPER
+    } else if w < 0 {
+        mix_with(CH24_PAPER, CH24_CYAN, 0.6, true)
+    } else if w == 1 {
+        mix_with(CH24_PAPER, CH24_ORANGE, 0.45, true)
+    } else {
+        mix_with(CH24_PAPER, CH24_ORANGE, 0.9, true)
+    }
+}
+
+/// Chapter 5's star, moved by (19.5, 19.5) -- this chapter's own use,
+/// distinct from chapter 22's `plate_star`.
+pub fn plate_star_24() -> Path {
+    transform_path(&star(), translation(19.5, 19.5))
+}
+
+/// Left: the winding numbers of `plate_star_24()`'s stencil buffer,
+/// coloured by `winding_color`. Right: Roboto's g through
+/// `loop_blinn_stencil`, never flattened.
+pub fn plate_24() -> Canvas {
+    let mut left = canvas(200, 200);
+    let s = stencil_buffer(&plate_star_24(), 200, 200);
+    for y in 0..200i64 {
+        for x in 0..200i64 {
+            write_pixel(&mut left, x, y, winding_color(stencil_at(&s, x, y)));
+        }
+    }
+
+    let font = roboto();
+    let m = text_matrix(&font, 700.0, -120.0, 420.0);
+    let curves = glyph_curves(&font, "g", m);
+    let terms = curve_terms(&curves, 200, 200);
+    let gs = glyph_stencil(&font, "g", m, 200, 200);
+    let mut right = canvas(200, 200);
+    for y in 0..200i64 {
+        for x in 0..200i64 {
+            let idx = y as usize * 200 + x as usize;
+            let mut col = CH24_PAPER;
+            let t = terms.values[idx];
+            if t > 0 {
+                col = mix_with(col, CH24_CYAN, 0.55, true);
+            } else if t < 0 {
+                col = mix_with(col, CH24_MAGENTA, 0.55, true);
+            }
+            if gs.values[idx] != 0 {
+                col = mix_with(col, CH24_ORANGE, 0.6, true);
+            }
+            write_pixel(&mut right, x, y, col);
+        }
+    }
+    side_by_side(&left, &right)
+}
+
+fn msaa_strip(cov: &CoverageBuffer) -> Canvas {
+    let mut c = canvas(24, 12);
+    for y in 0..12i64 {
+        for x in 0..24i64 {
+            let k = coverage_at(cov, 30 + x, 4 + y);
+            write_pixel(&mut c, x, y, mix_with(CH24_PAPER, CH24_ORANGE, k, true));
+        }
+    }
+    magnify(&c, 8)
+}
+
+/// Five strips of the sliver's edge: 1, 4, 16 and 64 msaa samples, then
+/// chapter 7's exact fill.
+pub fn msaa_demo() -> Canvas {
+    let p = sliver();
+    let strips = [
+        msaa_strip(&msaa_coverage(&p, "nonzero", 80, 40, 1)),
+        msaa_strip(&msaa_coverage(&p, "nonzero", 80, 40, 4)),
+        msaa_strip(&msaa_coverage(&p, "nonzero", 80, 40, 16)),
+        msaa_strip(&msaa_coverage(&p, "nonzero", 80, 40, 64)),
+        msaa_strip(&fill_path(&p, "nonzero", 80, 40)),
+    ];
+    let mut out = strips[0].clone();
+    for s in &strips[1..] {
+        out = stack_below(&out, s);
+    }
+    out
+}
+
+/// The rose through `run_pipeline` on the left, and a work map of every
+/// tile that spilled on the right.
+pub fn spill_map() -> Canvas {
+    let text = read_text("reference/chapter-20/rose.svg");
+    let sc = Scene(encode_svg(&text, 400, 400), 400, 400);
+    let mut fs = FineStats();
+    let rose_canvas = run_pipeline(&sc, None, &mut fs);
+    let grid = spill_grid(&sc);
+    let max_spill = grid.iter().flatten().copied().max().unwrap_or(0);
+
+    let mut out = canvas(810, 400);
+    fill(&mut out, CH24_PAPER);
+    for y in 0..400i64 {
+        for x in 0..400i64 {
+            write_pixel(&mut out, x, y, pixel_at(&rose_canvas, x, y));
+        }
+    }
+    let (ntx, nty) = tile_grid_of(400, 400);
+    for ty in 0..nty {
+        for tx in 0..ntx {
+            let spills = grid[ty][tx];
+            if spills == 0 {
+                continue;
+            }
+            let t = 0.2 + 0.8 * spills as f64 / max_spill.max(1) as f64;
+            let col = mix_with(CH24_PAPER, CH24_MAGENTA, t, true);
+            for dy in 1..(TILE - 1) {
+                for dx in 1..(TILE - 1) {
+                    let x = 410 + (tx * TILE + dx) as i64;
+                    let y = (ty * TILE + dy) as i64;
+                    write_pixel(&mut out, x, y, col);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The tiger's fine stage, run in `lcg_shuffle(841, 2024)` order and
+/// stopped after 210, 420, 630 and 841 tiles; every finished tile shows
+/// its pixels flattened over white, every unfinished one stays paper.
+pub fn tiger_assembly() -> Canvas {
+    let text = read_text("reference/chapter-20/tiger.svg");
+    let sc = Scene(encode_svg(&text, 450, 450), 450, 450);
+    let segs = flatten_stage(&sc);
+    let bins = bin_stage(&sc, &segs);
+    let lists = coarse_stage(&sc, &bins);
+    let (ntx, nty) = tile_grid_of(450, 450);
+    let order = lcg_shuffle(ntx * nty, 2024);
+    let tile_indices: Vec<(usize, usize)> = (0..nty).flat_map(|ty| (0..ntx).map(move |tx| (tx, ty))).collect();
+    let stops = [210usize, 420, 630, 841];
+    let empty_list: Vec<CoarseCommand> = Vec::new();
+    let mut canvas_layer = layer(450, 450);
+    let mut done = 0usize;
+    let mut fs = FineStats();
+    let mut panels = Vec::new();
+    for &stop in &stops {
+        while done < stop {
+            let (tx, ty) = tile_indices[order[done]];
+            let cmds = lists.get(&(tx, ty)).unwrap_or(&empty_list);
+            let block = fine_tile(cmds, tx, ty, 450, 450, &mut fs);
+            let xa = tx * TILE;
+            let ya = ty * TILE;
+            for y in 0..block.height {
+                for x in 0..block.width {
+                    canvas_layer.pixels[(ya + y) * 450 + (xa + x)] = block.pixels[y * block.width + x];
+                }
+            }
+            done += 1;
+        }
+        let finished: std::collections::HashSet<(usize, usize)> = order[..done].iter().map(|&i| tile_indices[i]).collect();
+        let mut panel = canvas(450, 450);
+        fill(&mut panel, CH24_PAPER);
+        let white = opaque(color(1.0, 1.0, 1.0));
+        for &(tx2, ty2) in &finished {
+            let xa = tx2 * TILE;
+            let ya = ty2 * TILE;
+            let xb = (xa + TILE).min(450);
+            let yb = (ya + TILE).min(450);
+            for y in ya..yb {
+                for x in xa..xb {
+                    let px = canvas_layer.pixels[y * 450 + x];
+                    write_pixel(&mut panel, x as i64, y as i64, pixel_color(over(px, white)));
+                }
+            }
+        }
+        panels.push(panel);
+    }
+    let top_row = side_by_side(&panels[0], &panels[1]);
+    let bottom_row = side_by_side(&panels[2], &panels[3]);
+    stack_below(&top_row, &bottom_row)
+}
+
+// =======================================================================
+// Chapter 25: The Raster Editor Detour
+// =======================================================================
+
+const CH25_PALE: Color = Color { red: 0.92, green: 0.9, blue: 0.82 };
+const CH25_INK: Color = Color { red: 0.05, green: 0.05, blue: 0.08 };
+const CH25_CYAN: Color = Color { red: 0.2, green: 0.75, blue: 0.9 };
+#[allow(dead_code)]
+const CH25_MAGENTA: Color = Color { red: 0.85, green: 0.2, blue: 0.55 };
+
+// ---------------------------------------------------------------------
+// § 25.1 Brushes
+// ---------------------------------------------------------------------
+
+/// A round brush: full coverage inside `hardness * radius`, a straight
+/// ramp to nothing at `radius`.
+#[derive(Debug, Clone, Copy)]
+pub struct Brush {
+    pub radius: f64,
+    pub hardness: f64,
+    pub spacing: f64,
+    pub flow: f64,
+    pub opacity: f64,
+}
+
+pub fn brush(radius: f64, hardness: f64, spacing: f64, flow: f64, opacity: f64) -> Brush {
+    Brush { radius, hardness, spacing, flow, opacity }
+}
+
+/// The dab's coverage at distance `d` from its center: 1 inside
+/// `hardness * radius`, 0 at or past `radius`, a straight ramp between.
+pub fn dab_coverage(b: &Brush, d: f64) -> f64 {
+    let inner = b.hardness * b.radius;
+    if d <= inner {
+        1.0
+    } else if d >= b.radius {
+        0.0
+    } else {
+        (b.radius - d) / (b.radius - inner)
+    }
+}
+
+/// Dabs spaced by arc length along the polyline through `events`: the
+/// first event is a dab, then one every `spacing * 2 * radius`, the
+/// distance still needed carried from segment to segment.
+pub fn stamp_positions(events: &[Tuple], b: &Brush) -> Vec<Tuple> {
+    if events.is_empty() {
+        return Vec::new();
+    }
+    let step = b.spacing * 2.0 * b.radius;
+    let mut out = vec![events[0]];
+    let mut need = step;
+    for i in 0..events.len() - 1 {
+        let a = events[i];
+        let c = events[i + 1];
+        let seg_len = magnitude(c - a);
+        if seg_len <= 0.0 {
+            continue;
+        }
+        let mut pos = 0.0;
+        while pos + need <= seg_len {
+            pos += need;
+            let t = pos / seg_len;
+            out.push(point(a.x + (c.x - a.x) * t, a.y + (c.y - a.y) * t));
+            need = step;
+        }
+        need -= seg_len - pos;
+    }
+    out
+}
+
+/// One stroke's coverage: every center's dab folded in by
+/// `1 - (1 - m)(1 - flow * k)`, so overlapping dabs build up.
+pub fn stroke_mask(width: usize, height: usize, centers: &[Tuple], b: &Brush) -> CoverageBuffer {
+    let mut m = coverage_buffer(width, height);
+    for q in centers {
+        let x0 = (q.x - b.radius).floor() as i64;
+        let x1 = (q.x + b.radius).ceil() as i64;
+        let y0 = (q.y - b.radius).floor() as i64;
+        let y1 = (q.y + b.radius).ceil() as i64;
+        for y in y0.max(0)..=y1.min(height as i64 - 1) {
+            for x in x0.max(0)..=x1.min(width as i64 - 1) {
+                let dx = x as f64 + 0.5 - q.x;
+                let dy = y as f64 + 0.5 - q.y;
+                let d = (dx * dx + dy * dy).sqrt();
+                let k = dab_coverage(b, d);
+                if k > 0.0 {
+                    let cur = coverage_at(&m, x, y);
+                    set_coverage(&mut m, x, y, 1.0 - (1.0 - cur) * (1.0 - b.flow * k));
+                }
+            }
+        }
+    }
+    m
+}
+
+/// A stroke's mask -- from `stamp_positions` when `by_distance`, from
+/// the raw events otherwise -- scaled by opacity and painted through.
+pub fn paint_stroke(c: &mut Canvas, events: &[Tuple], b: &Brush, col: Color, by_distance: bool) -> CoverageBuffer {
+    let centers: Vec<Tuple> = if by_distance { stamp_positions(events, b) } else { events.to_vec() };
+    let mut mask = stroke_mask(c.width, c.height, &centers, b);
+    for y in 0..c.height as i64 {
+        for x in 0..c.width as i64 {
+            let v = coverage_at(&mask, x, y) * b.opacity;
+            set_coverage(&mut mask, x, y, v);
+        }
+    }
+    paint_through(c, &mask, col);
+    mask
+}
+
+/// 25 pointer events bunched at the start where the hand was slow.
+pub fn wobbly_events() -> Vec<Tuple> {
+    (0..25)
+        .map(|i| {
+            let u = i as f64 / 24.0;
+            point(20.0 + 360.0 * u * u, 60.0 + 30.0 * (2.0 * std::f64::consts::PI * u).sin())
+        })
+        .collect()
+}
+
+/// The least mask value at `n` evenly spaced points of every segment of
+/// `events`, the pixel being the floor of each coordinate.
+pub fn min_along(m: &CoverageBuffer, events: &[Tuple], n: usize) -> f64 {
+    let mut best = f64::INFINITY;
+    for i in 0..events.len().saturating_sub(1) {
+        let a = events[i];
+        let c = events[i + 1];
+        for k in 0..n {
+            let t = k as f64 / n as f64;
+            let px = (a.x + (c.x - a.x) * t).floor() as i64;
+            let py = (a.y + (c.y - a.y) * t).floor() as i64;
+            best = best.min(coverage_at(m, px, py));
+        }
+    }
+    best
+}
+
+// ---------------------------------------------------------------------
+// § 25.2 Flood fill
+// ---------------------------------------------------------------------
+
+/// The pixel's three file bytes, chapter 1's `to_byte`.
+pub fn bytes_at(c: &Canvas, x: i64, y: i64) -> (i64, i64, i64) {
+    let col = pixel_at(c, x, y);
+    (to_byte(col.red), to_byte(col.green), to_byte(col.blue))
+}
+
+fn matches_seed(c: &Canvas, x: i64, y: i64, seed: (i64, i64, i64), tolerance: i64) -> bool {
+    if x < 0 || y < 0 || x as usize >= c.width || y as usize >= c.height {
+        return false;
+    }
+    let (r, g, b) = bytes_at(c, x, y);
+    (r - seed.0).abs() <= tolerance && (g - seed.1).abs() <= tolerance && (b - seed.2).abs() <= tolerance
+}
+
+/// What the flood fill counts as it runs: every push, and the most
+/// seeds the stack ever held.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FillStats {
+    pub pushes: u64,
+    pub deepest: u64,
+}
+
+pub fn fill_stats() -> FillStats {
+    FillStats::default()
+}
+
+fn fm_push(stack: &mut Vec<(i64, i64)>, fs: &mut FillStats, p: (i64, i64)) {
+    stack.push(p);
+    fs.pushes += 1;
+    fs.deepest = fs.deepest.max(stack.len() as u64);
+}
+
+/// The scanline flood fill, as a coverage mask of 1s.
+pub fn flood_mask(c: &Canvas, x: i64, y: i64, tolerance: i64, connectivity: i64, fs: &mut FillStats) -> CoverageBuffer {
+    let width = c.width as i64;
+    let height = c.height as i64;
+    let mut m = coverage_buffer(c.width, c.height);
+    let seed = bytes_at(c, x, y);
+    let reach = if connectivity == 8 { 1 } else { 0 };
+    let mut stack: Vec<(i64, i64)> = Vec::new();
+    fm_push(&mut stack, fs, (x, y));
+    while let Some((px, py)) = stack.pop() {
+        if coverage_at(&m, px, py) != 0.0 || !matches_seed(c, px, py, seed, tolerance) {
+            continue;
+        }
+        let mut lx = px;
+        while lx > 0 && coverage_at(&m, lx - 1, py) == 0.0 && matches_seed(c, lx - 1, py, seed, tolerance) {
+            lx -= 1;
+        }
+        let mut rx = px;
+        while rx < width - 1 && coverage_at(&m, rx + 1, py) == 0.0 && matches_seed(c, rx + 1, py, seed, tolerance) {
+            rx += 1;
+        }
+        for k in lx..=rx {
+            set_coverage(&mut m, k, py, 1.0);
+        }
+        for &ny in &[py - 1, py + 1] {
+            if ny < 0 || ny >= height {
+                continue;
+            }
+            let mut inrun = false;
+            let k0 = (lx - reach).max(0);
+            let k1 = (rx + reach).min(width - 1);
+            for k in k0..=k1 {
+                let ok = coverage_at(&m, k, ny) == 0.0 && matches_seed(c, k, ny, seed, tolerance);
+                if ok && !inrun {
+                    fm_push(&mut stack, fs, (k, ny));
+                }
+                inrun = ok;
+            }
+        }
+    }
+    m
+}
+
+/// The bucket with Contiguous off: every pixel of the canvas that
+/// matches, whether or not it's reachable.
+pub fn select_color(c: &Canvas, x: i64, y: i64, tolerance: i64) -> CoverageBuffer {
+    let seed = bytes_at(c, x, y);
+    let mut m = coverage_buffer(c.width, c.height);
+    for y2 in 0..c.height as i64 {
+        for x2 in 0..c.width as i64 {
+            if matches_seed(c, x2, y2, seed, tolerance) {
+                set_coverage(&mut m, x2, y2, 1.0);
+            }
+        }
+    }
+    m
+}
+
+/// Every pixel outside the mask with a 4-neighbour in it, at half
+/// coverage.
+pub fn anti_alias_mask(m: &CoverageBuffer) -> CoverageBuffer {
+    let mut out = coverage_buffer(m.width, m.height);
+    for y in 0..m.height as i64 {
+        for x in 0..m.width as i64 {
+            let v = coverage_at(m, x, y);
+            if v != 0.0 {
+                set_coverage(&mut out, x, y, v);
+                continue;
+            }
+            let has_neighbor =
+                coverage_at(m, x - 1, y) > 0.0 || coverage_at(m, x + 1, y) > 0.0 || coverage_at(m, x, y - 1) > 0.0 || coverage_at(m, x, y + 1) > 0.0;
+            set_coverage(&mut out, x, y, if has_neighbor { 0.5 } else { 0.0 });
+        }
+    }
+    out
+}
+
+/// The paint bucket: `flood_mask` (or `select_color` with Contiguous
+/// off), optionally softened by `anti_alias_mask`, painted through.
+pub fn bucket(c: &mut Canvas, x: i64, y: i64, col: Color, tolerance: i64, contiguous: bool, anti_alias: bool, connectivity: i64) -> CoverageBuffer {
+    let mut fs = fill_stats();
+    let mut m = if contiguous { flood_mask(c, x, y, tolerance, connectivity, &mut fs) } else { select_color(c, x, y, tolerance) };
+    if anti_alias {
+        m = anti_alias_mask(&m);
+    }
+    paint_through(c, &m, col);
+    m
+}
+
+/// 160 by 160 of pale paper with chapter 13's stroked ring on it.
+pub fn ring_canvas() -> Canvas {
+    let mut c = canvas(160, 160);
+    fill(&mut c, CH25_PALE);
+    let circle = circle_path(80.0, 80.0, 60.0, 96);
+    let outline = stroke_to_path(&circle, 4.0, "butt", "round", 4.0);
+    let cov = fill_path(&outline, "nonzero", 160, 160);
+    paint_through(&mut c, &cov, CH25_INK);
+    c
+}
+
+/// How deep the recursive four-way (right, left, down, up) fill goes,
+/// filling an empty `w` by `h` canvas from `(0, 0)`: the deepest chain
+/// of calls in flight. Simulated with an explicit heap stack (each frame
+/// remembering which direction to try next) instead of genuine
+/// recursion, which would overflow the call stack for a large canvas --
+/// the whole point of the section.
+pub fn naive_depth(w: i64, h: i64) -> u64 {
+    let mut visited = vec![false; (w * h) as usize];
+    let dirs = [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)];
+    let enter = |x: i64, y: i64, visited: &mut [bool]| -> bool {
+        if x < 0 || y < 0 || x >= w || y >= h {
+            return false;
+        }
+        let idx = (y * w + x) as usize;
+        if visited[idx] {
+            return false;
+        }
+        visited[idx] = true;
+        true
+    };
+    if !enter(0, 0, &mut visited) {
+        return 0;
+    }
+    let mut stack: Vec<(i64, i64, usize)> = vec![(0, 0, 0)];
+    let mut best = 1u64;
+    while !stack.is_empty() {
+        let top = stack.len() - 1;
+        let (x, y, di) = stack[top];
+        if di < 4 {
+            stack[top].2 += 1;
+            let (dx, dy) = dirs[di];
+            if enter(x + dx, y + dy, &mut visited) {
+                stack.push((x + dx, y + dy, 0));
+                best = best.max(stack.len() as u64);
+            }
+        } else {
+            stack.pop();
+        }
+    }
+    best
+}
+
+// ---------------------------------------------------------------------
+// § 25.3 Quantization
+// ---------------------------------------------------------------------
+
+fn channel_widths(cols: &[(i64, i64, i64)]) -> (i64, i64, i64) {
+    let (mut r0, mut g0, mut b0) = (i64::MAX, i64::MAX, i64::MAX);
+    let (mut r1, mut g1, mut b1) = (i64::MIN, i64::MIN, i64::MIN);
+    for &(r, g, b) in cols {
+        r0 = r0.min(r);
+        g0 = g0.min(g);
+        b0 = b0.min(b);
+        r1 = r1.max(r);
+        g1 = g1.max(g);
+        b1 = b1.max(b);
+    }
+    (r1 - r0, g1 - g0, b1 - b0)
+}
+
+fn choose_channel(cols: &[(i64, i64, i64)]) -> usize {
+    let (rw, gw, bw) = channel_widths(cols);
+    let mut best_w = rw;
+    let mut best_ch = 0usize;
+    if gw > best_w {
+        best_w = gw;
+        best_ch = 1;
+    }
+    if bw > best_w {
+        best_ch = 2;
+    }
+    best_ch
+}
+
+fn channel_of(c: &(i64, i64, i64), ch: usize) -> i64 {
+    match ch {
+        0 => c.0,
+        1 => c.1,
+        _ => c.2,
+    }
+}
+
+/// Heckbert's median cut: a palette of at most `n` byte colours.
+pub fn median_cut(colors: &[(i64, i64, i64)], n: usize) -> Vec<(i64, i64, i64)> {
+    let mut counts_map: HashMap<(i64, i64, i64), u64> = HashMap::new();
+    for c in colors {
+        *counts_map.entry(*c).or_insert(0) += 1;
+    }
+    let mut distinct: Vec<(i64, i64, i64)> = counts_map.keys().copied().collect();
+    distinct.sort();
+    let cnts: Vec<u64> = distinct.iter().map(|c| counts_map[c]).collect();
+    let mut boxes: Vec<(Vec<(i64, i64, i64)>, Vec<u64>)> = vec![(distinct, cnts)];
+
+    while boxes.len() < n {
+        let mut best_idx: Option<usize> = None;
+        let mut best_width: i64 = -1;
+        for (i, b) in boxes.iter().enumerate() {
+            if b.0.len() < 2 {
+                continue;
+            }
+            let (rw, gw, bw) = channel_widths(&b.0);
+            let w = rw.max(gw).max(bw);
+            if w > best_width {
+                best_width = w;
+                best_idx = Some(i);
+            }
+        }
+        let idx = match best_idx {
+            Some(i) => i,
+            None => break,
+        };
+        let (cols, cnts) = boxes[idx].clone();
+        let ch = choose_channel(&cols);
+        let mut order: Vec<usize> = (0..cols.len()).collect();
+        order.sort_by_key(|&i| channel_of(&cols[i], ch));
+        let sorted_cols: Vec<_> = order.iter().map(|&i| cols[i]).collect();
+        let sorted_cnts: Vec<_> = order.iter().map(|&i| cnts[i]).collect();
+        let total: u64 = sorted_cnts.iter().sum();
+        let mut running = 0u64;
+        let mut cut = sorted_cols.len();
+        for (i, &cnt) in sorted_cnts.iter().enumerate() {
+            running += cnt;
+            if 2 * running >= total {
+                cut = i + 1;
+                break;
+            }
+        }
+        if cut >= sorted_cols.len() {
+            cut = sorted_cols.len() - 1;
+        }
+        let left = (sorted_cols[..cut].to_vec(), sorted_cnts[..cut].to_vec());
+        let right = (sorted_cols[cut..].to_vec(), sorted_cnts[cut..].to_vec());
+        boxes.splice(idx..idx + 1, [left, right]);
+    }
+
+    boxes
+        .iter()
+        .map(|(cols, cnts)| {
+            let total: u64 = cnts.iter().sum();
+            let mut sums = (0i64, 0i64, 0i64);
+            for (&(r, g, b), &cnt) in cols.iter().zip(cnts.iter()) {
+                sums.0 += r * cnt as i64;
+                sums.1 += g * cnt as i64;
+                sums.2 += b * cnt as i64;
+            }
+            (
+                (sums.0 as f64 / total as f64).round() as i64,
+                (sums.1 as f64 / total as f64).round() as i64,
+                (sums.2 as f64 / total as f64).round() as i64,
+            )
+        })
+        .collect()
+}
+
+/// Every pixel's file bytes, row by row.
+pub fn canvas_bytes(c: &Canvas) -> Vec<(i64, i64, i64)> {
+    let mut out = Vec::with_capacity(c.width * c.height);
+    for y in 0..c.height as i64 {
+        for x in 0..c.width as i64 {
+            out.push(bytes_at(c, x, y));
+        }
+    }
+    out
+}
+
+/// The palette entry with the least squared distance, lowest index on
+/// a tie.
+pub fn nearest_index(palette: &[(i64, i64, i64)], col: (i64, i64, i64)) -> usize {
+    let mut best = 0usize;
+    let mut best_d = i64::MAX;
+    for (i, &(r, g, b)) in palette.iter().enumerate() {
+        let d = (r - col.0).pow(2) + (g - col.1).pow(2) + (b - col.2).pow(2);
+        if d < best_d {
+            best_d = d;
+            best = i;
+        }
+    }
+    best
+}
+
+/// `nearest_index` for every pixel of the canvas.
+pub fn remap(c: &Canvas, palette: &[(i64, i64, i64)]) -> Vec<usize> {
+    canvas_bytes(c).iter().map(|&col| nearest_index(palette, col)).collect()
+}
+
+fn palette_light(pal: &[(i64, i64, i64)]) -> Vec<Color> {
+    pal.iter().map(|&(r, g, b)| color(decode(r as f64 / 255.0), decode(g as f64 / 255.0), decode(b as f64 / 255.0))).collect()
+}
+
+fn nearest_light_index(lp: &[Color], col: Color) -> usize {
+    let mut best = 0usize;
+    let mut best_d = f64::INFINITY;
+    for (i, p) in lp.iter().enumerate() {
+        let d = (p.red - col.red).powi(2) + (p.green - col.green).powi(2) + (p.blue - col.blue).powi(2);
+        if d < best_d {
+            best_d = d;
+            best = i;
+        }
+    }
+    best
+}
+
+/// The nearest entry in light, by squared distance -- no error handed
+/// on.
+pub fn threshold(c: &Canvas, palette: &[(i64, i64, i64)]) -> Vec<usize> {
+    let lp = palette_light(palette);
+    let mut out = Vec::with_capacity(c.width * c.height);
+    for y in 0..c.height as i64 {
+        for x in 0..c.width as i64 {
+            out.push(nearest_light_index(&lp, pixel_at(c, x, y)));
+        }
+    }
+    out
+}
+
+/// For a two-entry palette: the second entry where the pixel's green
+/// light is above the Bayer-interpolated threshold between the two
+/// entries' green lights, the first otherwise.
+pub fn ordered_dither(c: &Canvas, palette: &[(i64, i64, i64)]) -> Vec<usize> {
+    let lp = palette_light(palette);
+    let lo = lp[0].green;
+    let hi = lp[1].green;
+    let mut out = Vec::with_capacity(c.width * c.height);
+    for y in 0..c.height as i64 {
+        for x in 0..c.width as i64 {
+            let g = pixel_at(c, x, y).green;
+            let t = lo + (hi - lo) * dither_threshold(x, y);
+            out.push(if g > t { 1 } else { 0 });
+        }
+    }
+    out
+}
+
+/// Floyd-Steinberg error diffusion, in light: 7/16 right, 3/16 below
+/// left, 5/16 below, 1/16 below right, what falls off the canvas
+/// dropped.
+pub fn error_diffuse(c: &Canvas, palette: &[(i64, i64, i64)]) -> Vec<usize> {
+    let lp = palette_light(palette);
+    let w = c.width;
+    let h = c.height;
+    let mut light: Vec<[f64; 3]> = (0..w * h)
+        .map(|i| {
+            let x = (i % w) as i64;
+            let y = (i / w) as i64;
+            let col = pixel_at(c, x, y);
+            [col.red, col.green, col.blue]
+        })
+        .collect();
+    let mut out = vec![0usize; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            let cur = color(light[idx][0], light[idx][1], light[idx][2]);
+            let best = nearest_light_index(&lp, cur);
+            out[idx] = best;
+            let chosen = lp[best];
+            let err = [cur.red - chosen.red, cur.green - chosen.green, cur.blue - chosen.blue];
+            let mut add = |dx: i64, dy: i64, factor: f64| {
+                let xx = x as i64 + dx;
+                let yy = y as i64 + dy;
+                if xx < 0 || yy < 0 || xx >= w as i64 || yy >= h as i64 {
+                    return;
+                }
+                let j = (yy as usize) * w + (xx as usize);
+                light[j][0] += err[0] * factor;
+                light[j][1] += err[1] * factor;
+                light[j][2] += err[2] * factor;
+            };
+            add(1, 0, 7.0 / 16.0);
+            add(-1, 1, 3.0 / 16.0);
+            add(0, 1, 5.0 / 16.0);
+            add(1, 1, 1.0 / 16.0);
+        }
+    }
+    out
+}
+
+/// The canvas of each index's light.
+pub fn indexed_canvas(indices: &[usize], palette: &[(i64, i64, i64)], w: usize, h: usize) -> Canvas {
+    let lp = palette_light(palette);
+    let mut c = canvas(w, h);
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            let idx = (y as usize) * w + (x as usize);
+            write_pixel(&mut c, x, y, lp[indices[idx]]);
+        }
+    }
+    c
+}
+
+/// Light `x / (w - 1)` in every channel.
+pub fn ramp_canvas(w: usize, h: usize) -> Canvas {
+    let mut c = canvas(w, h);
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            let t = if w > 1 { x as f64 / (w as f64 - 1.0) } else { 0.0 };
+            write_pixel(&mut c, x, y, color(t, t, t));
+        }
+    }
+    c
+}
+
+/// The mean green light over the whole canvas.
+pub fn mean_light(c: &Canvas) -> f64 {
+    let mut sum = 0.0;
+    for y in 0..c.height as i64 {
+        for x in 0..c.width as i64 {
+            sum += pixel_at(c, x, y).green;
+        }
+    }
+    sum / (c.width * c.height) as f64
+}
+
+/// An 8-bit indexed BMP: 14-byte file header, 40-byte info header, 256
+/// palette entries (blue, green, red, 0), then the rows bottom to top,
+/// each padded to a multiple of 4 bytes.
+pub fn canvas_to_bmp8(indices: &[usize], palette: &[(i64, i64, i64)], w: usize, h: usize) -> Vec<u8> {
+    let padded = w.div_ceil(4) * 4;
+    let pixel_data_size = padded * h;
+    let offset: u32 = 1078;
+    let file_size = offset + pixel_data_size as u32;
+    let mut out = Vec::with_capacity(file_size as usize);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&file_size.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&offset.to_le_bytes());
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&(w as i32).to_le_bytes());
+    out.extend_from_slice(&(h as i32).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&8u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(pixel_data_size as u32).to_le_bytes());
+    out.extend_from_slice(&2835i32.to_le_bytes());
+    out.extend_from_slice(&2835i32.to_le_bytes());
+    out.extend_from_slice(&(palette.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for i in 0..256 {
+        if i < palette.len() {
+            let (r, g, b) = palette[i];
+            out.push(b as u8);
+            out.push(g as u8);
+            out.push(r as u8);
+            out.push(0);
+        } else {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+        }
+    }
+    for row in (0..h).rev() {
+        let mut count = 0usize;
+        for col in 0..w {
+            out.push(indices[row * w + col] as u8);
+            count += 1;
+        }
+        while count < padded {
+            out.push(0);
+            count += 1;
+        }
+    }
+    out
+}
+
+/// `(width, height, palette, indices)` from an 8-bit indexed BMP.
+pub fn read_bmp8(data: &[u8]) -> (usize, usize, Vec<(i64, i64, i64)>, Vec<usize>) {
+    let w = i32::from_le_bytes([data[18], data[19], data[20], data[21]]) as usize;
+    let h = i32::from_le_bytes([data[22], data[23], data[24], data[25]]) as usize;
+    let offset = u32::from_le_bytes([data[10], data[11], data[12], data[13]]) as usize;
+    let pal_count = u32::from_le_bytes([data[46], data[47], data[48], data[49]]) as usize;
+    let mut palette = Vec::with_capacity(pal_count);
+    for i in 0..pal_count {
+        let base = 54 + i * 4;
+        let b = data[base] as i64;
+        let g = data[base + 1] as i64;
+        let r = data[base + 2] as i64;
+        palette.push((r, g, b));
+    }
+    let padded = w.div_ceil(4) * 4;
+    let mut indices = vec![0usize; w * h];
+    for row in 0..h {
+        let file_row = h - 1 - row;
+        let start = offset + file_row * padded;
+        for col in 0..w {
+            indices[row * w + col] = data[start + col] as usize;
+        }
+    }
+    (w, h, palette, indices)
+}
+
+/// A raw byte range, as signed integers for easy comparison in a
+/// scenario.
+pub fn bytes_of(data: &[u8], a: usize, b: usize) -> Vec<i64> {
+    data[a..b].iter().map(|&x| x as i64).collect()
+}
+
+// ---------------------------------------------------------------------
+// § 25.4 Selection and undo
+// ---------------------------------------------------------------------
+
+/// Chapter 12's `clip_rect`, under this chapter's name for it.
+pub fn marquee(x0: f64, y0: f64, x1: f64, y1: f64, w: usize, h: usize) -> CoverageBuffer {
+    clip_rect(x0, y0, x1, y1, w, h)
+}
+
+/// `1 - (1 - a)(1 - b)`: chapter 20's `union_coverage`.
+pub fn add_selection(a: &CoverageBuffer, b: &CoverageBuffer) -> CoverageBuffer {
+    union_coverage(a, b)
+}
+
+/// `a * (1 - b)`.
+pub fn subtract_selection(a: &CoverageBuffer, b: &CoverageBuffer) -> CoverageBuffer {
+    let mut out = coverage_buffer(a.width, a.height);
+    for y in 0..a.height as i64 {
+        for x in 0..a.width as i64 {
+            set_coverage(&mut out, x, y, coverage_at(a, x, y) * (1.0 - coverage_at(b, x, y)));
+        }
+    }
+    out
+}
+
+/// Chapter 12's `multiply_coverage`.
+pub fn intersect_selection(a: &CoverageBuffer, b: &CoverageBuffer) -> CoverageBuffer {
+    multiply_coverage(a, b)
+}
+
+/// A box blur of radius `r`, along the rows and then down the columns;
+/// pixels off the buffer count as 0.
+pub fn feather(m: &CoverageBuffer, r: i64) -> CoverageBuffer {
+    let w = m.width;
+    let h = m.height;
+    let n = (2 * r + 1) as f64;
+    let mut tmp = coverage_buffer(w, h);
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            let mut sum = 0.0;
+            for dx in -r..=r {
+                sum += coverage_at(m, x + dx, y);
+            }
+            set_coverage(&mut tmp, x, y, sum / n);
+        }
+    }
+    let mut out = coverage_buffer(w, h);
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            let mut sum = 0.0;
+            for dy in -r..=r {
+                sum += coverage_at(&tmp, x, y + dy);
+            }
+            set_coverage(&mut out, x, y, sum / n);
+        }
+    }
+    out
+}
+
+/// A selection lifted into a chapter 9 layer: `move_floating` moves it,
+/// `drop_floating` composites it back.
+pub struct Floating {
+    layer: Layer,
+    dx: i64,
+    dy: i64,
+}
+
+/// Lifts `sel`'s pixels into a layer, each premultiplied by the
+/// selection's coverage, and mixes the canvas under them toward
+/// `backfill` by that same coverage.
+pub fn float_selection(c: &mut Canvas, sel: &CoverageBuffer, backfill: Color) -> Floating {
+    let mut l = layer(c.width, c.height);
+    for y in 0..c.height as i64 {
+        for x in 0..c.width as i64 {
+            let k = coverage_at(sel, x, y);
+            if k > 0.0 {
+                let col = pixel_at(c, x, y);
+                l.pixels[y as usize * c.width + x as usize] = from_color(col, k);
+                write_pixel(c, x, y, mix_with(col, backfill, k, true));
+            }
+        }
+    }
+    Floating { layer: l, dx: 0, dy: 0 }
+}
+
+pub fn move_floating(f: &mut Floating, dx: i64, dy: i64) {
+    f.dx += dx;
+    f.dy += dy;
+}
+
+/// Composites every pixel of the float with alpha above 0, moved,
+/// source-over the canvas; pixels that land off the canvas are dropped.
+pub fn drop_floating(c: &mut Canvas, f: &Floating) {
+    for y in 0..f.layer.height as i64 {
+        for x in 0..f.layer.width as i64 {
+            let p = f.layer.pixels[y as usize * f.layer.width + x as usize];
+            if pixel_alpha(p) <= 0.0 {
+                continue;
+            }
+            let nx = x + f.dx;
+            let ny = y + f.dy;
+            if nx < 0 || ny < 0 || nx >= c.width as i64 || ny >= c.height as i64 {
+                continue;
+            }
+            let dst = opaque(pixel_at(c, nx, ny));
+            write_pixel(c, nx, ny, pixel_color(over(p, dst)));
+        }
+    }
+}
+
+struct HistoryEdit {
+    x0: i64,
+    y0: i64,
+    x1: i64,
+    y1: i64,
+    pixels: Vec<Color>,
+}
+
+/// A command stack over one canvas: `history_fill` and its siblings all
+/// take that same canvas explicitly, since Rust can't stash a live
+/// mutable reference to it inside `History` alongside the test's own
+/// direct reads of it.
+pub struct History {
+    undo_stack: Vec<HistoryEdit>,
+    redo_stack: Vec<HistoryEdit>,
+}
+
+/// A fresh, empty command stack for `c`.
+pub fn history(_c: &Canvas) -> History {
+    History { undo_stack: Vec::new(), redo_stack: Vec::new() }
+}
+
+fn clamp_rect(c: &Canvas, x0: i64, y0: i64, x1: i64, y1: i64) -> (i64, i64, i64, i64) {
+    let cx0 = x0.max(0);
+    let cy0 = y0.max(0);
+    let cx1 = x1.min(c.width as i64).max(cx0);
+    let cy1 = y1.min(c.height as i64).max(cy0);
+    (cx0, cy0, cx1, cy1)
+}
+
+fn save_rect(c: &Canvas, x0: i64, y0: i64, x1: i64, y1: i64) -> Vec<Color> {
+    let mut out = Vec::new();
+    for y in y0..y1 {
+        for x in x0..x1 {
+            out.push(pixel_at(c, x, y));
+        }
+    }
+    out
+}
+
+fn restore_rect(c: &mut Canvas, x0: i64, y0: i64, x1: i64, y1: i64, pixels: &[Color]) {
+    let mut i = 0;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            write_pixel(c, x, y, pixels[i]);
+            i += 1;
+        }
+    }
+}
+
+/// An edit that saves the canvas pixels of its rectangle (end
+/// exclusive, cut to the canvas), then sets them to `col`; a new edit
+/// throws the redo stack away.
+pub fn history_fill(h: &mut History, c: &mut Canvas, x0: i64, y0: i64, x1: i64, y1: i64, col: Color) {
+    let (cx0, cy0, cx1, cy1) = clamp_rect(c, x0, y0, x1, y1);
+    let before = save_rect(c, cx0, cy0, cx1, cy1);
+    for y in cy0..cy1 {
+        for x in cx0..cx1 {
+            write_pixel(c, x, y, col);
+        }
+    }
+    h.redo_stack.clear();
+    h.undo_stack.push(HistoryEdit { x0: cx0, y0: cy0, x1: cx1, y1: cy1, pixels: before });
+}
+
+/// Puts the saved pixels back, keeping the ones they replaced for
+/// `redo`; `false` with nothing to undo.
+pub fn undo(h: &mut History, c: &mut Canvas) -> bool {
+    match h.undo_stack.pop() {
+        None => false,
+        Some(edit) => {
+            let replaced = save_rect(c, edit.x0, edit.y0, edit.x1, edit.y1);
+            restore_rect(c, edit.x0, edit.y0, edit.x1, edit.y1, &edit.pixels);
+            h.redo_stack.push(HistoryEdit { x0: edit.x0, y0: edit.y0, x1: edit.x1, y1: edit.y1, pixels: replaced });
+            true
+        }
+    }
+}
+
+/// The reverse of `undo`.
+pub fn redo(h: &mut History, c: &mut Canvas) -> bool {
+    match h.redo_stack.pop() {
+        None => false,
+        Some(edit) => {
+            let replaced = save_rect(c, edit.x0, edit.y0, edit.x1, edit.y1);
+            restore_rect(c, edit.x0, edit.y0, edit.x1, edit.y1, &edit.pixels);
+            h.undo_stack.push(HistoryEdit { x0: edit.x0, y0: edit.y0, x1: edit.x1, y1: edit.y1, pixels: replaced });
+            true
+        }
+    }
+}
+
+/// How many pixels both stacks hold.
+pub fn stored_pixels(h: &History) -> usize {
+    h.undo_stack.iter().map(|e| e.pixels.len()).sum::<usize>() + h.redo_stack.iter().map(|e| e.pixels.len()).sum::<usize>()
+}
+
+// ---------------------------------------------------------------------
+// Plate 25, and the chapter's renders
+// ---------------------------------------------------------------------
+
+const CH25_BW: [(i64, i64, i64); 2] = [(0, 0, 0), (255, 255, 255)];
+
+/// `ramp_canvas(256, 32)` to black and white by `threshold`,
+/// `ordered_dither` and `error_diffuse`, stacked top to bottom.
+pub fn dither_strip() -> Canvas {
+    let r = ramp_canvas(256, 32);
+    let bw = CH25_BW.to_vec();
+    let a = indexed_canvas(&threshold(&r, &bw), &bw, 256, 32);
+    let b = indexed_canvas(&ordered_dither(&r, &bw), &bw, 256, 32);
+    let d = indexed_canvas(&error_diffuse(&r, &bw), &bw, 256, 32);
+    stack_below(&stack_below(&a, &b), &d)
+}
+
+/// `ring_canvas()` bucketed cyan from `(80, 80)`, four-way, contiguous,
+/// four times: tolerance 0; 32; 32 with anti-alias; 160.
+pub fn halo_demo() -> Canvas {
+    let mut c0 = ring_canvas();
+    bucket(&mut c0, 80, 80, CH25_CYAN, 0, true, false, 4);
+    let mut c1 = ring_canvas();
+    bucket(&mut c1, 80, 80, CH25_CYAN, 32, true, false, 4);
+    let mut c2 = ring_canvas();
+    bucket(&mut c2, 80, 80, CH25_CYAN, 32, true, true, 4);
+    let mut c3 = ring_canvas();
+    bucket(&mut c3, 80, 80, CH25_CYAN, 160, true, false, 4);
+    side_by_side(&side_by_side(&side_by_side(&c0, &c1), &c2), &c3)
+}
+
+/// `wobbly_events()` painted in ink, one dab per event; then the same
+/// events moved down 110, spaced by distance.
+pub fn brush_demo() -> Canvas {
+    let mut c = canvas(400, 240);
+    fill(&mut c, CH25_PALE);
+    let b = brush(8.0, 0.5, 0.25, 0.6, 1.0);
+    let ev = wobbly_events();
+    paint_stroke(&mut c, &ev, &b, CH25_INK, false);
+    let ev2: Vec<Tuple> = ev.iter().map(|p| point(p.x, p.y + 110.0)).collect();
+    paint_stroke(&mut c, &ev2, &b, CH25_INK, true);
+    c
+}
+
+/// Left: the bucket meeting chapter 7's antialiased ring, magnified.
+/// Right: a smooth ramp reduced to two ink levels by error diffusion.
+pub fn plate_25() -> Canvas {
+    let mut ring = ring_canvas();
+    bucket(&mut ring, 80, 80, CH25_CYAN, 32, true, false, 4);
+    let mut crop = canvas(60, 60);
+    for y in 0..60i64 {
+        for x in 0..60i64 {
+            write_pixel(&mut crop, x, y, pixel_at(&ring, 100 + x, 50 + y));
+        }
+    }
+    let left = magnify(&crop, 4);
+
+    let ramp = ramp_canvas(240, 240);
+    let bw = CH25_BW.to_vec();
+    let right = indexed_canvas(&error_diffuse(&ramp, &bw), &bw, 240, 240);
+
+    side_by_side(&left, &right)
+}
+
+/// A dusk scene painted entirely with this chapter's tools, then
+/// reduced to sixteen colours through an 8-bit BMP and read back.
+pub fn paint_by_script() -> Canvas {
+    let mut c = canvas(480, 320);
+
+    let sky_clip = marquee(0.0, 0.0, 480.0, 210.0, 480, 320);
+    let sky = linear_gradient(
+        point(0.0, 0.0),
+        point(0.0, 210.0),
+        vec![stop(0.0, color(0.05, 0.12, 0.35)), stop(1.0, color(0.95, 0.45, 0.2))],
+        "pad",
+    );
+    paint_fill(&mut c, &sky_clip, &sky);
+
+    const SEA: Color = Color { red: 0.02, green: 0.1, blue: 0.2 };
+    let sea_clip = marquee(0.0, 210.0, 480.0, 320.0, 480, 320);
+    paint_through(&mut c, &sea_clip, SEA);
+
+    const SUN: Color = Color { red: 1.0, green: 0.8, blue: 0.3 };
+    paint_stroke(&mut c, &[point(370.0, 110.0)], &brush(46.0, 0.55, 0.25, 1.0, 1.0), SUN, true);
+
+    const HILL: Color = Color { red: 0.04, green: 0.12, blue: 0.06 };
+    let hills: Vec<Tuple> = (0..21)
+        .map(|i| {
+            let i = i as f64;
+            point(-20.0 + 26.0 * i, 205.0 - 30.0 * (i / 3.1).sin() - 12.0 * (1.7 * i).sin())
+        })
+        .collect();
+    paint_stroke(&mut c, &hills, &brush(34.0, 0.7, 0.2, 0.8, 1.0), HILL, true);
+
+    // A magenta stroke from (40, 40) to (460, 300) is painted here and
+    // then undone: a perfect undo restores the canvas exactly, so
+    // never painting it is byte-identical to painting and undoing it.
+
+    for k in 0..6 {
+        let events: Vec<Tuple> = (0..12)
+            .map(|j| {
+                let k = k as f64;
+                let j = j as f64;
+                point(60.0 + 60.0 * k + 8.0 * j, 232.0 + 14.0 * k + 2.0 * j.sin())
+            })
+            .collect();
+        paint_stroke(&mut c, &events, &brush(1.6, 0.2, 0.3, 0.7, 0.8), SUN, true);
+    }
+
+    let boat_clip = marquee(150.0, 262.0, 210.0, 272.0, 480, 320);
+    paint_through(&mut c, &boat_clip, CH25_INK);
+
+    let mut f = float_selection(&mut c, &boat_clip, SEA);
+    move_floating(&mut f, 40, -6);
+    drop_floating(&mut c, &f);
+
+    let palette = median_cut(&canvas_bytes(&c), 16);
+    let indices = error_diffuse(&c, &palette);
+    let bmp = canvas_to_bmp8(&indices, &palette, 480, 320);
+    let (w, h, pal2, idx2) = read_bmp8(&bmp);
+    indexed_canvas(&idx2, &pal2, w, h)
+}

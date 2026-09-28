@@ -41,6 +41,13 @@ Feature: Brushes
     And   coverage_at(one, 12, 10) = 0.435147
     And   coverage_at(two, 10, 10) = 0.84
 
+  Scenario: Opacity caps the stroke however often it crosses itself
+    Given c ← canvas(60, 40)
+    When  fill(c, color(1, 1, 1))
+    And   m ← paint_stroke(c, [point(10, 20), point(50, 20), point(10, 20), point(50, 20)], brush(6, 1, 0.25, 1, 0.5), color(0, 0, 0), true)
+    Then  coverage_at(m, 30, 20) = 0.5
+    And   pixel_at(c, 30, 20) = color(0.5, 0.5, 0.5)
+
   Scenario: One dab per event leaves beads; spacing by distance doesn't
     Given ev ← wobbly_events()
     And   b ← brush(8, 0.5, 0.25, 0.6, 1)

@@ -8,7 +8,7 @@ Feature: Paint as a shader
   raster order.
 
   Scenario: A gradient asked in any order is the same gradient
-    Given g ← radial_gradient(point(20, 20), 0, point(40, 30), 50, [stop(0, color(1, 0, 0)), stop(1, color(0, 0, 1))])
+    Given g ← radial_gradient(point(20, 20), 0, point(40, 30), 50, [stop(0, color(1, 0, 0)), stop(1, color(0, 0, 1))], "pad")
     When  a ← shade_tile(g, 1, 2, none)
     And   b ← shade_tile(g, 1, 2, 5)
     Then  a = b

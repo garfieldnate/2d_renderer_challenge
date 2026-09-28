@@ -105,6 +105,13 @@
     <span class="kw">And</span>   coverage_at(one, 12, 10) = 0.435147
     <span class="kw">And</span>   coverage_at(two, 10, 10) = 0.84
 
+  <span class="kw">Scenario</span>: Opacity caps the stroke however often it crosses itself
+    <span class="kw">Given</span> c ← canvas(60, 40)
+    <span class="kw">When</span>  fill(c, color(1, 1, 1))
+    <span class="kw">And</span>   m ← paint_stroke(c, [point(10, 20), point(50, 20), point(10, 20), point(50, 20)], brush(6, 1, 0.25, 1, 0.5), color(0, 0, 0), true)
+    <span class="kw">Then</span>  coverage_at(m, 30, 20) = 0.5
+    <span class="kw">And</span>   pixel_at(c, 30, 20) = color(0.5, 0.5, 0.5)
+
   <span class="kw">Scenario</span>: One dab per event leaves beads; spacing by distance doesn't
     <span class="kw">Given</span> ev ← wobbly_events()
     <span class="kw">And</span>   b ← brush(8, 0.5, 0.25, 0.6, 1)
@@ -318,6 +325,12 @@
     <span class="kw">And</span>   mean_light(indexed_canvas(threshold(r, bw), bw, 256, 32)) = 0.5
     <span class="kw">And</span>   mean_light(indexed_canvas(ordered_dither(r, bw), bw, 256, 32)) = 0.530273
     <span class="kw">And</span>   mean_light(indexed_canvas(error_diffuse(r, bw), bw, 256, 32)) = 0.500732
+
+  <span class="kw">Scenario</span>: Three inks
+    <span class="kw">Given</span> r ← ramp_canvas(8, 2)
+    <span class="kw">And</span>   pal ← [(0, 0, 0), (128, 128, 128), (255, 255, 255)]
+    <span class="kw">Then</span>  threshold(r, pal) = [0, 1, 1, 1, 1, 2, 2, 2, 0, 1, 1, 1, 1, 2, 2, 2]
+    <span class="kw">And</span>   error_diffuse(r, pal) = [0, 1, 1, 1, 2, 1, 2, 2, 0, 1, 1, 1, 2, 2, 2, 2]
 
   <span class="kw">Scenario</span>: An 8-bit BMP, byte by byte
     <span class="kw">Given</span> bm ← canvas_to_bmp8([0, 1, 2, 1, 0, 2, 1, 1, 1, 0], [(10, 20, 30), (200, 100, 50), (0, 0, 255)], 5, 2)

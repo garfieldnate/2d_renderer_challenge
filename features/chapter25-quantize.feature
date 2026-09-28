@@ -60,6 +60,12 @@ Feature: Quantization
     And   mean_light(indexed_canvas(ordered_dither(r, bw), bw, 256, 32)) = 0.530273
     And   mean_light(indexed_canvas(error_diffuse(r, bw), bw, 256, 32)) = 0.500732
 
+  Scenario: Three inks
+    Given r ← ramp_canvas(8, 2)
+    And   pal ← [(0, 0, 0), (128, 128, 128), (255, 255, 255)]
+    Then  threshold(r, pal) = [0, 1, 1, 1, 1, 2, 2, 2, 0, 1, 1, 1, 1, 2, 2, 2]
+    And   error_diffuse(r, pal) = [0, 1, 1, 1, 2, 1, 2, 2, 0, 1, 1, 1, 2, 2, 2, 2]
+
   Scenario: An 8-bit BMP, byte by byte
     Given bm ← canvas_to_bmp8([0, 1, 2, 1, 0, 2, 1, 1, 1, 0], [(10, 20, 30), (200, 100, 50), (0, 0, 255)], 5, 2)
     Then  length(bm) = 1094

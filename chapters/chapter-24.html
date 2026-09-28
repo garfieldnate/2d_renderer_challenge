@@ -267,7 +267,7 @@
   raster order.
 
   <span class="kw">Scenario</span>: A gradient asked in any order is the same gradient
-    <span class="kw">Given</span> g ← radial_gradient(point(20, 20), 0, point(40, 30), 50, [stop(0, color(1, 0, 0)), stop(1, color(0, 0, 1))])
+    <span class="kw">Given</span> g ← radial_gradient(point(20, 20), 0, point(40, 30), 50, [stop(0, color(1, 0, 0)), stop(1, color(0, 0, 1))], "pad")
     <span class="kw">When</span>  a ← shade_tile(g, 1, 2, none)
     <span class="kw">And</span>   b ← shade_tile(g, 1, 2, 5)
     <span class="kw">Then</span>  a = b
@@ -468,7 +468,7 @@
   <p>The fine stage is the part that runs ten thousand times at once, so it's the one to print.
     Everything it reads was written by the coarse stage; everything it writes is its own block.</p>
 
-<pre><code>fine_tile(commands, tx, ty):
+<pre><code>fine_tile(scene, commands, tx, ty, fs):
   stack ← [a transparent 16 by 16 block]
   <span class="kw">for</span> each command of commands:
     <span class="kw">if</span> it's ("fill", tile draw, rule, paint, alpha, clip):
@@ -481,7 +481,7 @@
           k ← coverage[x, y] × clipped[x, y] × alpha
           <span class="kw">if</span> k &gt; 0: top[x, y] ← paint_at(paint, x + ½, y + ½) at k, over top[x, y]
     <span class="kw">if</span> it's ("push", opacity, clip):
-      <span class="kw">if</span> the stack holds STACK_DEPTH blocks: spills ← spills + 1
+      <span class="kw">if</span> the stack holds STACK_DEPTH blocks: fs.spills ← fs.spills + 1
       push a transparent block
     <span class="kw">if</span> it's ("pop"):
       g ← pop the block;  <span class="kw">if</span> its push had a clip: scale g by the clip's union

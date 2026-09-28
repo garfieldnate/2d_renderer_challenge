@@ -20,6 +20,8 @@ use renderer::{
     subpixel_strip, three_filters, three_gradients, title, trap_shrink, transform_demo,
     two_filters, two_strokes, word_demo,
     aspect_demo, harbor, rose, tiger, work_map, render_svg_with, stats, read_file,
+    msaa_demo, plate_24, spill_map, tiger_assembly,
+    brush_demo, dither_strip, halo_demo, paint_by_script, plate_25,
 };
 use std::time::Instant;
 
@@ -213,5 +215,36 @@ fn main() {
     write_p6(out, "title.ppm", canvas_to_p6(&title()));
     println!("title: {:.2?}", t.elapsed());
 
-    println!("wrote 86 renders to out/");
+    // Chapter 24: doing it the GPU's way.
+    let t = Instant::now();
+    write_p6(out, "plate-24.ppm", canvas_to_p6(&plate_24()));
+    println!("plate-24: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "msaa-demo.ppm", canvas_to_p6(&msaa_demo()));
+    println!("msaa-demo: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "spill-map.ppm", canvas_to_p6(&spill_map()));
+    println!("spill-map: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "tiger-assembly.ppm", canvas_to_p6(&tiger_assembly()));
+    println!("tiger-assembly: {:.2?}", t.elapsed());
+
+    // Chapter 25: the raster editor detour.
+    let t = Instant::now();
+    write_p6(out, "plate-25.ppm", canvas_to_p6(&plate_25()));
+    println!("plate-25: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "dither-strip.ppm", canvas_to_p6(&dither_strip()));
+    println!("dither-strip: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "halo-demo.ppm", canvas_to_p6(&halo_demo()));
+    println!("halo-demo: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "brush-demo.ppm", canvas_to_p6(&brush_demo()));
+    println!("brush-demo: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "paint-by-script.ppm", canvas_to_p6(&paint_by_script()));
+    println!("paint-by-script: {:.2?}", t.elapsed());
+
+    println!("wrote 95 renders to out/");
 }
