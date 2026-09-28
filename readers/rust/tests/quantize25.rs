@@ -31,6 +31,15 @@ fn median_cut_test() {
 }
 
 #[test]
+fn median_cuts_ties() {
+    assert_eq!(median_cut(&[(0, 10, 0), (10, 0, 0)], 2), vec![(0, 10, 0), (10, 0, 0)]);
+    assert_eq!(
+        median_cut(&[(0, 0, 0), (10, 0, 0), (100, 0, 0), (110, 0, 0)], 3),
+        vec![(0, 0, 0), (10, 0, 0), (105, 0, 0)]
+    );
+}
+
+#[test]
 fn the_nearest_entry() {
     let pal: Vec<(i64, i64, i64)> = vec![(0, 0, 0), (255, 255, 255), (255, 0, 0)];
     assert_eq!(nearest_index(&pal, (120, 120, 120)), 0);
@@ -48,6 +57,14 @@ fn two_inks_three_ways_error_diffusion_keeps_the_light() {
     assert!(approx_eq(mean_light(&indexed_canvas(&threshold(&r, &bw), &bw, 256, 32)), 0.5));
     assert!(approx_eq(mean_light(&indexed_canvas(&ordered_dither(&r, &bw), &bw, 256, 32)), 0.530273));
     assert!(approx_eq(mean_light(&indexed_canvas(&error_diffuse(&r, &bw), &bw, 256, 32)), 0.500732));
+}
+
+#[test]
+fn three_inks() {
+    let r = ramp_canvas(8, 2);
+    let pal: Vec<(i64, i64, i64)> = vec![(0, 0, 0), (128, 128, 128), (255, 255, 255)];
+    assert_eq!(threshold(&r, &pal), vec![0, 1, 1, 1, 1, 2, 2, 2, 0, 1, 1, 1, 1, 2, 2, 2]);
+    assert_eq!(error_diffuse(&r, &pal), vec![0, 1, 1, 1, 2, 1, 2, 2, 0, 1, 1, 1, 2, 2, 2, 2]);
 }
 
 #[test]

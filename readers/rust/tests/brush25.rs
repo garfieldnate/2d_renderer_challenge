@@ -1,6 +1,9 @@
 // features/chapter25-brush.feature
 
-use renderer::{approx_eq, brush, coverage_at, dab_coverage, min_along, point, stamp_positions, stroke_mask, wobbly_events};
+use renderer::{
+    approx_eq, brush, canvas, color, coverage_at, dab_coverage, fill, min_along, paint_stroke, pixel_at, point,
+    stamp_positions, stroke_mask, wobbly_events,
+};
 
 #[test]
 fn a_dabs_profile() {
@@ -40,6 +43,21 @@ fn flow_builds_up_where_dabs_overlap() {
     assert_eq!(coverage_at(&one, 10, 10), 0.6);
     assert!(approx_eq(coverage_at(&one, 12, 10), 0.435147));
     assert_eq!(coverage_at(&two, 10, 10), 0.84);
+}
+
+#[test]
+fn opacity_caps_the_stroke_however_often_it_crosses_itself() {
+    let mut c = canvas(60, 40);
+    fill(&mut c, color(1.0, 1.0, 1.0));
+    let m = paint_stroke(
+        &mut c,
+        &[point(10.0, 20.0), point(50.0, 20.0), point(10.0, 20.0), point(50.0, 20.0)],
+        &brush(6.0, 1.0, 0.25, 1.0, 0.5),
+        color(0.0, 0.0, 0.0),
+        true,
+    );
+    assert_eq!(coverage_at(&m, 30, 20), 0.5);
+    assert_eq!(pixel_at(&c, 30, 20), color(0.5, 0.5, 0.5));
 }
 
 #[test]

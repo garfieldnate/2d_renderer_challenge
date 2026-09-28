@@ -12490,16 +12490,16 @@ pub fn winding_color(w: i64) -> Color {
 
 /// Chapter 5's star, moved by (19.5, 19.5) -- this chapter's own use,
 /// distinct from chapter 22's `plate_star`.
-pub fn plate_star_24() -> Path {
+pub fn centred_star() -> Path {
     transform_path(&star(), translation(19.5, 19.5))
 }
 
-/// Left: the winding numbers of `plate_star_24()`'s stencil buffer,
+/// Left: the winding numbers of `centred_star()`'s stencil buffer,
 /// coloured by `winding_color`. Right: Roboto's g through
 /// `loop_blinn_stencil`, never flattened.
 pub fn plate_24() -> Canvas {
     let mut left = canvas(200, 200);
-    let s = stencil_buffer(&plate_star_24(), 200, 200);
+    let s = stencil_buffer(&centred_star(), 200, 200);
     for y in 0..200i64 {
         for x in 0..200i64 {
             write_pixel(&mut left, x, y, winding_color(stencil_at(&s, x, y)));
