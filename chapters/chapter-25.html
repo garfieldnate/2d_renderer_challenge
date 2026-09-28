@@ -387,6 +387,11 @@
     <span class="kw">And</span>   coverage_at(f, 1, 1) = 0.111111
     <span class="kw">And</span>   ink(f) = 16
 
+  <span class="kw">Scenario</span>: Off the buffer counts as unselected
+    <span class="kw">Given</span> f ← feather(marquee(0, 0, 4, 4, 8, 8), 1)
+    <span class="kw">Then</span>  coverage_at(f, 0, 0) = 0.444444
+    <span class="kw">And</span>   coverage_at(f, 1, 1) = 1
+
   <span class="kw">Scenario</span>: A floating selection moves and drops
     <span class="kw">Given</span> c ← canvas(8, 8)
     <span class="kw">When</span>  fill(c, color(0, 0, 1))

@@ -32,6 +32,11 @@ Feature: Selection and undo
     And   coverage_at(f, 1, 1) = 0.111111
     And   ink(f) = 16
 
+  Scenario: Off the buffer counts as unselected
+    Given f ← feather(marquee(0, 0, 4, 4, 8, 8), 1)
+    Then  coverage_at(f, 0, 0) = 0.444444
+    And   coverage_at(f, 1, 1) = 1
+
   Scenario: A floating selection moves and drops
     Given c ← canvas(8, 8)
     When  fill(c, color(0, 0, 1))
