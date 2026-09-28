@@ -159,6 +159,16 @@ public final class Chapter25Tests {
             assertDoubleEq("coverage_at(two, 10, 10)", two.coverageAt(10, 10), 0.84);
         });
 
+        scenario("Brush: opacity caps the stroke however often it crosses itself", () -> {
+            Canvas c = new Canvas(60, 40);
+            c.fill(new Color(1, 1, 1));
+            CoverageBuffer m = Brushes.paintStroke(c,
+                    List.of(pt(10, 20), pt(50, 20), pt(10, 20), pt(50, 20)),
+                    new Brush(6, 1, 0.25, 1, 0.5), new Color(0, 0, 0), true);
+            assertDoubleEq("coverage_at(m, 30, 20)", m.coverageAt(30, 20), 0.5);
+            assertColorEq("pixel_at(c, 30, 20)", c.pixelAt(30, 20), new Color(0.5, 0.5, 0.5));
+        });
+
         scenario("Brush: one dab per event leaves beads; spacing by distance doesn't", () -> {
             List<Tuple> ev = Brushes.wobblyEvents();
             Brush b = new Brush(8, 0.5, 0.25, 0.6, 1);
@@ -235,6 +245,16 @@ public final class Chapter25Tests {
                     List.of(rgb(63, 63, 80), rgb(128, 127, 130), rgb(226, 223, 215), rgb(246, 243, 234)));
         });
 
+        scenario("Quantize: median cut's ties", () -> {
+            assertPaletteEq("median_cut([(0,10,0),(10,0,0)], 2)",
+                    Quantize.medianCut(List.of(rgb(0, 10, 0), rgb(10, 0, 0)), 2),
+                    List.of(rgb(0, 10, 0), rgb(10, 0, 0)));
+            assertPaletteEq("median_cut([(0,0,0),(10,0,0),(100,0,0),(110,0,0)], 3)",
+                    Quantize.medianCut(
+                            List.of(rgb(0, 0, 0), rgb(10, 0, 0), rgb(100, 0, 0), rgb(110, 0, 0)), 3),
+                    List.of(rgb(0, 0, 0), rgb(10, 0, 0), rgb(105, 0, 0)));
+        });
+
         scenario("Quantize: the nearest entry", () -> {
             List<int[]> pal = List.of(rgb(0, 0, 0), rgb(255, 255, 255), rgb(255, 0, 0));
             assertEquals("nearest_index(pal, (120,120,120))", Quantize.nearestIndex(pal, rgb(120, 120, 120)), 0);
@@ -258,6 +278,15 @@ public final class Chapter25Tests {
             assertDoubleEq("mean_light(indexed_canvas(error_diffuse(r, bw), bw, 256, 32))",
                     Quantize.meanLight(Quantize.indexedCanvas(Quantize.errorDiffuse(r, bw), bw, 256, 32)),
                     0.500732, 0.000001);
+        });
+
+        scenario("Quantize: three inks", () -> {
+            Canvas r = Quantize.rampCanvas(8, 2);
+            List<int[]> pal = List.of(rgb(0, 0, 0), rgb(128, 128, 128), rgb(255, 255, 255));
+            assertIntArrayEq("threshold(r, pal)", Quantize.threshold(r, pal),
+                    new int[] {0, 1, 1, 1, 1, 2, 2, 2, 0, 1, 1, 1, 1, 2, 2, 2});
+            assertIntArrayEq("error_diffuse(r, pal)", Quantize.errorDiffuse(r, pal),
+                    new int[] {0, 1, 1, 1, 2, 1, 2, 2, 0, 1, 1, 1, 2, 2, 2, 2});
         });
 
         scenario("Quantize: an 8-bit BMP, byte by byte", () -> {

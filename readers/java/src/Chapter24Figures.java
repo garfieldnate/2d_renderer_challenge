@@ -27,8 +27,8 @@ public final class Chapter24Figures {
         }
     }
 
-    /** plate_star() is chapter 5's star moved by (19.5, 19.5). */
-    public static Path plateStar() {
+    /** centred_star() is chapter 5's star moved by (19.5, 19.5). */
+    public static Path centredStar() {
         return Paths.transformPath(Figures.star(), Transforms.translation(19.5, 19.5));
     }
 
@@ -44,7 +44,7 @@ public final class Chapter24Figures {
 
     public static Canvas plate24() {
         Canvas c = new Canvas(400, 200);
-        Stencil s = Stencils.stencilBuffer(plateStar(), 200, 200);
+        Stencil s = Stencils.stencilBuffer(centredStar(), 200, 200);
         for (int y = 0; y < 200; y++) {
             for (int x = 0; x < 200; x++) {
                 c.writePixel(x, y, windingColor(s.values[y * 200 + x]));
