@@ -11787,3 +11787,57 @@ def paint_by_script():
     bmp = canvas_to_bmp8(indices, palette, w, h)
     _w2, _h2, pal2, idx2 = read_bmp8(bmp)
     return indexed_canvas(idx2, pal2, w, h)
+
+
+# ============================================================
+# Epilogue: One Last Picture
+# ============================================================
+
+def book_cover():
+    """The program printed in the epilogue: chapter 20's render_svg of
+    the cover document on a 480 by 680 canvas, then the title (laid out
+    by layout_paragraph, 44 pixels, from (40, 530), 400 wide, left
+    aligned, kerning on) and the subtitle (laid out by layout_run, 15
+    pixels, from (40, 640), kerning on), both drawn with chapter 18's
+    draw_run with linear blending on."""
+    c = render_svg(read_file("reference/epilogue/cover.svg"), 480, 680)
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    title = layout_paragraph(font, "The 2D Renderer Challenge", 44, 40, 530, 400, "left", True)
+    sub = layout_run(font, "A test-driven guide to drawing every pixel yourself", 15, 40, 640, True)
+    draw_run(c, font, title, 44, color(0.9, 0.86, 0.79), True)
+    draw_run(c, font, sub, 15, color(1, 0.33, 0.085), True)
+    return c
+
+
+def glow_of(d):
+    """The bonus glow under the title's letters: 0.45 x (1 -
+    clamp(d / 10, 0, 1)) ** 2, 0.45 inside and on the edge, falling to 0
+    ten pixels out."""
+    t = max(0.0, min(1.0, d / 10.0))
+    return 0.45 * (1 - t) ** 2
+
+
+def book_cover_glow():
+    """book_cover() with one step between the document and the title's
+    draw_run: every distinct glyph of the title baked once by
+    bake_mtsdf at 32 pixels with spread 8, then, for every placement of
+    the title in order, draw_effect reading the true-distance channel
+    through glow_of. The subtitle gets no glow."""
+    c = render_svg(read_file("reference/epilogue/cover.svg"), 480, 680)
+    font = load_font(read_file("reference/chapter-16/roboto.json"))
+    title = layout_paragraph(font, "The 2D Renderer Challenge", 44, 40, 530, 400, "left", True)
+    sub = layout_run(font, "A test-driven guide to drawing every pixel yourself", 15, 40, 640, True)
+    orange = color(1, 0.33, 0.085)
+    baked_cache = {}
+
+    def get_baked(name):
+        if name not in baked_cache:
+            baked_cache[name] = bake_mtsdf(font, name, 32, 8)
+        return baked_cache[name]
+
+    for pl in title:
+        baked = get_baked(pl.name)
+        draw_effect(c, baked, 44 / 32, pl.x, pl.y, orange, True, glow_of)
+    draw_run(c, font, title, 44, color(0.9, 0.86, 0.79), True)
+    draw_run(c, font, sub, 15, orange, True)
+    return c

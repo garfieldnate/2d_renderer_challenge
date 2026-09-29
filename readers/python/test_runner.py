@@ -848,6 +848,10 @@ def evaluate_expression(expr_str, ctx):
             'halo_demo': renderer.halo_demo,
             'brush_demo': renderer.brush_demo,
             'paint_by_script': renderer.paint_by_script,
+            # Epilogue
+            'book_cover': renderer.book_cover,
+            'book_cover_glow': renderer.book_cover_glow,
+            'glow_of': renderer.glow_of,
         }
         namespace.update(ctx.variables)
 
