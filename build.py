@@ -7,7 +7,7 @@ and ../assets/book.js, so they open by double-clicking with no build step.
 This script produces the other thing we sometimes need: a single file with
 nothing external, suitable for publishing or emailing.
 
-    ./build.py                     # build every chapter into dist/
+    ./build.py                     # the contents page and every chapter, into dist/
     ./build.py chapters/chapter-01.html
     ./build.py --fragment ...      # drop <html>/<head>/<body>, for Artifacts
 
@@ -15,6 +15,7 @@ The --fragment form is what the Artifact publisher wants: a bare <title>,
 <style>, content and <script>, with the document skeleton supplied for you.
 """
 
+import base64
 import re
 import sys
 from pathlib import Path
@@ -38,6 +39,12 @@ def inline(path: Path, fragment: bool = False) -> str:
     html = re.sub(r'<link rel="stylesheet" href="([^"]+)">', css, html)
     html = re.sub(r'<script src="([^"]+)"></script>', js, html)
 
+    def img(m):
+        data = (base / m.group(1)).resolve()
+        return '<img src="data:image/png;base64,%s"' % base64.b64encode(data.read_bytes()).decode("ascii")
+
+    html = re.sub(r'<img src="([^"]+\.png)"', img, html)
+
     if fragment:
         # keep the title, drop the rest of the skeleton
         title = re.search(r"<title>(.*?)</title>", html, re.S)
@@ -47,15 +54,16 @@ def inline(path: Path, fragment: bool = False) -> str:
             body.group(1).strip() if body else html,
         )
 
-    # chapters link each other and the outline; those are gone once inlined
-    html = html.replace('href="../plan.html"', 'href="#"')
+    # dist/ is flat: the contents page and every chapter side by side
+    html = html.replace('href="../index.html"', 'href="index.html"')
+    html = html.replace('href="chapters/', 'href="')
     return html
 
 
 def main(argv):
     fragment = "--fragment" in argv
     args = [a for a in argv if not a.startswith("--")]
-    targets = [Path(a) for a in args] or sorted((ROOT / "chapters").glob("*.html"))
+    targets = [Path(a) for a in args] or [ROOT / "index.html"] + sorted((ROOT / "chapters").glob("*.html"))
 
     if not targets:
         print("nothing to build")

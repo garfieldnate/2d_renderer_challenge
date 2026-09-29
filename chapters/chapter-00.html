@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 0 · Before You Start — The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="../assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Chapter 0 of 25</span>
+    <span><a href="../index.html">Contents</a> · <a href="chapter-01.html">1 →</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">Chapter Zero</p>
+    <h1>Before You Start</h1>
+    <p class="hook">Open any drawing program, pick the ellipse tool and drag out a circle. It takes
+      about a second. In that second something decided, for every one of the few thousand pixels
+      along the circle's edge, how much of that pixel the circle covers, what colour the paint is
+      at that exact spot, and how to mix the paint with whatever was there before, without being
+      too dark along the rim or too bright where two shapes meet. You've never seen it make those
+      decisions, because when it gets them right there's nothing to see. This book is about making
+      them yourself.</p>
+  </header>
+
+  <p>You're going to write a 2D vector renderer from nothing: the kind of program that sits under
+    a browser, a PDF viewer, a font engine or an illustration tool, and turns shapes into pixels.
+    You'll write it test first, in whatever language you like, with no graphics library anywhere,
+    and at the end of each chapter you'll have a picture you drew yourself and a pile of passing
+    tests that say it's right.</p>
+
+  <p>This chapter has no tests and no code. It's the tour: what you'll build, the one idea the
+    whole book hangs on, the rules, how a chapter works, and a map with the places you can stop.
+    Chapter 1 is where the typing starts.</p>
+
+  <h2><span class="sec">§ 0.1</span> What you're going to build</h2>
+
+  <p>This is the last picture in the book, the cover, and you'll draw every pixel of it.</p>
+
+  <figure class="cover">
+    <img src="../assets/cover.png" width="480" height="680" alt="The book's cover: on dark indigo paper, a rounded square panel with a warm glowing background and the Ghostscript tiger's head filling it, its ear cut off by the panel's rounded corner; a dashed orange rule; the title The 2D Renderer Challenge in two lines of cream type; a small orange subtitle; faint crop marks in the corners">
+    <figcaption><span class="fig">Figure 0.1</span> The epilogue's render, as the reference implementation draws it: 480 by 680 pixels, one SVG document and two lines of type. This is the file <code>reference/epilogue/cover.ppm</code>, shown here as an image. By the end of the book your own program draws it, and a test checks every byte.</figcaption>
+  </figure>
+
+  <p>It doesn't look like much of a program, and that's the point. The panel is a rounded rectangle
+    used as a clip. The warm light behind the tiger is a radial gradient. The tiger is the
+    Ghostscript tiger, the test image every 2D renderer has drawn since the 1990s: 240 paths in
+    nested groups, with a matrix on top and hairline strokes on its whiskers. The rule under the
+    panel is a stroke with a dash pattern and round caps. The crop marks are a group drawn at half
+    opacity. The title is Roboto, set with kerning, broken into two lines, and rasterized glyph by
+    glyph. Every one of those is a chapter, and the finished cover is seven lines of code that call
+    them.</p>
+
+  <p>Along the way you'll build, in about this order: a canvas that stores light, not numbers;
+    antialiased lines; matrices; paths and the two rules for what's inside them; a polygon fill,
+    then an exact antialiased fill; Bézier curves and arcs; Porter–Duff compositing and blend modes;
+    gradients; image resampling; clips, masks and groups; strokes, including offsetting curves and
+    dashes; glyph outlines, text rasterization, line layout and a field guide to shaping; an SVG
+    renderer; and a chapter that makes it all fast without changing a single byte of output. After
+    that there are four bonus chapters for anyone who wants to keep going.</p>
+
+  <h2><span class="sec">§ 0.2</span> The one idea</h2>
+
+  <p>Here's the whole book in two sentences, and you'll be reminded of them often.</p>
+
+  <blockquote class="hook">Rasterization computes coverage. Painting composites paint through
+    coverage.</blockquote>
+
+  <p>Coverage is a number between 0 and 1 for every pixel: how much of that pixel the shape
+    covers. Chapter 2 introduces it, and from then on almost everything is either a better way of
+    computing coverage or a more interesting thing to paint through it. Once you hold a coverage
+    buffer, a stroke turns out to be a fill of a different outline. A clip is two coverage buffers
+    multiplied. A glyph is a path somebody else drew. An SVG file is a list of paths with paint
+    attached. Three quarters of the book is learning to see that, and the other quarter is the
+    places where it gets hard anyway.</p>
+
+  <h2><span class="sec">§ 0.3</span> The rules</h2>
+
+  <p>The book is modeled on Jamis Buck's <em>The Ray Tracer Challenge</em>, and it keeps that
+    book's rules, plus a few of its own.</p>
+
+  <ul>
+    <li><strong>Any language.</strong> Nothing in the book depends on a particular one. The tests
+      are written in Gherkin, a plain-English format you translate into whatever test framework
+      your language already has. You'll write the step definitions yourself; chapter 1 shows how
+      the notation reads.</li>
+    <li><strong>No graphics libraries.</strong> No image library, no canvas API, no windowing, no
+      font library. If a pixel ends up in a file, your code put it there.</li>
+    <li><strong>Output is PPM.</strong> A PPM file is a tiny header and then the pixels. Chapter 1
+      writes the plain-text kind, which you can open in a text editor; chapter 2 switches to the
+      binary kind, because the text files get large. Not every image viewer opens PPM; chapter 1
+      names some that do, and a converter for when yours doesn't.</li>
+    <li><strong>The canvas stores light.</strong> This is the book's one big opinion, and chapter 1
+      is spent defending it. Colours on the canvas measure light, so halfway between black
+      and white is half the photons. Only the file writer knows how screens encode that. A single
+      switch lets you blend the way browsers do when you want to compare.</li>
+    <li><strong>The maths is yours.</strong> Vectors, 3×3 matrices, curve splitting, root finding
+      and arc length are all small, and you write each one once.</li>
+    <li><strong>Two things arrive ready-made.</strong> Chapter 20 lets you use your language's XML
+      library to read SVG, because an XML parser teaches nothing about drawing; you still write
+      the parser for path data, which does. And font data comes as JSON files the book ships, so
+      you never have to read the binary tables inside a <code>.ttf</code>.</li>
+    <li><strong>No interactivity.</strong> Your program writes files. Every chapter has an
+      <em>In the GUI</em> aside that tells you which control in Illustrator, Figma, Inkscape or
+      Photoshop is secretly the algorithm you've written.</li>
+  </ul>
+
+  <h2><span class="sec">§ 0.4</span> How a chapter goes</h2>
+
+  <p>Every chapter opens on a concrete problem, usually one that looks like it should have a
+    one-line answer and doesn't. Then it goes round the same loop, a few times per chapter: the
+    idea, in prose and figures; a feature file of scenarios that pin down exactly what the idea
+    means; you make the scenarios pass; you render something and look at it. Every render the
+    book asks for is a named function with a reference image, so "look at it" is also a test.</p>
+
+  <p>Each chapter ends with a plate: the picture that proves the chapter works. Somewhere in the
+    middle there's a box called <em>The trap</em>, which is the mistake nearly everyone makes on
+    that topic. Most traps are there because the book's own author made the mistake first. There
+    are <em>In the GUI</em> asides, and notes like the one below that explain how to use the book
+    itself.</p>
+
+  <div class="note">
+    <h4>The code under each figure</h4>
+    <p>Every figure in the book is drawn live in your browser, and under each one is a
+      <em>canvas source</em> toggle that shows the JavaScript that drew it. It's there so you can
+      trust the picture: it is provably the code that ran. It's also, from chapter 2 on, a working
+      implementation of the chapter. If you want the book to teach you, write your own first, get
+      the scenarios passing, and read the figure's code afterwards to compare notes.</p>
+  </div>
+
+  <p>There is no exercises section anywhere. If the book asks you to do something, whether it's
+    writing a function, deciding what happens at an edge case or drawing a picture, there's a
+    scenario that says what the right answer is. If you find a step that isn't pinned by a test,
+    that's a bug in the book.</p>
+
+  <h2><span class="sec">§ 0.5</span> Three kinds of test</h2>
+
+  <p>A ray tracer's tests are mostly exact: a ray hits a sphere at t = 4, and that's that. A 2D
+    renderer's output mostly isn't a number you can write down, and a test that pinned a whole
+    400 by 400 image by hand would be unreadable and break every time you tidied your code. So the
+    book's tests come in three kinds, and chapter 1 uses all three before it's done. Chapter 1
+    also sets out the notation, including how close two numbers have to be to count as equal.</p>
+
+  <ul>
+    <li><strong>Exact.</strong> The ones that look like <em>The Ray Tracer Challenge</em>: a
+      matrix, a winding number, a point on a curve, a blend equation, a kerning pair. About half
+      the book.</li>
+    <li><strong>Coverage with a tolerance.</strong> How the rasterizer itself gets tested without
+      pinning whole images: shapes simple enough that you could work out the answer on paper,
+      such as a half-plane through pixel centres or a triangle of known area, and a coverage
+      that must come out within a stated margin.</li>
+    <li><strong>Golden images.</strong> A full render compared against a reference file the book
+      ships, with a budget: none of the red, green and blue bytes of any pixel, each 0 to 255, may differ
+      from the reference by more than 1. That budget is what
+      lets two correct programs in two languages agree, while a transposed axis, a truncation
+      instead of a rounding or a missed half-pixel offset fails loudly.</li>
+  </ul>
+
+  <p>By the last chapter the book has over 880 scenarios. Every number in every one of them came
+    from running code, not from arithmetic done by hand, and the reference images were checked by
+    looking at them as well as by diffing them.</p>
+
+  <h2><span class="sec">§ 0.6</span> What you need</h2>
+
+  <p>A language with floating point numbers and a test framework. That's close to the whole
+    list. Any language you can write comfortably is fine. Test readers have worked through the
+    first six chapters in twelve languages (C, C#, Dart, Java, JavaScript, Lean, Lua, Python, Ruby,
+    Rust, Swift and TypeScript) and the whole book in Python, Java and Rust. Fast languages make the later chapters more
+    pleasant. Python is fine too, with a coffee during the tiger.</p>
+
+  <p>The maths is high-school algebra and a little trigonometry. You'll meet vectors, a
+    3×3 matrix, the quadratic formula and the derivative of a polynomial, and every one of them is
+    explained where it's used. Nothing needs calculus beyond that, and nothing needs linear
+    algebra beyond multiplying a matrix by a point.</p>
+
+  <p>You also need the book's files. The <code>reference/</code> directory holds the reference
+    images the golden tests compare against, and the font and SVG files the later chapters read;
+    the scenarios load them by path, and chapter 1 tells you where to put the directory so the
+    paths resolve. The <code>features/</code> directory holds every scenario, one file per section,
+    exactly as the chapters print them. Your tests never read it: it's there so you can copy
+    scenarios from a file instead of from the page, and run them with Cucumber if you'd like to.</p>
+
+  <h2><span class="sec">§ 0.7</span> The map, and where you can stop</h2>
+
+  <p>The main track is twenty-one chapters in six parts. The parts build on each other in order,
+    and each one leaves you with something that works on its own.</p>
+
+  <div class="tablewrap">
+    <table class="props">
+      <thead><tr><th>Part</th><th>Chapters</th><th>What you have at the end</th></tr></thead>
+      <tbody>
+        <tr><td>I. Pixels and Coverage</td><td>1–3</td><td>A canvas that stores light, a PPM writer,
+          coverage, and antialiased lines. One deliberately bad renderer for everything after to beat.</td></tr>
+        <tr><td>II. Geometry and the Fill</td><td>4–8</td><td>Transforms, paths, an exact antialiased
+          fill and curves. A rasterizer as good as a production one. Everything after feeds it
+          more interesting shapes.</td></tr>
+        <tr><td>III. Paint</td><td>9–12</td><td>Compositing, blend modes, gradients, images, clips,
+          masks and groups: what colour, and how it meets what's already there.</td></tr>
+        <tr><td>IV. Strokes</td><td>13–15</td><td>Lines with width, joins, caps, offset curves and
+          dashes. No new rasterizer, and the fiddliest geometry in the book.</td></tr>
+        <tr><td>V. Type</td><td>16–19</td><td>Glyph outlines, text rasterization, kerning, line
+          breaking and alignment, and a working tour of how shaping handles Arabic.</td></tr>
+        <tr><td>VI. The Whole Machine</td><td>20–21</td><td>An SVG renderer that draws the tiger, and
+          the same renderer taken from 29 seconds a tiger to under two in Python, with
+          byte-identical output.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>If you stop after Part II, you have a real rasterizer. After Part III it paints the way a PDF
+    viewer does, gradients, images and clips included, as long as nothing needs an outline. After
+    Part IV it strokes. Part V, type, can be put off: the SVG renderer in Part VI never draws text,
+    and the only thing it borrows from Part V is the background colour chapter 16's figures are
+    drawn on. You'll want Part V back for the epilogue,
+    whose cover has a title. Chapter 21 finishes the main track, and the cover needs nothing
+    past it.</p>
+
+  <p>Then there are two bonus tracks, which you can take or leave:</p>
+
+  <ul>
+    <li><strong>Further Out</strong>, chapters 22 to 24. Boolean operations on paths, done with
+      exact arithmetic so they never crack; distance fields, the other way to think about a
+      shape, including the multi-channel kind games use for text; and the GPU's way of drawing,
+      re-implemented on the CPU so you can see it's the same sums in a different order. These need
+      the whole main track.</li>
+    <li><strong>The Raster Editor Detour</strong>, chapter 25. Brushes, the bucket fill, colour
+      quantization and dithering, selections and undo: the paint program's way of working, with
+      pixels instead of geometry. It can be read any time after chapter 13.</li>
+  </ul>
+
+  <p>The epilogue ties it together: a look back at what everything turned out to be, the cover,
+    with a bonus variant for readers who did chapter 23, and a list of what the book left out and
+    where to go to learn it.</p>
+
+  <p>One last thing before you start. A few of these chapters are hard. Chapter 7's fill, chapter
+    14's offset curves and chapter 22's booleans are hard for everyone, including the people who
+    write renderers for a living, and the book says so when it gets there. The rest is less
+    frightening than its reputation. The tests will tell you when you've got it right, every time.</p>
+
+  <p>Turn the page. There's a question about a gray pixel waiting for you.</p>
+
+  <nav class="endnav">
+    <a href="../index.html">← Contents</a>
+    <span>Chapter 0 · Before You Start</span>
+    <a href="chapter-01.html">Next: 1 · The Canvas and the Color →</a>
+  </nav>
+
+</div>
+
+</body>
+</html>

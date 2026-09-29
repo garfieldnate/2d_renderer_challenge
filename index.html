@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The 2D Renderer Challenge</title>
+<link rel="stylesheet" href="assets/book.css">
+</head>
+<body>
+
+<div class="chapter">
+
+  <nav class="runner">
+    <span>The 2D Renderer Challenge</span>
+    <span>Contents</span>
+    <span><a href="chapters/chapter-00.html">Start reading →</a></span>
+  </nav>
+
+  <header class="opener">
+    <p class="num">A test-driven book</p>
+    <h1>The 2D Renderer Challenge</h1>
+    <p class="hook">Build a complete 2D vector renderer from nothing, in any language, test first:
+      lines, fills, curves, compositing, gradients, images, clips, strokes, dashes, type and SVG,
+      with every pixel written by your own code.</p>
+  </header>
+
+  <figure class="cover">
+    <img src="assets/cover.png" width="480" height="680" alt="The book's cover: on dark indigo paper, a rounded square panel with a warm glowing background and the Ghostscript tiger's head filling it, its ear cut off by the panel's rounded corner; a dashed orange rule; the title The 2D Renderer Challenge in two lines of cream type; a small orange subtitle; faint crop marks in the corners">
+    <figcaption><span class="fig">The cover</span> The epilogue's render, drawn by the book's reference implementation. By the end, yours draws it too.</figcaption>
+  </figure>
+
+  <p>Twenty-one chapters in six parts make the main track, and each part leaves you with something
+    that works on its own. Two bonus tracks go further out. Every step comes with Gherkin scenarios
+    and every render with a reference image, so the tests always tell you when you've got it right.
+    Start with chapter 0, which explains how the book works and where you can stop.</p>
+
+  <ol class="contents">
+    <li><span class="n">0</span><a href="chapters/chapter-00.html">Before You Start</a><p>What you&#x27;ll build, the one idea, the rules, three kinds of test, and where you can stop.</p></li>
+  </ol>
+  <p class="part">Part I · Pixels and Coverage</p>
+  <ol class="contents">
+    <li><span class="n">1</span><a href="chapters/chapter-01.html">The Canvas and the Color</a><p>A canvas that stores light, a PPM writer, and why halfway between black and white is 188.</p></li>
+    <li><span class="n">2</span><a href="chapters/chapter-02.html">Coverage</a><p>How much of a pixel a shape covers, a brute-force supersampler, and binary PPM.</p></li>
+    <li><span class="n">3</span><a href="chapters/chapter-03.html">Lines</a><p>Bresenham&#x27;s line and Wu&#x27;s antialiased one, and why every slanted ray flickers.</p></li>
+  </ol>
+  <p class="part">Part II · Geometry and the Fill</p>
+  <ol class="contents">
+    <li><span class="n">4</span><a href="chapters/chapter-04.html">Points, Vectors, Transforms</a><p>Tuples, 3×3 matrices, translation, scaling, rotation and shear, and which space the pen lives in.</p></li>
+    <li><span class="n">5</span><a href="chapters/chapter-05.html">Paths and Insideness</a><p>Paths of subpaths, winding numbers, and the two fill rules.</p></li>
+    <li><span class="n">6</span><a href="chapters/chapter-06.html">Filling a Polygon</a><p>The scanline sweep: an edge table, active edges and spans.</p></li>
+    <li><span class="n">7</span><a href="chapters/chapter-07.html">Analytic Antialiasing</a><p>An exact coverage fill from a running sum of signed areas.</p></li>
+    <li><span class="n">8</span><a href="chapters/chapter-08.html">Curves</a><p>Quadratic and cubic Béziers, tight bounds, flattening to a tolerance, and SVG&#x27;s elliptical arcs.</p></li>
+  </ol>
+  <p class="part">Part III · Paint</p>
+  <ol class="contents">
+    <li><span class="n">9</span><a href="chapters/chapter-09.html">Compositing</a><p>Premultiplied pixels, source-over, the twelve Porter–Duff operators and the blend modes.</p></li>
+    <li><span class="n">10</span><a href="chapters/chapter-10.html">Paint Servers and Gradients</a><p>Linear, radial and conic gradients, colour stops, extend modes and ordered dither.</p></li>
+    <li><span class="n">11</span><a href="chapters/chapter-11.html">Images and Resampling</a><p>Nearest, bilinear and bicubic sampling, the half-pixel offset, and mipmaps.</p></li>
+    <li><span class="n">12</span><a href="chapters/chapter-12.html">Clipping, Masks and Groups</a><p>Clips as coverage, soft masks, and group opacity.</p></li>
+  </ol>
+  <p class="part">Part IV · Strokes</p>
+  <ol class="contents">
+    <li><span class="n">13</span><a href="chapters/chapter-13.html">Stroking is Filling</a><p>Width, joins, caps and the miter limit, as a union of shapes filled nonzero.</p></li>
+    <li><span class="n">14</span><a href="chapters/chapter-14.html">Offsetting Curves</a><p>Tangents, normals, curvature, cusps, and fitting an offset curve with cubics.</p></li>
+    <li><span class="n">15</span><a href="chapters/chapter-15.html">Dashes</a><p>Arc length, dash patterns, phase, and dashes that turn corners.</p></li>
+  </ol>
+  <p class="part">Part V · Type</p>
+  <ol class="contents">
+    <li><span class="n">16</span><a href="chapters/chapter-16.html">What a Glyph Is</a><p>Font data, TrueType&#x27;s quadratic contours, composite glyphs, and the flip to the canvas.</p></li>
+    <li><span class="n">17</span><a href="chapters/chapter-17.html">Rasterizing Type Well</a><p>Subpixel positioning, a glyph cache and atlas, stem darkening, and LCD text.</p></li>
+    <li><span class="n">18</span><a href="chapters/chapter-18.html">Setting a Line of Text</a><p>Kerning, metrics, line breaking, alignment, and why the pen must not round.</p></li>
+    <li><span class="n">19</span><a href="chapters/chapter-19.html">Shaping, a Field Guide</a><p>Ligatures, Arabic joining forms and marks, script runs, right-to-left runs, and carets.</p></li>
+  </ol>
+  <p class="part">Part VI · The Whole Machine</p>
+  <ol class="contents">
+    <li><span class="n">20</span><a href="chapters/chapter-20.html">Rendering SVG</a><p>Path data, transforms, styles, shapes, gradients, clips and groups: the tiger.</p></li>
+    <li><span class="n">21</span><a href="chapters/chapter-21.html">Making It Fast</a><p>Counting work, bounds, tiles and span compositing, byte for byte the same picture.</p></li>
+  </ol>
+  <p class="part">Bonus A · Further Out</p>
+  <ol class="contents">
+    <li><span class="n">22</span><a href="chapters/chapter-22.html">Boolean Path Operations</a><p>Union, intersection, difference and xor, in exact arithmetic on a snap grid, with a Bentley–Ottmann sweep.</p></li>
+    <li><span class="n">23</span><a href="chapters/chapter-23.html">Distance Fields</a><p>Signed distance for shapes and curves, field operations, the distance transform, and MSDF glyph atlases.</p></li>
+    <li><span class="n">24</span><a href="chapters/chapter-24.html">Doing It the GPU&#x27;s Way</a><p>Stencil winding, Loop–Blinn curves, MSAA patterns, and a tiled pipeline on the CPU.</p></li>
+  </ol>
+  <p class="part">Bonus B · The Raster Editor Detour</p>
+  <ol class="contents">
+    <li><span class="n">25</span><a href="chapters/chapter-25.html">The Raster Editor Detour</a><p>Brushes, the bucket fill, median cut and dithering, 8-bit BMP, selections and undo.</p></li>
+  </ol>
+  <ol class="contents">
+    <li><span class="n">E</span><a href="chapters/epilogue.html">One Last Picture</a><p>What everything turned out to be, the book&#x27;s cover, what was left out, and where to go next.</p></li>
+  </ol>
+
+  <nav class="endnav">
+    <span></span>
+    <span>Contents</span>
+    <a href="chapters/chapter-00.html">Start: 0 · Before You Start →</a>
+  </nav>
+
+</div>
+
+</body>
+</html>

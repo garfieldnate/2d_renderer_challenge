@@ -52,7 +52,7 @@ def sync(chapter, check):
         return m.group(1) + highlight(feature) + m.group(4)
 
     out = BLOCK_RE.sub(fill, src)
-    stem = chapter.stem.replace("chapter-", "chapter")
+    stem = chapter.stem.replace("chapter-", "chapter")   # epilogue.html prints epilogue-*.feature
     expected = sorted(p.name for p in (ROOT / "features").glob(stem + "-*.feature"))
     missing = sorted(set(expected) - set(seen))
     dupes = sorted(n for n in set(seen) if seen.count(n) > 1)
@@ -75,7 +75,7 @@ def sync(chapter, check):
 def main(argv):
     check = "--check" in argv
     problems = []
-    for ch in sorted((ROOT / "chapters").glob("chapter-*.html")):
+    for ch in sorted((ROOT / "chapters").glob("*.html")):
         problems += sync(ch, check)
     for p in problems:
         print("ERROR: " + p)

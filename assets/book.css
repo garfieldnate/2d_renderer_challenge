@@ -123,6 +123,8 @@ figure{
   margin:30px 0; background:var(--plate); border:1px solid var(--rule); padding:13px;
 }
 figure canvas{display:block;width:100%}
+figure img{display:block;max-width:100%;height:auto;margin:0 auto}
+figure.cover img{width:480px;image-rendering:auto}
 figcaption{
   font-family:var(--mono); font-size:11px; line-height:1.55; color:var(--ink-3);
   margin-top:11px; letter-spacing:.02em;
@@ -222,3 +224,12 @@ table.props th,table.props td{text-align:left;padding:5px 10px;border-bottom:1px
 table.props th{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:normal;border-bottom:1px solid var(--rule)}
 table.props code{font-size:13.5px}
 @media (max-width:640px){table.props{font-size:14px} table.props th,table.props td{padding:4px 6px}}
+
+/* ---- the contents page ----------------------------------------------- */
+.contents{margin:0 0 30px;padding:0;list-style:none}
+.contents li{display:grid;grid-template-columns:3.2em 1fr;gap:4px 12px;padding:12px 0;border-bottom:1px solid var(--rule-2);margin:0}
+.contents .n{font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--cyan);padding-top:5px}
+.contents a{font-family:var(--display);font-weight:700;font-size:19px;color:var(--ink);text-decoration:none}
+.contents a:hover{color:var(--cyan)}
+.contents p{grid-column:2;margin:0;font-size:16px;line-height:1.5;color:var(--ink-2)}
+.part{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--magenta);margin:44px 0 4px}

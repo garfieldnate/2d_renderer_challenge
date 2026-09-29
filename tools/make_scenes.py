@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Author-side generator for chapter 20's showcase documents. Writes
-reference/chapter-20/harbor.svg and reference/chapter-20/rose.svg.
+Author-side generator for chapter 20's showcase documents and the
+epilogue's cover. Writes reference/chapter-20/harbor.svg,
+reference/chapter-20/rose.svg and reference/epilogue/cover.svg.
 
 The files are the data; this script only saves typing the repetitive parts
 (stars, ripples, the window's twelve bays). Everything in them is SVG the
@@ -251,7 +252,54 @@ def rose():
     return "\n".join(L) + "\n"
 
 
+def cover():
+    """the book's cover: dark paper, a rounded panel with a warm glow and the
+    tiger inside it, cut off by the panel's clip, a frame, a dashed rule and
+    four crop marks at half opacity. The title is set on top by the
+    epilogue's program, not by SVG, which has no text in this book."""
+    tiger = (OUT / "tiger.svg").read_text()
+    inner = tiger[tiger.index(">", tiger.index("<svg")) + 1:tiger.rindex("</svg>")]
+    L = []
+    a = L.append
+    a('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 680">')
+    a('  <defs>')
+    a('    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">')
+    a('      <stop offset="0" stop-color="#15132a"/>')
+    a('      <stop offset="1" stop-color="#2e1636"/>')
+    a('    </linearGradient>')
+    a('    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.62">')
+    a('      <stop offset="0" stop-color="#fff6e2"/>')
+    a('      <stop offset="0.55" stop-color="#f4c98a"/>')
+    a('      <stop offset="1" stop-color="#c8643c"/>')
+    a('    </radialGradient>')
+    a('    <clipPath id="panel">')
+    a('      <rect x="40" y="40" width="400" height="400" rx="24"/>')
+    a('    </clipPath>')
+    a('  </defs>')
+    a('  <rect width="480" height="680" fill="url(#paper)"/>')
+    a('  <g clip-path="url(#panel)">')
+    a('    <rect x="40" y="40" width="400" height="400" fill="url(#glow)"/>')
+    a('    <g transform="translate(248 250) scale(0.5) translate(-450 -450)">')
+    a(inner.strip("\n"))
+    a('    </g>')
+    a('  </g>')
+    a('  <rect x="40" y="40" width="400" height="400" rx="24" fill="none" stroke="#f4efe6" stroke-width="2"/>')
+    a('  <line x1="40" y1="472" x2="440" y2="472" stroke="#ff9a52" stroke-width="3" stroke-dasharray="14 9" stroke-linecap="round"/>')
+    a('  <g opacity="0.5" stroke="#f4efe6" fill="none">')
+    # each arm 1 wide down the middle of a pixel row or column, so it's crisp,
+    # and each its own element, so where two cross shows the group's opacity
+    for (x, y, dx, dy) in [(16, 16, 1, 1), (464, 16, -1, 1), (16, 664, 1, -1), (464, 664, -1, -1)]:
+        a('    <path d="M%s %sh%d"/>' % (f(x), f(y + 8 * dy + 0.5 * dy), 16 * dx))
+        a('    <path d="M%s %sv%d"/>' % (f(x + 8 * dx + 0.5 * dx), f(y), 16 * dy))
+    a('  </g>')
+    a('</svg>')
+    return "\n".join(L) + "\n"
+
+
 if __name__ == "__main__":
     (OUT / "harbor.svg").write_text(harbor())
     (OUT / "rose.svg").write_text(rose())
-    print("wrote harbor.svg, rose.svg")
+    ep = OUT.parent / "epilogue"
+    ep.mkdir(exist_ok=True)
+    (ep / "cover.svg").write_text(cover())
+    print("wrote harbor.svg, rose.svg, ../epilogue/cover.svg")

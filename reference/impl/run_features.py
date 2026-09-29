@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Run every features/chapter01-*.feature against the reference implementation.
+Run every features/*.feature against the reference implementation.
 
 This is a deliberately tiny Gherkin executor: it understands exactly the step
 shapes the book uses and nothing else. Its job is to prove that every number
 printed in a scenario was produced by running code, so an edit to either side
 that breaks the agreement fails loudly.
 
-    ./reference/impl/run_features.py            # all chapter 1 features
+    ./reference/impl/run_features.py            # every feature file
     ./reference/impl/run_features.py features/chapter01-mix.feature
 """
 
@@ -21,7 +21,7 @@ import importlib
 import renderer as R  # noqa: E402
 
 CHAPTERS = [importlib.import_module(p.stem) for p in
-            sorted(Path(__file__).resolve().parent.glob("chapter*.py"))]
+            sorted(Path(__file__).resolve().parent.glob("chapter*.py"))] + [importlib.import_module("epilogue")]
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -245,7 +245,7 @@ def parse(path):
 
 
 def main(argv):
-    targets = [Path(a) for a in argv] or sorted((ROOT / "features").glob("chapter*.feature"))
+    targets = [Path(a) for a in argv] or sorted((ROOT / "features").glob("*.feature"))
     total = failed = 0
     for f in targets:
         for name, steps in parse(f):
