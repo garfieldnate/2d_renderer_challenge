@@ -205,8 +205,9 @@
   reference/epilogue/cover.svg on a 480 by 680 canvas; then the title, laid
   out as the type feature says, drawn with chapter 18's draw_run at 44 pixels
   in color(0.9, 0.86, 0.79); then the subtitle drawn at 15 pixels in
-  color(1, 0.33, 0.085); both draw_runs with linear blending on. It returns
-  the canvas.
+  color(1, 0.33, 0.085); both draw_runs with linear blending on (the probe at
+  (363, 510), on the edge of a letter, is where blending encoded instead shows).
+  It returns the canvas.
 
   <span class="kw">Scenario</span>: The cover
     <span class="kw">Given</span> ref ← read_file("reference/epilogue/cover.ppm")
@@ -219,6 +220,7 @@
     <span class="kw">And</span>   ppm_pixel(p6, 60, 540) = (42, 21, 52) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 56, 639) = (255, 155, 82) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 240, 8) = (21, 19, 42) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 363, 510) = (142, 136, 136) ± 1
     <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1
 
   <span class="kw">Scenario</span>: Chapter 21's tiled walker draws the cover's document byte for byte
@@ -269,7 +271,10 @@
   placement of the title in order, draw_effect(c, its baked glyph, 44 / 32,
   the placement's x, its y, color(1, 0.33, 0.085), true, glow_of). Spread 8
   at a scale of 44 / 32 reaches 11 pixels, past the glow's 10, so no texel
-  clamped at the spread ever glows. The subtitle gets no glow.
+  clamped at the spread ever glows. The glow reads the fourth, true-distance
+  channel; the probe at (62, 536), between the lines, is where the median of
+  the other three would glow and the true distance doesn't. The subtitle gets
+  no glow.
 
   <span class="kw">Scenario</span>: How the glow falls off
     <span class="kw">Then</span>  glow_of(-3) = 0.45
@@ -290,6 +295,7 @@
     <span class="kw">And</span>   ppm_pixel(p6, 44, 494) = (114, 67, 57) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 35, 499) = (93, 54, 55) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 60, 540) = (42, 21, 52) ± 1
+    <span class="kw">And</span>   ppm_pixel(p6, 62, 536) = (44, 23, 52) ± 1
     <span class="kw">And</span>   ppm_pixel(p6, 56, 639) = (255, 155, 82) ± 1
     <span class="kw">And</span>   max_channel_difference(p6, ref) ≤ 1</code></pre>
   </div>

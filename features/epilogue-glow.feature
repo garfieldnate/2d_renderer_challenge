@@ -7,7 +7,10 @@ Feature: Bonus: a glow under the title
   placement of the title in order, draw_effect(c, its baked glyph, 44 / 32,
   the placement's x, its y, color(1, 0.33, 0.085), true, glow_of). Spread 8
   at a scale of 44 / 32 reaches 11 pixels, past the glow's 10, so no texel
-  clamped at the spread ever glows. The subtitle gets no glow.
+  clamped at the spread ever glows. The glow reads the fourth, true-distance
+  channel; the probe at (62, 536), between the lines, is where the median of
+  the other three would glow and the true distance doesn't. The subtitle gets
+  no glow.
 
   Scenario: How the glow falls off
     Then  glow_of(-3) = 0.45
@@ -28,5 +31,6 @@ Feature: Bonus: a glow under the title
     And   ppm_pixel(p6, 44, 494) = (114, 67, 57) ± 1
     And   ppm_pixel(p6, 35, 499) = (93, 54, 55) ± 1
     And   ppm_pixel(p6, 60, 540) = (42, 21, 52) ± 1
+    And   ppm_pixel(p6, 62, 536) = (44, 23, 52) ± 1
     And   ppm_pixel(p6, 56, 639) = (255, 155, 82) ± 1
     And   max_channel_difference(p6, ref) ≤ 1

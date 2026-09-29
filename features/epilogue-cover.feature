@@ -3,8 +3,9 @@ Feature: The cover
   reference/epilogue/cover.svg on a 480 by 680 canvas; then the title, laid
   out as the type feature says, drawn with chapter 18's draw_run at 44 pixels
   in color(0.9, 0.86, 0.79); then the subtitle drawn at 15 pixels in
-  color(1, 0.33, 0.085); both draw_runs with linear blending on. It returns
-  the canvas.
+  color(1, 0.33, 0.085); both draw_runs with linear blending on (the probe at
+  (363, 510), on the edge of a letter, is where blending encoded instead shows).
+  It returns the canvas.
 
   Scenario: The cover
     Given ref ← read_file("reference/epilogue/cover.ppm")
@@ -17,6 +18,7 @@ Feature: The cover
     And   ppm_pixel(p6, 60, 540) = (42, 21, 52) ± 1
     And   ppm_pixel(p6, 56, 639) = (255, 155, 82) ± 1
     And   ppm_pixel(p6, 240, 8) = (21, 19, 42) ± 1
+    And   ppm_pixel(p6, 363, 510) = (142, 136, 136) ± 1
     And   max_channel_difference(p6, ref) ≤ 1
 
   Scenario: Chapter 21's tiled walker draws the cover's document byte for byte
