@@ -1,7 +1,8 @@
 # The 2D Renderer Challenge — Rust
 
 Chapters 1 (`The Canvas and the Color`) through 25 (`The Raster Editor
-Detour`), stdlib only except for one vendored crate: chapter 20 reads XML with
+Detour`), plus the epilogue (`One Last Picture`), stdlib only except for one
+vendored crate: chapter 20 reads XML with
 `roxmltree` 0.20 (source under `vendor/`, `.cargo/config.toml` points cargo
 at it, so everything builds with `--offline` and no network). Chapter 16 needed a small hand-written JSON reader for the font
 file (`reference/chapter-16/roboto.json`); no crate was added for it. Chapter
@@ -17,7 +18,7 @@ writer, again no new dependency.
 ## Build, test, render
 
 ```
-cargo test --release --offline   # every scenario in features/, chapters 1-25
+cargo test --release --offline   # every scenario in features/, chapters 1-25 and the epilogue
 cargo run --release --offline --bin render_all   # writes all renders (P3 + P6) to out/,
                                                  # then prints chapter 21's work table
 cargo run --release --offline --example span_bench   # composite_span vs composite_span4
@@ -90,8 +91,15 @@ That's it — `cargo build` alone also works if you just want the library to com
   `ordered_dither`/`error_diffuse`), a hand-written 8-bit indexed BMP
   reader and writer (`canvas_to_bmp8`/`read_bmp8`), and selection/undo
   (`marquee`/`add_selection`/`subtract_selection`/`intersect_selection`/
-  `feather`/`float_selection`/`History`/`history_fill`/`undo`/`redo`).
-- `src/bin/render_all.rs` — renders every figure/plate to `out/`.
+  `feather`/`float_selection`/`History`/`history_fill`/`undo`/`redo`). The
+  epilogue adds `book_cover()` (chapter 20's `render_svg` of
+  `reference/epilogue/cover.svg`, plus the title and subtitle laid out by
+  chapter 18 and drawn with chapter 18's `draw_run`), `glow_of` (the bonus
+  glow's falloff), and `book_cover_glow()` (the same cover with a
+  `bake_mtsdf`/`draw_effect` glow under the title, for readers who did
+  chapter 23).
+- `src/bin/render_all.rs` — renders every figure/plate to `out/`, plus the
+  epilogue's `cover-art.ppm`, `cover.ppm` and `cover-glow.ppm`.
 - `examples/span_bench.rs` — times chapter 21's two span compositors.
 - `tests/*.rs` — one test file per `features/*.feature` file (Gherkin
   scenarios translated 1:1 into `#[test]` functions; outlines expanded per
@@ -121,6 +129,10 @@ That's it — `cargo build` alone also works if you just want the library to com
   with an earlier chapter's names.
   Every render is checked against its own `reference/chapter-NN/` directory
   by the tests regardless.
+- `reference/epilogue/cover.svg`, `cover-art.ppm`, `cover.ppm` and
+  `cover-glow.ppm` — the epilogue's document and its three renders
+  (`render_svg` of the document alone, `book_cover()`, and
+  `book_cover_glow()`), written to `out/` under the same names.
 
 `--release` matters here: chapter 2's brute-force `coverage()` samples 64
 points per pixel per disc, chapter 3's `thick_line` reuses that same
@@ -1288,3 +1300,78 @@ none of its four brush scenarios uses an opacity below 1; only
 through the shared median-cut palette shifting a pixel 260 units away. See
 **Concrete changes** in `FEEDBACK.md`: the chapter's own stated invariant
 about opacity and self-crossing strokes has no direct scenario of its own.
+
+## Chapter 23 catch-up (before the epilogue)
+
+`features/chapter23-atlas.feature` gained one scenario since this code last
+ran: "A space has no edges, so every texel is as far out as the clamp
+allows", which calls `bake_mtsdf(f, "space", 16, 3)` and checks all four
+channels come back at the spread. `bake_sdf`/`bake_msdf`/`bake_mtsdf` were
+already written generally enough (the distance loop over an empty curve
+list leaves `best = f64::INFINITY`, and `bake_msdf`'s per-channel loop over
+zero matching edges falls through to its `None => spread` arm) that the new
+scenario passed on the first try with no code change — added to
+`tests/atlas23.rs` as `a_space_has_no_edges_so_every_texel_is_as_far_out_as_the_clamp_allows`.
+
+## Epilogue notes
+
+Nothing in the epilogue needed new machinery: `book_cover()` and
+`book_cover_glow()` (in `src/lib.rs`, right after chapter 25) are thin
+compositions of `render_svg` (chapter 20), `load_font`/`layout_paragraph`/
+`layout_run`/`draw_run` (chapters 16/18), and, for the bonus glow,
+`bake_mtsdf`/`draw_effect` (chapter 23) — exactly the seven-line program
+the chapter prints. All eleven scenarios across the four
+`features/epilogue-*.feature` files passed on the first attempt, and all
+three named renders (`cover-art.ppm`, `cover.ppm`, `cover-glow.ppm`) came
+out **byte-identical** (`max_channel_difference` 0, not just ≤ 1) to
+`reference/epilogue/`, confirmed both through the test suite's `≤ 1`
+scenarios and by a direct byte-for-byte `cmp` of `out/*.ppm` against
+`reference/epilogue/*.ppm` after `render_all`.
+
+The type feature's placement indices (`title[14]`, `title[15]`) and the
+"24 placements for 25 characters" count are pure consequences of chapters
+16 and 18's existing `break_lines`/`layout_paragraph`: `break_lines` already
+reconstructs each line by rejoining its words with single spaces, so the
+line-breaking space itself was already never placed, with no
+epilogue-specific code needed.
+
+`book_cover_glow` bakes each *distinct* glyph name in the title once (a
+`HashMap<String, Baked>` keyed by glyph name, filled while walking the
+placements) before drawing any glow, matching the chapter's prose ("every
+distinct glyph of the title baked once") — though nothing in the scenarios
+would have caught baking per-placement instead of per-glyph-name, since the
+result is pixel-identical either way and only the work done differs.
+
+Timing (release, one run each, this machine): `cover-art` (the bare SVG
+document) 392ms; `cover` (`book_cover()`) 470ms; `cover-glow`
+(`book_cover_glow()`) 1.03s — the extra ~600ms is baking and evaluating the
+MTSDF field for the roughly 20 distinct glyphs in the title.
+
+### Mutation testing (epilogue)
+
+Three deliberate bugs, tested and reverted, all caught:
+
+1. **The chapter's own named trap**: baking the glow at chapter 23's spread
+   of 4 instead of the epilogue's spread of 8. Caught by
+   `the_glow_sits_around_the_titles_letters_and_nowhere_else`
+   (pixel (35, 499): expected (93, 54, 55) ± 1, got (97, 56, 55)) — a small
+   miss, but over the 1-channel budget.
+2. **Drawing the glow after `draw_run` instead of before** (painting the
+   soft field on top of the crisp glyph bitmaps instead of underneath
+   them). Caught by the same scenario, much more loudly (pixel (44, 499):
+   expected (243, 239, 230), got (249, 207, 183) — the paper background
+   picking up an unwanted glow tint where the glyph should have covered it
+   cleanly).
+3. **Passing `linear = false` to both `draw_run` calls in `book_cover`**
+   (the browser-mode blend instead of the book's default linear one). This
+   is the interesting one: **every point-probe (`ppm_pixel`) assertion in
+   `the_cover` still passed** — the five hand-picked pixels happen to sit
+   where the mistake doesn't move the byte by more than 1 — and only the
+   golden-image scenario line, `max_channel_difference(p6, ref) ≤ 1`,
+   caught it, at an actual difference of 54. This is a direct
+   demonstration of the book's own §0.5 point about why golden-image tests
+   exist alongside point probes: a handful of probes, however well chosen,
+   can miss a global mistake that a full-image diff catches immediately.
+
+All three mutations were reverted and the full suite re-confirmed green
+(846 scenarios) before moving on.

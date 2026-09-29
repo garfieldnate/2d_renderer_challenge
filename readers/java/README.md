@@ -1,6 +1,7 @@
 # The 2D Renderer Challenge — Java
 
-Chapters 1-25, hand-rolled test runner, no JUnit, no network. Chapter 16's
+Chapters 1-25 plus the epilogue, hand-rolled test runner, no JUnit, no
+network. Chapter 16's
 font file (`reference/chapter-16/roboto.json`) and chapter 19's Arabic font
 (`reference/chapter-19/dejavu-arabic.json`) are read with a small
 hand-written JSON reader (`Json.java`) -- no library, as the chapter asks.
@@ -46,6 +47,7 @@ java -cp classes Chapter22Tests
 java -cp classes Chapter23Tests
 java -cp classes Chapter24Tests
 java -cp classes Chapter25Tests
+java -cp classes EpilogueTests
 ```
 
 Each run prints one `PASS`/`FAIL` line per scenario, a pass/fail total, and
@@ -79,7 +81,9 @@ chapter's own `plate_20()` is `tiger()` and chapter 21's `plate_21()` is
 `out/plate-23.ppm`, `out/title.ppm`. Chapter 24 adds `out/plate-24.ppm`,
 `out/msaa-demo.ppm`, `out/spill-map.ppm`, `out/tiger-assembly.ppm`; chapter
 25 adds `out/plate-25.ppm`, `out/dither-strip.ppm`, `out/halo-demo.ppm`,
-`out/brush-demo.ppm`, `out/paint-by-script.ppm`.
+`out/brush-demo.ppm`, `out/paint-by-script.ppm`. The epilogue adds
+`out/cover-art.ppm` (the SVG document alone), `out/cover.ppm` (`book_cover()`)
+and `out/cover-glow.ppm` (`book_cover_glow()`, the chapter-23 bonus variant).
 
 Chapter 15's dashed spiral render is `spiral-dashes.ppm`, not `spiral.ppm` --
 it used to share that name with chapter 6's spiral figure, which meant running
@@ -1441,3 +1445,52 @@ canvas's own palette ever produces an exact tie in channel or box width,
 so the prose's own stated tie-break rule ("the earliest on a tie") is
 asserted but never actually exercised by any pinned scenario. See
 `FEEDBACK.md` for the trace.
+
+## Epilogue
+
+`Epilogue.java` is the book's own closing program. `bookCover()` is the
+epilogue's `book_cover()` (named with the `book` prefix, not `cover()`,
+since chapter 24 already owns that name in this codebase): chapter 20's
+`SvgWalker.renderSvg` of `reference/epilogue/cover.svg` on a 480x680
+canvas, then chapter 18's `Layout.layoutParagraph`/`layoutRun` and
+`Layout.drawRun` for the title and subtitle, both with linear blending on.
+`bookCoverGlow()` is the chapter-23 bonus variant: every distinct glyph of
+the title baked once with `Msdf.bakeMtsdf(font, name, 32, 8)` (spread 8,
+not chapter 23's own spread 4 -- the chapter's own trap box explains why:
+at the scale the title is drawn, 44/32, spread 4 only reaches 5.5 pixels,
+short of the glow's 10-pixel falloff, and 8 reaches 11), then
+`Msdf.drawEffect` with `Epilogue::glowOf` for each placement *before* the
+crisp `drawRun` of the title, so chapter 17's bitmap sits on top of
+chapter 23's soft field, not the other way round. `glowOf(d) = 0.45 x (1 -
+clamp(d/10, 0, 1))^2`.
+
+All three renders (`cover-art.ppm`, `cover.ppm`, `cover-glow.ppm`) come out
+byte-for-byte identical to the reference (`max_channel_difference` = 0),
+not merely within the book's usual budget of 1. `EpilogueTests` also
+re-derives chapter 21's promise on the cover's own document: the tiled
+walker resolves 881,792 cells (of which 205,568 are plain copies) and
+still lands on exactly the same bytes as chapter 20's whole-canvas walker.
+
+Three mutations were tried against `bookCoverGlow()` and all three were
+caught: baking at chapter 23's spread of 4 instead of 8 (caught by a pixel
+probe just outside a letter, which comes out too bright); drawing the
+glow after the crisp title instead of before (caught immediately -- the
+soft field paints straight over the sharp glyph edges, changing pixels
+inside the letters themselves); and reading the median RGB channel
+instead of the true SDF channel via `drawEffect`'s `useTrue` flag (the
+individual pixel probes in the scenario all happened to still pass within
+tolerance, but the scenario's closing `max_channel_difference(p6, ref) <=
+1` assertion caught it at a difference of 45 -- see `FEEDBACK.md`).
+
+### Catch-up
+
+Before starting the epilogue, `features/chapter23-atlas.feature` was
+found to have a new scenario, "A space has no edges, so every texel is as
+far out as the clamp allows" (`bake_mtsdf` of the glyph `"space"`, which
+has no outline at all). It failed on the existing code:
+`Msdf.msdfChannel` returned `0` for a channel no edge carries (including
+every channel of an empty glyph) instead of the spread, i.e. "as far out
+as the clamp allows" that the chapter's own prose calls for. Fixed by
+returning `Double.POSITIVE_INFINITY` from that branch so the existing
+`clampSpread` call clamps it to `+spread`, matching `bake_sdf`'s (already
+correct) handling of the same case. See `FEEDBACK.md` for the full trace.

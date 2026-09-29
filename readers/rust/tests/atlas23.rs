@@ -1,8 +1,9 @@
 // features/chapter23-atlas.feature
 
 use renderer::{
-    approx_eq, bake_msdf, bake_sdf, circle_curves, color_edges, field_at, glyph_name, is_corner,
-    line_curve, load_font, median3, point, pseudo_distance, read_file, sample_field, vector,
+    approx_eq, bake_msdf, bake_mtsdf, bake_sdf, circle_curves, color_edges, field_at, glyph_name,
+    is_corner, line_curve, load_font, median3, point, pseudo_distance, read_file, sample_field,
+    vector,
 };
 
 fn font() -> renderer::Font {
@@ -20,6 +21,20 @@ fn the_box_a_glyph_is_baked_into() {
     assert_eq!(b.height, 18);
     assert_eq!(field_at(&b.channels[0], 0, 0), 3.0);
     assert!(approx_eq(field_at(&b.channels[0], 4, 9), -0.401566));
+}
+
+#[test]
+fn a_space_has_no_edges_so_every_texel_is_as_far_out_as_the_clamp_allows() {
+    let f = font();
+    let b = bake_mtsdf(&f, "space", 16.0, 3.0);
+    assert_eq!(b.left, -3);
+    assert_eq!(b.top, -3);
+    assert_eq!(b.width, 6);
+    assert_eq!(b.height, 6);
+    assert_eq!(field_at(&b.channels[0], 0, 0), 3.0);
+    assert_eq!(field_at(&b.channels[1], 2, 3), 3.0);
+    assert_eq!(field_at(&b.channels[2], 5, 5), 3.0);
+    assert_eq!(field_at(&b.channels[3], 2, 3), 3.0);
 }
 
 #[test]

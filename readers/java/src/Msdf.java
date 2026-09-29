@@ -194,7 +194,10 @@ public final class Msdf {
             }
         }
         if (best == null) {
-            return 0;
+            // No edge carries this channel (or the glyph has no outline at all, like the
+            // space): there's nothing to be near, so the answer is as far out as the clamp
+            // allows. Returning +infinity here, rather than 0, lets clampSpread do that.
+            return Double.POSITIVE_INFINITY;
         }
         return pseudoDistance(p, best.curve(), best.t(), best.d());
     }

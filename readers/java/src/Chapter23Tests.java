@@ -365,6 +365,19 @@ public final class Chapter23Tests {
             assertDoubleEq("field_at(4,9)", Field.fieldAt(b.channels[0], 4, 9), -0.401566, 0.000001);
         });
 
+        scenario("Atlas: a space has no edges, so every texel is as far out as the clamp allows", () -> {
+            Font f = Figures.robotoFont();
+            Baked b = Msdf.bakeMtsdf(f, "space", 16, 3);
+            assertEquals("left", b.left, -3);
+            assertEquals("top", b.top, -3);
+            assertEquals("width", b.width, 6);
+            assertEquals("height", b.height, 6);
+            assertDoubleEq("field_at(channels[0], 0, 0)", Field.fieldAt(b.channels[0], 0, 0), 3);
+            assertDoubleEq("field_at(channels[1], 2, 3)", Field.fieldAt(b.channels[1], 2, 3), 3);
+            assertDoubleEq("field_at(channels[2], 5, 5)", Field.fieldAt(b.channels[2], 5, 5), 3);
+            assertDoubleEq("field_at(channels[3], 2, 3)", Field.fieldAt(b.channels[3], 2, 3), 3);
+        });
+
         scenario("Atlas: what a corner is", () -> {
             assertEquals("perpendicular", Msdf.isCorner(vec(1, 0), vec(0, 1)), true);
             assertEquals("reversed", Msdf.isCorner(vec(1, 0), vec(-1, 0)), true);

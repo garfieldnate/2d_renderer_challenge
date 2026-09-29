@@ -22,6 +22,7 @@ use renderer::{
     aspect_demo, harbor, rose, tiger, work_map, render_svg_with, stats, read_file,
     msaa_demo, plate_24, spill_map, tiger_assembly,
     brush_demo, dither_strip, halo_demo, paint_by_script, plate_25,
+    book_cover, book_cover_glow, render_svg,
 };
 use std::time::Instant;
 
@@ -246,5 +247,17 @@ fn main() {
     write_p6(out, "paint-by-script.ppm", canvas_to_p6(&paint_by_script()));
     println!("paint-by-script: {:.2?}", t.elapsed());
 
-    println!("wrote 95 renders to out/");
+    // Epilogue: one last picture.
+    let t = Instant::now();
+    let cover_svg = String::from_utf8(read_file("reference/epilogue/cover.svg")).unwrap();
+    write_p6(out, "cover-art.ppm", canvas_to_p6(&render_svg(&cover_svg, 480, 680)));
+    println!("cover-art: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "cover.ppm", canvas_to_p6(&book_cover()));
+    println!("cover: {:.2?}", t.elapsed());
+    let t = Instant::now();
+    write_p6(out, "cover-glow.ppm", canvas_to_p6(&book_cover_glow()));
+    println!("cover-glow: {:.2?}", t.elapsed());
+
+    println!("wrote 98 renders to out/");
 }

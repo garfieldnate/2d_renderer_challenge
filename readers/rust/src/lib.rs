@@ -13651,3 +13651,74 @@ pub fn paint_by_script() -> Canvas {
     let (w, h, pal2, idx2) = read_bmp8(&bmp);
     indexed_canvas(&idx2, &pal2, w, h)
 }
+
+// =======================================================================
+// Epilogue: One Last Picture
+// =======================================================================
+
+/// The title and subtitle strings the cover sets, and the font, layout
+/// and paint every scenario measures against.
+const COVER_TITLE: &str = "The 2D Renderer Challenge";
+const COVER_SUBTITLE: &str = "A test-driven guide to drawing every pixel yourself";
+
+fn cover_font() -> Font {
+    load_font(read_file("reference/chapter-16/roboto.json"))
+}
+
+fn cover_document() -> Canvas {
+    let svg = String::from_utf8(read_file("reference/epilogue/cover.svg")).unwrap();
+    render_svg(&svg, 480, 680)
+}
+
+fn cover_title_placements(font: &Font) -> Vec<Placement> {
+    layout_paragraph(font, COVER_TITLE, 44.0, 40.0, 530.0, 400.0, "left", true)
+}
+
+fn cover_subtitle_placements(font: &Font) -> Vec<Placement> {
+    layout_run(font, COVER_SUBTITLE, 15.0, 40.0, 640.0, true)
+}
+
+/// The book's own cover: chapter 20's `render_svg` of
+/// `reference/epilogue/cover.svg` on a 480 by 680 canvas, then the title
+/// and subtitle laid out by chapter 18 and drawn with chapter 18's
+/// `draw_run`, both in linear light.
+pub fn book_cover() -> Canvas {
+    let mut c = cover_document();
+    let font = cover_font();
+    let title = cover_title_placements(&font);
+    let sub = cover_subtitle_placements(&font);
+    draw_run(&mut c, &font, &title, 44.0, color(0.9, 0.86, 0.79), true);
+    draw_run(&mut c, &font, &sub, 15.0, color(1.0, 0.33, 0.085), true);
+    c
+}
+
+/// The falloff for the bonus glow under the title: 0.45 inside the
+/// letter and on its edge, fading to 0 ten pixels out.
+pub fn glow_of(d: f64) -> f64 {
+    let t = (d / 10.0).clamp(0.0, 1.0);
+    0.45 * (1.0 - t).powi(2)
+}
+
+/// `book_cover`, with one step between the document and the title's
+/// `draw_run`: every distinct glyph of the title baked once by
+/// `bake_mtsdf` at 32 pixels with spread 8, then a `draw_effect` glow at
+/// every placement, reading the true-distance channel. The subtitle gets
+/// no glow.
+pub fn book_cover_glow() -> Canvas {
+    let mut c = cover_document();
+    let font = cover_font();
+    let title = cover_title_placements(&font);
+    let sub = cover_subtitle_placements(&font);
+
+    let mut baked: std::collections::HashMap<String, Baked> = std::collections::HashMap::new();
+    for pl in &title {
+        baked.entry(pl.name.clone()).or_insert_with(|| bake_mtsdf(&font, &pl.name, 32.0, 8.0));
+    }
+    for pl in &title {
+        draw_effect(&mut c, &baked[&pl.name], 44.0 / 32.0, pl.x, pl.y, color(1.0, 0.33, 0.085), true, glow_of);
+    }
+
+    draw_run(&mut c, &font, &title, 44.0, color(0.9, 0.86, 0.79), true);
+    draw_run(&mut c, &font, &sub, 15.0, color(1.0, 0.33, 0.085), true);
+    c
+}
