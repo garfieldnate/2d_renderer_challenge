@@ -190,7 +190,10 @@ def glyph_curves(font, name, m):
 
 def sd_curves(p, curves, sign_path, rule):
     """the distance to the nearest curve, negative where the flattened path
-    winds around the point under the rule"""
+    winds around the point under the rule; infinitely far when there are no
+    curves (a space)"""
+    if not curves:
+        return math.inf
     d = min(distance_to_quadratic(p, c) if len(c.points) == 3 else distance_to_cubic(p, c)
             for c in curves)
     return -d if inside_by(winding_at(sign_path, p.x, p.y), rule) else d
@@ -609,6 +612,9 @@ def msdf_texel(p, edges_, spread):
             key = (d, _orthogonality(p, c, t) if t in (0.0, 1.0) else 0.0)
             if best is None or key[0] < best[0][0] - 1e-12 or (abs(key[0] - best[0][0]) <= 1e-12 and key[1] < best[0][1]):
                 best = (key, c, t, d)
+        if best is None:              # no edge carries this channel: as far out as the clamp allows
+            out.append(spread)
+            continue
         v = pseudo_distance(p, best[1], best[2], best[3])
         out.append(clamp(v, -spread, spread))
     return out

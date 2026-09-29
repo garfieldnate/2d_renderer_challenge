@@ -12,8 +12,8 @@
 
   <nav class="runner">
     <span>The 2D Renderer Challenge</span>
-    <span>Chapter 23 of 24</span>
-    <span><a href="../plan.html">Outline</a> · <a href="chapter-22.html">← 22</a> · <a href="#plate">Plate&nbsp;23</a></span>
+    <span>Chapter 23 of 25</span>
+    <span><a href="../index.html">Contents</a> · <a href="chapter-22.html">← 22</a> · <a href="#plate">Plate&nbsp;23</a></span>
   </nav>
 
   <header class="opener">
@@ -541,6 +541,12 @@
     reach away from the edge, a glow or a shadow, read a fourth channel that holds the ordinary
     distance. That's <code>bake_mtsdf</code>, and the title below uses it.</p>
 
+  <p>One edge case before you bake a whole string: a space has no outline, so there's no edge for
+    any channel to be near. Every channel with nothing to measure, whether a whole blank glyph or a
+    colour no edge happens to carry, is <code>spread</code> at every texel, as far out as the clamp
+    allows. Leave that out and the first space in a title is a crash, or a <code>min</code> over
+    nothing, depending on your language's taste in failure.</p>
+
   <figure>
     <canvas id="fig237" role="img" aria-label="Four large letters in orange: an E with rounded corners and knobbed arm ends, an E with sharp corners, a k with notched jagged diagonals, and a clean sharp k"></canvas>
     <figcaption><span class="fig">Figure 23.7</span> <em>E</em> baked at 16 pixels, drawn at 20×: one channel, then three. <em>k</em> baked at 16, three channels, notched where its strokes are thinner than two texels; then baked at 32, clean.</figcaption>
@@ -601,7 +607,9 @@
   o is 0 when the nearest t is inside the curve and |dot(direction at
   that end, unit(p - that end))| when it's an end; the channel is that
   edge's pseudo_distance, clamped to ±spread. bake_mtsdf adds bake_sdf's field
-  as a fourth channel. line_curve(a, b) is a straight edge as chapter 16
+  as a fourth channel. A channel no edge carries, and every channel of a
+  glyph with no outline at all (the space), is spread at every texel: there
+  is nothing to be near, so the answer is as far out as the clamp allows. line_curve(a, b) is a straight edge as chapter 16
   makes one, quadratic(a, (a + b) / 2, b); circle_curves(cx, cy, r) is
   eight quadratics, ends on the circle at angles 2πi / 8 and controls at
   radius r / cos(π / 8) halfway between.
@@ -615,6 +623,18 @@
     <span class="kw">And</span>   b.height = 18
     <span class="kw">And</span>   field_at(b.channels[0], 0, 0) = 3
     <span class="kw">And</span>   field_at(b.channels[0], 4, 9) = -0.401566
+
+  <span class="kw">Scenario</span>: A space has no edges, so every texel is as far out as the clamp allows
+    <span class="kw">Given</span> f ← roboto()
+    <span class="kw">When</span>  b ← bake_mtsdf(f, "space", 16, 3)
+    <span class="kw">Then</span>  b.left = -3
+    <span class="kw">And</span>   b.top = -3
+    <span class="kw">And</span>   b.width = 6
+    <span class="kw">And</span>   b.height = 6
+    <span class="kw">And</span>   field_at(b.channels[0], 0, 0) = 3
+    <span class="kw">And</span>   field_at(b.channels[1], 2, 3) = 3
+    <span class="kw">And</span>   field_at(b.channels[2], 5, 5) = 3
+    <span class="kw">And</span>   field_at(b.channels[3], 2, 3) = 3
 
   <span class="kw">Scenario</span>: What a corner is
     <span class="kw">Then</span>  is_corner(vector(1, 0), vector(0, 1)) = true
@@ -1121,7 +1141,7 @@ function pseudoDistance(p,c,t,d){if(t===0||t===1){var e=pointAt(c,t),tn=dirAt(c,
   var side=crss(dirAt(c,t),sub(p,pointAt(c,t)));return side>0?-d:d;}
 function orthogonality(p,c,t){var v=sub(p,pointAt(c,t)),m=mag(v);return m===0?0:Math.abs(dot(dirAt(c,t),[v[0]*(1/m),v[1]*(1/m)]));}
 function msdfTexel(p,es,spread){return [RED,GREEN,BLUE].map(function(ch){var best=null;es.forEach(function(e){if(!(e[1]&ch))return;var n=nearestOnQuadratic(p,e[0]),o=(n[1]===0||n[1]===1)?orthogonality(p,e[0],n[1]):0;
-    if(best===null||n[0]<best.d-1e-12||(Math.abs(n[0]-best.d)<=1e-12&&o<best.o))best={c:e[0],t:n[1],d:n[0],o:o};});return clamp(pseudoDistance(p,best.c,best.t,best.d),-spread,spread);});}
+    if(best===null||n[0]<best.d-1e-12||(Math.abs(n[0]-best.d)<=1e-12&&o<best.o))best={c:e[0],t:n[1],d:n[0],o:o};});return best===null?spread:clamp(pseudoDistance(p,best.c,best.t,best.d),-spread,spread);});}
 function bakeMsdf(font,name,size,spread){var bx=bakeBox(font,name,size,spread),es=glyphEdges(font,name,bx.m),ch=[new Field(bx.w,bx.h),new Field(bx.w,bx.h),new Field(bx.w,bx.h)];
   for(var y=0;y<bx.h;y++)for(var x=0;x<bx.w;x++){var v=msdfTexel([x+0.5,y+0.5],es,spread);for(var k=0;k<3;k++)ch[k].v[y*bx.w+x]=v[k];}return {ch:ch,left:bx.left,top:bx.top,w:bx.w,h:bx.h};}
 function bakeMtsdf(font,name,size,spread){var m=bakeMsdf(font,name,size,spread);m.ch.push(bakeSdf(font,name,size,spread).ch[0]);return m;}

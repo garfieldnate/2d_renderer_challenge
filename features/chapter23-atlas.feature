@@ -51,7 +51,9 @@ Feature: Glyph atlases
   o is 0 when the nearest t is inside the curve and |dot(direction at
   that end, unit(p - that end))| when it's an end; the channel is that
   edge's pseudo_distance, clamped to ±spread. bake_mtsdf adds bake_sdf's field
-  as a fourth channel. line_curve(a, b) is a straight edge as chapter 16
+  as a fourth channel. A channel no edge carries, and every channel of a
+  glyph with no outline at all (the space), is spread at every texel: there
+  is nothing to be near, so the answer is as far out as the clamp allows. line_curve(a, b) is a straight edge as chapter 16
   makes one, quadratic(a, (a + b) / 2, b); circle_curves(cx, cy, r) is
   eight quadratics, ends on the circle at angles 2πi / 8 and controls at
   radius r / cos(π / 8) halfway between.
@@ -65,6 +67,18 @@ Feature: Glyph atlases
     And   b.height = 18
     And   field_at(b.channels[0], 0, 0) = 3
     And   field_at(b.channels[0], 4, 9) = -0.401566
+
+  Scenario: A space has no edges, so every texel is as far out as the clamp allows
+    Given f ← roboto()
+    When  b ← bake_mtsdf(f, "space", 16, 3)
+    Then  b.left = -3
+    And   b.top = -3
+    And   b.width = 6
+    And   b.height = 6
+    And   field_at(b.channels[0], 0, 0) = 3
+    And   field_at(b.channels[1], 2, 3) = 3
+    And   field_at(b.channels[2], 5, 5) = 3
+    And   field_at(b.channels[3], 2, 3) = 3
 
   Scenario: What a corner is
     Then  is_corner(vector(1, 0), vector(0, 1)) = true
